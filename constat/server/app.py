@@ -618,9 +618,15 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.feedback import router as feedback_router
     from constat.server.routes.testing import router as testing_router
     from constat.server.routes.fine_tune import router as fine_tune_router
+    from constat.server.routes.public import router as public_router
 
     # IMPORTANT: Register routers with specific paths BEFORE routers with /{session_id} wildcards
     # Otherwise the wildcard routes will match paths like /agents, /skills, etc.
+    fastapi_app.include_router(
+        public_router,
+        prefix="/api/public",
+        tags=["public"],
+    )
     fastapi_app.include_router(
         agents_router,
         prefix="/api/sessions",

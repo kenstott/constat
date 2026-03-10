@@ -475,3 +475,83 @@ class TestRichArtifacts:
         artifacts = memory_store.get_artifacts(step_number=1)
         assert len(artifacts) == 1
         assert artifacts[0].content == "print('hello')"
+
+    def test_delete_artifact(self, memory_store):
+        """Delete removes all versions by name."""
+        # Create two versions of the same artifact
+        memory_store.save_rich_artifact(
+            name="chart1", artifact_type=ArtifactType.CHART,
+            content="v1", step_number=1, title="Chart v1",
+        )
+        a2 = memory_store.save_rich_artifact(
+            name="chart1", artifact_type=ArtifactType.CHART,
+            content="v2", step_number=2, title="Chart v2",
+        )
+
+        # Verify both exist
+        versions = memory_store.get_artifact_versions("chart1")
+        assert len(versions) == 2
+
+        # Delete by ID of second version
+        result = memory_store.delete_artifact(a2.id)
+        assert result is True
+
+        # All versions should be gone
+        versions = memory_store.get_artifact_versions("chart1")
+        assert len(versions) == 0
+
+    def test_delete_artifact_not_found(self, memory_store):
+        """Delete returns False for nonexistent artifact."""
+        result = memory_store.delete_artifact(999999)
+        assert result is False
+
+    # --- Sharing tests ---
+
+    def test_shared_users_empty_by_default(self, memory_store):
+        """Shared users list is empty by default."""
+        assert memory_store.get_shared_users() == []
+
+    def test_shared_add_user(self, memory_store):
+        """Adding a shared user persists it."""
+        memory_store.add_shared_user("user1@example.com")
+        assert memory_store.get_shared_users() == ["user1@example.com"]
+
+    def test_shared_add_user_dedup(self, memory_store):
+        """Adding the same user twice does not duplicate."""
+        memory_store.add_shared_user("user1@example.com")
+        memory_store.add_shared_user("user1@example.com")
+        assert memory_store.get_shared_users() == ["user1@example.com"]
+
+    def test_shared_add_multiple_users(self, memory_store):
+        """Multiple users can be added."""
+        memory_store.add_shared_user("a@test.com")
+        memory_store.add_shared_user("b@test.com")
+        assert memory_store.get_shared_users() == ["a@test.com", "b@test.com"]
+
+    def test_shared_remove_user(self, memory_store):
+        """Removing a shared user works."""
+        memory_store.add_shared_user("a@test.com")
+        memory_store.add_shared_user("b@test.com")
+        memory_store.remove_shared_user("a@test.com")
+        assert memory_store.get_shared_users() == ["b@test.com"]
+
+    def test_shared_remove_nonexistent_user(self, memory_store):
+        """Removing a user not in the list is a no-op."""
+        memory_store.add_shared_user("a@test.com")
+        memory_store.remove_shared_user("nobody@test.com")
+        assert memory_store.get_shared_users() == ["a@test.com"]
+
+    def test_public_default_false(self, memory_store):
+        """Sessions are not public by default."""
+        assert memory_store.is_public() is False
+
+    def test_set_public_true(self, memory_store):
+        """Setting public to True makes the session public."""
+        memory_store.set_public(True)
+        assert memory_store.is_public() is True
+
+    def test_set_public_false_after_true(self, memory_store):
+        """Setting public to False after True reverts to private."""
+        memory_store.set_public(True)
+        memory_store.set_public(False)
+        assert memory_store.is_public() is False

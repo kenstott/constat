@@ -72,6 +72,8 @@ export interface Session {
   active_domains?: string[] // Active domain filenames
   tables_count: number
   artifacts_count: number
+  shared_with?: string[]
+  is_public?: boolean
 }
 
 export interface SessionListResponse {

@@ -23,6 +23,10 @@ from constat.server.models import (
     SessionResponse,
     SessionListResponse,
     SessionStatus,
+    ShareSessionRequest,
+    ShareSessionResponse,
+    TogglePublicRequest,
+    TogglePublicResponse,
 )
 from constat.server.persona_config import require_write
 from constat.server.session_manager import SessionManager, ManagedSession
@@ -76,6 +80,19 @@ def _session_to_response(managed: ManagedSession) -> SessionResponse:
         except (KeyError, ValueError, OSError):
             pass
 
+    # Get shared users and public flag from datastore
+    shared_with: list[str] = []
+    is_public = False
+    if managed.session.datastore:
+        try:
+            shared_with = managed.session.datastore.get_shared_users()
+        except (KeyError, ValueError, OSError):
+            pass
+        try:
+            is_public = managed.session.datastore.is_public()
+        except (KeyError, ValueError, OSError):
+            pass
+
     return SessionResponse(
         session_id=managed.session_id,
         user_id=managed.user_id,
@@ -87,6 +104,8 @@ def _session_to_response(managed: ManagedSession) -> SessionResponse:
         active_domains=managed.active_domains,
         tables_count=tables_count,
         artifacts_count=artifacts_count,
+        shared_with=shared_with,
+        is_public=is_public,
     )
 
 
@@ -279,6 +298,15 @@ async def create_session(
     logger.debug(f"[create_session] checking for existing session...")
     existing = session_manager.get_session_or_none(client_session_id)
     if existing:
+        # ACL check: owner or shared user
+        shared_with = []
+        if existing.session.datastore:
+            try:
+                shared_with = existing.session.datastore.get_shared_users()
+            except (KeyError, ValueError, OSError):
+                pass
+        if existing.user_id != effective_user_id and effective_user_id not in shared_with:
+            raise HTTPException(status_code=403, detail="Not authorized to access this session")
         logger.info(f"Reconnecting to existing session {client_session_id}")
         existing.touch()
         return _session_to_response(existing)
@@ -342,8 +370,19 @@ async def list_sessions(
     # Use authenticated user_id, but allow query param when auth disabled
     effective_user_id = current_user_id if current_user_id != "default" else (user_id or "default")
 
-    # Get in-memory sessions
+    # Get in-memory sessions (owned by user)
     in_memory = session_manager.list_sessions(user_id=effective_user_id)
+
+    # Also include sessions shared with this user
+    all_sessions = session_manager.list_sessions()
+    for s in all_sessions:
+        if s.user_id != effective_user_id and s.session.datastore:
+            try:
+                if effective_user_id in s.session.datastore.get_shared_users():
+                    in_memory.append(s)
+            except (KeyError, ValueError, OSError):
+                pass
+
     in_memory_ids = {s.session_id for s in in_memory}
     logger.debug(f"[list_sessions] in_memory_ids: {in_memory_ids}")
 
@@ -894,3 +933,135 @@ async def match_dynamic_context(
         "skills": context.get("skills"),
         "agent_source": context.get("agent_source"),
     }
+
+
+@router.post("/{session_id}/share", response_model=ShareSessionResponse)
+async def share_session(
+    session_id: str,
+    body: ShareSessionRequest,
+    user_id: CurrentUserId,
+    request: Request,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> ShareSessionResponse:
+    """Share a session with another user by email.
+
+    Adds the email to the session ACL and sends an invite email with a deep link.
+    Only the session owner can share.
+    """
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if managed.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Only the session owner can share")
+
+    email = body.email.strip().lower()
+
+    # Store email in shared_with ACL
+    if managed.session.datastore:
+        managed.session.datastore.add_shared_user(email)
+
+    # Build share URL
+    config = request.app.state.config
+    server_config = request.app.state.server_config
+    base_url = getattr(server_config, 'base_url', '') or ''
+    if not base_url:
+        # Derive from request
+        base_url = str(request.base_url).rstrip('/')
+    share_url = f"{base_url}/s/{session_id}"
+
+    # Send invite email if email is configured
+    if hasattr(config, 'email') and config.email:
+        from constat.email import EmailSender, markdown_to_html
+        sender = EmailSender(config.email)
+        summary = managed.session.datastore.get_session_meta("summary") if managed.session.datastore else None
+        subject = f"A Constat session has been shared with you"
+        body_md = f"""# Session Shared With You
+
+A user has shared a Constat session with you.
+
+{f"**Summary:** {summary}" if summary else ""}
+
+[Open Session]({share_url})
+
+Click the link above to join the session. You may need to sign in first.
+"""
+        html_body = markdown_to_html(body_md)
+        sender.send(to=email, subject=subject, body=html_body, html=True)
+
+    return ShareSessionResponse(status="shared", share_url=share_url)
+
+
+@router.get("/{session_id}/shares")
+async def get_shares(
+    session_id: str,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Get the list of users a session is shared with. Owner only."""
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if managed.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Only the session owner can view shares")
+
+    shared_with = []
+    if managed.session.datastore:
+        shared_with = managed.session.datastore.get_shared_users()
+
+    return {"shared_with": shared_with}
+
+
+@router.delete("/{session_id}/share/{shared_user_id}")
+async def remove_share(
+    session_id: str,
+    shared_user_id: str,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Remove a user from the session's shared list. Owner only."""
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if managed.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Only the session owner can manage shares")
+
+    if managed.session.datastore:
+        managed.session.datastore.remove_shared_user(shared_user_id)
+
+    return {"status": "removed", "user_id": shared_user_id}
+
+
+@router.post("/{session_id}/public", response_model=TogglePublicResponse)
+async def toggle_public(
+    session_id: str,
+    body: TogglePublicRequest,
+    user_id: CurrentUserId,
+    request: Request,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> TogglePublicResponse:
+    """Toggle public sharing for a session. Owner only.
+
+    When public is True, anyone with the link can view the session read-only.
+    Session IDs are UUIDs (unguessable) so no additional token is needed.
+    """
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if managed.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Only the session owner can toggle public sharing")
+
+    if managed.session.datastore:
+        managed.session.datastore.set_public(body.public)
+
+    # Build share URL
+    server_config = request.app.state.server_config
+    base_url = getattr(server_config, 'base_url', '') or ''
+    if not base_url:
+        base_url = str(request.base_url).rstrip('/')
+    share_url = f"{base_url}/s/{session_id}"
+
+    return TogglePublicResponse(
+        status="updated",
+        public=body.public,
+        share_url=share_url,
+    )

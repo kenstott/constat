@@ -269,6 +269,110 @@ export async function toggleArtifactStar(
   )
 }
 
+export async function deleteArtifact(
+  sessionId: string,
+  artifactId: number
+): Promise<{ status: string; artifact_id: number }> {
+  return del<{ status: string; artifact_id: number }>(
+    `/sessions/${sessionId}/artifacts/${artifactId}`
+  )
+}
+
+// Public Sharing
+export async function togglePublicSharing(
+  sessionId: string,
+  isPublic: boolean
+): Promise<{ status: string; public: boolean; share_url: string }> {
+  return post<{ status: string; public: boolean; share_url: string }>(
+    `/sessions/${sessionId}/public`,
+    { public: isPublic }
+  )
+}
+
+export async function publicGetSession(
+  sessionId: string
+): Promise<{ session_id: string; summary: string | null; status: string }> {
+  const resp = await fetch(`/api/public/${sessionId}`)
+  if (!resp.ok) throw new Error('Not found')
+  return resp.json()
+}
+
+export async function publicGetMessages(
+  sessionId: string
+): Promise<{ messages: StoredMessage[] }> {
+  const resp = await fetch(`/api/public/${sessionId}/messages`)
+  if (!resp.ok) throw new Error('Not found')
+  return resp.json()
+}
+
+export async function publicListArtifacts(
+  sessionId: string
+): Promise<{ artifacts: Artifact[] }> {
+  const resp = await fetch(`/api/public/${sessionId}/artifacts`)
+  if (!resp.ok) throw new Error('Not found')
+  return resp.json()
+}
+
+export async function publicListTables(
+  sessionId: string
+): Promise<{ tables: TableInfo[] }> {
+  const resp = await fetch(`/api/public/${sessionId}/tables`)
+  if (!resp.ok) throw new Error('Not found')
+  return resp.json()
+}
+
+export async function publicGetTableData(
+  sessionId: string,
+  tableName: string,
+  page = 1,
+  pageSize = 100
+): Promise<TableData> {
+  const resp = await fetch(`/api/public/${sessionId}/tables/${encodeURIComponent(tableName)}?page=${page}&page_size=${pageSize}`)
+  if (!resp.ok) throw new Error('Not found')
+  return resp.json()
+}
+
+export async function publicGetArtifact(
+  sessionId: string,
+  artifactId: number
+): Promise<ArtifactContent> {
+  const resp = await fetch(`/api/public/${sessionId}/artifacts/${artifactId}`)
+  if (!resp.ok) throw new Error('Not found')
+  return resp.json()
+}
+
+export async function publicGetProofFacts(
+  sessionId: string
+): Promise<{ facts: StoredProofFact[]; summary: string | null }> {
+  const resp = await fetch(`/api/public/${sessionId}/proof-facts`)
+  if (!resp.ok) throw new Error('Not found')
+  return resp.json()
+}
+
+// Session Sharing
+export async function shareSession(
+  sessionId: string,
+  email: string
+): Promise<{ status: string; share_url: string }> {
+  return post<{ status: string; share_url: string }>(
+    `/sessions/${sessionId}/share`,
+    { email }
+  )
+}
+
+export async function getShares(
+  sessionId: string
+): Promise<{ shared_with: string[] }> {
+  return get<{ shared_with: string[] }>(`/sessions/${sessionId}/shares`)
+}
+
+export async function removeShare(
+  sessionId: string,
+  userId: string
+): Promise<{ status: string }> {
+  return del<{ status: string }>(`/sessions/${sessionId}/share/${encodeURIComponent(userId)}`)
+}
+
 export async function toggleTableStar(
   sessionId: string,
   tableName: string

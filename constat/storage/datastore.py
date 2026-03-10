@@ -1516,6 +1516,37 @@ class DataStore:
 
         return True
 
+    def delete_artifact(self, artifact_id: int) -> bool:
+        """
+        Delete an artifact and all its versions (by name).
+
+        Args:
+            artifact_id: ID of any version of the artifact
+
+        Returns:
+            True if deleted, False if not found
+        """
+        # Look up the artifact name by ID
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT name FROM _constat_artifacts WHERE id = :id"),
+                {"id": artifact_id}
+            ).fetchone()
+
+        if not result:
+            return False
+
+        artifact_name = result[0]
+
+        # Delete all versions with that name
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM _constat_artifacts WHERE name = :name"),
+                {"name": artifact_name}
+            )
+
+        return True
+
     def set_starred_tables(self, table_names: list[str]) -> None:
         """Set the list of starred table names."""
         self.set_state("_starred_tables", table_names)
@@ -1543,6 +1574,34 @@ class DataStore:
             is_starred = True
         self.set_starred_tables(starred)
         return is_starred
+
+    # --- Session sharing methods ---
+
+    def get_shared_users(self) -> list[str]:
+        """Get list of user IDs this session is shared with."""
+        return self.get_state("_shared_with") or []
+
+    def add_shared_user(self, user_id: str) -> None:
+        """Add a user to the shared list (deduped)."""
+        shared = self.get_shared_users()
+        if user_id not in shared:
+            shared.append(user_id)
+            self.set_state("_shared_with", shared)
+
+    def remove_shared_user(self, user_id: str) -> None:
+        """Remove a user from the shared list."""
+        shared = self.get_shared_users()
+        if user_id in shared:
+            shared.remove(user_id)
+            self.set_state("_shared_with", shared)
+
+    def is_public(self) -> bool:
+        """Check if this session is publicly accessible."""
+        return self.get_state("_public") is True
+
+    def set_public(self, public: bool) -> None:
+        """Set the public sharing flag."""
+        self.set_state("_public", public)
 
     # --- Session metadata methods ---
 

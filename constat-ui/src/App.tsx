@@ -144,6 +144,115 @@ function NavigationSync() {
   return null
 }
 
+/** Read-only viewer for publicly shared sessions. */
+function PublicViewerApp({ sessionId }: { sessionId: string }) {
+  const { clearPublicSession } = useUIStore()
+  const [summary, setSummary] = useState<string | null>(null)
+  const [messages, setMessages] = useState<Array<{ id: string; type: string; content: string; timestamp: string }>>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const [sessionResp, messagesResp] = await Promise.all([
+          sessionsApi.publicGetSession(sessionId),
+          sessionsApi.publicGetMessages(sessionId),
+        ])
+        if (cancelled) return
+        setSummary(sessionResp.summary)
+        setMessages(messagesResp.messages || [])
+      } catch {
+        if (!cancelled) setError('This session is not available or not publicly shared.')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [sessionId])
+
+  if (loading) {
+    return (
+      <div className="fixed inset-0 flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-gray-200 dark:border-gray-700 rounded-full animate-spin border-t-blue-500" />
+          <p className="text-gray-500 dark:text-gray-400">Loading shared session...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="fixed inset-0 flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <div className="text-center max-w-md">
+          <p className="text-lg font-medium text-gray-700 dark:text-gray-300 mb-2">Session Not Available</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">{error}</p>
+          <button
+            onClick={clearPublicSession}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Go to App
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 flex flex-col bg-gray-50 dark:bg-gray-900">
+      {/* Header bar */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 flex items-center justify-center rounded-lg bg-blue-500 text-white font-bold text-sm">V</div>
+          <div>
+            <h1 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Shared Session</h1>
+            {summary && <p className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-md">{summary}</p>}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="px-2 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded">
+            Read-only
+          </span>
+          <button
+            onClick={clearPublicSession}
+            className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+          >
+            Go to App
+          </button>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 max-w-3xl mx-auto w-full">
+        {messages.length === 0 ? (
+          <p className="text-center text-gray-500 dark:text-gray-400 py-8">No messages in this session.</p>
+        ) : (
+          messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={`rounded-lg px-4 py-3 ${
+                msg.type === 'user'
+                  ? 'bg-blue-50 dark:bg-blue-900/20 ml-8'
+                  : 'bg-white dark:bg-gray-800 mr-8 border border-gray-200 dark:border-gray-700'
+              }`}
+            >
+              <div className="text-xs text-gray-400 dark:text-gray-500 mb-1">
+                {msg.type === 'user' ? 'User' : msg.type === 'output' ? 'Result' : msg.type}
+              </div>
+              <div className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">
+                {msg.content}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
 function MainApp() {
   const { session, wsConnected, createSession, messages } = useSessionStore()
   const { userId } = useAuthStore()
@@ -330,6 +439,7 @@ function MainApp() {
 
 function App() {
   const { initialize, loading, initialized } = useAuthStore()
+  const publicSessionId = useUIStore((state) => state.publicSessionId)
   const isAuthenticated = useAuthStore((state) => {
     if (isAuthDisabled) return true
     return state.user !== null
@@ -356,6 +466,11 @@ function App() {
       return () => clearTimeout(timer)
     }
   }, [splashStartTime])
+
+  // Public session viewer (no auth required)
+  if (publicSessionId) {
+    return <PublicViewerApp sessionId={publicSessionId} />
+  }
 
   // Show splash screen while auth is initializing OR minimum time hasn't elapsed
   if (!initialized || loading || !minTimeElapsed) {

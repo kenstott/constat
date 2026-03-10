@@ -6,8 +6,10 @@ import {
   ChevronRightIcon,
   ArrowsPointingOutIcon,
   ArrowDownTrayIcon,
+  TrashIcon,
   XMarkIcon,
   StarIcon as StarOutline,
+  EllipsisVerticalIcon,
 } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -116,7 +118,7 @@ interface ArtifactItemAccordionProps {
 
 export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: ArtifactItemAccordionProps) {
   const { session } = useSessionStore()
-  const { toggleArtifactStar, toggleTableStar } = useArtifactStore()
+  const { toggleArtifactStar, toggleTableStar, removeArtifact } = useArtifactStore()
   const [isOpen, setIsOpen] = useState(initiallyOpen)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [content, setContent] = useState<ArtifactContent | null>(null)
@@ -128,9 +130,18 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
   const [versions, setVersions] = useState<ArtifactVersionInfo[] | null>(null)
   const [viewingVersionId, setViewingVersionId] = useState<number | null>(null)
   const versionDropdownRef = useRef<HTMLDivElement>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   const isTable = artifact.artifact_type === 'table'
   const hasVersions = (artifact.version_count ?? 1) > 1
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!session) return
+    if (!confirm(`Remove "${artifact.title || artifact.name}"?`)) return
+    removeArtifact(session.session_id, artifact.id)
+  }
 
   const handleToggleStar = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -239,6 +250,18 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [showVersions])
+
+  // Close overflow menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [menuOpen])
 
   const handleVersionBadgeClick = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -812,30 +835,50 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
             <button
-              onClick={handleToggleStar}
-              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
-              title={artifact.is_starred ? "Unstar" : "Star"}
-            >
-              {artifact.is_starred ? (
-                <StarSolid className="w-4 h-4 text-yellow-500" />
-              ) : (
-                <StarOutline className="w-4 h-4 text-gray-400 hover:text-yellow-500" />
-              )}
-            </button>
-            <button
-              onClick={handleDownload}
-              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
-              title="Download"
-            >
-              <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
-            </button>
-            <button
               onClick={openFullscreen}
               className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
               title="Expand to fullscreen"
             >
               <ArrowsPointingOutIcon className="w-4 h-4 text-gray-500" />
             </button>
+            <div className="relative" ref={menuRef}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setMenuOpen(!menuOpen) }}
+                className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
+                title="More actions"
+              >
+                <EllipsisVerticalIcon className="w-4 h-4 text-gray-500" />
+              </button>
+              {menuOpen && (
+                <div className="absolute right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[140px]">
+                  <button
+                    onClick={(e) => { handleToggleStar(e); setMenuOpen(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    {artifact.is_starred ? (
+                      <StarSolid className="w-4 h-4 text-yellow-500" />
+                    ) : (
+                      <StarOutline className="w-4 h-4 text-gray-400" />
+                    )}
+                    {artifact.is_starred ? 'Unstar' : 'Star'}
+                  </button>
+                  <button
+                    onClick={(e) => { handleDownload(e); setMenuOpen(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
+                    Download
+                  </button>
+                  <button
+                    onClick={(e) => { handleDelete(e); setMenuOpen(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <TrashIcon className="w-4 h-4" />
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </button>
 

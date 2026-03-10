@@ -21,13 +21,15 @@ interface FullscreenArtifact {
 // /apis/{apiName}
 // /doc/{documentName}
 // /glossary/{termName}
+// /s/{sessionId}
 export interface DeepLink {
-  type: 'table' | 'document' | 'api' | 'glossary_term'
+  type: 'table' | 'document' | 'api' | 'glossary_term' | 'session'
   dbName?: string      // For table
   tableName?: string   // For table
   documentName?: string // For document
   apiName?: string     // For api
   termName?: string    // For glossary_term
+  sessionId?: string   // For session sharing
   _ts?: number         // Nonce to force re-trigger on repeated clicks
 }
 
@@ -42,6 +44,8 @@ export function deepLinkToPath(link: DeepLink): string {
       return `/doc/${encodeURIComponent(link.documentName!)}`
     case 'glossary_term':
       return `/glossary/${encodeURIComponent(link.termName!)}`
+    case 'session':
+      return `/s/${encodeURIComponent(link.sessionId!)}`
   }
 }
 
@@ -63,12 +67,47 @@ export function pathToDeepLink(pathname: string): DeepLink | null {
     case 'glossary':
       if (parts.length >= 2) return { type: 'glossary_term', termName: parts[1] }
       break
+    case 's':
+      if (parts.length >= 2) return { type: 'session', sessionId: parts[1] }
+      break
   }
   return null
 }
 
 /** Apply a deep link — expand sections, select term, set pending for ArtifactPanel. */
 export function applyDeepLink(link: DeepLink) {
+  // Session deep links: check if this is a public session
+  if (link.type === 'session' && link.sessionId) {
+    // Try public endpoint first; if it works, render read-only viewer
+    fetch(`/api/public/${link.sessionId}`)
+      .then((resp) => {
+        if (resp.ok) {
+          // Public session — set publicSessionId for read-only viewer
+          useUIStore.setState({ publicSessionId: link.sessionId! })
+        } else {
+          // Not public — try authenticated access (existing behavior)
+          import('@/api/sessions').then(({ storeSessionId }) => {
+            import('@/store/authStore').then(({ useAuthStore }) => {
+              const userId = useAuthStore.getState().userId
+              storeSessionId(link.sessionId!, userId)
+              window.location.href = '/'
+            })
+          })
+        }
+      })
+      .catch(() => {
+        // Network error — fall back to authenticated access
+        import('@/api/sessions').then(({ storeSessionId }) => {
+          import('@/store/authStore').then(({ useAuthStore }) => {
+            const userId = useAuthStore.getState().userId
+            storeSessionId(link.sessionId!, userId)
+            window.location.href = '/'
+          })
+        })
+      })
+    return
+  }
+
   const store = useUIStore.getState()
 
   // Expand the relevant accordion section
@@ -120,6 +159,10 @@ interface UIState {
   navigateTo: (link: DeepLink) => void
   consumeDeepLink: () => DeepLink | null
 
+  // Public session viewer
+  publicSessionId: string | null
+  clearPublicSession: () => void
+
   // Actions
   toggleMenu: () => void
   setMenuOpen: (open: boolean) => void
@@ -143,6 +186,8 @@ export const useUIStore = create<UIState>()(
       expandedArtifactSections: ['charts', 'tables'],
       fullscreenArtifact: null,
       pendingDeepLink: null,
+      publicSessionId: null,
+      clearPublicSession: () => set({ publicSessionId: null }),
 
       openFullscreenArtifact: (artifact: FullscreenArtifact) => set({ fullscreenArtifact: artifact }),
       closeFullscreenArtifact: () => set({ fullscreenArtifact: null }),

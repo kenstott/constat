@@ -129,6 +129,33 @@ class SessionCreate(BaseModel):
     )
 
 
+class TogglePublicRequest(BaseModel):
+    """Request to toggle public sharing for a session."""
+
+    public: bool = Field(description="Whether to make the session publicly accessible")
+
+
+class TogglePublicResponse(BaseModel):
+    """Response after toggling public sharing."""
+
+    status: str = Field(description="Result status")
+    public: bool = Field(description="New public status")
+    share_url: str = Field(description="Public share URL")
+
+
+class ShareSessionRequest(BaseModel):
+    """Request to share a session with another user."""
+
+    email: str = Field(description="Email address of user to share with")
+
+
+class ShareSessionResponse(BaseModel):
+    """Response after sharing a session."""
+
+    status: str = Field(description="Result status")
+    share_url: str = Field(description="Deep link URL for the shared session")
+
+
 class SessionResponse(BaseModel):
     """Response containing session details."""
 
@@ -156,6 +183,14 @@ class SessionResponse(BaseModel):
     artifacts_count: int = Field(
         default=0,
         description="Number of artifacts produced",
+    )
+    shared_with: list[str] = Field(
+        default_factory=list,
+        description="User IDs/emails this session is shared with",
+    )
+    is_public: bool = Field(
+        default=False,
+        description="Whether this session is publicly accessible via share link",
     )
 
 

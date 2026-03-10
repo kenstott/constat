@@ -10,6 +10,7 @@ import {
   ClipboardDocumentCheckIcon,
   XMarkIcon,
   StarIcon as StarOutline,
+  EllipsisVerticalIcon,
 } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import { useSessionStore } from '@/store/sessionStore'
@@ -384,55 +385,11 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
             )}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
-            <button
-              onClick={handleToggleStar}
-              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
-              title={table.is_starred ? "Unstar" : "Star"}
-            >
-              {table.is_starred ? (
-                <StarSolid className="w-4 h-4 text-yellow-500" />
-              ) : (
-                <StarOutline className="w-4 h-4 text-gray-400 hover:text-yellow-500" />
-              )}
-            </button>
-            <div className="relative" ref={copyMenuRef}>
-              <button
-                onClick={(e) => { e.stopPropagation(); setShowCopyMenu(!showCopyMenu) }}
-                className={`p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors ${
-                  copied ? 'text-green-500 dark:text-green-400' : ''
-                }`}
-                title={copied ? `Copied ${copied.toUpperCase()}` : 'Copy table data'}
-              >
-                {copied ? (
-                  <ClipboardDocumentCheckIcon className="w-4 h-4" />
-                ) : (
-                  <ClipboardDocumentIcon className="w-4 h-4 text-gray-500" />
-                )}
-              </button>
-              {showCopyMenu && (
-                <div className="absolute right-0 top-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md shadow-lg z-50">
-                  <button
-                    onClick={(e) => handleCopy('csv', e)}
-                    className="block w-full px-4 py-2 text-xs text-left text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-t-md whitespace-nowrap"
-                  >
-                    Copy as CSV
-                  </button>
-                  <button
-                    onClick={(e) => handleCopy('json', e)}
-                    className="block w-full px-4 py-2 text-xs text-left text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-b-md whitespace-nowrap"
-                  >
-                    Copy as JSON
-                  </button>
-                </div>
-              )}
-            </div>
-            <button
-              onClick={handleDownload}
-              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
-              title="Download as CSV"
-            >
-              <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
-            </button>
+            {copied && (
+              <span className="text-[10px] text-green-500 dark:text-green-400 mr-1">
+                Copied {copied.toUpperCase()}
+              </span>
+            )}
             <button
               onClick={openFullscreen}
               className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
@@ -440,6 +397,51 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
             >
               <ArrowsPointingOutIcon className="w-4 h-4 text-gray-500" />
             </button>
+            <div className="relative" ref={copyMenuRef}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowCopyMenu(!showCopyMenu) }}
+                className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
+                title="More actions"
+              >
+                <EllipsisVerticalIcon className="w-4 h-4 text-gray-500" />
+              </button>
+              {showCopyMenu && (
+                <div className="absolute right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[140px]">
+                  <button
+                    onClick={(e) => { handleToggleStar(e); setShowCopyMenu(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    {table.is_starred ? (
+                      <StarSolid className="w-4 h-4 text-yellow-500" />
+                    ) : (
+                      <StarOutline className="w-4 h-4 text-gray-400" />
+                    )}
+                    {table.is_starred ? 'Unstar' : 'Star'}
+                  </button>
+                  <button
+                    onClick={(e) => { handleCopy('csv', e); setShowCopyMenu(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <ClipboardDocumentIcon className="w-4 h-4 text-gray-500" />
+                    Copy as CSV
+                  </button>
+                  <button
+                    onClick={(e) => { handleCopy('json', e); setShowCopyMenu(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <ClipboardDocumentIcon className="w-4 h-4 text-gray-500" />
+                    Copy as JSON
+                  </button>
+                  <button
+                    onClick={(e) => { handleDownload(e); setShowCopyMenu(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
+                    Download CSV
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </button>
 

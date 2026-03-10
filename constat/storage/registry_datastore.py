@@ -416,6 +416,28 @@ class RegistryAwareDataStore:
         """Toggle a table's starred status."""
         return self._datastore.toggle_table_star(table_name)
 
+    # --- Session sharing (delegated) ---
+
+    def get_shared_users(self) -> list[str]:
+        """Get list of user IDs this session is shared with."""
+        return self._datastore.get_shared_users()
+
+    def add_shared_user(self, user_id: str) -> None:
+        """Add a user to the shared list."""
+        self._datastore.add_shared_user(user_id)
+
+    def remove_shared_user(self, user_id: str) -> None:
+        """Remove a user from the shared list."""
+        self._datastore.remove_shared_user(user_id)
+
+    def is_public(self) -> bool:
+        """Check if this session is publicly accessible."""
+        return self._datastore.is_public()
+
+    def set_public(self, public: bool) -> None:
+        """Set the public sharing flag."""
+        self._datastore.set_public(public)
+
     # --- Scratchpad Operations (delegated) ---
 
     def add_scratchpad_entry(
