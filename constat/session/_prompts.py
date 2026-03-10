@@ -159,8 +159,22 @@ class PromptsMixin:
                 for t in tables:
                     schema = self.datastore.get_table_schema(t['name'])
                     if schema:
-                        col_names = [c['name'] for c in schema]
-                        table_lines.append(f"  - {t['name']}: {t['row_count']} rows, columns: {col_names}")
+                        col_descs = []
+                        for c in schema:
+                            desc = c['name']
+                            col_type = str(c.get('type', '')).upper()
+                            if any(t in col_type for t in ('FLOAT', 'DOUBLE', 'REAL', 'DECIMAL', 'NUMERIC')):
+                                try:
+                                    stats = self.datastore.query(
+                                        f'SELECT MIN("{c["name"]}") as mn, MAX("{c["name"]}") as mx FROM "{t["name"]}"'
+                                    )
+                                    if not stats.empty and stats['mn'].iloc[0] is not None:
+                                        mn, mx = stats['mn'].iloc[0], stats['mx'].iloc[0]
+                                        desc += f" ({mn:.4g}..{mx:.4g})"
+                                except Exception:
+                                    pass
+                            col_descs.append(desc)
+                        table_lines.append(f"  - {t['name']}: {t['row_count']} rows, columns: [{', '.join(col_descs)}]")
                     else:
                         table_lines.append(f"  - {t['name']}: {t['row_count']} rows")
                 datastore_info = "\n".join(table_lines)

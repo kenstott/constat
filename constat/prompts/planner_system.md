@@ -145,6 +145,7 @@ Note: `role_id` and `domain` are optional. Use `null` or omit for steps that sho
 ## Task Types (for code generation routing)
 - **sql_generation**: Steps that primarily query databases (SELECT, joins, aggregations)
 - **python_analysis**: Steps that transform data, compute statistics, or generate output (including summaries)
+- **synthesis**: Final summary, report, or executive output steps that combine prior results into a deliverable
 - **user_input**: Steps that pause to ask the user a question about intermediate results. Code calls `ask_user()`.
 
 ## Complexity Levels

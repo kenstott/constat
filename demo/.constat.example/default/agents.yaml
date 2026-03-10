@@ -15,6 +15,7 @@ data-analyst:
 
 executive:
   description: High-level summaries for leadership decisions
+  model: claude-sonnet-4-20250514
   prompt: |
     Communicate at the executive level:
     - Lead with the bottom line (what should we do?)

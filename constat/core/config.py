@@ -519,6 +519,9 @@ DEFAULT_TASK_ROUTING = {
     "structured_extraction": TaskRoutingEntry(
         models=[ModelSpec(model="claude-sonnet-4-20250514")]
     ),
+    "synthesis": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
     "general": TaskRoutingEntry(
         models=[ModelSpec(model="claude-sonnet-4-20250514")]
     ),

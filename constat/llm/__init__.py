@@ -297,9 +297,11 @@ YOUR JSON RESPONSE:"""
 
     system_msg = f"You map {source_desc} to an allowed set of values{target_ctx}. Output ONLY valid JSON. Each entry has keys {keys_str}. EVERY value must come from the allowed set — NEVER null. Use score to express confidence."
 
+    from constat.core.models import TaskType
     content, model_used, provider_used = _execute(
         system=system_msg,
         user_message=prompt,
+        task_type=TaskType.STRUCTURED_EXTRACTION,
     )
 
     content = _parse_json(content)
@@ -324,7 +326,7 @@ YOUR JSON RESPONSE:"""
             logger.warning(f"[LLM_MAP] {len(failed)} null/invalid entries, retrying: {list(failed)}")
             retry_values_str = "\n".join(f"- {v}" for v in failed)
             retry_prompt = prompt.replace(f"SOURCE {source_desc.upper()}:\n{values_str}", f"SOURCE {source_desc.upper()}:\n{retry_values_str}")
-            retry_content, _, _ = _execute(system=system_msg, user_message=retry_prompt)
+            retry_content, _, _ = _execute(system=system_msg, user_message=retry_prompt, task_type=TaskType.STRUCTURED_EXTRACTION)
             retry_content = _parse_json(retry_content)
             if retry_content.startswith("{"):
                 retry_mapping = json.loads(retry_content)
@@ -455,9 +457,11 @@ YOUR JSON RESPONSE:"""
 
         system_msg = f"You classify items into categories: {cats_str}. Output ONLY valid JSON. Use null for uncertain."
 
+    from constat.core.models import TaskType
     content, model_used, provider_used = _execute(
         system=system_msg,
         user_message=prompt,
+        task_type=TaskType.STRUCTURED_EXTRACTION,
     )
 
     content = _parse_json(content)
@@ -524,9 +528,11 @@ Example format: [{{"field1": "val1", "field2": null}}, ...]
 
 YOUR JSON RESPONSE:"""
 
+    from constat.core.models import TaskType
     content, model_used, provider_used = _execute(
         system=f"You extract structured fields from text. Fields: {fields_str}. Output ONLY valid JSON array. Use null for missing.",
         user_message=prompt,
+        task_type=TaskType.STRUCTURED_EXTRACTION,
     )
 
     content = _parse_json(content)
@@ -585,9 +591,11 @@ Example format: ["summary1", "summary2", ...]
 
 YOUR JSON RESPONSE:"""
 
+    from constat.core.models import TaskType
     content, model_used, provider_used = _execute(
         system=f"You summarize texts. Output ONLY a valid JSON array of strings.",
         user_message=prompt,
+        task_type=TaskType.SUMMARIZATION,
     )
 
     content = _parse_json(content)
@@ -648,9 +656,11 @@ Example format: [{{"score": {min_val}, "reasoning": "..."}}, {{"score": {max_val
 
 YOUR JSON RESPONSE:"""
 
+    from constat.core.models import TaskType
     content, model_used, provider_used = _execute(
         system=f"You score texts on a scale from {min_val} to {max_val}. Output ONLY a valid JSON array of objects with 'score' and 'reasoning' keys.",
         user_message=prompt,
+        task_type=TaskType.STRUCTURED_EXTRACTION,
     )
 
     content = _parse_json(content)

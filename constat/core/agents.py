@@ -42,6 +42,7 @@ class Agent:
     skills: list[str] = field(default_factory=list)
     domain: str = ""   # owning domain filename ("" = unscoped/global)
     source: str = ""   # "system" | "shared" | "user" | "domain"
+    model: str = ""    # model override (e.g., "claude-sonnet-4-20250514")
 
 
 class AgentManager:
@@ -83,6 +84,7 @@ class AgentManager:
                         prompt=config["prompt"].strip(),
                         description=config.get("description", "").strip(),
                         skills=config.get("skills", []) or [],
+                        model=config.get("model", ""),
                     )
                     logger.debug(f"Loaded agent: {name}")
 
@@ -119,6 +121,7 @@ class AgentManager:
                         skills=config.get("skills", []) or [],
                         domain=domain_filename,
                         source="domain",
+                        model=config.get("model", ""),
                     )
             logger.info(f"Loaded domain agents from {agents_file}")
         except Exception as e:
@@ -210,6 +213,8 @@ class AgentManager:
             "prompt": agent.prompt,
             "description": agent.description,
         }
+        if agent.model:
+            agent_data["model"] = agent.model
         if agent.skills:
             agent_data["skills"] = agent.skills
         content = yaml.dump({
@@ -218,7 +223,8 @@ class AgentManager:
         return content, str(self._agents_file)
 
     def update_agent(self, name: str, prompt: str, description: str = "",
-                     skills: list[str] | None = None) -> bool:
+                     skills: list[str] | None = None,
+                     model: str | None = None) -> bool:
         """Update or create an agent.
 
         Args:
@@ -226,6 +232,7 @@ class AgentManager:
             prompt: Agent prompt
             description: Agent description
             skills: Optional list of skill names this agent requires
+            model: Optional model override (e.g., "claude-sonnet-4-20250514")
 
         Returns:
             True if successful
@@ -242,6 +249,12 @@ class AgentManager:
             "prompt": prompt.strip(),
             "description": description.strip(),
         }
+        if model is not None:
+            agent_data["model"] = model
+        elif name in data and isinstance(data[name], dict):
+            existing_model = data[name].get("model", "")
+            if existing_model:
+                agent_data["model"] = existing_model
         if skills is not None:
             agent_data["skills"] = skills
         elif name in data and isinstance(data[name], dict):

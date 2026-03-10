@@ -163,6 +163,7 @@ class TaskRouter:
         complexity: str = "medium",
         domain: Optional[str] = None,
         skip_models: int = 0,
+        model_override: Optional[str] = None,
     ) -> str:
         """Resolve the provider family for the first model that would handle this task.
 
@@ -178,6 +179,8 @@ class TaskRouter:
             models = self.routing_config.get_models_for_task("general", complexity)
         if not models:
             models = [ModelSpec(model=self.llm_config.model)]
+        if model_override:
+            models = [ModelSpec(model=model_override)] + models
         if skip_models > 0 and len(models) > 1:
             models = models[min(skip_models, len(models) - 1):]
         return (models[0].provider or self.llm_config.provider).lower()
@@ -304,6 +307,7 @@ class TaskRouter:
         complexity: str = "medium",
         domain: Optional[str] = None,
         skip_models: int = 0,
+        model_override: Optional[str] = None,
     ) -> TaskResult:
         """
         Execute a task with automatic model escalation.
@@ -318,6 +322,7 @@ class TaskRouter:
             complexity: Complexity hint (low, medium, high)
             domain: Optional domain path for domain-aware routing.
                     Walks domain hierarchy → user → system to find model chain.
+            model_override: Optional model to prepend to the chain (agent override).
 
         Returns:
             TaskResult with content and escalation info
@@ -347,6 +352,10 @@ class TaskRouter:
         # If still no models, use default from llm_config
         if not models:
             models = [ModelSpec(model=self.llm_config.model)]
+
+        # Prepend agent model override (tried first, falls back to normal chain)
+        if model_override:
+            models = [ModelSpec(model=model_override)] + models
 
         # Skip leading models (used for runtime-error escalation)
         # Clamp to keep at least the last model in the chain
@@ -456,6 +465,7 @@ class TaskRouter:
         complexity: str = "medium",
         domain: Optional[str] = None,
         skip_models: int = 0,
+        model_override: Optional[str] = None,
     ) -> TaskResult:
         """Execute and extract code from response."""
         result = self.execute(
@@ -468,6 +478,7 @@ class TaskRouter:
             complexity=complexity,
             domain=domain,
             skip_models=skip_models,
+            model_override=model_override,
         )
 
         if result.success:

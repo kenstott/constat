@@ -826,12 +826,20 @@ class ExecutionMixin:
                 }
             ))
 
+            # Resolve agent model override for this step's role
+            agent_model = None
+            if step.role_id and hasattr(self, 'agent_manager'):
+                agent = self.agent_manager.get_agent(step.role_id)
+                if agent and agent.model:
+                    agent_model = agent.model
+
             # Use router with step's task_type for automatic model selection/escalation
             model_family = self.router.resolve_model_family(
                 task_type=step.task_type,
                 complexity=step.complexity,
                 domain=step.domain,
                 skip_models=skip_models,
+                model_override=agent_model,
             )
             step_system = self._get_step_system_prompt(step, model_family=model_family)
             if attempt == 1:
@@ -845,6 +853,7 @@ class ExecutionMixin:
                     complexity=step.complexity,
                     domain=step.domain,
                     skip_models=skip_models,
+                    model_override=agent_model,
                 )
             else:
                 # Track error context for potential learning capture
@@ -872,6 +881,7 @@ class ExecutionMixin:
                     complexity=step.complexity,
                     domain=step.domain,
                     skip_models=skip_models,
+                    model_override=agent_model,
                 )
 
             if not result.success:
