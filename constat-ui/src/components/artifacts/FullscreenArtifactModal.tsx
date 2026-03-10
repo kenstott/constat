@@ -1,7 +1,7 @@
 // Fullscreen Artifact Modal - triggered from View Result button
 
-import { useState, useEffect, useRef } from 'react'
-import { XMarkIcon, ArrowDownTrayIcon, ChevronDownIcon } from '@heroicons/react/24/outline'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { XMarkIcon, ArrowDownTrayIcon, ChevronDownIcon, ClipboardDocumentIcon, ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline'
 import { useUIStore } from '@/store/uiStore'
 import { useSessionStore } from '@/store/sessionStore'
 import * as sessionsApi from '@/api/sessions'
@@ -19,6 +19,9 @@ export function FullscreenArtifactModal() {
   const [tablePage, setTablePage] = useState(1)
   const [downloadOpen, setDownloadOpen] = useState(false)
   const downloadRef = useRef<HTMLDivElement>(null)
+  const [copied, setCopied] = useState<'csv' | 'json' | null>(null)
+  const [showCopyMenu, setShowCopyMenu] = useState(false)
+  const copyMenuRef = useRef<HTMLDivElement>(null)
 
   const downloadFormats = [
     { key: 'csv', label: 'CSV', ext: '.csv' },
@@ -29,16 +32,50 @@ export function FullscreenArtifactModal() {
     { key: 'markdown', label: 'Markdown', ext: '.md' },
   ] as const
 
-  // Close dropdown on outside click
+  // Close dropdowns on outside click
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (downloadRef.current && !downloadRef.current.contains(e.target as Node)) {
         setDownloadOpen(false)
       }
+      if (copyMenuRef.current && !copyMenuRef.current.contains(e.target as Node)) {
+        setShowCopyMenu(false)
+      }
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
+
+  const getActiveTableData = useCallback(() => {
+    if (tableData) return tableData
+    if (dbTableData) return { columns: dbTableData.columns, data: dbTableData.data }
+    return null
+  }, [tableData, dbTableData])
+
+  const handleCopy = useCallback((format: 'csv' | 'json') => {
+    const active = getActiveTableData()
+    if (!active) return
+    let text: string
+    if (format === 'csv') {
+      const header = active.columns.join(',')
+      const rows = active.data.map(row =>
+        active.columns.map(col => {
+          const v = row[col]
+          const s = v != null && typeof v === 'object' ? JSON.stringify(v) : String(v ?? '')
+          return s.includes(',') || s.includes('"') || s.includes('\n')
+            ? `"${s.replace(/"/g, '""')}"`
+            : s
+        }).join(',')
+      )
+      text = [header, ...rows].join('\n')
+    } else {
+      text = JSON.stringify(active.data, null, 2)
+    }
+    navigator.clipboard.writeText(text)
+    setCopied(format)
+    setShowCopyMenu(false)
+    setTimeout(() => setCopied(null), 2000)
+  }, [getActiveTableData])
 
   const handleDownload = async (fmt: string, ext: string) => {
     if (!session || !fullscreenArtifact) return
@@ -505,29 +542,64 @@ export function FullscreenArtifactModal() {
           </div>
           <div className="flex items-center gap-2">
             {(fullscreenArtifact.type === 'table' || fullscreenArtifact.type === 'database_table') && (
-              <div className="relative" ref={downloadRef}>
-                <button
-                  onClick={() => setDownloadOpen((o) => !o)}
-                  className="flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                >
-                  <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
-                  <span className="text-gray-700 dark:text-gray-300">Download</span>
-                  <ChevronDownIcon className="w-3 h-3 text-gray-500" />
-                </button>
-                {downloadOpen && (
-                  <div className="absolute right-0 mt-1 w-40 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10">
-                    {downloadFormats.map((f) => (
+              <>
+                {/* Copy button */}
+                <div className="relative" ref={copyMenuRef}>
+                  <button
+                    onClick={() => setShowCopyMenu(!showCopyMenu)}
+                    className={`flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors ${
+                      copied ? 'text-green-500 dark:text-green-400' : 'text-gray-700 dark:text-gray-300'
+                    }`}
+                  >
+                    {copied ? (
+                      <ClipboardDocumentCheckIcon className="w-4 h-4" />
+                    ) : (
+                      <ClipboardDocumentIcon className="w-4 h-4" />
+                    )}
+                    <span>{copied ? `Copied ${copied.toUpperCase()}` : 'Copy'}</span>
+                  </button>
+                  {showCopyMenu && (
+                    <div className="absolute right-0 mt-1 w-40 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10">
                       <button
-                        key={f.key}
-                        onClick={() => handleDownload(f.key, f.ext)}
-                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 first:rounded-t-lg last:rounded-b-lg"
+                        onClick={() => handleCopy('csv')}
+                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-t-lg"
                       >
-                        {f.label}
+                        Copy as CSV
                       </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+                      <button
+                        onClick={() => handleCopy('json')}
+                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-b-lg"
+                      >
+                        Copy as JSON
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {/* Download button */}
+                <div className="relative" ref={downloadRef}>
+                  <button
+                    onClick={() => setDownloadOpen((o) => !o)}
+                    className="flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                  >
+                    <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
+                    <span className="text-gray-700 dark:text-gray-300">Download</span>
+                    <ChevronDownIcon className="w-3 h-3 text-gray-500" />
+                  </button>
+                  {downloadOpen && (
+                    <div className="absolute right-0 mt-1 w-40 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10">
+                      {downloadFormats.map((f) => (
+                        <button
+                          key={f.key}
+                          onClick={() => handleDownload(f.key, f.ext)}
+                          className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 first:rounded-t-lg last:rounded-b-lg"
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
             )}
             <button
               onClick={closeFullscreenArtifact}

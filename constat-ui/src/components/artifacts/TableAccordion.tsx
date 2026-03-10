@@ -465,13 +465,55 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
                   ({table.row_count} rows)
                 </span>
               </div>
-              <button
-                onClick={() => setIsFullscreen(false)}
-                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-                title="Close (Esc)"
-              >
-                <XMarkIcon className="w-5 h-5 text-gray-500" />
-              </button>
+              <div className="flex items-center gap-2">
+                {/* Copy button */}
+                <div className="relative" ref={copyMenuRef}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setShowCopyMenu(!showCopyMenu) }}
+                    className={`flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors ${
+                      copied ? 'text-green-500 dark:text-green-400' : 'text-gray-700 dark:text-gray-300'
+                    }`}
+                  >
+                    {copied ? (
+                      <ClipboardDocumentCheckIcon className="w-4 h-4" />
+                    ) : (
+                      <ClipboardDocumentIcon className="w-4 h-4" />
+                    )}
+                    <span>{copied ? `Copied ${copied.toUpperCase()}` : 'Copy'}</span>
+                  </button>
+                  {showCopyMenu && (
+                    <div className="absolute right-0 mt-1 w-40 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10">
+                      <button
+                        onClick={(e) => handleCopy('csv', e)}
+                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-t-lg"
+                      >
+                        Copy as CSV
+                      </button>
+                      <button
+                        onClick={(e) => handleCopy('json', e)}
+                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-b-lg"
+                      >
+                        Copy as JSON
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {/* Download button */}
+                <button
+                  onClick={handleDownload}
+                  className="flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-700 dark:text-gray-300"
+                >
+                  <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
+                  <span>Download</span>
+                </button>
+                <button
+                  onClick={() => setIsFullscreen(false)}
+                  className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+                  title="Close (Esc)"
+                >
+                  <XMarkIcon className="w-5 h-5 text-gray-500" />
+                </button>
+              </div>
             </div>
 
             {/* Modal Content */}
