@@ -258,7 +258,7 @@ export function MessageBubble({
 
       {/* Content + Action margin */}
       <div className={`flex-1 max-w-[80%] ${isUser ? 'text-right' : ''}`}>
-        <div className="flex items-start gap-1">
+        <div className={`flex items-start gap-1 ${isUser ? 'flex-row-reverse' : ''}`}>
           <div
             className={`relative inline-block rounded-lg px-4 py-3 ${styles.bg} ${
               isUser ? 'rounded-tr-none' : 'rounded-tl-none'
@@ -320,24 +320,6 @@ export function MessageBubble({
                     </button>
                   )}
                 </span>
-              )}
-              {/* Copy button for step messages - inline in header after chevrons */}
-              {isStep && (
-                <button
-                  onClick={handleCopy}
-                  className={`p-0.5 rounded transition-all ${
-                    copied
-                      ? 'text-green-500 dark:text-green-400'
-                      : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100'
-                  }`}
-                  title={copied ? 'Copied!' : 'Copy message'}
-                >
-                  {copied ? (
-                    <ClipboardDocumentCheckIcon className="w-3.5 h-3.5" />
-                  ) : (
-                    <ClipboardDocumentIcon className="w-3.5 h-3.5" />
-                  )}
-                </button>
               )}
             </div>
           )}
@@ -496,7 +478,7 @@ export function MessageBubble({
           {children}
           </div>
           {/* Action buttons — dedicated right margin, stacked vertically */}
-          {!isStep && (
+          {(
             <div className="flex flex-col gap-1 pt-1 w-6 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
                 onClick={handleCopy}
