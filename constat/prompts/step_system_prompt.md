@@ -69,7 +69,13 @@ Share data between steps ONLY via `store`:
 - `llm_summarize(texts, instruction)`: summarize texts using LLM. Pass ALL texts at once.
 - `llm_score(texts, min_val, max_val, instruction) -> list[float | None]`: score texts on a numeric scale. Accepts anything: list, Series, ndarray, or a single string. Returns `list[float|None]` for multiple, `float|None` for single. Deduplicates internally.
   - `df['score'] = llm_score(df['text'].tolist(), 0, 5, "Rate quality")`
-- `llm_extract_table(description, document, columns=None) -> DataFrame`: extract a table from a document into a DataFrame. Searches document chunks by `description` to find the relevant section, then extracts tabular data via LLM. Optional `columns` enforces column names. **Types are auto-coerced**: percentages become decimal rates (8% → 0.08), currency and units (k/M/B) become numeric, ranges like "5-8%" become separate `_min`/`_max` columns, bools and dates are detected. Values are ready for direct arithmetic: `salary * (1 + rate)`. Do NOT divide by 100. Do NOT rename columns to `_pct` or `_percent` — use `_rate` for decimal values.
+- `llm_extract_table(description, document, columns=None) -> DataFrame`: extract a table from a document into a DataFrame. `document` is the configured document NAME (e.g., `'business_rules'`), NOT raw text. Do NOT call `doc_read()` first — the function handles chunk retrieval internally. Optional `columns` enforces column names. **Types are auto-coerced**: percentages become decimal rates (8% → 0.08), currency and units (k/M/B) become numeric, ranges like "5-8%" become separate `_min`/`_max` columns, bools and dates are detected. Values are ready for direct arithmetic: `salary * (1 + rate)`. Do NOT divide by 100. Do NOT rename columns to `_pct` or `_percent` — use `_rate` for decimal values.
+  **CRITICAL anti-patterns for `llm_extract_table`**:
+  - WRONG: `text = doc_read('policy'); llm_extract_table(desc, text)` — do NOT call doc_read first
+  - WRONG: `columns=['raise_rate']` then manually split ranges — request the FINAL columns you need: `columns=['rating', 'min_raise_rate', 'max_raise_rate']`. Ranges auto-expand into `_min`/`_max` columns.
+  - WRONG: Using `parse_number()` on llm_extract_table output — values are already numeric decimals
+  - RIGHT: `df = llm_extract_table('raise rates by rating', 'compensation_policy', columns=['rating', 'min_raise_rate', 'max_raise_rate'])`
+  The returned DataFrame has numeric columns ready for arithmetic. No parsing needed.
 - `llm_extract_facts(query, document, context="") -> list[dict]`: extract facts matching a query from a document. Searches document chunks by `query` to find relevant sections, then extracts typed facts. Each fact has `name`, `value`, `dtype` ("scalar"|"range"|"table"|"list"|"rule"|"text"), and `metadata` dict. Best for: discovering data points, thresholds, rules, and structured elements relevant to a specific topic.
 
 <!-- @llm_guide -->
