@@ -406,6 +406,51 @@ async def download_artifact_file(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/{session_id}/artifacts/{artifact_id}")
+async def delete_artifact(
+    session_id: str,
+    artifact_id: int,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Delete an artifact by ID.
+
+    Positive IDs: delete real artifact (all versions by name).
+    Negative/virtual IDs: match virtual table hash and drop the table.
+    """
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    if not managed.session.datastore:
+        raise HTTPException(status_code=404, detail="No datastore")
+
+    try:
+        # Try real artifact first
+        artifact = managed.session.datastore.get_artifact_by_id(artifact_id)
+        if artifact:
+            deleted = managed.session.datastore.delete_artifact(artifact_id)
+            if not deleted:
+                raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_id}")
+            return {"status": "deleted", "artifact_id": artifact_id}
+
+        # Not a real artifact — check virtual table IDs
+        tables = managed.session.datastore.list_tables()
+        for t in tables:
+            table_name = t["name"]
+            virtual_id = -hash(table_name) % 1000000
+            if virtual_id == artifact_id:
+                managed.session.datastore.drop_table(table_name)
+                return {"status": "deleted", "artifact_id": artifact_id}
+
+        raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_id}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting artifact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/{session_id}/artifacts/{artifact_id}/star")
 async def toggle_artifact_star(
     session_id: str,

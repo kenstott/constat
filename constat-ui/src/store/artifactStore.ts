@@ -119,6 +119,8 @@ interface ArtifactState {
   addArtifact: (artifact: Artifact) => void
   addFact: (fact: Fact) => void
   addStepCode: (stepNumber: number, goal: string, code: string, model?: string) => void
+  // Delete artifact
+  removeArtifact: (sessionId: string, artifactId: number) => Promise<void>
   // Star/promote actions (persist to server)
   toggleArtifactStar: (sessionId: string, artifactId: number) => Promise<void>
   toggleTableStar: (sessionId: string, tableName: string) => Promise<void>
@@ -561,6 +563,30 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       updated.sort((a, b) => a.step_number - b.step_number)
       return { stepCodes: updated }
     })
+  },
+
+  removeArtifact: async (sessionId, artifactId) => {
+    const { artifacts, tables } = get()
+    const artifact = artifacts.find((a) => a.id === artifactId)
+    const isTable = artifact?.artifact_type === 'table'
+
+    // Optimistic removal
+    set((state) => ({
+      artifacts: state.artifacts.filter((a) => a.id !== artifactId),
+      ...(isTable && artifact ? { tables: state.tables.filter((t) => t.name !== artifact.name) } : {}),
+    }))
+
+    try {
+      await sessionsApi.deleteArtifact(sessionId, artifactId)
+    } catch {
+      // Revert on error — refetch both lists
+      const response = await sessionsApi.listArtifacts(sessionId)
+      set({ artifacts: response.artifacts })
+      if (isTable) {
+        const tablesResponse = await sessionsApi.listTables(sessionId)
+        set({ tables: tablesResponse.tables })
+      }
+    }
   },
 
   toggleArtifactStar: async (sessionId, artifactId) => {

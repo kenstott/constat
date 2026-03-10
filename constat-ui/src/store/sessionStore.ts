@@ -143,6 +143,7 @@ interface SessionState {
   clearQueue: () => void
   fetchAgents: () => Promise<void>
   setAgent: (agentName: string | null) => Promise<void>
+  shareSession: (email: string) => Promise<{ share_url: string }>
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -1504,5 +1505,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (error) {
       console.error('Failed to set agent:', error)
     }
+  },
+
+  shareSession: async (email: string) => {
+    const { session } = get()
+    if (!session) throw new Error('No active session')
+    const result = await sessionsApi.shareSession(session.session_id, email)
+    return { share_url: result.share_url }
   },
 }))
