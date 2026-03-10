@@ -1,11 +1,13 @@
 // Table Accordion - individual table with expandable details and fullscreen mode
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   ChevronDownIcon,
   ChevronRightIcon,
   ArrowsPointingOutIcon,
   ArrowDownTrayIcon,
+  ClipboardDocumentIcon,
+  ClipboardDocumentCheckIcon,
   XMarkIcon,
   StarIcon as StarOutline,
 } from '@heroicons/react/24/outline'
@@ -33,6 +35,10 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
   const [versions, setVersions] = useState<TableVersionInfo[] | null>(null)
   const [viewingVersion, setViewingVersion] = useState<number | null>(null)
   const versionDropdownRef = useRef<HTMLDivElement>(null)
+
+  const [copied, setCopied] = useState<'csv' | 'json' | null>(null)
+  const [showCopyMenu, setShowCopyMenu] = useState(false)
+  const copyMenuRef = useRef<HTMLDivElement>(null)
 
   const hasVersions = (table.version_count ?? 1) > 1
 
@@ -179,6 +185,43 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
       alert('Failed to download. Please try again.')
     }
   }
+
+  const handleCopy = useCallback((format: 'csv' | 'json', e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!data) return
+    let text: string
+    if (format === 'csv') {
+      const header = data.columns.join(',')
+      const rows = data.data.map(row =>
+        data.columns.map(col => {
+          const v = row[col]
+          const s = v != null && typeof v === 'object' ? JSON.stringify(v) : String(v ?? '')
+          return s.includes(',') || s.includes('"') || s.includes('\n')
+            ? `"${s.replace(/"/g, '""')}"`
+            : s
+        }).join(',')
+      )
+      text = [header, ...rows].join('\n')
+    } else {
+      text = JSON.stringify(data.data, null, 2)
+    }
+    navigator.clipboard.writeText(text)
+    setCopied(format)
+    setShowCopyMenu(false)
+    setTimeout(() => setCopied(null), 2000)
+  }, [data])
+
+  // Close copy menu on outside click
+  useEffect(() => {
+    if (!showCopyMenu) return
+    const handleClick = (e: MouseEvent) => {
+      if (copyMenuRef.current && !copyMenuRef.current.contains(e.target as Node)) {
+        setShowCopyMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showCopyMenu])
 
   const renderTable = (maxHeight?: string) => {
     if (loading) {
@@ -352,6 +395,37 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
                 <StarOutline className="w-4 h-4 text-gray-400 hover:text-yellow-500" />
               )}
             </button>
+            <div className="relative" ref={copyMenuRef}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowCopyMenu(!showCopyMenu) }}
+                className={`p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors ${
+                  copied ? 'text-green-500 dark:text-green-400' : ''
+                }`}
+                title={copied ? `Copied ${copied.toUpperCase()}` : 'Copy table data'}
+              >
+                {copied ? (
+                  <ClipboardDocumentCheckIcon className="w-4 h-4" />
+                ) : (
+                  <ClipboardDocumentIcon className="w-4 h-4 text-gray-500" />
+                )}
+              </button>
+              {showCopyMenu && (
+                <div className="absolute right-0 top-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md shadow-lg z-50">
+                  <button
+                    onClick={(e) => handleCopy('csv', e)}
+                    className="block w-full px-4 py-2 text-xs text-left text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-t-md whitespace-nowrap"
+                  >
+                    Copy as CSV
+                  </button>
+                  <button
+                    onClick={(e) => handleCopy('json', e)}
+                    className="block w-full px-4 py-2 text-xs text-left text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-b-md whitespace-nowrap"
+                  >
+                    Copy as JSON
+                  </button>
+                </div>
+              )}
+            </div>
             <button
               onClick={handleDownload}
               className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
