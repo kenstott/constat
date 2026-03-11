@@ -100,6 +100,7 @@ class RelationalStore:
                 """
                 INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id
                 """,
                 records,
             )
@@ -110,11 +111,13 @@ class RelationalStore:
                         """
                         INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id
                         """,
                         record,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to insert entity {record[0]}: {e}")
+        logger.debug(f"add_entities: inserted {len(records)} records for session {session_id}")
         self._clusters_dirty = True
 
     def find_entity_by_name(
@@ -1539,21 +1542,23 @@ class RelationalStore:
         self._conn.execute(
             """
             INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at)
-            SELECT id, name, display_name, semantic_type, ner_type, ?, domain_id, created_at
+            SELECT DISTINCT id, name, display_name, semantic_type, ner_type, ?, domain_id, created_at
             FROM ner_cached_entities WHERE fingerprint = ?
+            ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id
             """,
             [session_id, fingerprint],
         )
         entity_count = self._conn.execute(
-            "SELECT COUNT(*) FROM ner_cached_entities WHERE fingerprint = ?",
+            "SELECT COUNT(DISTINCT id) FROM ner_cached_entities WHERE fingerprint = ?",
             [fingerprint],
         ).fetchone()[0]
 
         self._conn.execute(
             """
             INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
-            SELECT chunk_id, entity_id, confidence
+            SELECT DISTINCT chunk_id, entity_id, confidence
             FROM ner_cached_chunk_entities WHERE fingerprint = ?
+            ON CONFLICT DO NOTHING
             """,
             [fingerprint],
         )
@@ -1561,8 +1566,9 @@ class RelationalStore:
         self._conn.execute(
             """
             INSERT INTO glossary_clusters (term_name, cluster_id, session_id)
-            SELECT term_name, cluster_id, ?
+            SELECT DISTINCT term_name, cluster_id, ?
             FROM ner_cached_clusters WHERE fingerprint = ?
+            ON CONFLICT DO NOTHING
             """,
             [session_id, fingerprint],
         )
@@ -1593,6 +1599,7 @@ class RelationalStore:
             INSERT INTO ner_cached_entities (fingerprint, id, name, display_name, semantic_type, ner_type, domain_id, created_at)
             SELECT ?, id, name, display_name, semantic_type, ner_type, domain_id, created_at
             FROM entities WHERE session_id = ?
+            ON CONFLICT DO NOTHING
             """,
             [fingerprint, session_id],
         )
@@ -1604,6 +1611,7 @@ class RelationalStore:
             FROM chunk_entities ce
             JOIN entities e ON ce.entity_id = e.id
             WHERE e.session_id = ?
+            ON CONFLICT DO NOTHING
             """,
             [fingerprint, session_id],
         )
@@ -1613,6 +1621,7 @@ class RelationalStore:
             INSERT INTO ner_cached_clusters (fingerprint, term_name, cluster_id)
             SELECT ?, term_name, cluster_id
             FROM glossary_clusters WHERE session_id = ?
+            ON CONFLICT DO NOTHING
             """,
             [fingerprint, session_id],
         )

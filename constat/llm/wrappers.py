@@ -45,41 +45,50 @@ def _to_str_list(values) -> tuple[list[str], bool]:
     return [str(values)], True
 
 
-def llm_map(values, allowed, source_desc="values", target_desc="", **_kw):
-    """Map values to an allowed set. Always returns str (scalar) or list[str]."""
+def llm_map(values, allowed, source_desc="values", target_desc="", allow_none=False, **_kw):
+    """Map values to an allowed set.
+
+    With allow_none=False (default): every value gets a best-effort match. Returns str (scalar) or list[str].
+    With allow_none=True: unclassifiable values return None. Returns str|None (scalar) or list[str|None].
+    """
     str_values, scalar = _to_str_list(values)
     if not str_values:
         return []
     unique = list(dict.fromkeys(str_values))
-    raw = _raw_llm_map(unique, allowed, source_desc, target_desc)
-    result = [raw.get(v, raw.get(v)) for v in str_values]
-    if scalar:
-        return result[0]
-    return result
-
-
-def llm_classify(values, categories, context="", **_kw):
-    """Classify values into categories. Always returns str|None (scalar) or list[str|None]."""
-    str_values, scalar = _to_str_list(values)
-    if not str_values:
-        return []
-    unique = list(dict.fromkeys(str_values))
-    raw = _raw_llm_classify(unique, categories, context)
+    if allow_none:
+        context = target_desc or source_desc
+        raw = _raw_llm_classify(unique, allowed, context)
+    else:
+        raw = _raw_llm_map(unique, allowed, source_desc, target_desc)
     result = [raw.get(v) for v in str_values]
     if scalar:
         return result[0]
     return result
 
 
-def llm_score(texts, min_val=0.0, max_val=1.0, instruction="Rate each text", **_kw):
-    """Score texts on a numeric scale. Always returns float|None (scalar) or list[float|None]."""
+def llm_classify(values, categories, context="", **_kw):
+    """Alias for llm_map(..., allow_none=True). Kept for backwards compatibility."""
+    return llm_map(values, categories, source_desc=context, target_desc=context, allow_none=True, **_kw)
+
+
+def llm_score(texts, min_val=0.0, max_val=1.0, instruction="Rate each text", explain=False, **_kw):
+    """Score texts on a numeric scale.
+
+    With explain=False (default): returns float|None (scalar) or list[float|None].
+    With explain=True: returns (float|None, str) (scalar) or list[tuple[float|None, str]].
+    """
     str_values, scalar = _to_str_list(texts)
     if not str_values:
         return []
     unique = list(dict.fromkeys(str_values))
     raw = _raw_llm_score(unique, min_val, max_val, instruction)
     score_map = dict(zip(unique, raw))
-    # raw returns list[tuple[float|None, str]] — extract score only
+    # raw returns list[tuple[float|None, str]]
+    if explain:
+        result = [score_map[v] for v in str_values]
+        if scalar:
+            return result[0]
+        return result
     result = [score_map[v][0] for v in str_values]
     if scalar:
         return result[0]

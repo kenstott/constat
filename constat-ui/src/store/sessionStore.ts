@@ -765,11 +765,42 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
       }
 
-      case 'plan_ready':
-        // Clear live message, show plan approval dialog
+      case 'plan_ready': {
         clearLiveMessage()
-        set({ status: 'awaiting_approval', plan: event.data.plan as Plan, executionPhase: 'awaiting_approval' })
+        const planData = event.data.plan as Plan | undefined
+        if (planData) {
+          // Approval callback sent plan — show approval dialog
+          set({ status: 'awaiting_approval', plan: planData, executionPhase: 'awaiting_approval' })
+        } else {
+          // Auto-approved or follow-up — create step messages and go straight to executing
+          const autoSteps = (event.data.steps as Array<{ number: number; goal: string; depends_on?: number[]; role_id?: string }>) || []
+          const autoStepIds: Record<number, string> = {}
+          const autoStepMsgs: Message[] = autoSteps.map((step) => {
+            const id = crypto.randomUUID()
+            autoStepIds[step.number] = id
+            return {
+              id,
+              type: 'step' as const,
+              content: `Step ${step.number}: ${step.goal || 'Pending'}`,
+              timestamp: new Date(),
+              stepNumber: step.number,
+              isLive: false,
+              isPending: true,
+              ...(step.role_id ? { role: step.role_id } : {}),
+            }
+          })
+          autoStepMsgs.sort((a, b) => (a.stepNumber || 0) - (b.stepNumber || 0))
+          set((state) => ({
+            messages: [...state.messages, ...autoStepMsgs],
+            stepMessageIds: { ...state.stepMessageIds, ...autoStepIds },
+            liveMessageId: null,
+            status: 'executing',
+            executionPhase: 'executing',
+            plan: null,
+          }))
+        }
         break
+      }
 
       case 'plan_updated': {
         // Mid-execution replan (e.g., after user_input step) — update step list

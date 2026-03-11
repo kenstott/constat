@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Similarity threshold for agent matching
 # Lower than intent classification (0.80) since agent descriptions are broader
-AGENT_MATCH_THRESHOLD = 0.45
+AGENT_MATCH_THRESHOLD = 0.60
 
 
 @dataclass

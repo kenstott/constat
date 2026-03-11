@@ -113,30 +113,30 @@ class AuditableMixin:
             ctx["schema_overview"] = self.schema_manager.get_overview()
 
         # Build hint about cached facts for redo (helps LLM use consistent names)
+        # Data is already cached in the resolver — premises should still reference
+        # their real source (database/document/api), the resolver finds cached data automatically.
         cached_facts_hint = ""
         if cached_fact_hints:
-            # Separate tables from scalar facts
             cached_tables = [f for f in cached_fact_hints if f.get("value_type") == "table"]
             cached_scalars = [f for f in cached_fact_hints if f.get("value_type") != "table"]
 
             hint_lines = [
-                "CACHED DATA AVAILABLE AS INPUT - Use these as premises with [source: cache]:",
+                "PREVIOUSLY RESOLVED DATA (reuse these exact premise names — they will resolve instantly):",
             ]
             if cached_tables:
-                hint_lines.append("\nCached tables:")
+                hint_lines.append("\nTables:")
                 for fact in cached_tables:
                     name = fact.get("name", "")
                     desc = fact.get("description", "")
                     hint_lines.append(f"  - \"{name}\" ({fact.get('row_count', '?')} rows) {desc}")
             if cached_scalars:
-                hint_lines.append("\nCached values:")
+                hint_lines.append("\nValues:")
                 for fact in cached_scalars:
                     name = fact.get("name", "")
                     hint_lines.append(f"  - \"{name}\" = {fact.get('value', '?')}")
             hint_lines.append("")
-            hint_lines.append("Use [source: cache] with EXACT names above. Do NOT rename them.")
+            hint_lines.append("Use the EXACT names above with their original source (database/document/api). Do NOT rename them.")
             hint_lines.append("CRITICAL: You must still build a COMPLETE derivation chain that PROVES the answer.")
-            hint_lines.append("CRITICAL: Do NOT just verify cached data exists - you must show HOW the answer is derived.")
             hint_lines.append("")
             cached_facts_hint = "\n".join(hint_lines) + "\n"
 
@@ -187,15 +187,14 @@ P4: <fact_name> = <known_value> (<description>) [source: llm_knowledge]
 PREMISE RULES:
 - Premises are DATA only (tables, records, values) - NOT functions or operations
 - Every premise MUST be referenced by at least one inference
-- Use "cache" for data already in cache (PREFERRED - fastest)
-- Use "database" for SQL queries to configured databases
-- Use "api" for external API data (GraphQL or REST endpoints)
-- Use "document:<doc_name>" for reference documents, policies, and guidelines (e.g., [source: document:business_rules])
+- Use "database:<db_name>" for SQL queries to configured databases. The db_name MUST be one of the databases listed above.
+- Use "api:<api_name>" for external API data. The api_name MUST be one of the APIs listed above.
+- Use "document:<doc_name>" for reference documents, policies, and guidelines. The doc_name MUST be one of the document names listed above under "Reference Documents".
 - Use "llm_knowledge" for universal facts (mathematical constants, scientific facts) and well-established reference data (ISO codes, country info, currency codes)
 - For known universal values, embed directly: P2: pi_value = 3.14159 (Pi constant) [source: llm_knowledge]
 - NEVER ASSUME personal values (age, location, preferences) - use [source: user] and leave value as ?
 - Example: P4: my_age = ? (User's age) [source: user]
-- IMPORTANT: If cached data is available for what you need, ALWAYS use [source: cache] instead of fetching from database/api again.
+- NEVER use "cache" as a source — caching is handled automatically by the system.
 - IMPORTANT: If the question mentions clarifications or user preferences (like "use guidelines from X"), treat these as DATA to be retrieved, NOT as embedded values. Always use = ? and resolve from the appropriate source.
 - IMPORTANT: If a configured API can provide the data, use [source: api:<name>] instead of llm_knowledge.
 - IMPORTANT: Extract numeric constraints from the question as premises. Example: "top 5 results" becomes P2: limit_count = 5 (Requested limit) [source: user]
@@ -384,7 +383,12 @@ IMPORTANT: ALL premises must appear in at least one inference. The final inferen
                 }
             ))
 
-            validation_result = validate_proof_plan(premises, inferences)
+            validation_result = validate_proof_plan(
+                premises, inferences,
+                known_databases=set(self.resources.database_names),
+                known_documents=set(self.resources.document_names),
+                known_apis=set(self.resources.api_names),
+            )
 
             if validation_result.valid:
                 # Emit validation success
@@ -403,6 +407,8 @@ IMPORTANT: ALL premises must appear in at least one inference. The final inferen
             error_feedback = validation_result.format_for_retry()
             error_types = list(set(e.error_type for e in validation_result.errors))
             error_summary = ", ".join(error_types)
+            for err in validation_result.errors:
+                logger.warning(f"[PLAN_VALIDATION] {err.error_type}: {err.fact_id} — {err.message}")
 
             self._emit_event(StepEvent(
                 event_type="plan_validation_failed",
@@ -724,8 +730,13 @@ REMEMBER:
             from constat.execution.dag import parse_plan_to_dag, DAGExecutor, NodeStatus
             from constat.execution.fact_resolver import Fact, FactSource
 
-            # Parse plan into DAG
-            dag = parse_plan_to_dag(premises, inferences)
+            # Parse plan into DAG — validate source names deterministically
+            dag = parse_plan_to_dag(
+                premises, inferences,
+                known_databases=set(self.resources.database_names),
+                known_documents=set(self.resources.document_names),
+                known_apis=set(self.resources.api_names),
+            )
 
             # Emit fact_start for ALL nodes upfront so UI can show complete DAG
             for node in dag.nodes.values():
@@ -1248,14 +1259,14 @@ If the original question had multiple goals or sub-questions, note whether all w
                     "confidence": resolved.confidence if resolved else None,
                     "dependencies": [],
                 }
-                # Include specific source details for test expectation extraction
+                # Include specific source details for test expectation extraction.
                 if resolved:
                     if resolved.source_name:
                         node_data["source_name"] = resolved.source_name
-                    if resolved.table_name:
-                        node_data["table_name"] = resolved.table_name
                     if resolved.api_endpoint:
                         node_data["api_endpoint"] = resolved.api_endpoint
+                    if resolved.query:
+                        node_data["query"] = resolved.query
                 proof_nodes.append(node_data)
             for inf in inferences:
                 iid = inf['id']
@@ -1279,7 +1290,7 @@ If the original question had multiple goals or sub-questions, note whether all w
                             deps.append(dep_node.fact_id)
                 if not deps:
                     deps = [p['id'] for p in premises]  # Fallback
-                proof_nodes.append({
+                inf_node_data = {
                     "id": iid,
                     "name": inf_name,
                     "value": value,
@@ -1287,7 +1298,23 @@ If the original question had multiple goals or sub-questions, note whether all w
                     "confidence": node_confidence,
                     "dependencies": deps,
                     "reasoning": node_reasoning,
-                })
+                }
+                # For inferences, document which datastore tables they consume
+                # (reads_from) and produce (writes_to).
+                if self.fact_resolver:
+                    inf_fact = self.fact_resolver.get_fact(inf_name)
+                    if inf_fact:
+                        if getattr(inf_fact, 'table_name', None):
+                            inf_node_data["writes_to"] = inf_fact.table_name
+                        # Collect input tables from dependency facts
+                        reads_from = []
+                        for dep_fact in (inf_fact.because or []):
+                            dep_table = getattr(dep_fact, 'table_name', None)
+                            if dep_table:
+                                reads_from.append(dep_table)
+                        if reads_from:
+                            inf_node_data["reads_from"] = reads_from
+                proof_nodes.append(inf_node_data)
 
             return {
                 "success": True,

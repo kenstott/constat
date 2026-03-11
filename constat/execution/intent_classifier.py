@@ -646,6 +646,14 @@ Mode: {mode_str}"""
 
         return TurnIntent(primary=primary, sub=sub, target=target)
 
+    def precompute(self) -> None:
+        """Eagerly load the embedding model and precompute exemplar embeddings.
+
+        Call this from a background thread after the embedding model is ready
+        so that the first classify() call doesn't race the model loader.
+        """
+        self._load_embedding_model()
+
     def set_llm_provider(self, provider: object) -> None:
         """Set the LLM provider for fallback classification.
 

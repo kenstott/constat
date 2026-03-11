@@ -80,9 +80,29 @@ class TestLlmMap:
         assert result == ["X", "X"]
         assert all(isinstance(v, str) for v in result)
 
+    @patch("constat.llm.wrappers._raw_llm_classify")
+    def test_allow_none_routes_to_classify(self, mock):
+        mock.return_value = {"a": "pos", "b": None}
+        from constat.llm.wrappers import llm_map
+        result = llm_map(["a", "b"], ["pos", "neg"], allow_none=True)
+        assert result == ["pos", None]
+        mock.assert_called_once()
+
+    @patch("constat.llm.wrappers._raw_llm_classify")
+    def test_allow_none_scalar(self, mock):
+        mock.return_value = {"x": "bug"}
+        from constat.llm.wrappers import llm_map
+        assert llm_map("x", ["bug", "feature"], allow_none=True) == "bug"
+
+    @patch("constat.llm.wrappers._raw_llm_classify")
+    def test_allow_none_dedup(self, mock):
+        mock.return_value = {"a": "pos", "b": "neg"}
+        from constat.llm.wrappers import llm_map
+        assert llm_map(["a", "b", "a"], ["pos", "neg"], allow_none=True) == ["pos", "neg", "pos"]
+
 
 # ---------------------------------------------------------------------------
-# llm_classify
+# llm_classify (backwards-compat alias)
 # ---------------------------------------------------------------------------
 
 class TestLlmClassify:
@@ -209,3 +229,30 @@ class TestLlmScore:
         df = pd.DataFrame({"text": ["a", "b", "c"]})
         df["score"] = df["text"].apply(lambda x: llm_score(x, 0, 1, "Rate"))
         assert df["score"].dtype == float
+
+    @patch("constat.llm.wrappers._raw_llm_score")
+    def test_explain_list(self, mock):
+        mock.return_value = [(0.5, "ok"), (0.9, "great")]
+        from constat.llm.wrappers import llm_score
+        result = llm_score(["a", "b", "a"], explain=True)
+        assert result == [(0.5, "ok"), (0.9, "great"), (0.5, "ok")]
+
+    @patch("constat.llm.wrappers._raw_llm_score")
+    def test_explain_scalar(self, mock):
+        mock.return_value = [(0.8, "good")]
+        from constat.llm.wrappers import llm_score
+        result = llm_score("hello", 0, 1, "Rate", explain=True)
+        assert result == (0.8, "good")
+
+    @patch("constat.llm.wrappers._raw_llm_score")
+    def test_explain_none_score(self, mock):
+        mock.return_value = [(None, "cannot score")]
+        from constat.llm.wrappers import llm_score
+        result = llm_score(["unclear"], explain=True)
+        assert result == (None, "cannot score")  # single-element list → scalar
+
+    @patch("constat.llm.wrappers._raw_llm_score")
+    def test_explain_empty(self, mock):
+        from constat.llm.wrappers import llm_score
+        assert llm_score([], explain=True) == []
+        mock.assert_not_called()

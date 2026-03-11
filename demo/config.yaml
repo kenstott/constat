@@ -35,12 +35,16 @@ llm:
          - provider: anthropic
            model: claude-opus-4-20250514
            timeout_seconds: 180
-     # Planning — Opus for multi-step reasoning
+     # Planning — Opus for multi-step reasoning, Sonnet for simple lookups
      planning:
        models:
          - provider: anthropic
            model: claude-opus-4-20250514
            timeout_seconds: 180
+       low_complexity_models:
+         - provider: anthropic
+           model: claude-sonnet-4-20250514
+           timeout_seconds: 60
      # Code gen — Llama fast path, Sonnet fallback
      sql_generation:
        models:

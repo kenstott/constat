@@ -170,21 +170,29 @@ def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEve
         managed.approval_event = asyncio.Event()
         managed.approval_response = None
 
-        # Queue plan_ready event for WebSocket
+        # Queue plan_ready event for WebSocket.
+        # MUST use call_soon_threadsafe because this callback runs in a
+        # thread-pool thread; asyncio.Queue is not thread-safe and a direct
+        # put_nowait would not wake up the get() coroutine on the event loop.
         plan_data = {
             "problem": request.problem,
             "steps": request.steps,
             "reasoning": request.reasoning,
         }
+        payload = {
+            "event_type": EventType.PLAN_READY.value,
+            "session_id": managed.session_id,
+            "step_number": 0,
+            "data": {"plan": plan_data},
+        }
         try:
-            managed.event_queue.put_nowait({
-                "event_type": EventType.PLAN_READY.value,
-                "session_id": managed.session_id,
-                "step_number": 0,
-                "data": {"plan": plan_data},
-            })
-        except asyncio.QueueFull:
-            logger.warning(f"Event queue full for session {managed.session_id}")
+            loop.call_soon_threadsafe(managed.event_queue.put_nowait, payload)
+        except RuntimeError:
+            # Loop closed — fall back to direct put
+            try:
+                managed.event_queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                logger.warning(f"Event queue full for session {managed.session_id}")
 
         # Wait for approval (blocking in thread, but event is set from async context)
         # Use run_coroutine_threadsafe to wait on the async event from sync code
@@ -239,7 +247,8 @@ def _create_clarification_callback(managed: ManagedSession, loop: asyncio.Abstra
         managed.clarification_event = asyncio.Event()
         managed.clarification_response = None
 
-        # Send all questions at once for stepper UI
+        # Send all questions at once for stepper UI.
+        # MUST use call_soon_threadsafe (same reason as approval callback).
         clarification_data = {
             "original_question": request.original_question,
             "ambiguity_reason": request.ambiguity_reason,
@@ -252,15 +261,19 @@ def _create_clarification_callback(managed: ManagedSession, loop: asyncio.Abstra
                 for q in request.questions
             ],
         }
+        payload = {
+            "event_type": EventType.CLARIFICATION_NEEDED.value,
+            "session_id": managed.session_id,
+            "step_number": 0,
+            "data": clarification_data,
+        }
         try:
-            managed.event_queue.put_nowait({
-                "event_type": EventType.CLARIFICATION_NEEDED.value,
-                "session_id": managed.session_id,
-                "step_number": 0,
-                "data": clarification_data,
-            })
-        except asyncio.QueueFull:
-            logger.warning(f"Event queue full for session {managed.session_id}")
+            loop.call_soon_threadsafe(managed.event_queue.put_nowait, payload)
+        except RuntimeError:
+            try:
+                managed.event_queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                logger.warning(f"Event queue full for session {managed.session_id}")
 
         # Wait for all answers
         async def wait_for_clarification():

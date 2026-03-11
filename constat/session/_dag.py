@@ -154,7 +154,9 @@ class DagMixin:
                     )
                 return node.value, node.confidence, "user"
 
-            # Check cache — return with planned source (preserves type prefix)
+            # Check fact resolver cache — premises may have been resolved in a
+            # prior execution within the same session. The datastore is NOT checked
+            # here — it holds inference intermediates, not raw source data.
             cached_fact = self.fact_resolver.get_fact(fact_name)
             if cached_fact and cached_fact.value is not None:
                 resolved_premises[fact_id] = cached_fact
@@ -166,52 +168,7 @@ class DagMixin:
             # Route based on source type (source is required, validated by DAG parser)
             logger.debug(f"[DAG] Premise {fact_id} '{fact_name}' routing with source='{source}'")
 
-            if source == FactSource.CACHE.value:
-                # Cached data resolution - look up in fact cache or datastore
-                cached_fact = self.fact_resolver.get_fact(fact_name)
-                if cached_fact:
-                    logger.debug(f"[DAG] Found cached fact: {fact_name} = {str(cached_fact.value)[:50]}...")
-                    resolved_premises[fact_id] = cached_fact
-                    source_str = format_source_attribution(
-                        cached_fact.source, cached_fact.source_name, cached_fact.api_endpoint
-                    )
-                    # Preserve original source type for test extraction
-                    if source_str == "cache" and cached_fact.source_name:
-                        source_str = f"database:{cached_fact.source_name}"
-                    return cached_fact.value, cached_fact.confidence, source_str
-
-                # Try datastore table
-                if self.datastore:
-                    tables = self.datastore.list_tables()
-                    for table in tables:
-                        if table["name"].lower() == fact_name.lower():
-                            # Found table in datastore
-                            row_count = table.get("row_count", 0)
-                            value_str = f"({table['name']}) {row_count} rows"
-                            fact = Fact(
-                                name=fact_name,
-                                value=value_str,
-                                source=FactSource.CACHE,
-                                reasoning=f"Cached table from previous analysis",
-                                confidence=0.95,
-                                table_name=table["name"],
-                                row_count=row_count,
-                            )
-                            resolved_premises[fact_id] = fact
-                            self.fact_resolver.add_user_fact(
-                                fact_name=fact_name,
-                                value=value_str,
-                                reasoning="Retrieved from session cache",
-                                source=FactSource.CACHE,
-                                table_name=table["name"],
-                                row_count=row_count,
-                            )
-                            # Return "database" since cached tables originate from DB
-                            return value_str, 0.95, "database"
-
-                raise ValueError(f"Cached data not found: {fact_name}")
-
-            elif source.startswith(FactSource.DATABASE.value):
+            if source.startswith(FactSource.DATABASE.value):
                 # Database resolution
                 db_name = source.split(":", 1)[1].strip() if ":" in source else None
                 if not db_name:
@@ -270,7 +227,15 @@ class DagMixin:
                         }
                     ))
 
-                    error_context = f"\nPREVIOUS ERROR: {last_error}\nFix the query." if last_error else ""
+                    error_context = ""
+                    if last_error:
+                        error_context = f"\nPREVIOUS ERROR: {last_error}\nFix the query."
+                        # On column errors, inject actual column names from schema
+                        if "no such column" in last_error and self.schema_manager:
+                            # Extract table name from the error context
+                            for tbl in self.schema_manager.get_tables_for_db(db_name):
+                                cols = ", ".join(c.name for c in tbl.columns)
+                                error_context += f"\n  {tbl.name} columns: {cols}"
                     sql_learnings = self._get_codegen_learnings(fact_desc, TaskType.SQL_GENERATION)
 
                     # Build step hints, but drop them on table validation retries

@@ -556,7 +556,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 semantic_type VARCHAR NOT NULL,
                 ner_type VARCHAR,
                 domain_id VARCHAR,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (fingerprint, id)
             )
         """)
         self._conn.execute("""
@@ -564,14 +565,16 @@ class DuckDBVectorStore(VectorStoreBackend):
                 fingerprint VARCHAR NOT NULL,
                 chunk_id VARCHAR NOT NULL,
                 entity_id VARCHAR NOT NULL,
-                confidence FLOAT DEFAULT 1.0
+                confidence FLOAT DEFAULT 1.0,
+                PRIMARY KEY (fingerprint, chunk_id, entity_id)
             )
         """)
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS ner_cached_clusters (
                 fingerprint VARCHAR NOT NULL,
                 term_name VARCHAR NOT NULL,
-                cluster_id INTEGER NOT NULL
+                cluster_id INTEGER NOT NULL,
+                PRIMARY KEY (fingerprint, term_name)
             )
         """)
         try:
@@ -580,6 +583,24 @@ class DuckDBVectorStore(VectorStoreBackend):
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_ner_cache_cl_fp ON ner_cached_clusters(fingerprint)")
         except Exception:
             pass
+        # Migrate existing tables: ensure unique constraints exist for ON CONFLICT support.
+        # If duplicates exist from the old schema (no PKs), clear cache data and retry.
+        for tbl, cols, idx in [
+            ("ner_cached_entities", "fingerprint, id", "idx_ner_ent_pk"),
+            ("ner_cached_chunk_entities", "fingerprint, chunk_id, entity_id", "idx_ner_ce_pk"),
+            ("ner_cached_clusters", "fingerprint, term_name", "idx_ner_cl_pk"),
+        ]:
+            try:
+                self._conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {tbl}({cols})")
+            except Exception:
+                # Duplicates exist — clear stale cache so index can be created
+                logger.warning(f"NER cache migration: clearing {tbl} to add unique index")
+                self._conn.execute(f"DELETE FROM {tbl}")
+                self._conn.execute("DELETE FROM ner_scope_cache")
+                try:
+                    self._conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {tbl}({cols})")
+                except Exception as e:
+                    logger.warning(f"NER cache migration: failed to create index on {tbl}: {e}")
 
     def _ensure_incremental_schema(self) -> None:
         """Create tables added after initial schema, for pre-existing databases."""

@@ -403,6 +403,9 @@ class TaskRoutingEntry(BaseModel):
     # Ordered list of models to try (first = preferred, subsequent = fallback)
     models: list[ModelSpec]
 
+    # Optional: models to use for low-complexity tasks (e.g., simple lookups)
+    low_complexity_models: Optional[list[ModelSpec]] = None
+
     # Optional: models to use for high-complexity tasks
     high_complexity_models: Optional[list[ModelSpec]] = None
 
@@ -477,6 +480,9 @@ class TaskRoutingConfig(BaseModel):
         entry = self.routes.get(task_type)
         if not entry:
             return []
+
+        if complexity == "low" and entry.low_complexity_models:
+            return entry.low_complexity_models
 
         if complexity == "high" and entry.high_complexity_models:
             return entry.high_complexity_models

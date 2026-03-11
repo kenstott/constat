@@ -10,12 +10,18 @@
 """Firebase authentication middleware and utilities."""
 
 import logging
+import time
 from typing import Annotated, TypeAlias
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 logger = logging.getLogger(__name__)
+
+# Token verification cache: jwt -> (decoded_token_dict, expiry_timestamp)
+_token_cache: dict[str, tuple[dict, float]] = {}
+_TOKEN_CACHE_TTL = 300  # 5 minutes
+_TOKEN_CACHE_MAX = 200
 
 # Optional Firebase Admin SDK import
 try:
@@ -93,11 +99,26 @@ async def get_current_user_id(
         )
 
     try:
+        raw_jwt = credentials.credentials
+        now = time.monotonic()
+
+        # Check cache first
+        cached = _token_cache.get(raw_jwt)
+        if cached is not None:
+            decoded_token, expiry = cached
+            if now < expiry:
+                user_id = decoded_token.get("sub") or decoded_token.get("user_id")
+                request.state.user_email = decoded_token.get("email")
+                logger.debug(f"[AUTH] Cache hit for user: {user_id}")
+                return user_id
+            else:
+                del _token_cache[raw_jwt]
+
         # Verify the Firebase ID token
         # This validates the token signature, expiration, and audience
         # noinspection PyTypeChecker
         decoded_token = id_token.verify_firebase_token(
-            credentials.credentials,
+            raw_jwt,
             google_requests.Request(),
             audience=server_config.firebase_project_id,
         )
@@ -109,6 +130,12 @@ async def get_current_user_id(
                 status_code=401,
                 detail="Invalid token: missing user ID",
             )
+
+        # Store in cache (evict oldest if full)
+        if len(_token_cache) >= _TOKEN_CACHE_MAX:
+            oldest_key = min(_token_cache, key=lambda k: _token_cache[k][1])
+            del _token_cache[oldest_key]
+        _token_cache[raw_jwt] = (dict(decoded_token), now + _TOKEN_CACHE_TTL)
 
         logger.info(f"[AUTH] Authenticated user: {user_id}")
 

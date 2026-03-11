@@ -60,15 +60,25 @@ Share data between steps ONLY via `store`:
 
 <!-- @llm_tools -->
 ## LLM Functions
-- `llm_ask(question) -> int | float | str`: ask the LLM a SINGLE factual question, returns a SINGLE scalar value. Use for one-off facts (e.g., "What is the GDP of France?" → 2780000000000). NEVER use llm_ask for per-row enrichment — use llm_map/llm_classify/llm_extract instead.
-- `llm_map(values, allowed, source_desc, target_desc) -> list[str]`: map values to an allowed set. Accepts anything: list, Series, ndarray, or a single string. Returns `list[str]` for multiple inputs, `str` for a single input. Deduplicates internally.
-  - `df['breed'] = llm_map(df['item'].tolist(), breed_names, "items", "breeds")`
-- `llm_classify(values, categories, context) -> list[str | None]`: classify into **semantic categories you defined** (e.g., ["high", "medium", "low"]). NOT for matching to a domain list — use `llm_map` for that. Accepts anything. Returns `list[str|None]` for multiple, `str|None` for single.
-  - `df['category'] = llm_classify(df['desc'].tolist(), categories, "context")`
+- `llm_ask(question) -> int | float | str`: ask the LLM a SINGLE factual question, returns a SINGLE scalar value. Use for one-off facts (e.g., "What is the GDP of France?" → 2780000000000). NEVER use llm_ask for per-row enrichment — use llm_map/llm_score/llm_extract instead.
+- `llm_map(values, allowed, source_desc, target_desc, allow_none=False)`: assign each value to one of the `allowed` labels. Accepts anything: list, Series, ndarray, or a single string. Deduplicates internally.
+  - `allow_none=False` (default): every value gets a best-effort match. Returns `str` (scalar) or `list[str]`.
+  - `allow_none=True`: unclassifiable values return `None`. Returns `str|None` (scalar) or `list[str|None]`.
+  - Mapping to a domain list: `df['breed'] = llm_map(df['item'].tolist(), breed_names, "items", "breeds")`
+  - Classifying into categories: `df['priority'] = llm_map(df['desc'].tolist(), ["high", "medium", "low"], "tickets", "priority levels", allow_none=True)`
+- `llm_classify(values, categories, context)`: alias for `llm_map(values, categories, allow_none=True)`. Works identically — use whichever reads better.
 - `llm_extract(texts, fields, context)`: extract structured fields from free text using LLM. `fields` is a `list[str]`. Returns a dict if one text is passed, list of dicts if multiple. Best for: parsing addresses, extracting entities from descriptions.
 - `llm_summarize(texts, instruction)`: summarize texts using LLM. Pass ALL texts at once.
-- `llm_score(texts, min_val, max_val, instruction) -> list[float | None]`: score texts on a numeric scale. Accepts anything: list, Series, ndarray, or a single string. Returns `list[float|None]` for multiple, `float|None` for single. Deduplicates internally.
+- `llm_score(texts, min_val, max_val, instruction, explain=False)`: score texts on a numeric scale. Accepts anything: list, Series, ndarray, or a single string. Deduplicates internally.
+  - `explain=False` (default): returns `float|None` (scalar) or `list[float|None]`
+  - `explain=True`: returns `(float|None, str)` (scalar) or `list[tuple[float|None, str]]` — each tuple is `(score, explanation)`
   - `df['score'] = llm_score(df['text'].tolist(), 0, 5, "Rate quality")`
+  - With explanation:
+    ```python
+    results = llm_score(df['text'].tolist(), 0, 5, "Rate quality", explain=True)
+    df['score'] = [r[0] for r in results]
+    df['explanation'] = [r[1] for r in results]
+    ```
 - `llm_extract_table(description, document, columns=None) -> DataFrame`: extract a table from a document into a DataFrame. `document` is the configured document NAME (e.g., `'business_rules'`), NOT raw text. Do NOT call `doc_read()` first — the function handles chunk retrieval internally. Optional `columns` enforces column names. **Types are auto-coerced**: percentages become decimal rates (8% → 0.08), currency and units (k/M/B) become numeric, ranges like "5-8%" become separate `_min`/`_max` columns, bools and dates are detected. Values are ready for direct arithmetic: `salary * (1 + rate)`. Do NOT divide by 100. Do NOT rename columns to `_pct` or `_percent` — use `_rate` for decimal values.
   **CRITICAL anti-patterns for `llm_extract_table`**:
   - WRONG: `text = doc_read('policy'); llm_extract_table(desc, text)` — do NOT call doc_read first
@@ -80,15 +90,13 @@ Share data between steps ONLY via `store`:
 
 <!-- @llm_guide -->
 ## LLM Primitive Selection Guide
-- **Map values to an allowed set** (product→breed, city→country_code, name→standardized): `llm_map`
-- **Classify into semantic categories** (sentiment, priority, risk level): `llm_classify`
-- **Score on a numeric scale** (quality, sentiment 0-1, rating 1-5): `llm_score`
-- **Extract structured fields from text** (parse addresses, entities): `llm_extract`
+- **Assign labels from a set** (product→breed, city→country, sentiment→high/med/low): `llm_map`. Use `allow_none=True` when some items may not fit any label.
+- **Score on a numeric scale** (quality, sentiment 0-1, rating 1-5): `llm_score`. Use `explain=True` when you also need reasoning.
+- **Extract structured fields from text** (parse addresses, entities, score + explanation): `llm_extract`
 - **Extract a table from a document** (rating scales, guidelines): `llm_extract_table`
 - **Discover facts in a document** (thresholds, rules, data points): `llm_extract_facts`
 - **Single factual lookup** (GDP, capital): `llm_ask`
-- **Key distinction**: known domain values → `llm_map`. Labels you invented → `llm_classify`.
-- `llm_map`, `llm_classify`, `llm_score` accept anything (list, Series, ndarray, single string). Deduplication is internal. Assign the result directly to a column.
+- `llm_map` and `llm_score` accept anything (list, Series, ndarray, single string). Deduplication is internal. Assign the result directly to a column.
 - `llm_ask` is NOT a batch primitive. One question → one value.
 
 <!-- @data_integrity -->
@@ -99,12 +107,19 @@ When a prior step saved data to `store`, **use it directly** — do NOT re-deriv
 - If a prior step's output is missing or broken, let the error propagate — the retry mechanism will fix the prior step.
 - NEVER wrap `store.load_dataframe()` in a try/except with fallback recomputation.
 
+## Store Tables vs Database Tables — CRITICAL DISTINCTION
+- **Store tables** (listed under "Intermediate Tables") are in the DuckDB datastore. Access via `store.load_dataframe('name')` or `store.query('SELECT ... FROM name')`.
+- **Database tables** are in configured databases (SQLite, PostgreSQL, etc.). Access via `pd.read_sql(query, db_<name>)` or `sql_<name>(query)`.
+- **They live in separate systems**: do NOT use store table names in `pd.read_sql()` queries — they don't exist in the database. Do NOT use database table names in `store.query()` — they don't exist in the store. To combine data from both, load each into a DataFrame separately, then join in pandas or save to store and use `store.query()`.
+- If your step goal says to use data that already exists in the store, load it with `store.load_dataframe()`. Do NOT re-query the database for it.
+
 ## Corrections and Updates
 When correcting or updating previous results:
 - **OVERWRITE the original table** with the exact same name - NEVER create "corrected_*", "updated_*", or "*_v2" versions
 - Use `store.save_dataframe('original_name', corrected_df, step_number=N)` to replace the existing table
 - The user wants the canonical result fixed in place, not a separate copy with a different name
 - If fixing "summary_df", save as "summary_df" not "corrected_summary_df" or "summary_df_v2"
+- **Do NOT explain what changed** — just present the corrected result. No "Previously X, now Y" or "The difference is..." commentary. Only compare old vs new if the user explicitly asks.
 
 ## Enhancing Existing Tables
 When the goal is to "enhance", "add columns to", or "enrich" an existing table:
@@ -124,13 +139,13 @@ Do NOT import skill modules. The functions are already available as globals, jus
 <!-- @pitfalls -->
 ## Common Pitfalls
 - **NEVER call `get_table_schema()`, `find_relevant_tables()`, or `find_entity()` in generated code** — they do not exist at runtime and will raise NameError. Those are code-generation tools only.
-- **Prefer passing full columns** to `llm_score`, `llm_map`, `llm_classify` — one call, direct assignment. Per-row `.apply()` calls work but waste tokens.
+- **Prefer passing full columns** to `llm_score`, `llm_map` — one call, direct assignment. Per-row `.apply()` calls work but waste tokens.
   - BEST: `df['score'] = llm_score(df['text'].tolist(), 0, 1, "Rate sentiment")`
 - If an expected column is missing, raise an error listing the actual columns: `raise KeyError(f"Expected 'col' but columns are: {list(df.columns)}")`. NEVER silently default to zero or skip — this produces corrupt data that passes downstream undetected.
 - NEVER use `if df:` on DataFrames - use `if df.empty:` or `if not df.empty:` instead
 - **NEVER use `input()`** — it blocks the server. To ask users questions, the step must have `task_type: user_input` with `ask_user()`. Regular steps cannot interact with users.
-- **NEVER hardcode mapping dicts, classification tables, or extracted constants**. Use `llm_map()`, `llm_classify()`, `llm_extract()`, or `llm_summarize()`. Hardcoded data breaks auditability and won't update when source data changes.
-- **No external NLP libraries** (TextBlob, VADER, spaCy, nltk, etc.) are available. For sentiment analysis, scoring, or text classification use `llm_score()` or `llm_classify()` — they are already provided and model-routed.
+- **NEVER hardcode mapping dicts, classification tables, or extracted constants**. Use `llm_map()`, `llm_extract()`, or `llm_summarize()`. Hardcoded data breaks auditability and won't update when source data changes.
+- **No external NLP libraries** (TextBlob, VADER, spaCy, nltk, etc.) are available. For sentiment analysis, scoring, or text classification use `llm_score()` or `llm_map(..., allow_none=True)` — they are already provided and model-routed.
 - **ALWAYS convert string-formatted numbers to numeric before saving**. Use `parse_number(val)` which returns a tuple of all extracted numbers: `"8-12%" → (8.0, 12.0)`, `"5%" → (5.0,)`, `"1,2,3" → (1.0, 2.0, 3.0)`. For min/max columns: `df['raise_min'] = df['raise_pct'].apply(lambda v: min(parse_number(v)))`. NEVER write your own parser. Downstream steps cannot aggregate string columns.
 
 ## Variable vs Hardcoded Values

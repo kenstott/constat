@@ -391,12 +391,13 @@ class Planner:
             ))
         return steps
 
-    def plan(self, problem: str) -> PlannerResponse:
+    def plan(self, problem: str, complexity: str = "medium") -> PlannerResponse:
         """
         Generate a multistep plan for a problem.
 
         Args:
             problem: Natural language problem to solve
+            complexity: Routing complexity hint ("low", "medium", "high")
 
         Returns:
             PlannerResponse with the generated plan
@@ -561,15 +562,30 @@ class Planner:
 
         system_prompt = self._build_system_prompt(problem)
 
+        # Build user message — add brevity directive for simple queries
+        user_message = f"Create a plan to answer this question:\n\n{problem}"
+        if complexity == "low":
+            user_message += (
+                "\n\nIMPORTANT: This is a simple request. Use a SINGLE step. "
+                "Do NOT add separate formatting, summary, or synthesis steps."
+            )
+        else:
+            user_message += (
+                "\n\nDo NOT add a final summarize, format, or synthesis step "
+                "unless the user explicitly asked for summarization or formatting. "
+                "Synthesis is handled automatically after execution."
+            )
+
         # Use router for planning task
         if self.router:
             result = self.router.execute(
                 task_type=TaskType.PLANNING,
                 system=system_prompt,
-                user_message=f"Create a plan to answer this question:\n\n{problem}",
+                user_message=user_message,
                 tools=schema_tools,
                 tool_handlers=self._get_tool_handlers(),
                 max_tokens=16384,
+                complexity=complexity,
             )
             if not result.success:
                 raise ValueError(f"Planning failed: {result.content}")

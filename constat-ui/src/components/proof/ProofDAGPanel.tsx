@@ -1039,13 +1039,14 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                   if (!testDomain || isSavingTest) return
                   setIsSavingTest(true)
                   try {
-                    const proofNodes = Array.from(facts.values()).map(f => ({
+                    // Send client-side nodes as fallback; server prefers its own richer nodes when available
+                    const fallbackNodes = Array.from(facts.values()).map(f => ({
                       id: f.id,
                       name: f.name,
                       source: f.source,
                       status: f.status,
                     }))
-                    const expect = await extractExpectations(sessionId, proofNodes, undefined, summary ?? undefined)
+                    const expect = await extractExpectations(sessionId, fallbackNodes, undefined, summary ?? undefined)
                     const questionText = expect.suggested_question || finalNode?.description || finalNode?.name?.replace(/^I\d+:\s*/, '') || 'Untitled question'
                     const body: GoldenQuestionRequest = {
                       question: questionText,

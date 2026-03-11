@@ -1047,6 +1047,7 @@ Prove all of the above claims and provide a complete audit trail."""
 
             # noinspection PyAttributeOutsideInit
             self.last_proof_result = result
+            self._save_proof_result(result)
             return result
 
         except Exception as e:

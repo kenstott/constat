@@ -17,7 +17,7 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 - Database connections (`db_<name>`), API clients (`api_<name>`)
 - `duckdb` for SQL queries on any data (DataFrames, JSON, Parquet)
 - `pd` (pandas), `np` (numpy), `store` for persisting data between steps
-- `llm_ask(question) -> scalar` for single factual lookups (GDP, capital, conversion rate). For per-row enrichment use `llm_map`/`llm_classify`/`llm_extract` instead.
+- `llm_ask(question) -> scalar` for single factual lookups (GDP, capital, conversion rate). For per-row enrichment use `llm_map`/`llm_score`/`llm_extract` instead.
 - `send_email(to, subject, body, fmt="markdown", df=None)` for emails (use fmt="markdown" for styled HTML)
 - `doc_read(name)` to load reference document content at runtime, `llm_extract(texts, fields, context)` to parse structured rules from it
 
@@ -68,7 +68,7 @@ If no active skills match the request, plan from primitives as usual.
 5. Only use pandas for operations SQL cannot express (e.g., complex reshaping, pivot, ML)
 6. Keep steps atomic - one main action per step
 7. Identify parallelizable steps (empty depends_on)
-8. End with a step that synthesizes the final answer
+8. NEVER add a synthesis, summary, or formatting step unless the user explicitly asked for one. Synthesis is handled automatically after execution. If a query needs data from multiple steps, the last data step should produce the combined result directly.
 9. **REUSE DATASET NAMES** - When modifying existing analysis, update existing tables (e.g., `final_answer`) rather than creating variations (`final_answer_v2`). Create new names only when truly adding new data.
 10. **CROSS-SOURCE JOIN OPTIMIZATION** - When joining data from multiple sources:
     - Same database: Use native JOIN (SQL) or lookup (MongoDB $lookup, Elasticsearch nested/parent-child)
@@ -82,7 +82,7 @@ If no active skills match the request, plan from primitives as usual.
     - Avoid querying entire large tables when only a subset is needed
     - Prefer aggregation at the database level over pulling raw data into Python
     - When the user asks a simple question, prefer fewer steps over exhaustive multi-step analysis
-    - `llm_map`/`llm_classify`/`llm_score` accept full columns — deduplication is internal
+    - `llm_map`/`llm_score` accept full columns — deduplication is internal
 13. **USER INPUT STEPS** — When a plan needs user feedback on intermediate results, use `task_type: "user_input"`. The step code calls `ask_user(question, widget=..., data=...)` to pause and get the user's answer. Use when the user's input genuinely affects subsequent steps.
     - **PLACE USER INPUT STEPS AS EARLY AS POSSIBLE**. If a user_input step only needs the output of step 1, make it step 2 — not step 5. The user should not wait through unnecessary steps before being asked for input. Steps that depend on the user's answer come AFTER the user_input step.
     - **Simple questions first**: If a step just asks the user for a number, preference, or selection that doesn't require prior computation, place it as step 1 or 2 with `depends_on: []`.
@@ -94,10 +94,13 @@ If no active skills match the request, plan from primitives as usual.
     - WRONG: Using user_input for questions that could be resolved before the plan starts (use clarifications instead)
     - When the task involves **creative mapping, subjective matching, or ambiguous associations** between two datasets, prefer inserting a user_input step to let the user guide the correlation logic rather than letting the LLM decide autonomously
     - **Mention the widget type in the step goal** so code generation picks the right one (e.g., "Ask user to map inventory terms to breed characteristics using mapping widget")
-14. **NO DUPLICATE WORK** - Never plan a step that re-does work already completed by a prior step.
+14. **NO DUPLICATE WORK** - Never plan a step that re-does work already completed by a prior step OR a prior query.
     - If step N produces a table with columns A, B, C, step N+1 must NOT recompute those columns — load and use the table directly.
+    - If an **existing table** from a prior query already contains the data, do NOT re-query the database for it. Use `store.load_dataframe()` to access it.
     - WRONG: Step 3 matches products→breeds with reasoning. Step 4 "generates final list with reasoning" by re-calling `llm_map`. This duplicates Step 3.
+    - WRONG: Planning "Query employees joined with reviews from database" when `most_recent_reviews` already exists in the store from a prior query.
     - RIGHT: Step 3 matches products→breeds with reasoning. Step 4 formats the existing matches into a report. No LLM calls needed.
+    - RIGHT: "Load most_recent_reviews from store" when that table already exists.
     - A later step should only transform, filter, aggregate, or present prior results — never regenerate them.
     - If a step's output already contains the fields needed downstream (e.g., reasoning, scores), do NOT plan another step to "add" those same fields.
 

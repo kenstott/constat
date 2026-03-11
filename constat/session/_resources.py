@@ -14,7 +14,10 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+import numpy as np
+
 from constat.context import ContextEstimator, ContextCompactor, ContextStats, CompactionResult
+from constat.embedding_loader import EmbeddingModelLoader
 from constat.execution.scratchpad import Scratchpad
 from constat.session._types import StepEvent
 
@@ -598,7 +601,8 @@ class ResourcesMixin:
                 logger.info("[CONTEXT] No agent matched for query")
 
         # Step 3: Merge agent-declared skills
-        # If the selected agent declares explicit skills, add them if not already matched
+        # If the selected agent declares explicit skills, add them if not already matched.
+        # Gate: only inject if the skill description is semantically relevant to the query.
         if agent_info:
             agent_obj = self.agent_manager.get_agent(agent_info["name"])
             if agent_obj and agent_obj.skills:
@@ -607,16 +611,24 @@ class ResourcesMixin:
                     if skill_name not in matched_skill_names:
                         skill_obj = self.skill_manager.get_skill(skill_name)
                         if skill_obj:
+                            # Check embedding similarity between query and skill description
+                            skill_sim = self._skill_query_similarity(query, skill_obj.description)
+                            if skill_sim < 0.40:
+                                logger.info(
+                                    f"[CONTEXT] Skipped agent-declared skill '{skill_name}' "
+                                    f"(similarity {skill_sim:.2f} < 0.40)"
+                                )
+                                continue
                             skills_info.append({
                                 "name": skill_obj.name,
                                 "description": skill_obj.description,
-                                "similarity": 1.0,
+                                "similarity": skill_sim,
                                 "source": "agent",
                             })
                             skills_prompts.append(
                                 f"## {skill_obj.name} (required by agent: {agent_info['name']})\n{skill_obj.prompt}"
                             )
-                            logger.info(f"[CONTEXT] Added agent-declared skill: {skill_name}")
+                            logger.info(f"[CONTEXT] Added agent-declared skill: {skill_name} (similarity {skill_sim:.2f})")
                         else:
                             logger.warning(f"Agent '{agent_info['name']}' declares skill '{skill_name}' but it was not found")
 
@@ -627,6 +639,18 @@ class ResourcesMixin:
             "skills_prompt": "\n\n".join(skills_prompts),
             "agent_source": agent_source,
         }
+
+    def _skill_query_similarity(self, query: str, skill_description: str) -> float:
+        """Compute embedding cosine similarity between query and skill description."""
+        if not skill_description:
+            return 0.0
+        try:
+            model = EmbeddingModelLoader.get_instance().get_model()
+            embeddings = model.encode([query, skill_description], normalize_embeddings=True)
+            return float(np.dot(embeddings[0], embeddings[1]))
+        except Exception as e:
+            logger.warning(f"Skill similarity check failed: {e}")
+            return 1.0  # On failure, allow injection (safe fallback)
 
     @property
     def current_agent_id(self) -> Optional[str]:

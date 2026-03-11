@@ -217,6 +217,30 @@ def _resolve_entity_with_term(
 
 _GROUNDABLE_SOURCES = {"database", "document", "api", "embedded"}
 
+# Regex to extract table names from SQL FROM/JOIN clauses.
+# Handles: FROM table, FROM "table", JOIN table, FROM schema.table
+_SQL_TABLE_RE = re.compile(
+    r'(?:FROM|JOIN)\s+'
+    r'"?(\w+)"?'            # table or schema
+    r'(?:\s*\.\s*"?(\w+)"?)?',  # optional .table
+    re.IGNORECASE,
+)
+
+
+def _extract_tables_from_sql(sql: str) -> list[str]:
+    """Extract real table names from a SQL query's FROM/JOIN clauses."""
+    tables: list[str] = []
+    seen: set[str] = set()
+    for m in _SQL_TABLE_RE.finditer(sql):
+        part1, part2 = m.group(1), m.group(2)
+        # schema.table → use table; plain table → use as-is
+        name = part2 if part2 else part1
+        key = name.lower()
+        if key not in seen:
+            seen.add(key)
+            tables.append(name)
+    return tables
+
 
 def _generate_test_metadata(
     config, original_question: str | None, proof_summary: str | None,
@@ -304,18 +328,20 @@ async def extract_expectations(
     """
     managed = sm.get_session(session_id)
 
-    # Prefer client-supplied proof nodes, fall back to server-side state
+    # Server-side proof nodes are richer (source_name, table_name, api_endpoint).
+    # Client-side nodes are always available (survive session restore).
+    # Use server-side when available, fall back to client-side.
     proof_nodes: list[dict] = []
-    if body and body.proof_nodes:
+    proof = managed.session.last_proof_result
+    if proof and proof.get("proof_nodes"):
+        proof_nodes = proof["proof_nodes"]
+        logger.info(f"[extract_expectations] using {len(proof_nodes)} server-side proof nodes")
+    elif body and body.proof_nodes:
         proof_nodes = [n.model_dump() for n in body.proof_nodes]
-    else:
-        proof = managed.session.last_proof_result
-        if proof:
-            proof_nodes = proof.get("proof_nodes", [])
+        logger.info(f"[extract_expectations] using {len(proof_nodes)} client-supplied proof nodes")
 
     if not proof_nodes:
         raise HTTPException(status_code=404, detail="No reasoning chain result available")
-    logger.info(f"[extract_expectations] received {len(proof_nodes)} proof nodes")
 
     doc_tools = managed.session.doc_tools
     relational = None
@@ -336,7 +362,11 @@ async def extract_expectations(
         source_type = raw_source.split(":")[0] if raw_source else ""
         # Only premises (groundable sources) create expectations;
         # all other outcomes (derived, cache, llm_knowledge, etc.) use LLM-as-judge
-        logger.info(f"[extract_expectations] node name={node.get('name')!r} source={raw_source!r} source_type={source_type!r} status={node.get('status')!r}")
+        logger.info(
+            f"[extract_expectations] node name={node.get('name')!r} source={raw_source!r} "
+            f"source_type={source_type!r} source_name={node.get('source_name')!r} "
+            f"table_name={node.get('table_name')!r} status={node.get('status')!r}"
+        )
         if source_type not in _GROUNDABLE_SOURCES:
             continue
 
@@ -365,11 +395,11 @@ async def extract_expectations(
 
         entities.append(resolved_name)
 
-        # Build grounding assertion from source info.
+        # Build grounding assertion directly from proof node data.
         resolves_to: list[str] = []
         source_name = node.get("source_name")
-        table_name = node.get("table_name")
         api_endpoint = node.get("api_endpoint")
+        query = node.get("query")
 
         source_suffix = raw_source.split(":", 1)[1] if ":" in raw_source else None
         if not source_name and source_type == "database" and source_suffix:
@@ -377,16 +407,21 @@ async def extract_expectations(
         if not api_endpoint and source_type == "api" and source_suffix:
             api_endpoint = source_suffix
 
-        if source_type == "database" and source_name and table_name:
-            resolves_to.append(f"schema:{source_name}.{table_name}")
-        elif source_type == "database" and source_name:
-            resolves_to.append(f"schema:{source_name}")
+        if source_type == "database" and source_name:
+            # Extract actual table names from the SQL query
+            sql_tables = _extract_tables_from_sql(query) if query else []
+            if sql_tables:
+                for t in sql_tables:
+                    resolves_to.append(f"schema:{source_name}.{t}")
+            else:
+                resolves_to.append(f"schema:{source_name}")
         elif source_type == "api" and api_endpoint:
             resolves_to.append(f"api:{api_endpoint}")
         elif source_type == "api" and source_name:
             resolves_to.append(f"api:{source_name}")
         elif source_type == "document":
-            resolves_to.append("document")
+            doc_name = source_name or source_suffix
+            resolves_to.append(f"document:{doc_name}" if doc_name else "document")
         else:
             resolves_to.append(raw_source)
 
@@ -400,7 +435,39 @@ async def extract_expectations(
                 ga["domain"] = term_obj.domain
             glossary.append(ga)
 
-    logger.info(f"[extract_expectations] result: {len(entities)} entities, {len(grounding)} grounding, {len(glossary)} glossary")
+    # Extract relationships between resolved entities
+    relationships: list[dict] = []
+    if relational and entities:
+        entity_set = set(e.lower() for e in entities)
+        rel_seen: set[tuple[str, str, str]] = set()
+        for entity_name in entities:
+            try:
+                rels = relational.get_relationships_for_entity(entity_name, session_id)
+            except Exception as e:
+                logger.warning(f"[extract_expectations] failed to get relationships for {entity_name!r}: {e}")
+                continue
+            for r in rels:
+                subj = r["subject_name"]
+                obj = r["object_name"]
+                # Only include if both ends are in resolved entities
+                if subj.lower() not in entity_set or obj.lower() not in entity_set:
+                    continue
+                triple = (subj.lower(), r["verb"].lower(), obj.lower())
+                if triple in rel_seen:
+                    continue
+                rel_seen.add(triple)
+                relationships.append({
+                    "subject": subj,
+                    "verb": r["verb"],
+                    "object": obj,
+                    "min_confidence": r.get("confidence", 0.0),
+                })
+        logger.info(f"[extract_expectations] extracted {len(relationships)} relationships from entity store")
+
+    logger.info(
+        f"[extract_expectations] result: {len(entities)} entities, {len(grounding)} grounding, "
+        f"{len(relationships)} relationships, {len(glossary)} glossary"
+    )
 
     # Use LLM to generate a concise test question name and semantic_match criteria
     suggested_question = None
@@ -428,7 +495,7 @@ async def extract_expectations(
     return GoldenQuestionExpectations(
         entities=entities,
         grounding=grounding,
-        relationships=[],
+        relationships=relationships,
         glossary=glossary,
         end_to_end=end_to_end,
         suggested_question=suggested_question,
@@ -636,20 +703,26 @@ async def create_golden_question(
 
     # Resolve entity names against the store so auto-generated tests use
     # actual entity names rather than LLM premise labels.
-    # Only keep entities that actually resolve — drop unresolvable ones.
+    # Skip resolution if expectations already have grounding — they came from
+    # extract_expectations which already resolved names. Double-resolving drops
+    # entities that were normalized to snake_case but don't exist in the store.
     expect = body.expect.model_dump()
-    doc_tools = managed.session.doc_tools
-    if doc_tools and hasattr(doc_tools, '_vector_store'):
-        relational = getattr(doc_tools._vector_store, '_relational', None)
-        if relational:
-            domain_ids = list(getattr(doc_tools, '_active_domain_ids', None) or [])
-            logger.info(f"Resolving expectations: entities={expect.get('entities')}, domain_ids={domain_ids}, session_id={session_id}")
-            expect = _resolve_expectations(relational, expect, session_id, user_id, domain_ids)
-            logger.info(f"Resolved expectations: entities={expect.get('entities')}, grounding={expect.get('grounding')}")
-        else:
-            logger.warning("Cannot resolve expectations: no relational store available")
+    has_grounding = bool(expect.get("grounding"))
+    if has_grounding:
+        logger.info(f"Skipping re-resolution: expectations already have {len(expect['grounding'])} grounding entries (pre-resolved)")
     else:
-        logger.warning(f"Cannot resolve expectations: doc_tools={doc_tools is not None}, has _vector_store={hasattr(doc_tools, '_vector_store') if doc_tools else False}")
+        doc_tools = managed.session.doc_tools
+        if doc_tools and hasattr(doc_tools, '_vector_store'):
+            relational = getattr(doc_tools._vector_store, '_relational', None)
+            if relational:
+                domain_ids = list(getattr(doc_tools, '_active_domain_ids', None) or [])
+                logger.info(f"Resolving expectations: entities={expect.get('entities')}, domain_ids={domain_ids}, session_id={session_id}")
+                expect = _resolve_expectations(relational, expect, session_id, user_id, domain_ids)
+                logger.info(f"Resolved expectations: entities={expect.get('entities')}, grounding={expect.get('grounding')}")
+            else:
+                logger.warning("Cannot resolve expectations: no relational store available")
+        else:
+            logger.warning(f"Cannot resolve expectations: doc_tools={doc_tools is not None}, has _vector_store={hasattr(doc_tools, '_vector_store') if doc_tools else False}")
 
     domain_path, data = _read_domain_yaml(dc)
     gq_list = data.setdefault("golden_questions", [])

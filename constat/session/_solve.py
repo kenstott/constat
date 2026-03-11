@@ -12,13 +12,47 @@ from __future__ import annotations
 import logging
 
 from constat.core.models import Plan, PlannerResponse, StepStatus, StepResult, TaskType
-from constat.execution.mode import PlanApproval, PrimaryIntent
+from constat.execution.mode import PlanApproval, PrimaryIntent, SubIntent
+from constat.keywords import wants_brief_output
 from constat.execution.scratchpad import Scratchpad
 from constat.session._types import QuestionAnalysis, QuestionType, StepEvent, is_meta_question
 from constat.storage.datastore import DataStore
 from constat.storage.registry_datastore import RegistryAwareDataStore
 
 logger = logging.getLogger(__name__)
+
+_HIGH_COMPLEXITY_SUBS = {SubIntent.COMPARE, SubIntent.PREDICT}
+
+
+def _assess_planning_complexity(
+    analysis: QuestionAnalysis,
+    turn_intent,
+    query: str = "",
+) -> str:
+    """Return 'low', 'medium', or 'high' based on analysis and intent signals.
+
+    Only compare/predict sub-intents trigger 'high' — they require multi-source
+    reasoning. Scope refinements are query constraints, not complexity indicators.
+    """
+    sub = turn_intent.sub if turn_intent else None
+    mods = getattr(analysis, "fact_modifications", []) or []
+    # Keyword detection as fallback for unreliable LLM wants_brief
+    keyword_brief = wants_brief_output(query) if query else False
+    brief = analysis.wants_brief or keyword_brief
+    logger.debug(
+        f"[COMPLEXITY] sub={sub}, fact_modifications={len(mods)}, "
+        f"wants_brief={analysis.wants_brief}, keyword_brief={keyword_brief}"
+    )
+
+    # High: only compare/predict sub-intents
+    if sub in _HIGH_COMPLEXITY_SUBS:
+        return "high"
+
+    # Low: brief request with no fact modifications
+    if brief and not mods:
+        return "low"
+
+    return "medium"
 
 
 # noinspection PyUnresolvedReferences
@@ -304,6 +338,10 @@ class SolveMixin:
         # All queries use exploratory mode by default
         # Use /reason command to generate auditable reasoning chains when needed
 
+        # Assess planning complexity for model routing
+        planning_complexity = _assess_planning_complexity(analysis, turn_intent, problem)
+        logger.info(f"[PLANNING] Assessed complexity: {planning_complexity} (wants_brief={analysis.wants_brief})")
+
         # Generate plan with approval loop
         current_problem = problem
         display_problem = problem  # What to show in UI (just feedback on replan)
@@ -328,16 +366,23 @@ class SolveMixin:
                     speculative_plan = None
                 executor.shutdown(wait=False)
 
-                if speculative_plan is not None:
+                if speculative_plan is not None and planning_complexity != "low":
                     logger.debug("[PARALLEL] Using speculative plan (saved ~1 LLM call)")
                     planner_response = speculative_plan
+                    self.plan = planner_response.plan
+                elif speculative_plan is not None and planning_complexity == "low":
+                    logger.debug("[PARALLEL] Discarding speculative plan — re-planning with low-complexity directive")
+                    self._sync_user_facts_to_planner()
+                    self._sync_glossary_to_planner(current_problem)
+                    self._sync_available_agents_to_planner()
+                    planner_response = self.planner.plan(current_problem, complexity=planning_complexity)
                     self.plan = planner_response.plan
                 else:
                     # Speculative plan failed, fall through to synchronous planning
                     self._sync_user_facts_to_planner()
                     self._sync_glossary_to_planner(current_problem)
                     self._sync_available_agents_to_planner()
-                    planner_response = self.planner.plan(current_problem)
+                    planner_response = self.planner.plan(current_problem, complexity=planning_complexity)
                     self.plan = planner_response.plan
             else:
                 # Emit planning start event
@@ -353,7 +398,7 @@ class SolveMixin:
                 self._sync_available_agents_to_planner()
 
                 # Generate plan
-                planner_response = self.planner.plan(current_problem)
+                planner_response = self.planner.plan(current_problem, complexity=planning_complexity)
                 self.plan = planner_response.plan
 
             # Emit planning complete event
@@ -385,8 +430,16 @@ class SolveMixin:
                 iteration=replan_attempt,
             )
 
-            # Request approval if required
-            if self.session_config.require_approval:
+            # Request approval if required — auto-approve simple plans
+            # Auto-approve: ≤2 steps (unless high complexity), or low complexity with ≤3 steps
+            n_steps = len(self.plan.steps)
+            simple_plan = (
+                (n_steps <= 2 and planning_complexity != "high")
+                or (planning_complexity == "low" and n_steps <= 3)
+            )
+            if simple_plan:
+                logger.info(f"[PLANNING] Auto-approving simple plan ({n_steps} steps, complexity={planning_complexity})")
+            if self.session_config.require_approval and not simple_plan:
                 # Use display_problem for UI (just feedback on replan, full problem initially)
                 approval = self._request_approval(display_problem, planner_response)
 
@@ -537,19 +590,22 @@ class SolveMixin:
                 status="pending",
             )
 
-        # Emit plan_ready event BEFORE execution starts
-        self._emit_event(StepEvent(
-            event_type="plan_ready",
-            step_number=0,
-            data={
-                "steps": [
-                    {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
-                    for s in self.plan.steps
-                ],
-                "reasoning": planner_response.reasoning,
-                "is_followup": False,
-            }
-        ))
+        # Emit plan_ready only for auto-approved plans (the approval callback
+        # already sends plan_ready for plans that went through user approval)
+        if simple_plan:
+            self._emit_event(StepEvent(
+                event_type="plan_ready",
+                step_number=0,
+                data={
+                    "steps": [
+                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
+                        for s in self.plan.steps
+                    ],
+                    "reasoning": planner_response.reasoning,
+                    "is_followup": False,
+                    "auto_approved": True,
+                },
+            ))
 
         # Materialize facts table before execution starts
         self._materialize_facts_table()
@@ -1044,5 +1100,11 @@ class SolveMixin:
 
         # Update fact resolver's datastore reference (for storing large facts as tables)
         self.fact_resolver._datastore = self.datastore
+
+        # Restore last_proof_result from persisted state
+        state = self.history.load_state(session_id)
+        if state and "last_proof_result" in state:
+            # noinspection PyAttributeOutsideInit
+            self.last_proof_result = state["last_proof_result"]
 
         return True

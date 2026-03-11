@@ -70,10 +70,14 @@ Write a brief insight (max 150 words) with:
 WRONG (do not do this):
 - "Step 1 loaded the data, Step 2 filtered it, Step 3 calculated..."
 - "First I analyzed X, then I computed Y..."
+- "Unlike the previous result...", "The difference is...", "Previously we showed X but now..."
+- Any comparison to or explanation of differences from prior queries
 
 RIGHT:
 - "The top 3 customers account for 60% of revenue. This concentration suggests..."
 - "Revenue grew 15% YoY, driven primarily by the Enterprise segment..."
+
+Do NOT explain how this result differs from a previous query's result. Just present the current findings directly. Only compare results if the user explicitly asked for a comparison.
 
 Reference tables with backticks: `table_name`"""
 

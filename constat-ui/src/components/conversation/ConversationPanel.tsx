@@ -194,7 +194,7 @@ export function ConversationPanel() {
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Toolbar - shown when there are messages */}
       {messages.length > 0 && (
-        <div className="flex justify-end gap-1 px-4 pt-2">
+        <div className="flex justify-end gap-1 px-4 pt-2 opacity-0 hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200">
           {hasSteps && (
             <>
               <button

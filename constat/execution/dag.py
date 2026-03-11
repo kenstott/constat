@@ -265,6 +265,9 @@ def parse_plan_to_dag(
     premises: list[dict],
     inferences: list[dict],
     validate: bool = True,
+    known_databases: set[str] | None = None,
+    known_documents: set[str] | None = None,
+    known_apis: set[str] | None = None,
 ) -> ExecutionDAG:
     """Parse auditable mode plan into an executable DAG.
 
@@ -310,6 +313,26 @@ def parse_plan_to_dag(
             parts = source.split(":", 1)
             source_type = parts[0]
             source_db = parts[1].strip()
+
+        # Validate source references against known configured sources
+        if source_type == "database" and known_databases is not None and source_db:
+            if source_db not in known_databases:
+                raise ValueError(
+                    f"Premise {fact_id} references unknown database '{source_db}'. "
+                    f"Available databases: {', '.join(sorted(known_databases))}"
+                )
+        if source_type == "document" and known_documents is not None and source_db:
+            if source_db not in known_documents:
+                raise ValueError(
+                    f"Premise {fact_id} references unknown document '{source_db}'. "
+                    f"Available documents: {', '.join(sorted(known_documents))}"
+                )
+        if source_type == "api" and known_apis is not None and source_db:
+            if source_db not in known_apis:
+                raise ValueError(
+                    f"Premise {fact_id} references unknown API '{source_db}'. "
+                    f"Available APIs: {', '.join(sorted(known_apis))}"
+                )
 
         # Check for embedded value in name (e.g., "pi_value = 3.14159")
         embedded_value = None
@@ -428,6 +451,9 @@ class PlanValidationResult:
 def validate_proof_plan(
     premises: list[dict],
     inferences: list[dict],
+    known_databases: set[str] | None = None,
+    known_documents: set[str] | None = None,
+    known_apis: set[str] | None = None,
 ) -> PlanValidationResult:
     """Validate a proof plan for internal consistency before execution.
 
@@ -436,10 +462,14 @@ def validate_proof_plan(
     2. All premises are used by at least one inference
     3. Inference dependencies form a valid DAG (no forward references)
     4. No duplicate names
+    5. Source references match configured databases/documents/APIs
 
     Args:
         premises: List of premise dicts with keys: id, name, description, source
         inferences: List of inference dicts with keys: id, name, operation, explanation
+        known_databases: Set of configured database names (None = skip check)
+        known_documents: Set of configured document names (None = skip check)
+        known_apis: Set of configured API names (None = skip check)
 
     Returns:
         PlanValidationResult with valid=True if plan is consistent, or errors if not
@@ -475,6 +505,42 @@ def validate_proof_plan(
             ))
         else:
             premise_name_to_id[clean_name] = fact_id
+
+        # Validate source references against known configured sources
+        source = p.get("source", "")
+        if source == "cache":
+            # Cache is not a valid planning source — it's an internal resolution optimization.
+            # Premises must reference their actual data source.
+            errors.append(PlanValidationError(
+                fact_id=fact_id,
+                error_type="invalid_source",
+                message=(
+                    f"'cache' is not a valid source. Use the actual data source "
+                    f"(database:<name>, document:<name>, or api:<name>). "
+                    f"Caching is handled automatically."
+                ),
+            ))
+        elif ":" in source:
+            src_type, src_name = source.split(":", 1)
+            src_name = src_name.strip()
+            if src_type == "database" and known_databases is not None and src_name not in known_databases:
+                errors.append(PlanValidationError(
+                    fact_id=fact_id,
+                    error_type="unknown_source",
+                    message=f"Unknown database '{src_name}'. Available: {', '.join(sorted(known_databases))}",
+                ))
+            elif src_type == "document" and known_documents is not None and src_name not in known_documents:
+                errors.append(PlanValidationError(
+                    fact_id=fact_id,
+                    error_type="unknown_source",
+                    message=f"Unknown document '{src_name}'. Available: {', '.join(sorted(known_documents))}",
+                ))
+            elif src_type == "api" and known_apis is not None and src_name not in known_apis:
+                errors.append(PlanValidationError(
+                    fact_id=fact_id,
+                    error_type="unknown_source",
+                    message=f"Unknown API '{src_name}'. Available: {', '.join(sorted(known_apis))}",
+                ))
 
         valid_ids.add(fact_id)
         valid_names.add(clean_name)

@@ -233,6 +233,18 @@ class CoreMixin:
             llm_provider=self.router,
         )
 
+        # Precompute intent classifier embeddings in background
+        # so first classify() call doesn't race the model loader
+        import threading
+        def _precompute_intent_embeddings():
+            try:
+                EmbeddingModelLoader.get_instance().get_model()  # block until ready
+                self._intent_classifier.precompute()
+                logger.debug("Intent classifier embeddings precomputed")
+            except Exception as e:
+                logger.warning(f"Intent classifier precompute failed: {e}")
+        threading.Thread(target=_precompute_intent_embeddings, daemon=True).start()
+
         # Phase 4: Execution Control
         # Cancellation flag for stopping execution mid-flight
         self._cancelled: bool = False
@@ -586,6 +598,12 @@ class CoreMixin:
             True if the session is in EXECUTING phase.
         """
         return self._conversation_state.phase == Phase.EXECUTING
+
+    def _save_proof_result(self, result: dict) -> None:
+        """Persist last_proof_result to session state.json."""
+        state = self.history.load_state(self.session_id) or {}
+        state["last_proof_result"] = result
+        self.history.save_state(self.session_id, state)
 
     def get_state(self) -> dict:
         """Get current session state for inspection or resumption."""

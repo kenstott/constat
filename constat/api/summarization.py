@@ -278,7 +278,7 @@ Write as a clear explanation for someone reviewing the audit trail."""
         result = llm.generate(
             system="You are an auditor explaining a proof derivation clearly and accurately.",
             user_message=prompt,
-            max_tokens=1000,
+            max_tokens=llm.max_output_tokens,
         )
         logger.info(f"[summarize_proof] LLM returned result length={len(result) if result else 0}")
         diagram = _build_proof_mermaid(proof_nodes)
