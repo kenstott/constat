@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from constat.core.models import Plan, PlannerResponse, StepStatus, StepResult, TaskType
+from constat.core.models import Plan, PlannerResponse, Step, StepStatus, StepResult, TaskType
 from constat.execution.mode import PlanApproval, PrimaryIntent, SubIntent
 from constat.keywords import wants_brief_output
 from constat.execution.scratchpad import Scratchpad
@@ -229,6 +229,23 @@ class SolveMixin:
             planning_future.cancel()
             executor.shutdown(wait=False)
             return self._handle_control_intent(turn_intent, problem)
+
+        # If session already has completed work, delegate to follow_up() which injects context
+        if self.datastore and self.session_id:
+            scratchpad = self.datastore.get_scratchpad()
+            if scratchpad:
+                logger.info("[ROUTING] Session has prior work, routing to follow_up()")
+                planning_future.cancel()
+                executor.shutdown(wait=False)
+                return self.follow_up(problem, auto_classify=False)
+
+        # Store user query for replan context
+        _objective_index = 0
+        if self.datastore:
+            queries = self.datastore.get_state("user_queries") or []
+            _objective_index = len(queries)
+            queries.append(problem)
+            self.datastore.set_state("user_queries", queries, step_number=0)
 
         # PLAN_NEW, PLAN_CONTINUE, or re-routed QUERY - continue with planning flow
         self._apply_phase_transition("plan_new")
@@ -613,7 +630,7 @@ class SolveMixin:
         # Execute steps in parallel waves based on dependencies
         # Phase 4: Reset cancellation state before starting execution
         self.reset_cancellation()
-        all_results = []
+        all_results: list[tuple[Step, StepResult]] = []
 
         # Debug: Log full plan structure before computing waves
         logger.debug(f"[EXECUTION] Plan has {len(self.plan.steps)} steps:")
@@ -720,6 +737,8 @@ class SolveMixin:
                                 narrative=result.stdout,
                                 tables_created=result.tables_created,
                                 code=result.code,
+                                user_query=problem,
+                                objective_index=_objective_index,
                             )
                             self.datastore.update_plan_step(
                                 step.number,
@@ -728,7 +747,7 @@ class SolveMixin:
                                 attempts=result.attempts,
                                 duration_ms=result.duration_ms,
                             )
-                        all_results.append(result)
+                        all_results.append((step, result))
                     else:
                         self.plan.mark_step_failed(step.number, result)
                         if self.datastore:
@@ -742,7 +761,7 @@ class SolveMixin:
                             )
                         if not cancelled:  # Only mark as failed if not cancelled
                             wave_failed = True
-                        all_results.append(result)
+                        all_results.append((step, result))
 
                 if cancelled:
                     logger.debug(f"[EXECUTION] Wave {wave_num + 1} cancelled, breaking out of loop")
@@ -755,7 +774,7 @@ class SolveMixin:
                 # If any step in wave failed, stop execution
                 if wave_failed:
                     self.datastore.set_session_meta("status", "failed")
-                    failed_result = next(r for r in all_results if not r.success)
+                    failed_result = next(r for _, r in all_results if not r.success)
                     self.history.record_query(
                         session_id=self.session_id,
                         question=problem,
@@ -785,8 +804,8 @@ class SolveMixin:
             completed_output = ""
             if all_results:
                 completed_output = "\n\n".join([
-                    f"Step {i+1}: {self.plan.steps[i].goal}\n{r.stdout}"
-                    for i, r in enumerate(all_results) if r.success
+                    f"Step {s.number}: {s.goal}\n{r.stdout}"
+                    for s, r in all_results if r.success
                 ])
 
             # Process any queued intents
@@ -803,13 +822,13 @@ class SolveMixin:
             }
 
         # Record successful completion
-        total_duration = sum(r.duration_ms for r in all_results)
-        total_attempts = sum(r.attempts for r in all_results)
+        total_duration = sum(r.duration_ms for _, r in all_results)
+        total_attempts = sum(r.attempts for _, r in all_results)
 
         # Combine all step outputs
         combined_output = "\n\n".join([
-            f"Step {i+1}: {self.plan.steps[i].goal}\n{r.stdout}"
-            for i, r in enumerate(all_results)
+            f"Step {s.number}: {s.goal}\n{r.stdout}"
+            for s, r in all_results
         ])
 
         # Auto-publish final step artifacts (they appear in artifacts panel)
@@ -819,7 +838,7 @@ class SolveMixin:
             # noinspection DuplicatedCode
             final_tables = []
             steps_with_tables = 0
-            for result in reversed(all_results):
+            for _, result in reversed(all_results):
                 if result.success and result.tables_created:
                     final_tables.extend(result.tables_created)
                     steps_with_tables += 1
@@ -833,7 +852,7 @@ class SolveMixin:
 
             # If no important tables found, use tables from last step only (max 5)
             if not important_tables:
-                for result in reversed(all_results):
+                for _, result in reversed(all_results):
                     if result.success and result.tables_created:
                         important_tables = result.tables_created[:5]
                         break
@@ -952,7 +971,7 @@ class SolveMixin:
         return {
             "success": True,
             "plan": self.plan,
-            "results": all_results,
+            "results": [r for _, r in all_results],
             "output": combined_output,
             "final_answer": final_answer,
             "suggestions": suggestions,

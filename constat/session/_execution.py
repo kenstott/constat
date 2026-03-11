@@ -17,6 +17,7 @@ import time
 
 from typing import Callable
 
+
 from constat.core.models import FailureSuggestion, PostValidation, Step, StepResult, TaskType, ValidationOnFail
 from constat.email import create_send_email
 from constat.execution import RETRY_PROMPT_TEMPLATE
@@ -945,12 +946,26 @@ class ExecutionMixin:
             # ask_user available in all steps — returns cached value from store
             # if it exists, only asks the user if no cached value is found
             exec_globals['ask_user'] = self._make_ask_user(step.number)
+            # Set current step number on viz helper so artifacts get correct step attribution
+            if 'viz' in exec_globals and hasattr(exec_globals['viz'], 'step_number'):
+                exec_globals['viz'].step_number = step.number
             result = self.executor.execute(code, exec_globals)
             logger.debug(f"[Step {step.number}] Execution result (attempt {attempt}): success={result.success}, error={result.error_message()[:200] if not result.success else 'none'}")
 
             # Auto-save any DataFrames or lists created during execution
             if result.success and self.datastore:
                 self._auto_save_results(result.namespace, step.number)
+
+                # Fix step_number on tables created by code that didn't pass step_number
+                tables_after = self.datastore.list_tables()
+                new_or_modified = [
+                    t['name'] for t in tables_after
+                    if (t['name'] not in tables_before or t.get('version', 1) != versions_before.get(t['name'], 1))
+                    and t.get('step_number', 0) == 0
+                    and not t['name'].startswith('_')
+                ]
+                for tname in new_or_modified:
+                    self.datastore.update_table_step_number(tname, step.number)
 
             # Record output artifact after execution
             if self.datastore and result.stdout:
@@ -967,6 +982,27 @@ class ExecutionMixin:
                         context=pending_learning_context,
                         fixed_code=code,
                     )
+
+                # Run automatic quality validations (always)
+                auto_error, auto_diagnostic = self._run_automatic_validations(step, result.namespace)
+                if auto_error:
+                    last_code = code
+                    last_error = (
+                        f"Code executed without errors, but automatic quality check failed.\n"
+                        f"Problem: {auto_error}\n"
+                        f"{auto_diagnostic}\n"
+                        f"The code must be fixed to produce valid output."
+                    )
+                    self._emit_event(StepEvent(
+                        event_type="validation_retry",
+                        step_number=step.number,
+                        data={"validation": auto_error}
+                    ))
+                    runtime_failures += 1
+                    if runtime_failures >= escalation_threshold:
+                        skip_models += 1
+                        runtime_failures = 0
+                    continue
 
                 # Run post-validations
                 validation_warnings: list[str] = []
@@ -1164,6 +1200,46 @@ class ExecutionMixin:
             duration_ms=duration_ms,
             suggestions=suggestions,
         )
+
+    def _run_automatic_validations(self, step: Step, namespace: dict) -> tuple[str | None, str]:
+        """Built-in quality checks that always run on success.
+
+        Returns (error_message, diagnostic) or (None, '') if all checks pass.
+        """
+        if not self.datastore:
+            return None, ""
+
+        tables_after_list = self.datastore.list_tables()
+        tables_after = {t['name'] for t in tables_after_list}
+
+        # Check expected outputs exist
+        if step.expected_outputs:
+            missing = [o for o in step.expected_outputs if o not in tables_after and o not in namespace]
+            if missing:
+                return (
+                    f"Step expected to produce {missing} but they were not found.",
+                    f"Expected outputs: {step.expected_outputs}, available tables: {sorted(tables_after)}"
+                )
+
+        # Check DataFrames in namespace for degenerate content
+        import pandas as pd
+        for name, val in namespace.items():
+            if name.startswith('_') or not isinstance(val, pd.DataFrame):
+                continue
+            if len(val) == 0:
+                if step.expected_outputs and name in step.expected_outputs:
+                    return (
+                        f"Output '{name}' is an empty DataFrame (0 rows).",
+                        "The query or computation produced no results."
+                    )
+            elif val.isna().sum().sum() / val.size > 0.5:
+                nan_cols = [c for c in val.columns if val[c].isna().mean() > 0.5]
+                return (
+                    f"Output '{name}' has >50% NaN values.",
+                    f"Columns with majority NaN: {nan_cols}. Total shape: {val.shape}."
+                )
+
+        return None, ""
 
     def _run_post_validations(
         self, step: Step, namespace: dict
