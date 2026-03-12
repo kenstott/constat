@@ -11,7 +11,6 @@ import {
   BeakerIcon,
   CodeBracketIcon,
   LightBulbIcon,
-  TagIcon,
   StarIcon,
   CircleStackIcon,
   GlobeAltIcon,
@@ -45,7 +44,6 @@ import type { FineTuneJob, FineTuneProvider } from '@/types/api'
 import { ArtifactItemAccordion } from './ArtifactItemAccordion'
 import { CodeViewer } from './CodeViewer'
 import GlossaryPanel from './GlossaryPanel'
-import DomainPanel from './DomainPanel'
 import RegressionPanel from './RegressionPanel'
 import * as sessionsApi from '@/api/sessions'
 import * as agentsApi from '@/api/agents'
@@ -129,9 +127,27 @@ function formatMs(ms: number): string {
 }
 
 /** Collapsible step code list for the Exploratory Code section */
-function StepCodeList({ stepCodes, supersededStepNumbers }: { stepCodes: Array<{ step_number: number; goal: string; code: string; prompt?: string; model?: string }>; supersededStepNumbers: Set<number> }) {
+function StepCodeList({ stepCodes, supersededStepNumbers, tables, artifacts }: {
+  stepCodes: Array<{ step_number: number; goal: string; code: string; prompt?: string; model?: string }>
+  supersededStepNumbers: Set<number>
+  tables: Array<{ name: string; step_number: number }>
+  artifacts: Array<{ id: number; name: string; step_number: number; artifact_type: string }>
+}) {
   const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(() => new Set(stepCodes.map((s) => s.step_number)))
   const [showPrompt, setShowPrompt] = useState<Set<number>>(new Set())
+
+  // Build step → outputs lookup
+  const stepOutputs = new Map<number, Array<{ type: 'table' | 'artifact'; name: string; id: string }>>()
+  const excludedTypes = new Set(['code', 'error', 'output', 'table'])
+  for (const t of tables) {
+    if (!stepOutputs.has(t.step_number)) stepOutputs.set(t.step_number, [])
+    stepOutputs.get(t.step_number)!.push({ type: 'table', name: t.name, id: `table-${t.name}` })
+  }
+  for (const a of artifacts) {
+    if (excludedTypes.has(a.artifact_type)) continue
+    if (!stepOutputs.has(a.step_number)) stepOutputs.set(a.step_number, [])
+    stepOutputs.get(a.step_number)!.push({ type: 'artifact', name: a.name, id: `artifact-${a.id}` })
+  }
 
   // Collapse newly arriving step codes by default
   useEffect(() => {
@@ -177,19 +193,17 @@ function StepCodeList({ stepCodes, supersededStepNumbers }: { stepCodes: Array<{
             <div className="flex items-center gap-1">
               <button
                 onClick={() => toggleStep(step.step_number)}
-                className="flex items-start gap-1 flex-1 text-left text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 py-1 transition-colors"
+                className="flex items-center gap-1 flex-1 text-left text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 py-1 transition-colors"
               >
                 {isCollapsed ? (
-                  <ChevronRightIcon className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                  <ChevronRightIcon className="w-3 h-3 flex-shrink-0" />
                 ) : (
-                  <ChevronDownIcon className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                  <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
                 )}
-                <span className="flex flex-col">
-                  <span>Step {step.step_number}: {step.goal}</span>
-                  {step.model && (
-                    <span className="text-[10px] text-gray-400 dark:text-gray-500 font-mono">{step.model}</span>
-                  )}
-                </span>
+                <span>Step {step.step_number}</span>
+                {step.model && (
+                  <span className="text-[10px] text-gray-400 dark:text-gray-500 font-mono ml-1">{step.model}</span>
+                )}
               </button>
               {step.prompt && (
                 <button
@@ -212,7 +226,135 @@ function StepCodeList({ stepCodes, supersededStepNumbers }: { stepCodes: Array<{
                   code={step.code}
                   language="python"
                 />
+                {stepOutputs.has(step.step_number) && (
+                  <div className="flex flex-wrap gap-1 mt-1 px-1">
+                    {stepOutputs.get(step.step_number)!.map((output) => (
+                      <button
+                        key={output.id}
+                        onClick={() => {
+                          const el = document.getElementById(`section-results`)
+                          el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                          // After scroll, highlight the specific item
+                          requestAnimationFrame(() => {
+                            requestAnimationFrame(() => {
+                              const item = document.getElementById(output.id)
+                              if (item) {
+                                item.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                                item.classList.add('ring-2', 'ring-primary-400')
+                                setTimeout(() => item.classList.remove('ring-2', 'ring-primary-400'), 2000)
+                              }
+                            })
+                          })
+                        }}
+                        className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-primary-50 text-primary-600 hover:bg-primary-100 dark:bg-primary-900/20 dark:text-primary-400 dark:hover:bg-primary-900/40 transition-colors"
+                        title={`Jump to ${output.name}`}
+                      >
+                        {output.type === 'table' ? <CircleStackIcon className="w-3 h-3" /> : <StarIcon className="w-3 h-3" />}
+                        {output.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Collapsible scratchpad list for the Scratchpad section */
+function ScratchpadList({ entries, supersededStepNumbers, tables }: {
+  entries: Array<{ step_number: number; goal: string; narrative: string; tables_created: string[]; code: string; user_query: string; objective_index: number | null }>
+  supersededStepNumbers: Set<number>
+  tables: Array<{ name: string }>
+}) {
+  const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(() => new Set(entries.map((e) => e.step_number)))
+
+  // Collapse newly arriving entries by default
+  useEffect(() => {
+    setCollapsedSteps((prev) => {
+      const next = new Set(prev)
+      for (const e of entries) {
+        next.add(e.step_number)
+      }
+      return next.size === prev.size ? prev : next
+    })
+  }, [entries])
+
+  const toggleStep = useCallback((stepNumber: number) => {
+    setCollapsedSteps((prev) => {
+      const next = new Set(prev)
+      if (next.has(stepNumber)) {
+        next.delete(stepNumber)
+      } else {
+        next.add(stepNumber)
+      }
+      return next
+    })
+  }, [])
+
+  // Build set of existing table names for linking
+  const tableNames = new Set(tables.map((t) => t.name))
+
+  return (
+    <div className="space-y-1">
+      {entries.map((entry) => {
+        const isCollapsed = collapsedSteps.has(entry.step_number)
+        return (
+          <div key={entry.step_number} className={supersededStepNumbers.has(entry.step_number) ? 'opacity-40' : ''}>
+            <button
+              onClick={() => toggleStep(entry.step_number)}
+              className="flex items-center gap-1 w-full text-left text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 py-1 transition-colors"
+            >
+              {isCollapsed ? (
+                <ChevronRightIcon className="w-3 h-3 flex-shrink-0" />
+              ) : (
+                <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
+              )}
+              <span className="font-medium">Step {entry.step_number}:</span>
+              <span>{entry.goal}</span>
+            </button>
+            {!isCollapsed && (
+              <div className="pl-5 pb-2 space-y-1.5">
+                <p className="text-xs text-gray-600 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                  {entry.narrative}
+                </p>
+                {entry.tables_created.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {entry.tables_created.map((tbl) => (
+                      <button
+                        key={tbl}
+                        onClick={() => {
+                          if (!tableNames.has(tbl)) return
+                          const el = document.getElementById('section-results')
+                          el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                          requestAnimationFrame(() => {
+                            requestAnimationFrame(() => {
+                              const item = document.getElementById(`table-${tbl}`)
+                              if (item) {
+                                item.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                                item.classList.add('ring-2', 'ring-primary-400')
+                                setTimeout(() => item.classList.remove('ring-2', 'ring-primary-400'), 2000)
+                              }
+                            })
+                          })
+                        }}
+                        className={`inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                          tableNames.has(tbl)
+                            ? 'bg-primary-50 text-primary-600 hover:bg-primary-100 dark:bg-primary-900/20 dark:text-primary-400 dark:hover:bg-primary-900/40 cursor-pointer'
+                            : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-500 cursor-default'
+                        }`}
+                        title={tableNames.has(tbl) ? `Jump to ${tbl}` : tbl}
+                      >
+                        <CircleStackIcon className="w-3 h-3" />
+                        {tbl}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )
@@ -235,6 +377,8 @@ export function ArtifactPanel() {
     documents,
     stepCodes,
     inferenceCodes,
+    scratchpadEntries,
+    sessionDDL,
     supersededStepNumbers,
     promptContext,
     taskRouting,
@@ -250,6 +394,8 @@ export function ArtifactPanel() {
     fetchTaskRouting,
     fetchAllSkills,
     fetchAllAgents,
+    fetchScratchpad,
+    fetchDDL,
     createSkill,
     updateSkill,
     deleteSkill,
@@ -261,10 +407,14 @@ export function ArtifactPanel() {
   const canSeeSection = (key: string) => isAuthDisabled || (authPermissions?.visibility?.[key] ?? false)
   const canWrite = (key: string) => isAuthDisabled || (authPermissions?.writes?.[key] ?? false)
   // Sources group visible if any child section visible
-  const sourcesVisible = canSeeSection('databases') || canSeeSection('apis') || canSeeSection('documents')
+  const sourcesVisible = canSeeSection('databases') || canSeeSection('apis') || canSeeSection('documents') || canSeeSection('facts')
   // Reasoning group visible if any child section visible
   const hasRouting = taskRouting && Object.keys(taskRouting).length > 0
-  const reasoningVisible = canSeeSection('system_prompt') || canSeeSection('agents') || canSeeSection('skills') || canSeeSection('learnings') || canSeeSection('code') || canSeeSection('inference_code') || canSeeSection('facts') || canSeeSection('glossary') || hasRouting
+  const reasoningVisible = canSeeSection('system_prompt') || hasRouting || canSeeSection('agents') || canSeeSection('skills') || canSeeSection('learnings') || canSeeSection('code') || canSeeSection('inference_code')
+  // Reasoning sub-group visibility
+  const configVisible = canSeeSection('system_prompt') || hasRouting || canSeeSection('agents') || canSeeSection('skills')
+  const improvementVisible = (canSeeSection('learnings') && (learnings.length > 0 || rules.length > 0)) || false
+  const codeLogVisible = canSeeSection('code') || canSeeSection('inference_code') || scratchpadEntries.length > 0
 
   const [expandedDb, setExpandedDb] = useState<string | null>(null)
   const [dbTables, setDbTables] = useState<Record<string, sessionsApi.DatabaseTableInfo[]>>({})
@@ -350,13 +500,21 @@ export function ArtifactPanel() {
     const stored = localStorage.getItem('constat-results-filter')
     return stored !== 'all' // Default to published only
   })
+  const { collapsedResultSteps, toggleResultStep } = useUIStore()
   // Collapsible section states - persisted in localStorage
+  const [resultsCollapsed, setResultsCollapsed] = useState(() => {
+    return localStorage.getItem('constat-results-collapsed') === 'true'
+  })
   const [sourcesCollapsed, setSourcesCollapsed] = useState(() => {
     return localStorage.getItem('constat-sources-collapsed') === 'true'
   })
   const [reasoningCollapsed, setReasoningCollapsed] = useState(() => {
     return localStorage.getItem('constat-reasoning-collapsed') === 'true'
   })
+  const [glossaryCollapsed, setGlossaryCollapsed] = useState(() => localStorage.getItem('constat-glossary-collapsed') === 'true')
+  const [configCollapsed, setConfigCollapsed] = useState(() => localStorage.getItem('constat-config-collapsed') === 'true')
+  const [improvementCollapsed, setImprovementCollapsed] = useState(() => localStorage.getItem('constat-improvement-collapsed') === 'true')
+  const [codeLogCollapsed, setCodeLogCollapsed] = useState(() => localStorage.getItem('constat-codelog-collapsed') === 'true')
   // Move-to-domain state
   const [domainList, setDomainList] = useState<{ filename: string; name: string }[]>([])
   const [movingSkill, setMovingSkill] = useState<string | null>(null)
@@ -392,10 +550,7 @@ export function ArtifactPanel() {
       setSourcesCollapsed(false)
       localStorage.setItem('constat-sources-collapsed', 'false')
     }
-    if (link.type === 'glossary_term') {
-      setReasoningCollapsed(false)
-      localStorage.setItem('constat-reasoning-collapsed', 'false')
-    }
+    // Glossary is now top-level — no group to uncollapse
 
     const scrollToSection = (sectionId: string) => {
       // Double rAF to ensure DOM has updated after state changes
@@ -483,6 +638,8 @@ export function ArtifactPanel() {
       fetchAllSkills()
       fetchAllAgents(session.session_id)
       fetchTaskRouting(session.session_id)
+      fetchScratchpad(session.session_id)
+      fetchDDL(session.session_id)
       // Fetch domain list for move-to pickers
       sessionsApi.getDomainTree().then((nodes) => {
         const collect = (ns: sessionsApi.DomainTreeNode[]): { filename: string; name: string }[] =>
@@ -490,7 +647,7 @@ export function ArtifactPanel() {
         setDomainList(collect(nodes))
       }).catch(() => {})
     }
-  }, [session, fetchArtifacts, fetchTables, fetchFacts, fetchEntities, fetchLearnings, fetchDataSources, fetchPromptContext, fetchAllSkills, fetchAllAgents, fetchTaskRouting])
+  }, [session, fetchArtifacts, fetchTables, fetchFacts, fetchEntities, fetchLearnings, fetchDataSources, fetchPromptContext, fetchAllSkills, fetchAllAgents, fetchTaskRouting, fetchScratchpad, fetchDDL])
 
   // Auto-refresh fine-tune jobs when any are training
   useEffect(() => {
@@ -1133,6 +1290,20 @@ ${skill.body}`
     ? allResults.filter((r) => r.is_published)
     : allResults
 
+  // Group results by step_number
+  const resultsByStep: { stepNumber: number; goal: string | undefined; items: ResultItem[] }[] = []
+  const stepMap = new Map<number, ResultItem[]>()
+  for (const r of displayedResults) {
+    const sn = r.data.step_number || 0
+    if (!stepMap.has(sn)) stepMap.set(sn, [])
+    stepMap.get(sn)!.push(r)
+  }
+  // Build ordered groups, look up goal from stepCodes
+  const stepGoalMap = new Map(stepCodes.map((s) => [s.step_number, s.goal]))
+  for (const [stepNumber, items] of stepMap) {
+    resultsByStep.push({ stepNumber, goal: stepGoalMap.get(stepNumber), items })
+  }
+
   const totalCount = allResults.length
 
   // Auto-expand: find best item to expand
@@ -1485,39 +1656,46 @@ ${skill.body}`
 
       {/* ═══════════════ RESULTS ═══════════════ */}
       {totalCount > 0 && (() => {
-        // Get total elapsed from the final insight message (query submit → complete)
         const finalInsight = messages.find((m) => m.isFinalInsight && m.stepDurationMs != null)
         const totalElapsedMs = finalInsight?.stepDurationMs ?? null
 
         return (
         <>
-          <AccordionSection
-            id="results"
-            title="Results"
-            count={displayedResults.length}
-            icon={<StarIcon className="w-4 h-4" />}
-            command="/results"
-            action={
-              <div className="flex items-center gap-1.5">
-                {totalElapsedMs != null && totalElapsedMs > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400" title="Total elapsed time">
-                    {formatMs(totalElapsedMs)}
-                  </span>
-                )}
-                <button
-                  onClick={(e) => { e.stopPropagation(); toggleResultsFilter(); }}
-                  className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
-                    showPublishedOnly
-                      ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
-                      : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
-                  }`}
-                  title={showPublishedOnly ? 'Showing published only. Click to show all.' : 'Showing all. Click to show published only.'}
-                >
-                  {showPublishedOnly ? 'published' : 'all'}
-                </button>
-              </div>
-            }
+          <button
+            onClick={() => {
+              const newVal = !resultsCollapsed
+              setResultsCollapsed(newVal)
+              localStorage.setItem('constat-results-collapsed', String(newVal))
+            }}
+            className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
           >
+            <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+              Results ({displayedResults.length})
+            </span>
+            <div className="flex items-center gap-1.5">
+              {totalElapsedMs != null && totalElapsedMs > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400" title="Total elapsed time">
+                  {formatMs(totalElapsedMs)}
+                </span>
+              )}
+              <span
+                role="button"
+                onClick={(e) => { e.stopPropagation(); toggleResultsFilter(); }}
+                className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+                  showPublishedOnly
+                    ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                    : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+                }`}
+                title={showPublishedOnly ? 'Showing published only. Click to show all.' : 'Showing all. Click to show published only.'}
+              >
+                {showPublishedOnly ? 'published' : 'all'}
+              </span>
+              <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${resultsCollapsed ? '' : 'rotate-90'}`} />
+            </div>
+          </button>
+
+          {!resultsCollapsed && (
+          <div id="section-results" className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-800">
             {displayedResults.length === 0 ? (
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 {showPublishedOnly && totalCount > 0
@@ -1525,88 +1703,52 @@ ${skill.body}`
                   : 'No results yet'}
               </p>
             ) : (
-              <div className="space-y-2">
-                {displayedResults.map((result) =>
-                  result.type === 'table' ? (
-                    <TableAccordion
-                      key={`table-${result.data.name}`}
-                      table={result.data}
-                      initiallyOpen={bestResultId === `table-${result.data.name}`}
-                    />
-                  ) : (
-                    <ArtifactItemAccordion
-                      key={`artifact-${result.data.id}`}
-                      artifact={result.data}
-                      initiallyOpen={bestResultId === `artifact-${result.data.id}`}
-                    />
+              <div className="space-y-3">
+                {resultsByStep.map(({ stepNumber, items }) => {
+                  const isStepCollapsed = collapsedResultSteps.has(stepNumber)
+                  return (
+                  <div key={`step-group-${stepNumber}`}>
+                    {stepNumber > 0 && (
+                      <button
+                        onClick={() => toggleResultStep(stepNumber)}
+                        className="flex items-center gap-1 text-[10px] font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-1 px-1 hover:text-gray-600 dark:hover:text-gray-300 transition-colors w-full text-left"
+                      >
+                        <ChevronDownIcon className={`w-3 h-3 transition-transform ${isStepCollapsed ? '-rotate-90' : ''}`} />
+                        Step {stepNumber}
+                        <span className="text-gray-300 dark:text-gray-600 ml-auto normal-case">{items.length}</span>
+                      </button>
+                    )}
+                    {(!isStepCollapsed || stepNumber === 0) && (
+                    <div className="space-y-2">
+                      {items.map((result) =>
+                        result.type === 'table' ? (
+                          <div key={`table-${result.data.name}`} id={`table-${result.data.name}`}>
+                            <TableAccordion
+                              table={result.data}
+                              initiallyOpen={bestResultId === `table-${result.data.name}`}
+                            />
+                          </div>
+                        ) : (
+                          <div key={`artifact-${result.data.id}`} id={`artifact-${result.data.id}`}>
+                            <ArtifactItemAccordion
+                              artifact={result.data}
+                              initiallyOpen={bestResultId === `artifact-${result.data.id}`}
+                            />
+                          </div>
+                        )
+                      )}
+                    </div>
+                    )}
+                  </div>
                   )
-                )}
+                })}
               </div>
             )}
-          </AccordionSection>
+          </div>
+          )}
         </>
         )
       })()}
-
-      {/* ═══════════════ DOMAINS ═══════════════ */}
-      <AccordionSection
-        id="domains"
-        title="Session Domain"
-        count={session?.active_domains?.length || 0}
-        icon={<GlobeAltIcon className="w-4 h-4" />}
-        command="/domains"
-        action={
-          canWrite('system_prompt') ? (
-            <button
-              onClick={handleEditSystemPrompt}
-              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-              title="Edit session prompt"
-            >
-              <PencilIcon className="w-4 h-4" />
-            </button>
-          ) : undefined
-        }
-      >
-        {/* Session Prompt (inline) */}
-        {canSeeSection('system_prompt') && (promptContext?.systemPrompt || canWrite('system_prompt')) && (
-          <div className="mb-3">
-            <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Session Prompt</div>
-            {editingSystemPrompt ? (
-              <div className="space-y-2">
-                <textarea
-                  value={systemPromptDraft || ''}
-                  onChange={(e) => setSystemPromptDraft(e.target.value)}
-                  className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none min-h-[150px]"
-                  placeholder="Enter session prompt..."
-                />
-                <div className="flex gap-1">
-                  <button
-                    onClick={handleSaveSystemPrompt}
-                    className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded"
-                    title="Save"
-                  >
-                    <CheckIcon className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => setEditingSystemPrompt(false)}
-                    className="p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-                    title="Cancel"
-                  >
-                    <XMarkIcon className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            ) : promptContext?.systemPrompt ? (
-              <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-48 overflow-y-auto">
-                {promptContext.systemPrompt}
-              </div>
-            ) : (
-              <p className="text-sm text-gray-500 dark:text-gray-400 italic">No session prompt configured</p>
-            )}
-          </div>
-        )}
-        <DomainPanel />
-      </AccordionSection>
 
       {/* ═══════════════ SOURCES ═══════════════ */}
       {sourcesVisible && (
@@ -1619,7 +1761,7 @@ ${skill.body}`
         className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
       >
         <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-          Sources ({databases.length + apis.length + documents.length})
+          Sources ({databases.length + apis.length + documents.length + facts.length})
         </span>
         <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${sourcesCollapsed ? '' : 'rotate-90'}`} />
       </button>
@@ -2091,7 +2233,149 @@ ${skill.body}`
         )}
       </AccordionSection>
       )}
+
+      {/* Facts (in Sources group) */}
+      {canSeeSection('facts') && (
+      <AccordionSection
+        id="facts"
+        title="Facts"
+        count={facts.length}
+        icon={<LightBulbIcon className="w-4 h-4" />}
+        command="/facts"
+        action={
+          <div className="flex items-center gap-1">
+            {facts.length > 0 && (
+              <button
+                onClick={() => {
+                  const csvRows = [
+                    ['name', 'value'],
+                    ...facts.map(f => [
+                      `"${String(f.name).replace(/"/g, '""')}"`,
+                      `"${String(f.value).replace(/"/g, '""')}"`
+                    ])
+                  ]
+                  const csvContent = csvRows.map(row => row.join(',')).join('\n')
+                  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+                  const url = URL.createObjectURL(blob)
+                  const link = document.createElement('a')
+                  link.href = url
+                  link.download = 'facts.csv'
+                  link.click()
+                  URL.revokeObjectURL(url)
+                }}
+                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                title="Download facts as CSV"
+              >
+                <ArrowDownTrayIcon className="w-4 h-4" />
+              </button>
+            )}
+            <button
+              onClick={() => openModal('fact')}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Add fact"
+            >
+              <PlusIcon className="w-4 h-4" />
+            </button>
+          </div>
+        }
+      >
+        {facts.length === 0 ? (
+          <p className="text-sm text-gray-500 dark:text-gray-400">No facts yet</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">Name</th>
+                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">Value</th>
+                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">Source</th>
+                  <th className="w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {facts.map((fact) => (
+                  <React.Fragment key={fact.name}>
+                  <tr className="border-b border-gray-100 dark:border-gray-800 last:border-b-0 group">
+                    <td className="py-2 px-1 font-medium text-gray-700 dark:text-gray-300">
+                      <span className="flex items-center gap-1 flex-wrap">
+                        {fact.name}
+                        <DomainBadge domain={fact.source === 'config' ? 'system' : fact.domain || (fact.is_persisted ? 'user' : null)} />
+                        {fact.role_id && <DomainBadge domain={fact.role_id} />}
+                      </span>
+                    </td>
+                    <td className="py-2 px-1 text-gray-600 dark:text-gray-400">{String(fact.value)}</td>
+                    <td className="py-2 px-1 text-xs text-gray-400 dark:text-gray-500">
+                      <DomainBadge domain={fact.source === 'config' ? 'system' : fact.source} />
+                    </td>
+                    <td className="py-2 px-1 flex items-center gap-1">
+                      {fact.source !== 'config' && (
+                        <>
+                          {!fact.is_persisted && (
+                            <button onClick={() => handlePersistFact(fact.name)} className="p-1 text-gray-300 dark:text-gray-600 hover:text-amber-500 dark:hover:text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity" title="Save permanently">
+                              <ArrowUpTrayIcon className="w-3 h-3" />
+                            </button>
+                          )}
+                          {fact.is_persisted && (
+                            <button onClick={() => setMovingFact(movingFact === fact.name ? null : fact.name)} className="p-1 text-gray-300 dark:text-gray-600 hover:text-primary-600 dark:hover:text-primary-400 opacity-0 group-hover:opacity-100 transition-opacity" title="Move to domain">
+                              <ArrowsRightLeftIcon className="w-3 h-3" />
+                            </button>
+                          )}
+                          <button onClick={() => handleForgetFact(fact.name)} className="p-1 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity" title="Forget fact">
+                            <MinusIcon className="w-3 h-3" />
+                          </button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                  {movingFact === fact.name && (
+                    <tr>
+                      <td colSpan={4} className="py-1.5 px-1">
+                        <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 rounded px-2 py-1">
+                          <span className="text-[11px] text-gray-600 dark:text-gray-400">Move to:</span>
+                          <select autoFocus className="text-[11px] bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5" defaultValue="" onChange={(e) => { if (e.target.value) handleMoveFact(fact.name, e.target.value) }}>
+                            <option value="" disabled>Select domain...</option>
+                            {domainList.filter((d) => d.filename !== (fact.domain || '')).map((d) => (
+                              <option key={d.filename} value={d.filename}>{d.name}</option>
+                            ))}
+                          </select>
+                          <button onClick={() => setMovingFact(null)} className="text-[11px] text-gray-400 hover:text-gray-600">Cancel</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </AccordionSection>
+      )}
+
       </>
+      )}
+
+      {/* ═══════════════ GLOSSARY ═══════════════ */}
+      {canSeeSection('glossary') && session && (
+      <button
+        onClick={() => {
+          const newVal = !glossaryCollapsed
+          setGlossaryCollapsed(newVal)
+          localStorage.setItem('constat-glossary-collapsed', String(newVal))
+        }}
+        className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
+      >
+        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+          Glossary ({totalDefined + totalSelfDescribing})
+        </span>
+        <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${glossaryCollapsed ? '' : 'rotate-90'}`} />
+      </button>
+      )}
+
+      {canSeeSection('glossary') && session && !glossaryCollapsed && (
+      <div id="section-glossary" className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-800">
+        <GlossaryPanel sessionId={session.session_id} />
+      </div>
       )}
 
       {/* ═══════════════ REASONING ═══════════════ */}
@@ -2113,6 +2397,71 @@ ${skill.body}`
 
       {reasoningVisible && !reasoningCollapsed && (
       <>
+
+      {/* --- Configuration sub-group --- */}
+      {configVisible && (
+      <button
+        onClick={() => {
+          const newVal = !configCollapsed
+          setConfigCollapsed(newVal)
+          localStorage.setItem('constat-config-collapsed', String(newVal))
+        }}
+        className="w-full px-4 py-1.5 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors"
+      >
+        <span className="text-[9px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider pl-2">
+          Configuration
+        </span>
+        <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${configCollapsed ? '' : 'rotate-90'}`} />
+      </button>
+      )}
+
+      {configVisible && !configCollapsed && (
+      <>
+
+      {/* Session Prompt */}
+      {canSeeSection('system_prompt') && (
+      <AccordionSection
+        id="session-prompt"
+        title="Session Prompt"
+        icon={<PencilIcon className="w-4 h-4" />}
+        action={
+          canWrite('system_prompt') ? (
+            <button
+              onClick={handleEditSystemPrompt}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Edit session prompt"
+            >
+              <PencilIcon className="w-4 h-4" />
+            </button>
+          ) : undefined
+        }
+      >
+        {editingSystemPrompt ? (
+          <div className="space-y-2">
+            <textarea
+              value={systemPromptDraft || ''}
+              onChange={(e) => setSystemPromptDraft(e.target.value)}
+              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none min-h-[150px]"
+              placeholder="Enter session prompt..."
+            />
+            <div className="flex gap-1">
+              <button onClick={handleSaveSystemPrompt} className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded" title="Save">
+                <CheckIcon className="w-4 h-4" />
+              </button>
+              <button onClick={() => setEditingSystemPrompt(false)} className="p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded" title="Cancel">
+                <XMarkIcon className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        ) : promptContext?.systemPrompt ? (
+          <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-48 overflow-y-auto">
+            {promptContext.systemPrompt}
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500 dark:text-gray-400 italic">No session prompt configured</p>
+        )}
+      </AccordionSection>
+      )}
 
       {/* Models (task routing) */}
       {hasRouting && (
@@ -2337,7 +2686,7 @@ ${skill.body}`
               const content = agentContents[agent.name]
 
               return (
-                <div key={agent.name} className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
+                <div key={agent.name} id={`agent-${agent.name}`} className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
                   {/* Sub-accordion header */}
                   <div className="flex items-center group">
                     <button
@@ -2927,6 +3276,29 @@ ${skill.body}`
         )}</AccordionSection>
       )}
 
+      </>
+      )}
+
+      {/* --- Improvement sub-group --- */}
+      {improvementVisible && (
+      <button
+        onClick={() => {
+          const newVal = !improvementCollapsed
+          setImprovementCollapsed(newVal)
+          localStorage.setItem('constat-improvement-collapsed', String(newVal))
+        }}
+        className="w-full px-4 py-1.5 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors"
+      >
+        <span className="text-[9px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider pl-2">
+          Improvement
+        </span>
+        <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${improvementCollapsed ? '' : 'rotate-90'}`} />
+      </button>
+      )}
+
+      {improvementVisible && !improvementCollapsed && (
+      <>
+
       {/* Learnings */}
       {canSeeSection('learnings') && (
       <AccordionSection
@@ -3476,6 +3848,52 @@ ${skill.body}`
       </AccordionSection>
       )}
 
+      {/* Regression Tests (in Improvement sub-group) */}
+      {session && (
+        <AccordionSection
+          id="regression"
+          title="Regression Tests"
+          icon={<BeakerIcon className="w-4 h-4" />}
+        >
+          <RegressionPanel sessionId={session.session_id} />
+        </AccordionSection>
+      )}
+
+      </>
+      )}
+
+      {/* --- Code Log sub-group --- */}
+      {codeLogVisible && (
+      <button
+        onClick={() => {
+          const newVal = !codeLogCollapsed
+          setCodeLogCollapsed(newVal)
+          localStorage.setItem('constat-codelog-collapsed', String(newVal))
+        }}
+        className="w-full px-4 py-1.5 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors"
+      >
+        <span className="text-[9px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider pl-2">
+          Code Log
+        </span>
+        <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${codeLogCollapsed ? '' : 'rotate-90'}`} />
+      </button>
+      )}
+
+      {codeLogVisible && !codeLogCollapsed && (
+      <>
+
+      {/* Scratchpad - execution narrative per step */}
+      {scratchpadEntries.length > 0 && (
+        <AccordionSection
+          id="scratchpad"
+          title="Scratchpad"
+          count={scratchpadEntries.length}
+          icon={<DocumentTextIcon className="w-4 h-4" />}
+        >
+          <ScratchpadList entries={scratchpadEntries} supersededStepNumbers={supersededStepNumbers} tables={tables} />
+        </AccordionSection>
+      )}
+
       {/* Code - only show when there's code and user can see it */}
       {canSeeSection('code') && stepCodes.length > 0 && (
         <AccordionSection
@@ -3530,7 +3948,7 @@ ${skill.body}`
             </button>
           }
         >
-          <StepCodeList stepCodes={stepCodes} supersededStepNumbers={supersededStepNumbers} />
+          <StepCodeList stepCodes={stepCodes} supersededStepNumbers={supersededStepNumbers} tables={tables} artifacts={artifacts} />
         </AccordionSection>
       )}
 
@@ -3645,180 +4063,33 @@ ${skill.body}`
         </AccordionSection>
       )}
 
-      {/* Facts */}
-      {canSeeSection('facts') && (
-      <AccordionSection
-        id="facts"
-        title="Facts"
-        count={facts.length}
-        icon={<LightBulbIcon className="w-4 h-4" />}
-        command="/facts"
-        action={
-          <div className="flex items-center gap-1">
-            {facts.length > 0 && (
-              <button
-                onClick={() => {
-                  // Generate CSV content with name, value columns
-                  const csvRows = [
-                    ['name', 'value'],
-                    ...facts.map(f => [
-                      // Escape quotes and wrap in quotes if contains comma
-                      `"${String(f.name).replace(/"/g, '""')}"`,
-                      `"${String(f.value).replace(/"/g, '""')}"`
-                    ])
-                  ]
-                  const csvContent = csvRows.map(row => row.join(',')).join('\n')
-                  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-                  const url = URL.createObjectURL(blob)
-                  const link = document.createElement('a')
-                  link.href = url
-                  link.download = 'facts.csv'
-                  link.click()
-                  URL.revokeObjectURL(url)
-                }}
-                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-                title="Download facts as CSV"
-              >
-                <ArrowDownTrayIcon className="w-4 h-4" />
-              </button>
-            )}
+      {/* Session Store DDL */}
+      {sessionDDL && (
+        <AccordionSection
+          id="session-ddl"
+          title="Session Store"
+          icon={<CircleStackIcon className="w-4 h-4" />}
+          action={
             <button
-              onClick={() => openModal('fact')}
+              onClick={() => {
+                if (session) fetchDDL(session.session_id)
+              }}
               className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-              title="Add fact"
+              title="Refresh DDL"
             >
-              <PlusIcon className="w-4 h-4" />
+              <ArrowPathIcon className="w-4 h-4" />
             </button>
-          </div>
-        }
-      >
-        {facts.length === 0 ? (
-          <p className="text-sm text-gray-500 dark:text-gray-400">No facts yet</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 dark:border-gray-700">
-                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">
-                    Name
-                  </th>
-                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">
-                    Value
-                  </th>
-                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">
-                    Source
-                  </th>
-                  <th className="w-8"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {facts.map((fact) => (
-                  <React.Fragment key={fact.name}>
-                  <tr
-                    className="border-b border-gray-100 dark:border-gray-800 last:border-b-0 group"
-                  >
-                    <td className="py-2 px-1 font-medium text-gray-700 dark:text-gray-300">
-                      <span className="flex items-center gap-1 flex-wrap">
-                        {fact.name}
-                        <DomainBadge domain={fact.source === 'config' ? 'system' : fact.domain || (fact.is_persisted ? 'user' : null)} />
-                        {fact.role_id && (
-                          <DomainBadge domain={fact.role_id} />
-                        )}
-                      </span>
-                    </td>
-                    <td className="py-2 px-1 text-gray-600 dark:text-gray-400">
-                      {String(fact.value)}
-                    </td>
-                    <td className="py-2 px-1 text-xs text-gray-400 dark:text-gray-500">
-                      <DomainBadge domain={fact.source === 'config' ? 'system' : fact.source} />
-                    </td>
-                    <td className="py-2 px-1 flex items-center gap-1">
-                      {/* Don't show persist/forget buttons for config facts */}
-                      {fact.source !== 'config' && (
-                        <>
-                          {!fact.is_persisted && (
-                            <button
-                              onClick={() => handlePersistFact(fact.name)}
-                              className="p-1 text-gray-300 dark:text-gray-600 hover:text-amber-500 dark:hover:text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                              title="Save permanently"
-                            >
-                              <ArrowUpTrayIcon className="w-3 h-3" />
-                            </button>
-                          )}
-                          {fact.is_persisted && (
-                            <button
-                              onClick={() => setMovingFact(movingFact === fact.name ? null : fact.name)}
-                              className="p-1 text-gray-300 dark:text-gray-600 hover:text-primary-600 dark:hover:text-primary-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                              title="Move to domain"
-                            >
-                              <ArrowsRightLeftIcon className="w-3 h-3" />
-                            </button>
-                          )}
-                          <button
-                            onClick={() => handleForgetFact(fact.name)}
-                            className="p-1 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                            title="Forget fact"
-                          >
-                            <MinusIcon className="w-3 h-3" />
-                          </button>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                  {/* Move-to-domain picker for fact */}
-                  {movingFact === fact.name && (
-                    <tr>
-                      <td colSpan={4} className="py-1.5 px-1">
-                        <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 rounded px-2 py-1">
-                          <span className="text-[11px] text-gray-600 dark:text-gray-400">Move to:</span>
-                          <select
-                            autoFocus
-                            className="text-[11px] bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5"
-                            defaultValue=""
-                            onChange={(e) => { if (e.target.value) handleMoveFact(fact.name, e.target.value) }}
-                          >
-                            <option value="" disabled>Select domain...</option>
-                            {domainList.filter((d) => d.filename !== (fact.domain || '')).map((d) => (
-                              <option key={d.filename} value={d.filename}>{d.name}</option>
-                            ))}
-                          </select>
-                          <button onClick={() => setMovingFact(null)} className="text-[11px] text-gray-400 hover:text-gray-600">Cancel</button>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                  </React.Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </AccordionSection>
-      )}
-
-      {/* Glossary (replaces Entities) */}
-      {canSeeSection('glossary') && session && (
-        <AccordionSection
-          id="glossary"
-          title="Glossary"
-          count={totalDefined + totalSelfDescribing}
-          icon={<TagIcon className="w-4 h-4" />}
-          command="/glossary"
-          action={<div className="w-6 h-6" />}
+          }
         >
-          <GlossaryPanel sessionId={session.session_id} />
+          <pre className="text-[11px] leading-relaxed text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/50 p-3 rounded overflow-auto max-h-96 whitespace-pre font-mono">
+            {sessionDDL}
+          </pre>
         </AccordionSection>
       )}
 
-      {session && (
-        <AccordionSection
-          id="regression"
-          title="Regression Tests"
-          icon={<BeakerIcon className="w-4 h-4" />}
-        >
-          <RegressionPanel sessionId={session.session_id} />
-        </AccordionSection>
+      </>
       )}
+
       </>
       )}
     </div>

@@ -14,6 +14,17 @@ interface StepCode {
   model?: string
 }
 
+// Scratchpad entry (execution narrative per step)
+interface ScratchpadEntry {
+  step_number: number
+  goal: string
+  narrative: string
+  tables_created: string[]
+  code: string
+  user_query: string
+  objective_index: number | null
+}
+
 // Inference code from auditable mode (matches API response)
 interface InferenceCode {
   inference_id: string
@@ -73,6 +84,8 @@ interface ArtifactState {
   documents: DocumentSourceInfo[]
   stepCodes: StepCode[]
   inferenceCodes: InferenceCode[]
+  scratchpadEntries: ScratchpadEntry[]
+  sessionDDL: string
   promptContext: PromptContext | null
   taskRouting: Record<string, Record<string, ModelRouteInfo[]>> | null
   allSkills: SkillInfo[]
@@ -95,6 +108,8 @@ interface ArtifactState {
   fetchLearnings: () => Promise<void>
   fetchStepCodes: (sessionId: string) => Promise<void>
   fetchInferenceCodes: (sessionId: string) => Promise<void>
+  fetchScratchpad: (sessionId: string) => Promise<void>
+  fetchDDL: (sessionId: string) => Promise<void>
   fetchDatabases: (sessionId: string) => Promise<void>
   fetchDataSources: (sessionId: string) => Promise<void>
   fetchPromptContext: (sessionId: string) => Promise<void>
@@ -143,6 +158,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   facts: [],
   stepCodes: [],
   inferenceCodes: [],
+  scratchpadEntries: [],
+  sessionDDL: '',
   entities: [],
   learnings: [],
   rules: [],
@@ -229,6 +246,24 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       set({ inferenceCodes: response.inferences.filter((ic: { inference_id: string }) => ic.inference_id) })
     } catch (error) {
       console.warn('Failed to fetch inference codes:', error)
+    }
+  },
+
+  fetchScratchpad: async (sessionId) => {
+    try {
+      const response = await sessionsApi.getScratchpad(sessionId)
+      set({ scratchpadEntries: response.entries })
+    } catch (error) {
+      console.warn('Failed to fetch scratchpad:', error)
+    }
+  },
+
+  fetchDDL: async (sessionId) => {
+    try {
+      const response = await sessionsApi.getDDL(sessionId)
+      set({ sessionDDL: response.ddl })
+    } catch (error) {
+      console.warn('Failed to fetch DDL:', error)
     }
   },
 
@@ -566,7 +601,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   },
 
   removeArtifact: async (sessionId, artifactId) => {
-    const { artifacts, tables } = get()
+    const { artifacts } = get()
     const artifact = artifacts.find((a) => a.id === artifactId)
     const isTable = artifact?.artifact_type === 'table'
 
@@ -702,6 +737,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       documents: [],
       stepCodes: [],
   inferenceCodes: [],
+      scratchpadEntries: [],
+      sessionDDL: '',
       promptContext: null,
       allSkills: [],
       allAgents: [],
@@ -720,6 +757,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       facts: [],
       stepCodes: [],
   inferenceCodes: [],
+      scratchpadEntries: [],
+      sessionDDL: '',
       selectedArtifact: null,
       selectedTable: null,
       error: null,

@@ -644,6 +644,32 @@ export async function listInferenceCodes(
   )
 }
 
+// Scratchpad (execution narrative per step)
+export interface ScratchpadEntry {
+  step_number: number
+  goal: string
+  narrative: string
+  tables_created: string[]
+  code: string
+  user_query: string
+  objective_index: number | null
+}
+
+export async function getScratchpad(
+  sessionId: string
+): Promise<{ entries: ScratchpadEntry[]; total: number }> {
+  return get<{ entries: ScratchpadEntry[]; total: number }>(
+    `/sessions/${sessionId}/scratchpad`
+  )
+}
+
+// DDL (session store schema)
+export async function getDDL(
+  sessionId: string
+): Promise<{ ddl: string }> {
+  return get<{ ddl: string }>(`/sessions/${sessionId}/ddl`)
+}
+
 // Output
 export async function getOutput(
   sessionId: string

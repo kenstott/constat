@@ -48,6 +48,20 @@ Share data between steps ONLY via `store`:
 - Convert to DataFrame: `pd.DataFrame(db_<name>.cypher('MATCH (n:Label) RETURN n.prop'))`
 
 - In SQL, always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts
+
+**Data Federation — Unified Query Namespace**:
+Source databases (SQLite, DuckDB) are automatically attached to the session store. All data — source DB tables, intermediate tables, and views — is queryable through `store.query()` using PostgreSQL syntax.
+- **Source DB tables**: queryable as `db_name.table_name` (e.g., `hr.employees`, `sales.orders`)
+- **Store tables/views**: queryable by name (e.g., `employee_list`, `most_recent_reviews`)
+- **Cross-source JOINs**: `store.query('SELECT ... FROM hr.employees e JOIN employee_list el ON ...')` — joins source DB and store tables in one query
+- If data already exists in the store, use it. Do NOT re-query the database for it.
+
+**CRITICAL anti-pattern — do NOT materialize what can be a view**:
+- WRONG: `df = pd.read_sql('SELECT ... FROM employees', db_hr)` then `store.save_dataframe('employees_filtered', df)` — eagerly copies data into store
+- RIGHT: `store.create_view('employees_filtered', 'SELECT ... FROM hr.employees WHERE ...', step_number=N)` — lazy, zero-copy, queryable by later steps
+- WRONG: `df1 = store.load_dataframe('table_a'); df2 = pd.read_sql(..., db_hr); merged = pd.merge(df1, df2, ...); store.save_dataframe('merged', merged)` — unnecessary DataFrame round-trip
+- RIGHT: `store.create_view('merged', 'SELECT ... FROM table_a a JOIN hr.employees e ON a.id = e.id', step_number=N)` — single SQL, no materialization
+- Use `store.save_dataframe()` ONLY when the result requires Python computation (LLM calls, pandas transforms, API data). If it's pure SQL, use `store.create_view()`.
 - **Schema discovery**: `find_relevant_tables(query)`, `get_table_schema(table)`, `find_entity(name)` are available ONLY as tool calls during code generation. They are NOT available in generated code — calling them will raise NameError. Use them to explore schemas before writing your code, then hardcode the table/column names you found.
 
 <!-- @api -->
@@ -110,21 +124,6 @@ When a prior step saved data to `store`, **use it directly** — do NOT re-deriv
 - RIGHT: Load `inventory_breed_matches` and use the columns already present (reasoning, scores, etc.).
 - If a prior step's output is missing or broken, let the error propagate — the retry mechanism will fix the prior step.
 - NEVER wrap `store.load_dataframe()` in a try/except with fallback recomputation.
-
-## Data Federation — Unified Query Namespace
-Source databases (SQLite, DuckDB) are automatically attached to the session store. All data — source DB tables, intermediate tables, and views — is queryable through `store.query()` using PostgreSQL syntax.
-
-- **Source DB tables**: queryable as `db_name.table_name` (e.g., `hr.employees`, `sales.orders`)
-- **Store tables/views**: queryable by name (e.g., `employee_list`, `most_recent_reviews`)
-- **Cross-source JOINs**: `store.query('SELECT ... FROM hr.employees e JOIN employee_list el ON ...')` — joins source DB and store tables in one query
-- If data already exists in the store, use it. Do NOT re-query the database for it.
-
-**CRITICAL anti-pattern — do NOT materialize what can be a view**:
-- WRONG: `df = pd.read_sql('SELECT ... FROM employees', db_hr)` then `store.save_dataframe('employees_filtered', df)` — eagerly copies data into store
-- RIGHT: `store.create_view('employees_filtered', 'SELECT ... FROM hr.employees WHERE ...', step_number=N)` — lazy, zero-copy, queryable by later steps
-- WRONG: `df1 = store.load_dataframe('table_a'); df2 = pd.read_sql(..., db_hr); merged = pd.merge(df1, df2, ...); store.save_dataframe('merged', merged)` — unnecessary DataFrame round-trip
-- RIGHT: `store.create_view('merged', 'SELECT ... FROM table_a a JOIN hr.employees e ON a.id = e.id', step_number=N)` — single SQL, no materialization
-- Use `store.save_dataframe()` ONLY when the result requires Python computation (LLM calls, pandas transforms, API data). If it's pure SQL, use `store.create_view()`.
 
 ## Corrections and Updates
 When correcting or updating previous results:

@@ -144,6 +144,9 @@ interface SessionState {
   fetchAgents: () => Promise<void>
   setAgent: (agentName: string | null) => Promise<void>
   shareSession: (email: string) => Promise<{ share_url: string }>
+  replanFromStep: (stepNumber: number, mode: 'edit' | 'delete' | 'redo', editedGoal?: string) => void
+  editObjective: (objectiveIndex: number, newText: string) => void
+  deleteObjective: (objectiveIndex: number) => void
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -424,22 +427,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     // Create message bubbles for steps (pending until step_start)
+    // Skip steps that already have non-superseded messages (prevents duplicates)
+    const existingStepNums = new Set(
+      get().messages.filter((m) => m.type === 'step' && m.stepNumber !== undefined && !m.isSuperseded).map((m) => m.stepNumber)
+    )
     const stepMessageIds: Record<number, string> = {}
-    const stepMessages: Message[] = stepsToShow.map((step) => {
-      const id = crypto.randomUUID()
-      stepMessageIds[step.number] = id
-      return {
-        id,
-        type: 'step' as const,
-        content: `Step ${step.number}: ${step.goal || 'Pending'}`,
-        timestamp: new Date(),
-        stepNumber: step.number,
-        isLive: false, // Not live until step starts
-        isPending: true, // Pending animation until step starts
-        ...(step.role_id ? { role: step.role_id } : {}),
-        ...(step.skill_ids?.length ? { skills: step.skill_ids } : {}),
-      }
-    })
+    const stepMessages: Message[] = stepsToShow
+      .filter((step) => !existingStepNums.has(step.number))
+      .map((step) => {
+        const id = crypto.randomUUID()
+        stepMessageIds[step.number] = id
+        return {
+          id,
+          type: 'step' as const,
+          content: `Step ${step.number}: ${step.goal || 'Pending'}`,
+          timestamp: new Date(),
+          stepNumber: step.number,
+          isLive: false, // Not live until step starts
+          isPending: true, // Pending animation until step starts
+          ...(step.role_id ? { role: step.role_id } : {}),
+          ...(step.skill_ids?.length ? { skills: step.skill_ids } : {}),
+        }
+      })
 
     await queriesApi.approvePlan(session.session_id, true, undefined, deletedSteps, editedSteps)
     wsManager.approve()
@@ -725,6 +734,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         set({ status: 'planning' })  // Don't clear queryContext - it was set by dynamic_context
         break
 
+      case 'replan_start': {
+        const fromStep = (event.data as Record<string, unknown>)?.from_step as number
+        // Mark steps >= fromStep as superseded
+        set((state) => ({
+          messages: state.messages.map((m) =>
+            m.stepNumber !== undefined && m.stepNumber >= fromStep
+              ? { ...m, isSuperseded: true, isLive: false, isPending: false }
+              : m
+          ),
+          status: 'executing',
+        }))
+        break
+      }
+
       case 'proof_start':
         ensureLiveMessage('Generating reasoning chain...', 'planning')
         set({ status: 'planning' })
@@ -774,21 +797,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         } else {
           // Auto-approved or follow-up — create step messages and go straight to executing
           const autoSteps = (event.data.steps as Array<{ number: number; goal: string; depends_on?: number[]; role_id?: string }>) || []
+          // Skip steps that already have messages (prevents duplicates on replan/re-emit)
+          const existingStepNumbers = new Set(
+            get().messages.filter((m) => m.type === 'step' && m.stepNumber !== undefined && !m.isSuperseded).map((m) => m.stepNumber)
+          )
           const autoStepIds: Record<number, string> = {}
-          const autoStepMsgs: Message[] = autoSteps.map((step) => {
-            const id = crypto.randomUUID()
-            autoStepIds[step.number] = id
-            return {
-              id,
-              type: 'step' as const,
-              content: `Step ${step.number}: ${step.goal || 'Pending'}`,
-              timestamp: new Date(),
-              stepNumber: step.number,
-              isLive: false,
-              isPending: true,
-              ...(step.role_id ? { role: step.role_id } : {}),
-            }
-          })
+          const autoStepMsgs: Message[] = autoSteps
+            .filter((step) => !existingStepNumbers.has(step.number))
+            .map((step) => {
+              const id = crypto.randomUUID()
+              autoStepIds[step.number] = id
+              return {
+                id,
+                type: 'step' as const,
+                content: `Step ${step.number}: ${step.goal || 'Pending'}`,
+                timestamp: new Date(),
+                stepNumber: step.number,
+                isLive: false,
+                isPending: true,
+                ...(step.role_id ? { role: step.role_id } : {}),
+              }
+            })
           autoStepMsgs.sort((a, b) => (a.stepNumber || 0) - (b.stepNumber || 0))
           set((state) => ({
             messages: [...state.messages, ...autoStepMsgs],
@@ -1005,6 +1034,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           artifactStore.fetchFacts(session.session_id)
           artifactStore.fetchTables(session.session_id)
           artifactStore.fetchLearnings()
+          artifactStore.fetchScratchpad(session.session_id)
         }
         break
       }
@@ -1152,14 +1182,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Compute total elapsed time from query submission to now
         const { querySubmittedAt } = get()
         const totalElapsedMs = querySubmittedAt ? Date.now() - querySubmittedAt : undefined
-        // Add final insights bubble
-        const output = (event.data.output as string) || 'Analysis complete'
-        addMessage({
-          type: 'output',
-          content: output,
-          isFinalInsight: true,
-          stepDurationMs: totalElapsedMs,
-        })
+        // Mark the last step message as isFinalInsight (avoids duplicate output bubble)
+        const { messages: currentMessages } = get()
+        const lastStepMsg = [...currentMessages].reverse().find((m) => m.type === 'step')
+        if (lastStepMsg) {
+          set((state) => ({
+            messages: state.messages.map((m) =>
+              m.id === lastStepMsg.id
+                ? { ...m, isFinalInsight: true, stepDurationMs: totalElapsedMs ?? m.stepDurationMs }
+                : m
+            ),
+          }))
+        } else {
+          // No step messages (e.g. control intent) — add output bubble as before
+          const output = (event.data.output as string) || 'Analysis complete'
+          addMessage({
+            type: 'output',
+            content: output,
+            isFinalInsight: true,
+            stepDurationMs: totalElapsedMs,
+          })
+        }
         // Refresh artifact panel with final data (including learnings)
         const { session } = get()
         if (session) {
@@ -1298,6 +1341,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           columns: tableData.columns || [],
         }
         useArtifactStore.getState().addTable(table)
+        // Refresh DDL to reflect new table/view
+        const sid = get().session?.session_id
+        if (sid) useArtifactStore.getState().fetchDDL(sid)
         break
       }
 
@@ -1543,5 +1589,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!session) throw new Error('No active session')
     const result = await sessionsApi.shareSession(session.session_id, email)
     return { share_url: result.share_url }
+  },
+
+  replanFromStep: (stepNumber: number, mode: 'edit' | 'delete' | 'redo', editedGoal?: string) => {
+    // Mark steps >= stepNumber as superseded
+    set((state) => ({
+      messages: state.messages.map((m) =>
+        m.stepNumber !== undefined && m.stepNumber >= stepNumber
+          ? { ...m, isSuperseded: true }
+          : m
+      ),
+      status: 'executing',
+    }))
+    wsManager.replanFrom(stepNumber, mode, editedGoal)
+  },
+
+  editObjective: (objectiveIndex: number, newText: string) => {
+    set({ status: 'executing' })
+    wsManager.editObjective(objectiveIndex, newText)
+  },
+
+  deleteObjective: (objectiveIndex: number) => {
+    set({ status: 'executing' })
+    wsManager.deleteObjective(objectiveIndex)
   },
 }))
