@@ -505,6 +505,10 @@ User feedback: {suggestion_text}
         # Materialize facts table before execution starts
         self._materialize_facts_table()
 
+        # Set self.plan so _build_step_prompt sees correct total_steps
+        # noinspection PyAttributeOutsideInit
+        self.plan = follow_up_plan
+
         # Execute each step
         # Phase 4: Reset cancellation state before starting execution
         self.reset_cancellation()
@@ -843,6 +847,13 @@ User feedback: {suggestion_text}
                 if e.get('step_number', 0) < step_number
             ]
 
+        # Notify UI to remove truncated steps/artifacts
+        self._emit_event(StepEvent(
+            event_type="steps_truncated",
+            step_number=step_number,
+            data={"tables_dropped": tables_dropped, "mode": mode},
+        ))
+
         # Build replan prompt
         if mode == 'edit':
             refinement = f"Refinement: {edited_goal}"
@@ -1151,6 +1162,7 @@ Prove all of the above claims and provide a complete audit trail."""
                                     content=f"# Proof Summary\n\n{summary_result.summary}",
                                     name="proof_summary",
                                     title="Proof Summary",
+                                    metadata={"internal": True},
                                 )
                             except Exception as ae:
                                 logger.warning(f"[prove_conversation] Failed to save summary artifact: {ae}")

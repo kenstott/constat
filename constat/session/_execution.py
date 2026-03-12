@@ -1611,7 +1611,7 @@ class ExecutionMixin:
             for table_meta in self.schema_manager.metadata_cache.values():
                 by_db.setdefault(table_meta.database, []).append(table_meta.name)
             if by_db:
-                lines.append("\nDATA SOURCES (use store.query('SELECT ... FROM db_name.table') or store.create_view()):")
+                lines.append("\nDATA SOURCES (use store.create_view() for named results, store.query() only to read into Python):")
                 for db_name in sorted(by_db):
                     tables = sorted(by_db[db_name])
                     lines.append(f"  {db_name}: {', '.join(tables)}")
@@ -1622,7 +1622,7 @@ class ExecutionMixin:
             if store_tables:
                 names = [t['name'] for t in store_tables if not t['name'].startswith('_')]
                 if names:
-                    lines.append(f"\nSTORE TABLES (use store.load_dataframe('name') or store.query()):")
+                    lines.append(f"\nSTORE TABLES (use store.create_view() to build on these, or store.query() to read into Python):")
                     lines.append(f"  {', '.join(names)}")
 
         return "\n".join(lines) if lines else ""

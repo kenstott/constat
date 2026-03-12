@@ -8,6 +8,7 @@ import {
   ArrowDownTrayIcon,
   ClipboardDocumentIcon,
   ClipboardDocumentCheckIcon,
+  TrashIcon,
   XMarkIcon,
   StarIcon as StarOutline,
   EllipsisVerticalIcon,
@@ -25,7 +26,7 @@ interface TableAccordionProps {
 
 export function TableAccordion({ table, initiallyOpen = false }: TableAccordionProps) {
   const { session } = useSessionStore()
-  const { toggleTableStar } = useArtifactStore()
+  const { toggleTableStar, removeTable } = useArtifactStore()
   const [isOpen, setIsOpen] = useState(initiallyOpen)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [data, setData] = useState<TableData | null>(null)
@@ -107,6 +108,13 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
     if (session) {
       toggleTableStar(session.session_id, table.name)
     }
+  }
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!session) return
+    if (!confirm(`Remove table "${table.name}"?`)) return
+    removeTable(session.session_id, table.name)
   }
 
   const handleVersionBadgeClick = async (e: React.MouseEvent) => {
@@ -438,6 +446,13 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
                   >
                     <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
                     Download CSV
+                  </button>
+                  <button
+                    onClick={(e) => { handleDelete(e); setShowCopyMenu(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <TrashIcon className="w-4 h-4" />
+                    Remove
                   </button>
                 </div>
               )}

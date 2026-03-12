@@ -18,9 +18,9 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 
 ## Data Loading
 **SQL databases** (SQLite, PostgreSQL, DuckDB):
-- **Preferred**: `store.create_view('name', 'SELECT ... FROM db_name.table', step_number=N)` — lazy, no materialization
-- **Preferred**: `store.query('SELECT ... FROM db_name.table')` — when you just need the result as DataFrame
-- Fallback: `pd.read_sql(query, db_<name>)` — only when you need pandas ops before saving
+- **Named result**: `store.create_view('name', 'SELECT ... FROM db_name.table', step_number=N)` — lazy, no materialization, queryable by later steps
+- **Read into Python**: `store.query('SELECT ... FROM db_name.table')` — only when you need a DataFrame for Python ops (llm_score, llm_map, etc.)
+- NEVER use `pd.read_sql()` — it cannot access federated schema prefixes. Use store.query() or store.create_view().
 - NEVER use `db.execute()` or `db_<name>.execute()`
 
 **NoSQL databases** (MongoDB, Cassandra, Elasticsearch):

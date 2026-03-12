@@ -327,6 +327,7 @@ def _create_event_handler(managed: ManagedSession):
         "plan_updated": EventType.PLAN_UPDATED,
         "proof_start": EventType.PROOF_START,
         "replanning": EventType.REPLANNING,
+        "steps_truncated": EventType.STEPS_TRUNCATED,
         "synthesizing": EventType.SYNTHESIZING,
         "generating_insights": EventType.GENERATING_INSIGHTS,
         # Fact resolution events (for proof DAG)

@@ -422,3 +422,32 @@ async def toggle_table_star(
     except Exception as e:
         logger.error(f"Error toggling table star: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{session_id}/tables/{table_name}")
+async def delete_table(
+    session_id: str,
+    table_name: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Delete a table from the session store."""
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if not managed.session.datastore:
+        raise HTTPException(status_code=404, detail="No datastore")
+
+    try:
+        tables = managed.session.datastore.list_tables()
+        if not any(t["name"] == table_name for t in tables):
+            raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
+
+        managed.session.datastore.drop_table(table_name)
+        return {"status": "deleted", "table_name": table_name}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting table: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1037,8 +1037,8 @@ REMEMBER:
             ))
 
             # Build synthesis context - use English names for clarity
-            # Truncate values to prevent token overflow
-            def truncate_value(v, max_chars=500):
+            # Truncate large tabular values but keep documents/rules intact
+            def truncate_value(v, max_chars=3000):
                 s = str(v)
                 return s[:max_chars] + "..." if len(s) > max_chars else s
 
@@ -1247,16 +1247,48 @@ If the original question had multiple goals or sub-questions, note whether all w
             for p in premises:
                 pid = p['id']
                 resolved = resolved_premises.get(pid)
-                # Use the premise's planned source (e.g. "database:hr") which
-                # preserves the source type prefix needed for test extraction.
-                # The resolved Fact may lose this (e.g. cache → "cache").
-                source_str = p.get('source', '')
+                planned_source = p.get('source', '')
+
+                # Pre-resolved embedded nodes skip _execute_dag_node, so they
+                # won't appear in resolved_premises.  Detect them via the DAG.
+                dag_node = dag.get_node(p.get('name', '').split(' = ')[0].strip())
+                is_embedded = (
+                    dag_node is not None
+                    and dag_node.value is not None
+                    and dag_node.status == NodeStatus.RESOLVED
+                    and not resolved
+                )
+
+                if is_embedded:
+                    source_str = "embedded"
+                    node_value = dag_node.value
+                    node_confidence = dag_node.confidence
+                elif resolved:
+                    node_value = resolved.value
+                    node_confidence = resolved.confidence
+                    # Use resolved source — it reflects actual resolution,
+                    # not the LLM plan's guess.
+                    actual_type = resolved.source.value
+                    planned_type = planned_source.split(":")[0] if planned_source else ""
+                    if actual_type in ("llm_knowledge", "user_provided"):
+                        source_str = "embedded"
+                    elif resolved.source_name:
+                        source_str = f"{actual_type}:{resolved.source_name}"
+                    elif ":" in planned_source:
+                        source_str = planned_source
+                    else:
+                        source_str = actual_type
+                else:
+                    node_value = None
+                    node_confidence = None
+                    source_str = planned_source
+
                 node_data = {
                     "id": pid,
                     "name": p['name'],
-                    "value": resolved.value if resolved else None,
+                    "value": node_value,
                     "source": source_str,
-                    "confidence": resolved.confidence if resolved else None,
+                    "confidence": node_confidence,
                     "dependencies": [],
                 }
                 # Include specific source details for test expectation extraction.
@@ -1267,6 +1299,8 @@ If the original question had multiple goals or sub-questions, note whether all w
                         node_data["api_endpoint"] = resolved.api_endpoint
                     if resolved.query:
                         node_data["query"] = resolved.query
+                    if getattr(resolved, 'table_name', None):
+                        node_data["table_name"] = resolved.table_name
                 proof_nodes.append(node_data)
             for inf in inferences:
                 iid = inf['id']

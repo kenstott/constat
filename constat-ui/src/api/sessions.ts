@@ -278,6 +278,15 @@ export async function deleteArtifact(
   )
 }
 
+export async function deleteTable(
+  sessionId: string,
+  tableName: string
+): Promise<{ status: string; table_name: string }> {
+  return del<{ status: string; table_name: string }>(
+    `/sessions/${sessionId}/tables/${tableName}`
+  )
+}
+
 // Public Sharing
 export async function togglePublicSharing(
   sessionId: string,

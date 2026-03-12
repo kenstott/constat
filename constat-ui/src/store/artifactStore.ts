@@ -134,8 +134,9 @@ interface ArtifactState {
   addArtifact: (artifact: Artifact) => void
   addFact: (fact: Fact) => void
   addStepCode: (stepNumber: number, goal: string, code: string, model?: string) => void
-  // Delete artifact
+  // Delete artifact/table
   removeArtifact: (sessionId: string, artifactId: number) => Promise<void>
+  removeTable: (sessionId: string, tableName: string) => Promise<void>
   // Star/promote actions (persist to server)
   toggleArtifactStar: (sessionId: string, artifactId: number) => Promise<void>
   toggleTableStar: (sessionId: string, tableName: string) => Promise<void>
@@ -150,6 +151,7 @@ interface ArtifactState {
   clear: () => void
   clearQueryResults: () => void  // Clear artifacts/tables/facts/stepCodes but keep data sources/entities/learnings
   clearInferenceCodes: () => void  // Clear inference codes on proof re-run
+  truncateFromStep: (fromStep: number, tablesDropped?: string[]) => void  // Remove artifacts/tables/codes from step N onwards
 }
 
 export const useArtifactStore = create<ArtifactState>((set, get) => ({
@@ -624,6 +626,25 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     }
   },
 
+  removeTable: async (sessionId, tableName) => {
+    // Optimistic removal
+    set((state) => ({
+      tables: state.tables.filter((t) => t.name !== tableName),
+      artifacts: state.artifacts.filter((a) => !(a.artifact_type === 'table' && a.name === tableName)),
+    }))
+
+    try {
+      await sessionsApi.deleteTable(sessionId, tableName)
+    } catch {
+      // Revert on error — refetch both lists
+      const [tablesResponse, artifactsResponse] = await Promise.all([
+        sessionsApi.listTables(sessionId),
+        sessionsApi.listArtifacts(sessionId),
+      ])
+      set({ tables: tablesResponse.tables, artifacts: artifactsResponse.artifacts })
+    }
+  },
+
   toggleArtifactStar: async (sessionId, artifactId) => {
     // Optimistic update - toggle is_starred
     set((state) => ({
@@ -779,4 +800,11 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       return { inferenceCodes: [...filtered, ic] }
     }),
   clearInferenceCodes: () => set({ inferenceCodes: [] }),
+  truncateFromStep: (fromStep, _tablesDropped) =>
+    set((state) => ({
+      tables: state.tables.filter((t) => (t.step_number ?? 0) < fromStep),
+      artifacts: state.artifacts.filter((a) => (a.step_number ?? 0) < fromStep),
+      stepCodes: state.stepCodes.filter((sc) => sc.step_number < fromStep),
+      scratchpadEntries: state.scratchpadEntries.filter((e) => (e.step_number ?? 0) < fromStep),
+    })),
 }))

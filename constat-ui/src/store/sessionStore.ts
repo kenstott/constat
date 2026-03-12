@@ -1366,6 +1366,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
       }
 
+      case 'steps_truncated': {
+        const fromStep = event.step_number
+        const tablesDropped = (event.data as { tables_dropped?: string[] })?.tables_dropped
+        // Remove artifacts, tables, step codes from step N onwards
+        useArtifactStore.getState().truncateFromStep(fromStep, tablesDropped)
+        // Mark step messages as superseded
+        set((state) => ({
+          messages: state.messages.map((m) =>
+            m.type === 'step' && (m.stepNumber || 0) >= fromStep
+              ? { ...m, isSuperseded: true }
+              : m
+          ),
+        }))
+        // Refresh DDL
+        const truncSid = get().session?.session_id
+        if (truncSid) useArtifactStore.getState().fetchDDL(truncSid)
+        break
+      }
+
       case 'facts_extracted': {
         // Add facts to artifact store
         const factsData = event.data as { facts?: Fact[]; fact?: Fact }

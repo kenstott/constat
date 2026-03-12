@@ -360,6 +360,19 @@ class TestCreateView:
         result = store.load_dataframe("filtered")
         assert len(result) == 2
 
+    def test_no_auto_convert_for_non_select(self, store):
+        """save_dataframe does NOT auto-convert for SHOW TABLES or other non-SELECT SQL."""
+        # Simulate a DataFrame from store.query("SHOW TABLES")
+        df = pd.DataFrame({"name": ["table_a", "table_b"]})
+        df.attrs["_source_sql"] = "SHOW TABLES"
+        df.attrs["_source_columns"] = list(df.columns)
+        df.attrs["_source_len"] = len(df)
+        # Should save as a table, not try to create_view
+        store.save_dataframe("available_tables", df, step_number=1)
+        result = store.load_dataframe("available_tables")
+        assert len(result) == 2
+        assert list(result.columns) == ["name"]
+
 
 class TestAttachSQLite:
     def test_attach_and_query(self, store, tmp_dir):

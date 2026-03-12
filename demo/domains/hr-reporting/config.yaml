@@ -24,4 +24,42 @@ documents:
     - auth\.wikimedia\.org
     - \.(png|jpg|jpeg|gif|svg|ico|css|js)(\?|$)
     description: Human resource management concepts and practices
-golden_questions: []
+golden_questions:
+- question: Calculate employee raises using performance review guidelines
+  tags:
+  - from-reason-chain
+  expect:
+    entities:
+    - employees
+    - performance_reviews
+    - raise_guidelines
+    - time_period_=_"last_12_months"
+    - calculation_basis_=_"percentage_of_current_salary"
+    grounding:
+    - entity: employees
+      resolves_to:
+      - schema:hr
+      strict: true
+    - entity: performance_reviews
+      resolves_to:
+      - schema:hr
+      strict: true
+    - entity: raise_guidelines
+      resolves_to:
+      - document:business_rules
+      strict: true
+    - entity: time_period_=_"last_12_months"
+      resolves_to:
+      - database
+      strict: true
+    - entity: calculation_basis_=_"percentage_of_current_salary"
+      resolves_to:
+      - database
+      strict: true
+    relationships: []
+    glossary: []
+    end_to_end:
+      semantic_match: Answer should apply performance review-based raise percentages
+        to current salary for all employees in last 12 months, without budget constraints,
+        excluding compensation guidelines
+    suggested_question: Calculate employee raises using performance review guidelines

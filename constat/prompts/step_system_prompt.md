@@ -15,13 +15,12 @@ Your code has access to:
 {ask_user_docs}
 
 ## State Management
-Share data between steps ONLY via `store`:
-- `store.save_dataframe('name', df, step_number=N)` / `store.load_dataframe('name')` — materializes data
-- `store.create_view('name', sql, step_number=N)` — lazy SQL view (preferred when result is SQL-derivable)
-- `store.set_state('key', value, step_number=N)` / `store.get_state('key')` (check for None!)
-- `store.query('SELECT ... FROM table')` for SQL on saved data, views, or attached source DB tables
-
-**Prefer `store.create_view()` over `store.save_dataframe()`** when the result can be expressed as SQL over existing tables. Views are lazy — they don't materialize data until queried, saving memory and making the data pipeline transparent. Use `save_dataframe()` only when the result requires Python computation (LLM calls, complex pandas ops, API data).
+Share data between steps ONLY via `store`. Choose the right method:
+1. **`store.create_view('name', sql, step_number=N)`** — DEFAULT. Creates a named lazy SQL view. No data copied. Queryable by later steps. Use for anything expressible as SQL.
+2. **`store.save_dataframe('name', df, step_number=N)`** — only when result requires Python computation (LLM calls, pandas transforms, API data). Creates a named table.
+3. **`store.query('SELECT ... FROM table')`** — READ-ONLY. Returns an ephemeral DataFrame for use in Python. Does NOT create a named result. Use only when you need data in Python for non-SQL operations (feeding to `llm_score`, `llm_map`, row iteration). Never use query() as a way to create a named dataset — use create_view() instead.
+4. **`store.set_state('key', value, step_number=N)` / `store.get_state('key')`** — for scalar values (check for None!)
+5. **`store.load_dataframe('name')`** — read a previously saved table/view into a DataFrame
 
 <!-- @database -->
 ## Database Access Patterns
@@ -30,9 +29,9 @@ Share data between steps ONLY via `store`:
 
 **SQL databases** (SQLite, PostgreSQL, MySQL, DuckDB):
 - **ALWAYS write SQL in PostgreSQL dialect** regardless of the target database. A transpiler converts to the native dialect automatically. Do NOT use SQLite, MySQL, or DuckDB-specific syntax.
-- **Preferred**: `store.create_view('name', 'SELECT ... FROM db_name.table ...', step_number=N)` — lazy, no materialization
-- **Preferred**: `store.query('SELECT ... FROM db_name.table ...')` — when you just need the result as DataFrame
-- Fallback: `pd.read_sql(query, db_<name>)` or `sql_<name>(query)` — only when you need pandas ops before saving
+- **Named result**: `store.create_view('name', 'SELECT ... FROM db_name.table ...', step_number=N)` — lazy, no materialization, queryable by later steps
+- **Read into Python**: `store.query('SELECT ... FROM db_name.table ...')` — only when you need a DataFrame for Python ops (llm_score, llm_map, etc.)
+- NEVER use `pd.read_sql()` — it cannot access federated schema prefixes (e.g., `hr.employees`). Use `store.query()` or `store.create_view()` instead.
 - NEVER use db.execute()
 
 **NoSQL databases** (MongoDB, Cassandra, Elasticsearch, etc.):
@@ -57,11 +56,11 @@ Source databases (SQLite, DuckDB) are automatically attached to the session stor
 - If data already exists in the store, use it. Do NOT re-query the database for it.
 
 **CRITICAL anti-pattern — do NOT materialize what can be a view**:
-- WRONG: `df = pd.read_sql('SELECT ... FROM employees', db_hr)` then `store.save_dataframe('employees_filtered', df)` — eagerly copies data into store
-- RIGHT: `store.create_view('employees_filtered', 'SELECT ... FROM hr.employees WHERE ...', step_number=N)` — lazy, zero-copy, queryable by later steps
-- WRONG: `df1 = store.load_dataframe('table_a'); df2 = pd.read_sql(..., db_hr); merged = pd.merge(df1, df2, ...); store.save_dataframe('merged', merged)` — unnecessary DataFrame round-trip
+- WRONG: `df = store.query('SELECT ... FROM hr.employees'); store.save_dataframe('filtered', df)` — query+save when a view suffices
+- RIGHT: `store.create_view('filtered', 'SELECT ... FROM hr.employees WHERE ...', step_number=N)` — lazy, zero-copy, queryable by later steps
+- WRONG: `df1 = store.load_dataframe('table_a'); df2 = store.query('SELECT ... FROM hr.employees'); merged = pd.merge(df1, df2, ...); store.save_dataframe('merged', merged)` — unnecessary DataFrame round-trip
 - RIGHT: `store.create_view('merged', 'SELECT ... FROM table_a a JOIN hr.employees e ON a.id = e.id', step_number=N)` — single SQL, no materialization
-- Use `store.save_dataframe()` ONLY when the result requires Python computation (LLM calls, pandas transforms, API data). If it's pure SQL, use `store.create_view()`.
+- OK: `df = store.query('SELECT ... FROM hr.employees'); df['score'] = llm_score(df['text'].tolist(), ...); store.save_dataframe('scored', df, step_number=N)` — query() is correct here because the data feeds into a Python operation
 - **Schema discovery**: `find_relevant_tables(query)`, `get_table_schema(table)`, `find_entity(name)` are available ONLY as tool calls during code generation. They are NOT available in generated code — calling them will raise NameError. Use them to explore schemas before writing your code, then hardcode the table/column names you found.
 
 <!-- @api -->
@@ -167,14 +166,14 @@ Do NOT import skill modules. The functions are already available as globals, jus
 <!-- @rules -->
 ## Code Rules
 1. Use appropriate access pattern for database type
-2. **ALWAYS save results to store** — use `store.create_view()` for SQL-derivable results, `store.save_dataframe()` only for Python-computed results
+2. **ALWAYS create named results** — use `store.create_view()` for SQL-derivable results, `store.save_dataframe()` only for Python-computed results. Never leave data in an unnamed DataFrame.
 3. Print a brief summary of what was done (e.g., "Loaded 150 employees")
-4. **Self-check before writing code** — collapse query+save into a single view:
+4. **Self-check: can this be a view?** If the step is pure SQL (filter, join, aggregate), use `create_view()`. Only use `store.query()` when you need data in Python:
    - WRONG: `df = store.query('SELECT ... FROM hr.employees'); store.save_dataframe('employees', df, step_number=1)`
    - RIGHT: `store.create_view('employees', 'SELECT ... FROM hr.employees', step_number=1)`
-   - WRONG: `df = store.query('SELECT ... FROM hr.employees'); filtered = df[df['salary'] > 50000]; store.save_dataframe('high_earners', filtered, step_number=1)`
+   - WRONG: `df = store.query('...'); filtered = df[df['salary'] > 50000]; store.save_dataframe('high_earners', filtered, step_number=1)`
    - RIGHT: `store.create_view('high_earners', 'SELECT ... FROM hr.employees WHERE salary > 50000', step_number=1)`
-   - Use SQL equivalents for Python operations: `CURRENT_DATE` instead of `datetime.date.today()`, `WHERE`/`GROUP BY`/`ORDER BY` instead of pandas filtering/grouping/sorting
+   - OK: `df = store.query('SELECT ... FROM hr.employees'); df['sentiment'] = llm_score(df['comments'].tolist(), 0, 1, "Rate sentiment"); store.save_dataframe('scored_employees', df, step_number=1)` — query() needed for LLM call
 
 ## Output Guidelines
 - Print brief summaries and key metrics (e.g., "Loaded 150 employees", "Average salary: $85,000")

@@ -155,7 +155,7 @@ class PromptsMixin:
         if self.datastore:
             tables = self.datastore.list_tables()
             if tables:
-                table_lines = ["Available in `store` (use `store.query('SELECT ... FROM name')` or `store.load_dataframe('name')`):"]
+                table_lines = ["Available in `store` (use `store.create_view()` to build on these, `store.query()` to read into Python):"]
                 for t in tables:
                     schema = self.datastore.get_table_schema(t['name'])
                     if schema:

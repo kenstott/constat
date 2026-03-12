@@ -102,6 +102,10 @@ async def list_artifacts(
         # Build artifact list
         artifact_list = []
         for artifact_item in artifacts:
+            # Skip internal artifacts (data profiles, proof summaries, etc.)
+            full_check = managed.session.datastore.get_artifact_by_id(artifact_item["id"])
+            if full_check and full_check.metadata and full_check.metadata.get("internal"):
+                continue
             is_starred, is_key_result = get_starred_and_key_result(artifact_item)
             # Get full artifact to access metadata
             full_artifact = managed.session.datastore.get_artifact_by_id(artifact_item["id"])

@@ -90,6 +90,7 @@ class EventType(str, Enum):
     # Table/artifact events
     TABLE_CREATED = "table_created"
     ARTIFACT_CREATED = "artifact_created"
+    STEPS_TRUNCATED = "steps_truncated"
 
     # Synthesis events
     SYNTHESIZING = "synthesizing"

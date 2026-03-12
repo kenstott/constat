@@ -471,7 +471,7 @@ class MetadataMixin:
         if not tables:
             return self._get_brief_schema_summary()
 
-        lines = ["Relevant tables (queryable via store.query('SELECT ... FROM db_name.table') or store.create_view('name', 'SELECT ... FROM db_name.table', step_number=N)):"]
+        lines = ["Relevant tables (use store.create_view() for named results, store.query() only to read into Python for LLM ops):"]
 
         # Group by database for clarity
         by_db: dict[str, list] = {}

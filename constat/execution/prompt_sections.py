@@ -356,17 +356,17 @@ Each step runs in complete isolation. The ONLY way to share data between steps i
 
 ### DataFrames & Views
 ```python
-# PREFERRED: Create a lazy view when result is SQL-derivable (no data copied)
+# 1. create_view — DEFAULT for all SQL-derivable results (named, lazy, queryable by later steps)
 store.create_view('customers_filtered', 'SELECT * FROM hr.customers WHERE active = true', step_number=1)
 
-# Only use save_dataframe when result requires Python computation (LLM calls, pandas transforms)
+# 2. save_dataframe — ONLY when result requires Python computation (LLM calls, pandas transforms)
 store.save_dataframe('enriched', df_with_llm_scores, step_number=1, description='LLM-enriched data')
 
-# Load a DataFrame from a previous step
-customers = store.load_dataframe('customers')
+# 3. query — READ-ONLY, returns ephemeral DataFrame. Use only when you need data in Python for non-SQL ops
+df = store.query('SELECT * FROM customers_filtered')  # read into Python for llm_score, etc.
 
-# Query saved data/views with SQL
-result = store.query('SELECT * FROM customers WHERE revenue > 1000')
+# 4. load_dataframe — read a previously saved table/view into a DataFrame
+customers = store.load_dataframe('customers')
 ```
 
 ### Simple Values (numbers, strings, lists, dicts)

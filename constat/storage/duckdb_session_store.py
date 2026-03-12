@@ -265,10 +265,11 @@ class DuckDBSessionStore:
         if df.empty or len(df.columns) == 0:
             return
 
-        # Auto-convert to view if data is an unmodified query result
+        # Auto-convert to view if data is an unmodified SELECT result
         source_sql = getattr(df, 'attrs', {}).get('_source_sql')
         if (
             source_sql
+            and source_sql.strip().upper().startswith('SELECT')
             and list(df.columns) == df.attrs.get('_source_columns', [])
             and len(df) == df.attrs.get('_source_len', -1)
         ):
@@ -531,6 +532,11 @@ class DuckDBSessionStore:
         validated = _validate_table_name(name)
         duckdb_sql = transpile_sql(pg_sql, target_dialect="duckdb", source_dialect="postgres")
         with self._locked_conn() as conn:
+            # Drop existing TABLE if present — DuckDB can't replace a TABLE with a VIEW
+            try:
+                conn.execute(f"DROP TABLE IF EXISTS {validated}")
+            except duckdb.CatalogException:
+                pass
             conn.execute(f"CREATE OR REPLACE VIEW {validated} AS {duckdb_sql}")
 
             # Probe row count and columns from the view
@@ -812,10 +818,24 @@ class DuckDBSessionStore:
         if not entries:
             return "(no previous steps)"
         parts = []
+        current_query = None
         for entry in entries:
+            # Group entries by user query so the LLM can distinguish objectives
+            query = entry.get('user_query') or ''
+            if query and query != current_query:
+                current_query = query
+                parts.append(f"---\n**Objective:** {query}")
             section = f"## Step {entry['step_number']}: {entry['goal']}\n{entry['narrative']}"
             if entry['tables_created']:
-                section += f"\n\n**Tables created:** {', '.join(entry['tables_created'])}"
+                table_parts = []
+                for tname in entry['tables_created']:
+                    schema = self.get_table_schema(tname)
+                    if schema:
+                        cols = ", ".join(f"{c['name']} ({c['type']})" for c in schema)
+                        table_parts.append(f"`{tname}` — columns: {cols}")
+                    else:
+                        table_parts.append(f"`{tname}`")
+                section += f"\n\n**Tables created:**\n" + "\n".join(f"- {t}" for t in table_parts)
             parts.append(section)
         return "\n\n".join(parts)
 

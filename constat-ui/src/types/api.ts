@@ -493,6 +493,7 @@ export type EventType =
   | 'query_cancelled'
   | 'table_created'
   | 'artifact_created'
+  | 'steps_truncated'
   | 'clarification_needed'
   | 'clarification_received'
   | 'autocomplete_response'

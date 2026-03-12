@@ -390,6 +390,12 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
 
   // Convert facts Map to DAG structure
   // Recalculate when isPlanningComplete changes to ensure all dependencies are resolved
+  // Structural key: only changes when nodes are added/removed or edges change
+  const structuralKey = useMemo(() => {
+    const nodes = Array.from(facts.values())
+    return nodes.map(n => `${n.id}:${n.dependencies.filter(d => facts.has(d)).join(',')}`).sort().join('|')
+  }, [facts])
+
   const dagData = useMemo(() => {
     const nodes = Array.from(facts.values())
     if (nodes.length === 0) return null
@@ -405,7 +411,8 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     }))
 
     return dagNodes
-  }, [facts, isPlanningComplete])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [structuralKey])
 
   // Compute DAG layout
   const layout = useMemo(() => {
@@ -445,7 +452,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     }
   }, [dagData])
 
-  // Update dimensions and reset zoom/pan when layout changes
+  // Update dimensions and reset zoom/pan only when graph structure changes
   useEffect(() => {
     if (layout) {
       setDimensions({ width: layout.width, height: layout.height })
@@ -885,43 +892,6 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
               </g>
               </g>
             </svg>
-            {/* Zoom controls */}
-            <div className="absolute bottom-2 right-2 flex gap-1">
-              <button
-                onClick={() => setZoom(z => Math.min(3, z * 1.2))}
-                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-sm font-bold hover:bg-gray-100 dark:hover:bg-gray-700 shadow-sm"
-              >+</button>
-              <button
-                onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}
-                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 shadow-sm"
-              >1:1</button>
-              <button
-                onClick={() => setZoom(z => Math.max(0.3, z / 1.2))}
-                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-sm font-bold hover:bg-gray-100 dark:hover:bg-gray-700 shadow-sm"
-              >−</button>
-              <button
-                onClick={() => {
-                  if (!svgRef.current) return
-                  const container = svgRef.current.parentElement
-                  if (!container) return
-                  const cw = container.clientWidth
-                  const ch = container.clientHeight
-                  const fitZoom = Math.min(cw / dimensions.width, ch / dimensions.height, 1) * 0.95
-                  const offsetX = (cw - dimensions.width * fitZoom) / 2
-                  const offsetY = (ch - dimensions.height * fitZoom) / 2
-                  setZoom(fitZoom)
-                  setPan({ x: offsetX, y: offsetY })
-                }}
-                title="Fit to window"
-                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 shadow-sm flex items-center justify-center"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="2" width="12" height="12" rx="1" />
-                  <polyline points="2,6 5,6 5,2" />
-                  <polyline points="14,10 11,10 11,14" />
-                </svg>
-              </button>
-            </div>
             </div>
           ) : (
             <div className="text-center text-gray-500 py-8 min-w-[500px]">
@@ -987,7 +957,45 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
 
         {/* Footer */}
         <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
-          <span className="text-xs text-gray-500">Click nodes for details</span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-gray-500">Click nodes for details</span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => setZoom(z => Math.min(3, z * 1.2))}
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-sm font-bold hover:bg-gray-100 dark:hover:bg-gray-700"
+              >+</button>
+              <button
+                onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-xs hover:bg-gray-100 dark:hover:bg-gray-700"
+              >1:1</button>
+              <button
+                onClick={() => setZoom(z => Math.max(0.3, z / 1.2))}
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-sm font-bold hover:bg-gray-100 dark:hover:bg-gray-700"
+              >−</button>
+              <button
+                onClick={() => {
+                  if (!svgRef.current) return
+                  const container = svgRef.current.parentElement
+                  if (!container) return
+                  const cw = container.clientWidth
+                  const ch = container.clientHeight
+                  const fitZoom = Math.min(cw / dimensions.width, ch / dimensions.height, 1) * 0.95
+                  const offsetX = (cw - dimensions.width * fitZoom) / 2
+                  const offsetY = (ch - dimensions.height * fitZoom) / 2
+                  setZoom(fitZoom)
+                  setPan({ x: offsetX, y: offsetY })
+                }}
+                title="Fit to window"
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="2" width="12" height="12" rx="1" />
+                  <polyline points="2,6 5,6 5,2" />
+                  <polyline points="14,10 11,10 11,14" />
+                </svg>
+              </button>
+            </div>
+          </div>
           <div className="flex gap-2 items-center">
             {isProofComplete && onRedo && (
               <button

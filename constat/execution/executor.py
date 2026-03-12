@@ -263,17 +263,18 @@ def _get_prescriptive_fix(error_text: str, _code: str) -> str:
             "Use store.query('SELECT ... FROM db_name.table') or store.create_view() instead."
         )
 
-    # Schema prefix errors (SQLite doesn't support them)
+    # Schema prefix errors (pd.read_sql can't handle federated schema prefixes)
     if "no such table" in error_lower and "." in error_text:
-        # Extract the table name with schema prefix
         import re
         match = re.search(r'no such table[:\s]+(\w+\.\w+)', error_text, re.IGNORECASE)
         if match:
             full_name = match.group(1)
-            table_only = full_name.split('.')[-1]
             return (
-                f"SQLite does NOT support schema prefixes. Change '{full_name}' to just '{table_only}'. "
-                f"Use: store.query('SELECT * FROM db_name.{table_only}') — source DB tables are attached as db_name.table"
+                f"pd.read_sql does NOT support schema prefixes like '{full_name}'. "
+                f"REPLACE the entire pd.read_sql call with store.query() or store.create_view() which handle federation automatically:\n"
+                f"  store.create_view('name', 'SELECT ... FROM {full_name}', step_number=N)  # lazy view\n"
+                f"  df = store.query('SELECT ... FROM {full_name}')  # immediate DataFrame\n"
+                f"Do NOT use pd.read_sql for this query."
             )
 
     # Store methods that don't exist

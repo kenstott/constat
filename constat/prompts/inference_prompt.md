@@ -9,7 +9,7 @@ YOUR INPUTS — load these, do NOT recompute them:
 SCALAR VALUES:
 {scalars}
 
-TABLES (already in datastore, load with store.load_dataframe() or store.query()):
+TABLES (already in datastore — use store.create_view() for SQL operations, store.query() only to read into Python for LLM ops):
 {tables}
 {referenced_section}{api_sources_section}
 Available Data Access:

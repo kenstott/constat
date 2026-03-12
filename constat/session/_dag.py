@@ -469,7 +469,7 @@ RULES:
                             if issues:
                                 logger.warning(f"[VERIFY] {inf_id} data quality issues in '{ref_table}': {issues}")
 
-                            # Save profile as artifact
+                            # Save profile as artifact (internal, not shown in UI)
                             if self.datastore:
                                 inf_step = 1000 + int(inf_id[1:])
                                 self.datastore.add_artifact(
@@ -477,6 +477,7 @@ RULES:
                                     name=f"profile_{ref_table}",
                                     title=f"Data Profile: {ref_table}",
                                     content_type="text/markdown",
+                                    metadata={"internal": True},
                                 )
 
                             resolved_inferences[inf_id] = f"Verified: {row_count} records"
@@ -535,10 +536,14 @@ RULES:
                     elif is_db_referenced:
                         # Referenced table: get metadata from original database
                         # Extract table name from the value format (db.table)
+                        ref_db = None
                         match = re.match(r'\(([^.]+)\.([^)]+)\)', val_str)
                         if match:
                             ref_db, ref_table = match.groups()
                             dep_table = ref_table  # Use actual table name
+
+                        # Qualified name for queries (db.table)
+                        qualified = f"{ref_db}.{dep_table}" if ref_db else dep_table
 
                         # Try to get column info from the original database table
                         if self.schema_manager:
@@ -550,7 +555,7 @@ RULES:
                                         cols = [c.name for c in table_meta.columns]
                                         columns_info = f" columns: {cols}"
                                         referenced_tables.append(
-                                            f"- {dep_node.fact_id}: query from database table '{dep_table}'{columns_info}"
+                                            f"- {dep_node.fact_id} → store.query('SELECT * FROM {qualified}'){columns_info}"
                                         )
                                         break
                             except Exception as e:
@@ -559,7 +564,7 @@ RULES:
                         if not columns_info:
                             # Fallback: still mark as referenced
                             referenced_tables.append(
-                                f"- {dep_node.fact_id}: referenced table '{dep_table}' (query from database)"
+                                f"- {dep_node.fact_id} → store.query('SELECT * FROM {qualified}')"
                             )
                     else:
                         # Regular table in datastore
@@ -593,7 +598,7 @@ RULES:
                                     sample_info += f"\n    total rows: {row_count}"
                             except Exception as e:
                                 logger.debug(f"Failed to get sample for {dep_table}: {e}")
-                        tables.append(f"- {dep_node.fact_id}: stored as '{dep_table}'{columns_info}{sample_info}")
+                        tables.append(f"- {dep_node.fact_id} → store.query('SELECT * FROM {dep_table}'){columns_info}{sample_info}")
                 else:
                     if dep_node.source == "document":
                         # Document premises: tell LLM to use doc_read() instead of variable reference
@@ -619,7 +624,7 @@ RULES:
             referenced_section = ""
             if referenced_tables:
                 referenced_section = f"""
-REFERENCED TABLES (query with store.query('SELECT ... FROM db_name.table') or store.create_view()):
+REFERENCED DATABASE TABLES (use the exact query shown — fact IDs like P1, P2 are NOT table names):
 {chr(10).join(referenced_tables)}
 """
 
@@ -697,8 +702,8 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
 
             # Build dynamic data source descriptions
             data_source_apis = [
-                "- store.query('SELECT ... FROM db_name.table') -> pd.DataFrame",
-                "- store.create_view('name', 'SELECT ... FROM db_name.table', step_number=N) — lazy, preferred",
+                "- store.create_view('name', 'SELECT ... FROM db_name.table', step_number=N) — named lazy view (DEFAULT)",
+                "- store.query('SELECT ... FROM db_name.table') -> ephemeral DataFrame (only for Python/LLM ops)",
                 "- store.save_dataframe(name, df) — only for Python-computed results",
             ]
 
