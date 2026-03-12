@@ -30,9 +30,10 @@ Share data between steps ONLY via `store`:
 
 **SQL databases** (SQLite, PostgreSQL, MySQL, DuckDB):
 - **ALWAYS write SQL in PostgreSQL dialect** regardless of the target database. A transpiler converts to the native dialect automatically. Do NOT use SQLite, MySQL, or DuckDB-specific syntax.
-- Use `pd.read_sql(query, db_<name>)` - NEVER use db.execute()
-- Or use `sql_<name>(query)` helper - returns DataFrame, auto-transpiles
-- `sql(query)` is alias for first database
+- **Preferred**: `store.create_view('name', 'SELECT ... FROM db_name.table ...', step_number=N)` — lazy, no materialization
+- **Preferred**: `store.query('SELECT ... FROM db_name.table ...')` — when you just need the result as DataFrame
+- Fallback: `pd.read_sql(query, db_<name>)` or `sql_<name>(query)` — only when you need pandas ops before saving
+- NEVER use db.execute()
 
 **NoSQL databases** (MongoDB, Cassandra, Elasticsearch, etc.):
 - MongoDB: `list(db_<name>['collection'].find(query))` returns list of dicts
@@ -116,10 +117,14 @@ Source databases (SQLite, DuckDB) are automatically attached to the session stor
 - **Source DB tables**: queryable as `db_name.table_name` (e.g., `hr.employees`, `sales.orders`)
 - **Store tables/views**: queryable by name (e.g., `employee_list`, `most_recent_reviews`)
 - **Cross-source JOINs**: `store.query('SELECT ... FROM hr.employees e JOIN employee_list el ON ...')` — joins source DB and store tables in one query
-- `store.create_view('name', 'SELECT ... FROM hr.employees JOIN ...')` — creates a lazy view that federates across sources
-- `pd.read_sql(query, db_<name>)` / `sql_<name>(query)` still work for direct database queries
-- **Prefer `store.query()` and `store.create_view()`** over `pd.read_sql()` + `store.save_dataframe()` — avoids materializing intermediates and enables lazy evaluation
 - If data already exists in the store, use it. Do NOT re-query the database for it.
+
+**CRITICAL anti-pattern — do NOT materialize what can be a view**:
+- WRONG: `df = pd.read_sql('SELECT ... FROM employees', db_hr)` then `store.save_dataframe('employees_filtered', df)` — eagerly copies data into store
+- RIGHT: `store.create_view('employees_filtered', 'SELECT ... FROM hr.employees WHERE ...', step_number=N)` — lazy, zero-copy, queryable by later steps
+- WRONG: `df1 = store.load_dataframe('table_a'); df2 = pd.read_sql(..., db_hr); merged = pd.merge(df1, df2, ...); store.save_dataframe('merged', merged)` — unnecessary DataFrame round-trip
+- RIGHT: `store.create_view('merged', 'SELECT ... FROM table_a a JOIN hr.employees e ON a.id = e.id', step_number=N)` — single SQL, no materialization
+- Use `store.save_dataframe()` ONLY when the result requires Python computation (LLM calls, pandas transforms, API data). If it's pure SQL, use `store.create_view()`.
 
 ## Corrections and Updates
 When correcting or updating previous results:
