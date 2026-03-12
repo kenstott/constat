@@ -103,6 +103,20 @@ async def list_tables(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/{session_id}/ddl")
+async def get_session_ddl(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Return the full DDL of the session store."""
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not managed.session.datastore:
+        return {"ddl": ""}
+    return {"ddl": managed.session.datastore.get_ddl()}
+
+
 @router.get("/{session_id}/tables/{table_name}/versions", response_model=TableVersionsResponse)
 async def get_table_versions(
     session_id: str,

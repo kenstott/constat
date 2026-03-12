@@ -43,7 +43,7 @@ from constat.session._types import (
 from constat.storage.history import SessionHistory
 from constat.storage.learnings import LearningStore
 from constat.storage.registry import ConstatRegistry
-from constat.storage.registry_datastore import RegistryAwareDataStore
+from constat.storage.duckdb_session_store import DuckDBSessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ class CoreMixin:
         self.server_session_id: Optional[str] = session_id  # Server UUID for reverse lookup
         self.plan: Optional[Plan] = None
         self.scratchpad = Scratchpad()
-        self.datastore: Optional[RegistryAwareDataStore] = None  # Persistent storage (only shared state between steps)
+        self.datastore: Optional[DuckDBSessionStore] = None  # Persistent storage (only shared state between steps)
 
         # Central registry for tables and artifacts (shared across sessions)
         self.registry = ConstatRegistry(base_dir=self.data_dir)
@@ -600,10 +600,41 @@ class CoreMixin:
         return self._conversation_state.phase == Phase.EXECUTING
 
     def _save_proof_result(self, result: dict) -> None:
-        """Persist last_proof_result to session state.json."""
+        """Persist last_proof_result to session state.json and proven grounding."""
         state = self.history.load_state(self.session_id) or {}
         state["last_proof_result"] = result
         self.history.save_state(self.session_id, state)
+        self._persist_proven_grounding(result)
+
+    def _persist_proven_grounding(self, result: dict) -> None:
+        """Extract source patterns from proof nodes and persist as proven grounding."""
+        proof_nodes = result.get("proof_nodes", [])
+        if not proof_nodes:
+            return
+
+        relational = None
+        if self.doc_tools and hasattr(self.doc_tools, '_vector_store'):
+            relational = getattr(self.doc_tools._vector_store, '_relational', None)
+        if not relational:
+            return
+
+        import re as _re
+        from constat.testing.grounding import build_source_patterns
+
+        for node in proof_nodes:
+            raw_name = node.get("name", "")
+            if not raw_name:
+                continue
+            name = _re.sub(r"^[A-Z]\d+:\s*", "", raw_name)
+            if not name:
+                continue
+
+            patterns = build_source_patterns(node)
+            if not patterns:
+                continue
+
+            entity_name = name.strip().lower().replace(" ", "_")
+            relational.save_proven_grounding(entity_name, patterns)
 
     def get_state(self) -> dict:
         """Get current session state for inspection or resumption."""

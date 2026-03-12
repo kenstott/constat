@@ -78,6 +78,7 @@ from constat.providers import (
 from constat.session import Session
 # Storage
 from constat.storage.datastore import DataStore
+from constat.storage.duckdb_session_store import DuckDBSessionStore
 from constat.storage.history import SessionHistory
 
 __version__ = "0.1.0"

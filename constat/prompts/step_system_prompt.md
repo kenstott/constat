@@ -16,9 +16,12 @@ Your code has access to:
 
 ## State Management
 Share data between steps ONLY via `store`:
-- `store.save_dataframe('name', df, step_number=N)` / `store.load_dataframe('name')`
+- `store.save_dataframe('name', df, step_number=N)` / `store.load_dataframe('name')` — materializes data
+- `store.create_view('name', sql, step_number=N)` — lazy SQL view (preferred when result is SQL-derivable)
 - `store.set_state('key', value, step_number=N)` / `store.get_state('key')` (check for None!)
-- `store.query('SELECT ... FROM table')` for SQL on saved data
+- `store.query('SELECT ... FROM table')` for SQL on saved data, views, or attached source DB tables
+
+**Prefer `store.create_view()` over `store.save_dataframe()`** when the result can be expressed as SQL over existing tables. Views are lazy — they don't materialize data until queried, saving memory and making the data pipeline transparent. Use `save_dataframe()` only when the result requires Python computation (LLM calls, complex pandas ops, API data).
 
 <!-- @database -->
 ## Database Access Patterns
@@ -107,11 +110,16 @@ When a prior step saved data to `store`, **use it directly** — do NOT re-deriv
 - If a prior step's output is missing or broken, let the error propagate — the retry mechanism will fix the prior step.
 - NEVER wrap `store.load_dataframe()` in a try/except with fallback recomputation.
 
-## Store Tables vs Database Tables — CRITICAL DISTINCTION
-- **Store tables** (listed under "Intermediate Tables") are in the DuckDB datastore. Access via `store.load_dataframe('name')` or `store.query('SELECT ... FROM name')`.
-- **Database tables** are in configured databases (SQLite, PostgreSQL, etc.). Access via `pd.read_sql(query, db_<name>)` or `sql_<name>(query)`.
-- **They live in separate systems**: do NOT use store table names in `pd.read_sql()` queries — they don't exist in the database. Do NOT use database table names in `store.query()` — they don't exist in the store. To combine data from both, load each into a DataFrame separately, then join in pandas or save to store and use `store.query()`.
-- If your step goal says to use data that already exists in the store, load it with `store.load_dataframe()`. Do NOT re-query the database for it.
+## Data Federation — Unified Query Namespace
+Source databases (SQLite, DuckDB) are automatically attached to the session store. All data — source DB tables, intermediate tables, and views — is queryable through `store.query()` using PostgreSQL syntax.
+
+- **Source DB tables**: queryable as `db_name.table_name` (e.g., `hr.employees`, `sales.orders`)
+- **Store tables/views**: queryable by name (e.g., `employee_list`, `most_recent_reviews`)
+- **Cross-source JOINs**: `store.query('SELECT ... FROM hr.employees e JOIN employee_list el ON ...')` — joins source DB and store tables in one query
+- `store.create_view('name', 'SELECT ... FROM hr.employees JOIN ...')` — creates a lazy view that federates across sources
+- `pd.read_sql(query, db_<name>)` / `sql_<name>(query)` still work for direct database queries
+- **Prefer `store.query()` and `store.create_view()`** over `pd.read_sql()` + `store.save_dataframe()` — avoids materializing intermediates and enables lazy evaluation
+- If data already exists in the store, use it. Do NOT re-query the database for it.
 
 ## Corrections and Updates
 When correcting or updating previous results:

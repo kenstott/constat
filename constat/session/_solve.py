@@ -16,8 +16,7 @@ from constat.execution.mode import PlanApproval, PrimaryIntent, SubIntent
 from constat.keywords import wants_brief_output
 from constat.execution.scratchpad import Scratchpad
 from constat.session._types import QuestionAnalysis, QuestionType, StepEvent, is_meta_question
-from constat.storage.datastore import DataStore
-from constat.storage.registry_datastore import RegistryAwareDataStore
+from constat.storage.duckdb_session_store import DuckDBSessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -1076,27 +1075,17 @@ class SolveMixin:
 
         # Load the datastore (contains tables, state, scratchpad, artifacts)
         session_dir = self.history._session_dir(session_id)
-        datastore_path = session_dir / "datastore.duckdb"
-        tables_dir = session_dir / "tables"
+        db_path = session_dir / "session.duckdb"
 
-        # Create underlying datastore
-        if datastore_path.exists():
-            underlying_datastore = DataStore(db_path=datastore_path)
-        else:
-            # No datastore file - create empty one
-            underlying_datastore = DataStore(db_path=datastore_path)
-
-        # Wrap with registry-aware datastore
         # noinspection PyAttributeOutsideInit
-        self.datastore = RegistryAwareDataStore(
-            datastore=underlying_datastore,
+        self.datastore = DuckDBSessionStore(
+            db_path=db_path,
             registry=self.registry,
             user_id=self.user_id,
             session_id=session_id,
-            tables_dir=tables_dir,
         )
 
-        if datastore_path.exists():
+        if db_path.exists():
             # Rebuild scratchpad from datastore
             scratchpad_entries = self.datastore.get_scratchpad()
             if scratchpad_entries:

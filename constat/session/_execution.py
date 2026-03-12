@@ -34,6 +34,27 @@ logger = logging.getLogger(__name__)
 # noinspection PyUnresolvedReferences
 class ExecutionMixin:
 
+    def _auto_attach_sqlite(self, db_name: str, conn) -> None:
+        """Auto-ATTACH a SQLite source database to the session DuckDB store."""
+        if not hasattr(self, 'datastore') or self.datastore is None:
+            return
+        try:
+            engine_url = str(conn.engine.url)
+            if not engine_url.startswith("sqlite"):
+                return
+            # Extract file path from sqlite:///path or sqlite:///file:path?mode=ro
+            db_path = engine_url.split("///", 1)[1] if "///" in engine_url else None
+            if not db_path:
+                return
+            # Strip file: prefix and query params (?mode=ro)
+            if db_path.startswith("file:"):
+                db_path = db_path[5:]
+            if "?" in db_path:
+                db_path = db_path.split("?")[0]
+            self.datastore.attach(db_name, db_path, db_type="sqlite", read_only=True)
+        except Exception as e:
+            logger.debug(f"Could not auto-attach {db_name}: {e}")
+
     def _make_ask_user(self, step_number: int) -> Callable:
         """Create an ask_user() function for use in generated step code.
 
@@ -495,6 +516,7 @@ class ExecutionMixin:
 
         # Provide database connections from config
         # SQL databases get both raw engine (db_<name>) and transpiling helper (sql_<name>)
+        # SQLite databases are also ATTACHed to the session DuckDB store for federation
         from constat.catalog.sql_transpiler import TranspilingConnection, create_sql_helper
 
         config_db_names = set()
@@ -513,6 +535,8 @@ class ExecutionMixin:
                     globals_dict["db"] = conn.engine
                     globals_dict["sql"] = create_sql_helper(conn)
                     first_db = conn.engine
+                # Auto-ATTACH SQLite sources to session DuckDB for federation
+                self._auto_attach_sqlite(db_name, conn)
             else:
                 globals_dict[f"db_{db_name}"] = conn
                 if i == 0:
@@ -530,6 +554,7 @@ class ExecutionMixin:
                         globals_dict["db"] = conn.engine
                         globals_dict["sql"] = create_sql_helper(conn)
                         first_db = conn.engine
+                    self._auto_attach_sqlite(db_name, conn)
                 else:
                     globals_dict[f"db_{db_name}"] = conn
                     if first_db is None:

@@ -20,8 +20,7 @@ from constat.core.models import TaskType
 from constat.execution.fact_resolver import format_source_attribution
 from constat.prompts import load_prompt
 from constat.session._types import StepEvent
-from constat.storage.datastore import DataStore
-from constat.storage.registry_datastore import RegistryAwareDataStore
+from constat.storage.duckdb_session_store import DuckDBSessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -1183,15 +1182,12 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
             )
         if not self.datastore:
             session_dir = self.history._session_dir(self.session_id)
-            datastore_path = session_dir / "datastore.duckdb"
-            tables_dir = session_dir / "tables"
-            underlying_datastore = DataStore(db_path=datastore_path)
-            self.datastore = RegistryAwareDataStore(
-                datastore=underlying_datastore,
+            db_path = session_dir / "session.duckdb"
+            self.datastore = DuckDBSessionStore(
+                db_path=db_path,
                 registry=self.registry,
                 user_id=self.user_id,
                 session_id=self.session_id,
-                tables_dir=tables_dir,
             )
             self.fact_resolver._datastore = self.datastore
 
