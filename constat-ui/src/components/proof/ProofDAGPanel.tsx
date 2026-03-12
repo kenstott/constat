@@ -1057,7 +1057,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                 Save as Skill
               </button>
             )}
-            {showSkillForm && sessionId && (
+            {isProofComplete && showSkillForm && sessionId && (
               <form
                 className="flex items-center gap-2"
                 onSubmit={async (e) => {
@@ -1116,7 +1116,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                 Save as Test
               </button>
             )}
-            {showTestForm && sessionId && (
+            {isProofComplete && showTestForm && sessionId && (
               <form
                 className="flex items-center gap-2"
                 onSubmit={async (e) => {
