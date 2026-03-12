@@ -163,6 +163,11 @@ interface UIState {
   publicSessionId: string | null
   clearPublicSession: () => void
 
+  // Result step collapsing
+  collapsedResultSteps: Set<number>
+  toggleResultStep: (stepNumber: number) => void
+  expandResultStep: (stepNumber: number) => void
+
   // Actions
   toggleMenu: () => void
   setMenuOpen: (open: boolean) => void
@@ -187,6 +192,23 @@ export const useUIStore = create<UIState>()(
       fullscreenArtifact: null,
       pendingDeepLink: null,
       publicSessionId: null,
+      collapsedResultSteps: new Set<number>(),
+
+      toggleResultStep: (stepNumber) =>
+        set((state) => {
+          const next = new Set(state.collapsedResultSteps)
+          if (next.has(stepNumber)) next.delete(stepNumber)
+          else next.add(stepNumber)
+          return { collapsedResultSteps: next }
+        }),
+
+      expandResultStep: (stepNumber) =>
+        set((state) => {
+          if (!state.collapsedResultSteps.has(stepNumber)) return state
+          const next = new Set(state.collapsedResultSteps)
+          next.delete(stepNumber)
+          return { collapsedResultSteps: next }
+        }),
       clearPublicSession: () => set({ publicSessionId: null }),
 
       openFullscreenArtifact: (artifact: FullscreenArtifact) => set({ fullscreenArtifact: artifact }),

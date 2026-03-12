@@ -15,10 +15,13 @@ import {
   ClipboardDocumentIcon,
   ClipboardDocumentCheckIcon,
   EyeIcon,
-  ArrowPathIcon,
   LightBulbIcon,
   BoltIcon,
   CheckIcon,
+  PencilIcon,
+  TrashIcon,
+  CircleStackIcon,
+  StarIcon,
 } from '@heroicons/react/24/outline'
 import { FlagButton } from './FlagButton'
 
@@ -86,7 +89,6 @@ interface MessageBubbleProps {
   defaultExpanded?: boolean
   isFinalInsight?: boolean
   onViewResult?: () => void
-  onRedo?: (guidance?: string) => void
   children?: ReactNode
   role?: string // Role used for this step (e.g., "data_analyst")
   skills?: string[] // Skills used for this step
@@ -97,6 +99,12 @@ interface MessageBubbleProps {
   stepDisplayModeVersion?: number // Increment to re-trigger override
   queryText?: string // The user query that produced this answer (for flagging)
   isSuperseded?: boolean // Step from a previous run (dimmed)
+  onStepEdit?: (stepNumber: number, newGoal: string) => void
+  onStepDelete?: (stepNumber: number) => void
+  stepOutputs?: Array<{ type: 'table' | 'artifact'; name: string; id: string }>
+  onOutputClick?: (output: { type: 'table' | 'artifact'; name: string; id: string }) => void
+  onRoleClick?: (role: string) => void
+  onEditMessage?: (content: string) => void
 }
 
 function formatMs(ms: number): string {
@@ -166,7 +174,6 @@ export function MessageBubble({
   defaultExpanded,
   isFinalInsight,
   onViewResult,
-  onRedo,
   children,
   role,
   skills,
@@ -177,6 +184,12 @@ export function MessageBubble({
   stepDisplayModeVersion: externalStepModeVersion,
   queryText,
   isSuperseded,
+  onStepEdit,
+  onStepDelete,
+  stepOutputs,
+  onOutputClick,
+  onRoleClick,
+  onEditMessage,
 }: MessageBubbleProps) {
   const styles = typeStyles[type]
   const Icon = styles.icon
@@ -208,8 +221,8 @@ export function MessageBubble({
   const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false)
   const [needsExpansion, setNeedsExpansion] = useState(false)
   const [copied, setCopied] = useState(false)
-  const [showRedoForm, setShowRedoForm] = useState(false)
-  const [redoGuidance, setRedoGuidance] = useState('')
+  const [isEditing, setIsEditing] = useState(false)
+  const [editGoal, setEditGoal] = useState('')
   const contentRef = useRef<HTMLDivElement>(null)
 
   // Sync external step mode override (condense-all / expand-all)
@@ -277,9 +290,12 @@ export function MessageBubble({
                 <CheckIcon className="w-3.5 h-3.5 text-green-500" />
               ) : null}
               {role && (
-                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
+                <button
+                  onClick={() => onRoleClick?.(role)}
+                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-800/50 cursor-pointer transition-colors"
+                >
                   @{role}
-                </span>
+                </button>
               )}
               {skills && skills.length > 0 && skills.map((skill) => (
                 <span
@@ -386,8 +402,8 @@ export function MessageBubble({
             )}
           </div>
           )}
-          {/* Action buttons row — non-step expand/collapse + view/redo */}
-          {((!isStep && needsExpansion) || (isFinalInsight && onViewResult) || onRedo) && (
+          {/* Action buttons row — non-step expand/collapse + view proof */}
+          {((!isStep && needsExpansion) || (isFinalInsight && onViewResult)) && (
             <div className="mt-2 flex items-center gap-3">
               {!isStep && needsExpansion && (
                 <button
@@ -407,75 +423,70 @@ export function MessageBubble({
                   )}
                 </button>
               )}
-              {isFinalInsight && onViewResult && (
+              {isFinalInsight && onViewResult && content.toLowerCase().includes('proof') && (
                 <button
                   onClick={onViewResult}
                   className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
                 >
                   <EyeIcon className="w-4 h-4" />
-                  {content.toLowerCase().includes('proof') ? 'View Reason-Chain' : 'View Result'}
-                </button>
-              )}
-              {isFinalInsight && stepDurationMs != null && stepDurationMs > 0 && (
-                <span className="text-xs text-gray-400 dark:text-gray-500" title="Total elapsed time">
-                  {formatMs(stepDurationMs)}
-                </span>
-              )}
-              {onRedo && (
-                <button
-                  onClick={() => setShowRedoForm(true)}
-                  className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-md transition-colors"
-                >
-                  <ArrowPathIcon className="w-4 h-4" />
-                  Redo
+                  View Reason-Chain
                 </button>
               )}
             </div>
           )}
-          {showRedoForm && onRedo && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}>
-              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-[480px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
-                <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
-                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Redo Analysis</h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">What should be different this time? (optional)</p>
-                </div>
-                <form
-                  className="px-5 py-4"
-                  onSubmit={(e) => {
-                    e.preventDefault()
-                    onRedo(redoGuidance.trim() || undefined)
-                    setShowRedoForm(false)
-                    setRedoGuidance('')
-                  }}
+          {/* Artifact/table pills for completed steps */}
+          {isStep && stepOutputs && stepOutputs.length > 0 && stepDurationMs !== undefined && !isLive && (
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {stepOutputs.map((output) => (
+                <button
+                  key={output.id}
+                  onClick={() => onOutputClick?.(output)}
+                  className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-primary-50 text-primary-600 hover:bg-primary-100 dark:bg-primary-900/20 dark:text-primary-400 dark:hover:bg-primary-900/40 transition-colors"
+                  title={`Jump to ${output.name}`}
                 >
-                  <textarea
-                    value={redoGuidance}
-                    onChange={(e) => setRedoGuidance(e.target.value)}
-                    placeholder="e.g. Focus on quarterly trends instead of monthly..."
-                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
-                    rows={4}
-                    autoFocus
-                  />
-                  <div className="flex justify-end gap-2 mt-4">
-                    <button
-                      type="button"
-                      onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}
-                      className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors"
-                    >
-                      Redo
-                    </button>
-                  </div>
-                </form>
-              </div>
+                  {output.type === 'table' ? <CircleStackIcon className="w-3 h-3" /> : <StarIcon className="w-3 h-3" />}
+                  {output.name}
+                </button>
+              ))}
             </div>
           )}
           {children}
+          {isEditing && stepNumber !== undefined && onStepEdit && (
+            <div className="mt-2 flex gap-2">
+              <input
+                type="text"
+                value={editGoal}
+                onChange={(e) => setEditGoal(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && editGoal.trim()) {
+                    onStepEdit(stepNumber, editGoal.trim())
+                    setIsEditing(false)
+                  } else if (e.key === 'Escape') {
+                    setIsEditing(false)
+                  }
+                }}
+                className="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                autoFocus
+              />
+              <button
+                onClick={() => {
+                  if (editGoal.trim()) {
+                    onStepEdit(stepNumber, editGoal.trim())
+                    setIsEditing(false)
+                  }
+                }}
+                className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+              >
+                Replan
+              </button>
+              <button
+                onClick={() => setIsEditing(false)}
+                className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
           </div>
           {/* Action buttons — dedicated right margin, stacked vertically */}
           {(
@@ -495,8 +506,38 @@ export function MessageBubble({
                   <ClipboardDocumentIcon className="w-4 h-4" />
                 )}
               </button>
+              {isUser && onEditMessage && (
+                <button
+                  onClick={() => onEditMessage(content)}
+                  className="p-1 rounded text-gray-400 hover:text-blue-500 dark:text-gray-500 dark:hover:text-blue-400 transition-colors"
+                  title="Edit and resubmit"
+                >
+                  <PencilIcon className="w-4 h-4" />
+                </button>
+              )}
               {!isUser && queryText && (
                 <FlagButton queryText={queryText} answerSummary={content.slice(0, 200)} />
+              )}
+              {isStep && stepDurationMs !== undefined && !isLive && !isSuperseded && onStepEdit && stepNumber !== undefined && (
+                <button
+                  onClick={() => {
+                    setEditGoal(cleanedContent.split('\n')[0])
+                    setIsEditing(true)
+                  }}
+                  className="p-1 rounded text-gray-400 hover:text-blue-500 dark:text-gray-500 dark:hover:text-blue-400 transition-colors"
+                  title="Edit step goal and replan"
+                >
+                  <PencilIcon className="w-4 h-4" />
+                </button>
+              )}
+              {isStep && stepDurationMs !== undefined && !isLive && !isSuperseded && onStepDelete && stepNumber !== undefined && (
+                <button
+                  onClick={() => onStepDelete(stepNumber)}
+                  className="p-1 rounded text-gray-400 hover:text-red-500 dark:text-gray-500 dark:hover:text-red-400 transition-colors"
+                  title="Delete step and replan"
+                >
+                  <TrashIcon className="w-4 h-4" />
+                </button>
               )}
             </div>
           )}

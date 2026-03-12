@@ -2078,11 +2078,29 @@ async def delete_rule(
         404: Rule not found
     """
     try:
+        import yaml as _yaml
         from constat.storage.learnings import LearningStore
 
+        # Try user-level store first
         store = LearningStore(user_id=user_id)
         if store.delete_rule(rule_id):
             return {"status": "deleted", "id": rule_id}
+
+        # Search domain-scoped learnings.yaml files
+        for _key, domain_cfg in (_config.domains or {}).items():
+            if domain_cfg.source_path:
+                for d in _domain_data_dirs(domain_cfg, user_id):
+                    lf = d / "learnings.yaml"
+                    if lf.is_file():
+                        try:
+                            ldata = _yaml.safe_load(lf.read_text()) or {}
+                            if rule_id in (ldata.get("rules") or {}):
+                                del ldata["rules"][rule_id]
+                                lf.write_text(_yaml.dump(ldata, default_flow_style=False, sort_keys=False))
+                                return {"status": "deleted", "id": rule_id}
+                        except Exception:
+                            pass
+
         raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
     except HTTPException:
         raise

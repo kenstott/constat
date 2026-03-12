@@ -167,8 +167,14 @@ Do NOT import skill modules. The functions are already available as globals, jus
 <!-- @rules -->
 ## Code Rules
 1. Use appropriate access pattern for database type
-2. **ALWAYS save results to store** - nothing in local variables persists!
+2. **ALWAYS save results to store** — use `store.create_view()` for SQL-derivable results, `store.save_dataframe()` only for Python-computed results
 3. Print a brief summary of what was done (e.g., "Loaded 150 employees")
+4. **Self-check before writing code** — collapse query+save into a single view:
+   - WRONG: `df = store.query('SELECT ... FROM hr.employees'); store.save_dataframe('employees', df, step_number=1)`
+   - RIGHT: `store.create_view('employees', 'SELECT ... FROM hr.employees', step_number=1)`
+   - WRONG: `df = store.query('SELECT ... FROM hr.employees'); filtered = df[df['salary'] > 50000]; store.save_dataframe('high_earners', filtered, step_number=1)`
+   - RIGHT: `store.create_view('high_earners', 'SELECT ... FROM hr.employees WHERE salary > 50000', step_number=1)`
+   - Use SQL equivalents for Python operations: `CURRENT_DATE` instead of `datetime.date.today()`, `WHERE`/`GROUP BY`/`ORDER BY` instead of pandas filtering/grouping/sorting
 
 ## Output Guidelines
 - Print brief summaries and key metrics (e.g., "Loaded 150 employees", "Average salary: $85,000")

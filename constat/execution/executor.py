@@ -251,7 +251,8 @@ def _get_prescriptive_fix(error_text: str, _code: str) -> str:
     if "find_relevant_tables" in error_text or "get_table_schema" in error_text:
         return (
             "The function find_relevant_tables() and get_table_schema() are NOT available. "
-            "These are planning-only tools. Use pd.read_sql(query, db_<name>) to query tables directly. "
+            "These are planning-only tools. Use store.query('SELECT ... FROM db_name.table') or "
+            "store.create_view('name', 'SELECT ...', step_number=N) to query tables directly. "
             "The table schema is already provided in the prompt - use that information."
         )
 
@@ -259,7 +260,7 @@ def _get_prescriptive_fix(error_text: str, _code: str) -> str:
     if "execute" in error_lower and ("engine" in error_lower or "attribute" in error_lower):
         return (
             "Do NOT use db.execute() or db_<name>.execute() - this does not work in SQLAlchemy 2.0. "
-            "Use pd.read_sql(query, db_<name>) for ALL database queries."
+            "Use store.query('SELECT ... FROM db_name.table') or store.create_view() instead."
         )
 
     # Schema prefix errors (SQLite doesn't support them)
@@ -272,7 +273,7 @@ def _get_prescriptive_fix(error_text: str, _code: str) -> str:
             table_only = full_name.split('.')[-1]
             return (
                 f"SQLite does NOT support schema prefixes. Change '{full_name}' to just '{table_only}'. "
-                f"Use: pd.read_sql('SELECT * FROM {table_only}', db_<name>)"
+                f"Use: store.query('SELECT * FROM db_name.{table_only}') — source DB tables are attached as db_name.table"
             )
 
     # Store methods that don't exist

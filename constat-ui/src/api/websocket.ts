@@ -139,6 +139,18 @@ export class WebSocketManager {
     this.send('cancel')
   }
 
+  replanFrom(stepNumber: number, mode: 'edit' | 'delete' | 'redo', editedGoal?: string): void {
+    this.send('replan_from', { step_number: stepNumber, mode, edited_goal: editedGoal })
+  }
+
+  editObjective(objectiveIndex: number, newText: string): void {
+    this.send('edit_objective', { objective_index: objectiveIndex, new_text: newText })
+  }
+
+  deleteObjective(objectiveIndex: number): void {
+    this.send('delete_objective', { objective_index: objectiveIndex })
+  }
+
   requestAutocomplete(
     context: 'table' | 'column' | 'entity',
     prefix: string,

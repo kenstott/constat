@@ -38,6 +38,7 @@ class TableRecord:
     row_count: int
     columns: list[dict]  # [{name, type}, ...]
     created_at: str
+    step_number: int = 0  # Which step created this table
     is_published: bool = False  # Explicitly marked as output for artifacts panel
     is_final_step: bool = False  # Created in final step of request
     title: Optional[str] = None  # Human-friendly display name
@@ -82,6 +83,7 @@ class ConstatRegistry:
             row_count INTEGER DEFAULT 0,
             columns VARCHAR,  -- JSON array of {name, type}
             created_at VARCHAR NOT NULL,
+            step_number INTEGER DEFAULT 0,
             is_published BOOLEAN DEFAULT FALSE,
             is_final_step BOOLEAN DEFAULT FALSE,
             title VARCHAR,
@@ -154,6 +156,7 @@ class ConstatRegistry:
             row_count=row[columns.index("row_count")],
             columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
             created_at=row[columns.index("created_at")],
+            step_number=int(get("step_number", 0) or 0),
             is_published=bool(get("is_published", False)),
             is_final_step=bool(get("is_final_step", False)),
             title=get("title"),
@@ -207,6 +210,8 @@ class ConstatRegistry:
                 conn.execute("ALTER TABLE constat_tables ADD COLUMN title VARCHAR")
             if "role_id" not in cols:
                 conn.execute("ALTER TABLE constat_tables ADD COLUMN role_id VARCHAR")
+            if "step_number" not in cols:
+                conn.execute("ALTER TABLE constat_tables ADD COLUMN step_number INTEGER DEFAULT 0")
             # Update existing NULL values to FALSE so filtering works correctly
             conn.execute("UPDATE constat_tables SET is_published = FALSE WHERE is_published IS NULL")
             conn.execute("UPDATE constat_tables SET is_final_step = FALSE WHERE is_final_step IS NULL")
@@ -249,6 +254,7 @@ class ConstatRegistry:
         row_count: int = 0,
         columns: Optional[list[dict]] = None,
         description: Optional[str] = None,
+        step_number: int = 0,
         is_published: bool = False,
         is_final_step: bool = False,
         title: Optional[str] = None,
@@ -290,10 +296,10 @@ class ConstatRegistry:
         conn.execute("""
             INSERT INTO constat_tables
             (id, user_id, session_id, name, file_path, description, row_count, columns, created_at,
-             is_published, is_final_step, title, role_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             step_number, is_published, is_final_step, title, role_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [table_id, user_id, session_id, name, file_path, description, row_count, columns_json, now,
-              is_published, is_final_step, title, role_id])
+              step_number, is_published, is_final_step, title, role_id])
 
         return table_id
 

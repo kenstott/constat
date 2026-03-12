@@ -16,6 +16,7 @@ import {
 interface AutocompleteInputProps {
   onSubmit: (query: string) => void
   disabled?: boolean
+  editValue?: string | null  // When set, populates input and focuses it
 }
 
 type CompletionContext = 'command' | 'table' | 'entity' | 'scope' | 'none'
@@ -125,7 +126,7 @@ function saveHistory(history: string[]): void {
   }
 }
 
-export function AutocompleteInput({ onSubmit, disabled }: AutocompleteInputProps) {
+export function AutocompleteInput({ onSubmit, disabled, editValue }: AutocompleteInputProps) {
   const [query, setQuery] = useState('')
   const [isOpen, setIsOpen] = useState(false)
   const [items, setItems] = useState<AutocompleteItem[]>([])
@@ -139,6 +140,14 @@ export function AutocompleteInput({ onSubmit, disabled }: AutocompleteInputProps
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Populate input when editValue changes
+  useEffect(() => {
+    if (editValue != null) {
+      setQuery(editValue)
+      setTimeout(() => textareaRef.current?.focus(), 0)
+    }
+  }, [editValue])
 
   // Check if session is busy (will queue instead of send)
   const { status, executionPhase } = useSessionStore()

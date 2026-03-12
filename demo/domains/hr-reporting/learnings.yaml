@@ -1,14 +1,3 @@
-rules:
-  rule_d925e068:
-    category: user_correction
-    summary: 'CRITICAL: Calculate raises using performance review guidelines from
-      business_rules.md AND NEVER from compensation_policy.'
-    confidence: 0.9
-    source_learnings: []
-    tags: []
-    applied_count: 0
-    created: '2026-02-07T13:20:59.545758+00:00'
-    updated_at: '2026-02-07T14:33:30.802916+00:00'
-    domain: hr-reporting
+rules: {}
 corrections: {}
 archive: {}

@@ -809,6 +809,69 @@ def skill_download_command(ctx: CommandContext) -> CommandResult:
     )
 
 
+def objective_edit_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /objective-edit <index> <new_text>"""
+    parts = ctx.args.strip().split(None, 1)
+    if len(parts) < 2:
+        return ErrorResult(error="Usage: /objective-edit <index> <new_text>")
+    idx = int(parts[0])
+    new_text = parts[1]
+    result = ctx.session.edit_objective(idx, new_text)
+    return TextResult(success=True, content=result.get('output', 'Replanned.'))
+
+
+def objective_delete_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /objective-delete <index>"""
+    if not ctx.args.strip():
+        return ErrorResult(error="Usage: /objective-delete <index>")
+    idx = int(ctx.args.strip())
+    result = ctx.session.delete_objective(idx)
+    return TextResult(success=True, content=result.get('output', 'Replanned.'))
+
+
+def objectives_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /objectives — list session objectives"""
+    session = ctx.session
+    if not session.datastore:
+        return ErrorResult(error="No active session")
+    queries = session.datastore.get_state("user_queries") or []
+    if not queries:
+        return TextResult(success=True, content="No objectives yet.")
+    lines = [f"  [{i}] {q}" for i, q in enumerate(queries)]
+    return TextResult(success=True, content="Session objectives:\n" + "\n".join(lines))
+
+
+def step_redo_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /step-redo <step_number>"""
+    if not ctx.args.strip():
+        return ErrorResult(error="Usage: /step-redo <step_number>")
+    step = int(ctx.args.strip())
+    result = ctx.session.replan_from_step(step, mode='redo')
+    return TextResult(success=True, content=result.get('output', 'Replanned.'))
+
+
+def step_delete_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /step-delete <step_number>"""
+    if not ctx.args.strip():
+        return ErrorResult(error="Usage: /step-delete <step_number>")
+    step = int(ctx.args.strip())
+    result = ctx.session.replan_from_step(step, mode='delete')
+    return TextResult(success=True, content=result.get('output', 'Replanned.'))
+
+
+def step_edit_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /step-edit <step_number> <new_goal>"""
+    parts = ctx.args.strip().split(None, 1)
+    if not parts:
+        return ErrorResult(error="Usage: /step-edit <step_number> <new_goal>")
+    step = int(parts[0])
+    new_goal = parts[1] if len(parts) > 1 else None
+    if not new_goal:
+        return ErrorResult(error="Usage: /step-edit <step_number> <new_goal>")
+    result = ctx.session.replan_from_step(step, mode='edit', edited_goal=new_goal)
+    return TextResult(success=True, content=result.get('output', 'Replanned.'))
+
+
 def prove_command(ctx: CommandContext) -> CommandResult:
     """Run proof verification on the current conversation.
 

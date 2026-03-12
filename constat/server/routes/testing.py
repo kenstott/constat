@@ -30,6 +30,10 @@ from constat.server.models import (
 )
 from constat.server.permissions import get_user_permissions
 from constat.server.session_manager import SessionManager
+from constat.testing.grounding import (
+    _GROUNDABLE_SOURCES,
+    build_source_patterns,
+)
 from constat.testing.models import parse_golden_questions
 
 logger = logging.getLogger(__name__)
@@ -215,33 +219,6 @@ def _resolve_entity_with_term(
     return None, None
 
 
-_GROUNDABLE_SOURCES = {"database", "document", "api", "embedded"}
-
-# Regex to extract table names from SQL FROM/JOIN clauses.
-# Handles: FROM table, FROM "table", JOIN table, FROM schema.table
-_SQL_TABLE_RE = re.compile(
-    r'(?:FROM|JOIN)\s+'
-    r'"?(\w+)"?'            # table or schema
-    r'(?:\s*\.\s*"?(\w+)"?)?',  # optional .table
-    re.IGNORECASE,
-)
-
-
-def _extract_tables_from_sql(sql: str) -> list[str]:
-    """Extract real table names from a SQL query's FROM/JOIN clauses."""
-    tables: list[str] = []
-    seen: set[str] = set()
-    for m in _SQL_TABLE_RE.finditer(sql):
-        part1, part2 = m.group(1), m.group(2)
-        # schema.table → use table; plain table → use as-is
-        name = part2 if part2 else part1
-        key = name.lower()
-        if key not in seen:
-            seen.add(key)
-            tables.append(name)
-    return tables
-
-
 def _generate_test_metadata(
     config, original_question: str | None, proof_summary: str | None,
     entities: list[str],
@@ -395,35 +372,10 @@ async def extract_expectations(
 
         entities.append(resolved_name)
 
-        # Build grounding assertion directly from proof node data.
-        resolves_to: list[str] = []
-        source_name = node.get("source_name")
-        api_endpoint = node.get("api_endpoint")
-        query = node.get("query")
-
-        source_suffix = raw_source.split(":", 1)[1] if ":" in raw_source else None
-        if not source_name and source_type == "database" and source_suffix:
-            source_name = source_suffix
-        if not api_endpoint and source_type == "api" and source_suffix:
-            api_endpoint = source_suffix
-
-        if source_type == "database" and source_name:
-            # Extract actual table names from the SQL query
-            sql_tables = _extract_tables_from_sql(query) if query else []
-            if sql_tables:
-                for t in sql_tables:
-                    resolves_to.append(f"schema:{source_name}.{t}")
-            else:
-                resolves_to.append(f"schema:{source_name}")
-        elif source_type == "api" and api_endpoint:
-            resolves_to.append(f"api:{api_endpoint}")
-        elif source_type == "api" and source_name:
-            resolves_to.append(f"api:{source_name}")
-        elif source_type == "document":
-            doc_name = source_name or source_suffix
-            resolves_to.append(f"document:{doc_name}" if doc_name else "document")
-        else:
-            resolves_to.append(raw_source)
+        # Build grounding assertion from proof node source data.
+        resolves_to = build_source_patterns(node)
+        if not resolves_to:
+            resolves_to = [raw_source]
 
         grounding.append({"entity": resolved_name, "resolves_to": resolves_to, "strict": True})
 

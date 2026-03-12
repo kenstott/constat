@@ -1,10 +1,9 @@
 // Conversation Panel container
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import { useUIStore } from '@/store/uiStore'
 import { useProofStore } from '@/store/proofStore'
+import { useArtifactStore } from '@/store/artifactStore'
 import { MessageBubble, StepDisplayMode } from './MessageBubble'
 import { AutocompleteInput } from './AutocompleteInput'
 import {
@@ -17,13 +16,63 @@ import {
   ShareIcon,
   LinkIcon,
 } from '@heroicons/react/24/outline'
+import { useUIStore } from '@/store/uiStore'
 import * as sessionsApi from '@/api/sessions'
 
 export function ConversationPanel() {
-  const { session, messages, submitQuery, queuedMessages, removeQueuedMessage, lastQueryStartStep, isCreatingSession, shareSession } = useSessionStore()
-  const { artifacts, tables } = useArtifactStore()
-  const { openFullscreenArtifact } = useUIStore()
+  const { session, messages, submitQuery, queuedMessages, removeQueuedMessage, isCreatingSession, shareSession, replanFromStep } = useSessionStore()
   const { openPanel: openProofPanel } = useProofStore()
+  const { tables, artifacts } = useArtifactStore()
+  const { expandArtifactSection, expandResultStep } = useUIStore()
+
+  const handleRoleClick = (role: string) => {
+    expandArtifactSection('agents')
+    setTimeout(() => {
+      const el = document.getElementById(`agent-${role}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('ring-2', 'ring-purple-400')
+        setTimeout(() => el.classList.remove('ring-2', 'ring-purple-400'), 2000)
+      }
+    }, 150)
+  }
+
+  const handleOutputClick = (stepNumber: number | undefined, output: { type: 'table' | 'artifact'; name: string; id: string }) => {
+    // Ensure the results accordion section is open
+    expandArtifactSection('results')
+    // Ensure the step group is expanded
+    if (stepNumber) expandResultStep(stepNumber)
+    // Scroll to the item after DOM updates
+    setTimeout(() => {
+      const item = document.getElementById(output.id)
+      if (item) {
+        item.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        item.classList.add('ring-2', 'ring-primary-400')
+        setTimeout(() => item.classList.remove('ring-2', 'ring-primary-400'), 2000)
+      }
+    }, 150)
+  }
+
+  // Build step outputs map: stepNumber -> array of {type, name, id}
+  const stepOutputsMap = useMemo(() => {
+    const map = new Map<number, Array<{ type: 'table' | 'artifact'; name: string; id: string }>>()
+    for (const t of tables) {
+      if (t.step_number > 0) {
+        const arr = map.get(t.step_number) || []
+        arr.push({ type: 'table', name: t.name, id: `table-${t.name}` })
+        map.set(t.step_number, arr)
+      }
+    }
+    const internalTypes = new Set(['code', 'output', 'error', 'stdout', 'stderr', 'table'])
+    for (const a of artifacts) {
+      if (a.step_number > 0 && !internalTypes.has(a.artifact_type)) {
+        const arr = map.get(a.step_number) || []
+        arr.push({ type: 'artifact', name: a.title || a.name, id: `artifact-${a.id}` })
+        map.set(a.step_number, arr)
+      }
+    }
+    return map
+  }, [tables, artifacts])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [copiedAll, setCopiedAll] = useState(false)
   const [stepOverride, setStepOverride] = useState<{ mode: StepDisplayMode; version: number } | undefined>()
@@ -34,6 +83,7 @@ export function ConversationPanel() {
   const [isPublic, setIsPublic] = useState(session?.is_public ?? false)
   const [publicUrl, setPublicUrl] = useState<string | null>(null)
   const [publicCopied, setPublicCopied] = useState(false)
+  const [editValue, setEditValue] = useState<string | null>(null)
 
   const hasSteps = messages.some((m) => m.type === 'step')
 
@@ -49,85 +99,6 @@ export function ConversationPanel() {
     submitQuery(query, isFollowup)
   }
 
-  // Filter to only include items from the current query (step >= lastQueryStartStep)
-  const isFromCurrentQuery = useCallback((stepNumber?: number): boolean => {
-    if (lastQueryStartStep === 0) return true // No query started yet, include all
-    return (stepNumber ?? 0) >= lastQueryStartStep
-  }, [lastQueryStartStep])
-
-  // Check if there are any viewable results from the current query
-  const hasViewableResults = useCallback((): boolean => {
-    const currentQueryArtifacts = artifacts.filter((a) => isFromCurrentQuery(a.step_number))
-    const currentQueryTables = tables.filter((t) => isFromCurrentQuery(t.step_number))
-    return currentQueryArtifacts.length > 0 || currentQueryTables.length > 0
-  }, [artifacts, tables, isFromCurrentQuery])
-
-  // Find and open the best artifact fullscreen (prioritize current query's artifacts)
-  const handleViewResult = useCallback(() => {
-    // Priority keywords for finding the best result
-    const hasPriorityKeyword = (name?: string, title?: string): boolean => {
-      const text = `${name || ''} ${title || ''}`.toLowerCase()
-      return ['final', 'recommended', 'answer', 'result', 'conclusion'].some(kw => text.includes(kw))
-    }
-
-    // Helper to get the most recent item (highest step_number)
-    const getMostRecent = <T extends { step_number?: number }>(items: T[]): T | undefined => {
-      if (items.length === 0) return undefined
-      return items.reduce((best, curr) =>
-        (curr.step_number ?? 0) > (best.step_number ?? 0) ? curr : best
-      )
-    }
-
-    // Key artifacts from current query (published/starred)
-    const currentQueryArtifacts = artifacts.filter((a) => isFromCurrentQuery(a.step_number))
-    let keyArtifacts = currentQueryArtifacts.filter((a) => a.is_key_result)
-
-    // If no key artifacts in current query, fall back to ALL key artifacts
-    if (keyArtifacts.length === 0) {
-      keyArtifacts = artifacts.filter((a) => a.is_key_result)
-      console.log('[viewResult] No key artifacts in current query, using all key artifacts')
-    }
-
-    // Markdown documents (highest priority for final results)
-    const keyMarkdown = keyArtifacts.filter((a) =>
-      ['markdown', 'md'].includes(a.artifact_type?.toLowerCase())
-    )
-
-    // Other visualizations (charts, images, etc.)
-    const keyVisualizations = keyArtifacts.filter((a) =>
-      ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega'].includes(a.artifact_type?.toLowerCase())
-    )
-
-    // Tables in key artifacts
-    const keyTables = keyArtifacts.filter((a) => a.artifact_type === 'table')
-
-    // Find best item - prioritize markdown documents
-    console.log('[viewResult v2025-02-05] lastQueryStartStep:', lastQueryStartStep)
-    console.log('[viewResult v2025-02-05] keyArtifacts:', keyArtifacts.map(a => `${a.id}:${a.name}(${a.artifact_type})`))
-    console.log('[viewResult v2025-02-05] keyMarkdown:', keyMarkdown.map(a => `${a.id}:${a.name}`))
-    if (keyMarkdown.length > 0) {
-      const best = keyMarkdown.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyMarkdown)
-      console.log('[viewResult v2025-02-05] Selected markdown:', best?.id, best?.name)
-      if (best) openFullscreenArtifact({ type: 'artifact', id: best.id })
-    } else if (keyVisualizations.length > 0) {
-      const best = keyVisualizations.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyVisualizations)
-      if (best) openFullscreenArtifact({ type: 'artifact', id: best.id })
-    } else if (keyTables.length > 0) {
-      const best = keyTables.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyTables)
-      if (best) openFullscreenArtifact({ type: 'table', name: best.name })
-    } else if (tables.length > 0) {
-      // Fallback to tables from current query
-      const currentQueryTables = tables.filter(t => isFromCurrentQuery(t.step_number))
-      if (currentQueryTables.length > 0) {
-        const best = currentQueryTables.find(t => hasPriorityKeyword(t.name)) || getMostRecent(currentQueryTables)
-        if (best) openFullscreenArtifact({ type: 'table', name: best.name })
-      } else {
-        // Ultimate fallback - most recent table overall
-        const best = getMostRecent(tables)
-        if (best) openFullscreenArtifact({ type: 'table', name: best.name })
-      }
-    }
-  }, [artifacts, tables, isFromCurrentQuery, openFullscreenArtifact])
 
   // Copy entire conversation to clipboard
   const handleCopyAll = async () => {
@@ -141,10 +112,6 @@ export function ConversationPanel() {
     setCopiedAll(true)
     setTimeout(() => setCopiedAll(false), 2000)
   }
-
-  const handleRedo = useCallback((guidance?: string) => {
-    submitQuery(guidance ? '/redo ' + guidance : '/redo', true)
-  }, [submitQuery])
 
   const handleShare = async () => {
     if (!shareEmail.trim()) return
@@ -364,11 +331,8 @@ export function ConversationPanel() {
                 isPending={message.isPending}
                 defaultExpanded={message.defaultExpanded}
                 isFinalInsight={message.isFinalInsight}
-                onViewResult={message.isFinalInsight ? (
-                  message.content?.toLowerCase().includes('proof') ? openProofPanel : (hasViewableResults() ? handleViewResult : undefined)
-                ) : undefined}
-                onRedo={message.isFinalInsight && !message.content?.toLowerCase().includes('proof')
-                  ? handleRedo : undefined}
+                onViewResult={message.isFinalInsight && message.content?.toLowerCase().includes('proof')
+                  ? openProofPanel : undefined}
                 role={message.role}
                 skills={message.skills}
                 stepStartedAt={message.stepStartedAt}
@@ -378,6 +342,12 @@ export function ConversationPanel() {
                 stepDisplayModeVersion={stepOverride?.version}
                 queryText={queryText}
                 isSuperseded={message.isSuperseded}
+                onStepEdit={(stepNumber, newGoal) => replanFromStep(stepNumber, 'edit', newGoal)}
+                onStepDelete={(stepNumber) => replanFromStep(stepNumber, 'delete')}
+                stepOutputs={message.stepNumber ? stepOutputsMap.get(message.stepNumber) : undefined}
+                onOutputClick={(output) => handleOutputClick(message.stepNumber, output)}
+                onRoleClick={handleRoleClick}
+                onEditMessage={message.type === 'user' ? (text) => setEditValue(text) : undefined}
               />
               )
             })}
@@ -417,7 +387,7 @@ export function ConversationPanel() {
       </div>
 
       {/* Query input */}
-      <AutocompleteInput onSubmit={handleSubmit} disabled={isCreatingSession} />
+      <AutocompleteInput onSubmit={(q) => { setEditValue(null); handleSubmit(q) }} disabled={isCreatingSession} editValue={editValue} />
     </div>
   )
 }

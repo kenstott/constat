@@ -323,6 +323,8 @@ def _create_event_handler(managed: ManagedSession):
         "progress": EventType.PROGRESS,
         "dynamic_context": EventType.DYNAMIC_CONTEXT,
         "planning_start": EventType.PLANNING_START,
+        "plan_ready": EventType.PLAN_READY,
+        "plan_updated": EventType.PLAN_UPDATED,
         "proof_start": EventType.PROOF_START,
         "replanning": EventType.REPLANNING,
         "synthesizing": EventType.SYNTHESIZING,
@@ -1028,6 +1030,169 @@ async def websocket_endpoint(
                                     "items": items[:20],  # Limit to 20 items
                                 },
                             },
+                        })
+
+                    elif action == "edit_objective":
+                        obj_data = data.get("data", {})
+                        obj_index = obj_data.get("objective_index")
+                        new_text = obj_data.get("new_text")
+
+                        managed.status = SessionStatus.EXECUTING
+                        execution_id = str(uuid.uuid4())
+                        managed.execution_id = execution_id
+
+                        # Register event handler so step events reach the WebSocket
+                        _handler = _create_event_handler(managed)
+                        managed.session._event_handlers = []
+                        managed.session.on_event(_handler)
+
+                        async def _run_edit_objective():
+                            _loop = asyncio.get_event_loop()
+                            try:
+                                result = await _loop.run_in_executor(
+                                    _executor,
+                                    lambda: managed.session.edit_objective(obj_index, new_text)
+                                )
+                                managed.event_queue.put_nowait({
+                                    "event_type": EventType.QUERY_COMPLETE.value,
+                                    "session_id": session_id,
+                                    "step_number": 0,
+                                    "data": {
+                                        "success": result.get("success", False),
+                                        "output": result.get("output", ""),
+                                        "final_answer": result.get("final_answer", ""),
+                                        "suggestions": result.get("suggestions", []),
+                                    },
+                                })
+                            except Exception as obj_err:
+                                logger.error(f"Edit objective error: {obj_err}")
+                                managed.event_queue.put_nowait({
+                                    "event_type": EventType.QUERY_ERROR.value,
+                                    "session_id": session_id,
+                                    "step_number": 0,
+                                    "data": {"error": str(obj_err)},
+                                })
+                            finally:
+                                managed.status = SessionStatus.IDLE
+                                managed.execution_id = None
+
+                        asyncio.create_task(_run_edit_objective())
+
+                        await websocket.send_json({
+                            "type": "ack",
+                            "payload": {"action": "edit_objective", "status": "ok"},
+                        })
+
+                    elif action == "delete_objective":
+                        del_data = data.get("data", {})
+                        del_index = del_data.get("objective_index")
+
+                        managed.status = SessionStatus.EXECUTING
+                        execution_id = str(uuid.uuid4())
+                        managed.execution_id = execution_id
+
+                        # Register event handler so step events reach the WebSocket
+                        _handler = _create_event_handler(managed)
+                        managed.session._event_handlers = []
+                        managed.session.on_event(_handler)
+
+                        async def _run_delete_objective():
+                            _loop = asyncio.get_event_loop()
+                            try:
+                                result = await _loop.run_in_executor(
+                                    _executor,
+                                    lambda: managed.session.delete_objective(del_index)
+                                )
+                                managed.event_queue.put_nowait({
+                                    "event_type": EventType.QUERY_COMPLETE.value,
+                                    "session_id": session_id,
+                                    "step_number": 0,
+                                    "data": {
+                                        "success": result.get("success", False),
+                                        "output": result.get("output", ""),
+                                        "final_answer": result.get("final_answer", ""),
+                                        "suggestions": result.get("suggestions", []),
+                                    },
+                                })
+                            except Exception as del_err:
+                                logger.error(f"Delete objective error: {del_err}")
+                                managed.event_queue.put_nowait({
+                                    "event_type": EventType.QUERY_ERROR.value,
+                                    "session_id": session_id,
+                                    "step_number": 0,
+                                    "data": {"error": str(del_err)},
+                                })
+                            finally:
+                                managed.status = SessionStatus.IDLE
+                                managed.execution_id = None
+
+                        asyncio.create_task(_run_delete_objective())
+
+                        await websocket.send_json({
+                            "type": "ack",
+                            "payload": {"action": "delete_objective", "status": "ok"},
+                        })
+
+                    elif action == "replan_from":
+                        replan_data = data.get("data", {})
+                        step_number = replan_data.get("step_number")
+                        mode = replan_data.get("mode", "redo")
+                        edited_goal = replan_data.get("edited_goal")
+
+                        # Emit replan_start so UI can mark steps as superseded
+                        managed.event_queue.put_nowait({
+                            "event_type": "replan_start",
+                            "session_id": session_id,
+                            "step_number": step_number,
+                            "data": {"mode": mode, "from_step": step_number},
+                        })
+
+                        managed.status = SessionStatus.EXECUTING
+                        execution_id = str(uuid.uuid4())
+                        managed.execution_id = execution_id
+
+                        # Register event handler so step events reach the WebSocket
+                        _handler = _create_event_handler(managed)
+                        managed.session._event_handlers = []
+                        managed.session.on_event(_handler)
+
+                        async def _run_replan():
+                            _loop = asyncio.get_event_loop()
+                            try:
+                                result = await _loop.run_in_executor(
+                                    _executor,
+                                    lambda: managed.session.replan_from_step(
+                                        step_number, mode, edited_goal
+                                    )
+                                )
+                                managed.event_queue.put_nowait({
+                                    "event_type": EventType.QUERY_COMPLETE.value,
+                                    "session_id": session_id,
+                                    "step_number": 0,
+                                    "data": {
+                                        "success": result.get("success", False),
+                                        "output": result.get("output", ""),
+                                        "final_answer": result.get("final_answer", ""),
+                                        "suggestions": result.get("suggestions", []),
+                                    },
+                                })
+                            except Exception as replan_err:
+                                logger.error(f"Replan error: {replan_err}")
+                                managed.event_queue.put_nowait({
+                                    "event_type": EventType.QUERY_ERROR.value,
+                                    "session_id": session_id,
+                                    "step_number": 0,
+                                    "data": {"error": str(replan_err)},
+                                })
+                            finally:
+                                managed.status = SessionStatus.IDLE
+                                managed.execution_id = None
+
+                        asyncio.create_task(_run_replan())
+
+                        await websocket.send_json({
+                            "type": "ack",
+                            "payload": {"action": "replan_from", "status": "ok"},
                         })
 
                     else:

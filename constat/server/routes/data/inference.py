@@ -83,6 +83,26 @@ async def list_step_codes(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/{session_id}/scratchpad")
+async def get_scratchpad(
+    session_id: str,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Get the execution scratchpad (goal + narrative per step)."""
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not managed.session.datastore:
+        return {"entries": [], "total": 0}
+    try:
+        entries = managed.session.datastore.get_scratchpad()
+        return {"entries": entries, "total": len(entries)}
+    except Exception as e:
+        logger.error(f"Error getting scratchpad: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{session_id}/inference-codes")
 async def list_inference_codes(
     session_id: str,

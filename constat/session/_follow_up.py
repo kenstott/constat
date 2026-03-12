@@ -208,6 +208,12 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         if not self.datastore:
             raise ValueError("No datastore available. Session may not have been properly initialized.")
 
+        # Store user query for replan context
+        queries = self.datastore.get_state("user_queries") or []
+        _objective_index = len(queries)
+        queries.append(question)
+        self.datastore.set_state("user_queries", queries, step_number=0)
+
         # Fast path: /redo bypasses command registry (it's an intent-based command)
         stripped = question.strip()
         if stripped.lower().startswith("/redo"):
@@ -362,19 +368,22 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         for i, step in enumerate(follow_up_plan.steps):
             step.number = next_step_number + i
 
-        # Emit plan_ready event for display
-        self._emit_event(StepEvent(
-            event_type="plan_ready",
-            step_number=0,
-            data={
-                "steps": [
-                    {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
-                    for s in follow_up_plan.steps
-                ],
-                "reasoning": planner_response.reasoning,
-                "is_followup": True,
-            }
-        ))
+        # Emit plan_ready only for auto-approved plans (the approval callback
+        # already sends plan_ready for plans that went through user approval)
+        if not self.session_config.require_approval or self.session_config.auto_approve:
+            self._emit_event(StepEvent(
+                event_type="plan_ready",
+                step_number=0,
+                data={
+                    "steps": [
+                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
+                        for s in follow_up_plan.steps
+                    ],
+                    "reasoning": planner_response.reasoning,
+                    "is_followup": True,
+                    "auto_approved": True,
+                }
+            ))
 
         # Request approval if required (same as solve())
         if self.session_config.require_approval:
@@ -452,21 +461,7 @@ User feedback: {suggestion_text}
                     for i, step in enumerate(follow_up_plan.steps):
                         step.number = next_step_number + i
 
-                    # Emit updated plan
-                    self._emit_event(StepEvent(
-                        event_type="plan_ready",
-                        step_number=0,
-                        data={
-                            "steps": [
-                                {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
-                                for s in follow_up_plan.steps
-                            ],
-                            "reasoning": planner_response.reasoning,
-                            "is_followup": True,
-                        }
-                    ))
-
-                    # Request approval again
+                    # Request approval again (callback emits plan_ready with plan data)
                     approval = self._request_approval(question, planner_response)
                     if approval.decision == PlanApproval.REJECT:
                         # noinspection PyAttributeOutsideInit
@@ -557,6 +552,8 @@ User feedback: {suggestion_text}
                         narrative=result.stdout,
                         tables_created=result.tables_created,
                         code=result.code,
+                        user_query=question,
+                        objective_index=_objective_index,
                     )
 
             else:
@@ -736,6 +733,132 @@ User feedback: {suggestion_text}
             "scratchpad": self.scratchpad.to_markdown(),
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
         }
+
+    def delete_objective(self, objective_index: int) -> dict:
+        """Delete an objective and replan from its first step."""
+        if not self.datastore or not self.session_id:
+            raise ValueError("No active session")
+
+        queries = self.datastore.get_state("user_queries") or []
+        if objective_index < 0 or objective_index >= len(queries):
+            raise ValueError(f"Invalid objective index: {objective_index}")
+
+        # Remove objective
+        queries.pop(objective_index)
+        self.datastore.set_state("user_queries", queries, step_number=0)
+
+        if not queries:
+            raise ValueError("Cannot delete the only objective")
+
+        # Find earliest step produced by this objective (or later, since indices shift)
+        scratchpad = self.datastore.get_scratchpad()
+        first_step = None
+        for e in scratchpad:
+            if e.get('objective_index') is not None and e['objective_index'] >= objective_index:
+                first_step = e['step_number']
+                break
+
+        if first_step is not None:
+            tables_dropped = self.datastore.truncate_from_step(first_step)
+            logger.info(f"[delete_objective] Truncated from step {first_step}, dropped: {tables_dropped}")
+
+            if hasattr(self, 'scratchpad') and self.scratchpad:
+                self.scratchpad._entries = [
+                    e for e in getattr(self.scratchpad, '_entries', [])
+                    if e.get('step_number', 0) < first_step
+                ]
+
+        # Replan with remaining objectives
+        prompt = (
+            "Continue the plan.\n\n"
+            "Objective (user requests):\n"
+            + "\n".join(f"- {q}" for q in queries)
+        )
+
+        return self.follow_up(prompt, auto_classify=False)
+
+    def edit_objective(self, objective_index: int, new_text: str) -> dict:
+        """Edit an objective and replan from the first step it produced."""
+        if not self.datastore or not self.session_id:
+            raise ValueError("No active session")
+
+        queries = self.datastore.get_state("user_queries") or []
+        if objective_index < 0 or objective_index >= len(queries):
+            raise ValueError(f"Invalid objective index: {objective_index}")
+
+        # Replace objective
+        queries[objective_index] = new_text
+        self.datastore.set_state("user_queries", queries, step_number=0)
+
+        # Find earliest step produced by this objective
+        scratchpad = self.datastore.get_scratchpad()
+        first_step = None
+        for e in scratchpad:
+            if e.get('objective_index') == objective_index:
+                first_step = e['step_number']
+                break
+
+        # Truncate from that step (preserves earlier objectives' work)
+        if first_step is not None:
+            tables_dropped = self.datastore.truncate_from_step(first_step)
+            logger.info(f"[edit_objective] Truncated from step {first_step}, dropped: {tables_dropped}")
+
+            # Clear in-memory scratchpad
+            if hasattr(self, 'scratchpad') and self.scratchpad:
+                self.scratchpad._entries = [
+                    e for e in getattr(self.scratchpad, '_entries', [])
+                    if e.get('step_number', 0) < first_step
+                ]
+
+        # Replan with full edited objective list
+        prompt = (
+            "Continue the plan.\n\n"
+            "Objective (user requests):\n"
+            + "\n".join(f"- {q}" for q in queries)
+        )
+
+        return self.follow_up(prompt, auto_classify=False)
+
+    def replan_from_step(self, step_number: int, mode: str,
+                         edited_goal: str | None = None) -> dict:
+        """Replan from step N. mode: 'edit', 'delete', 'redo'."""
+        if not self.datastore or not self.session_id:
+            raise ValueError("No active session")
+
+        # Get the step being modified (before truncation)
+        entry = self.datastore.get_scratchpad_entry(step_number)
+        original_goal = entry['goal'] if entry else f"Step {step_number}"
+
+        # Get user queries (the objective)
+        user_queries = self.datastore.get_state("user_queries") or []
+
+        # Truncate from step N
+        tables_dropped = self.datastore.truncate_from_step(step_number)
+        logger.info(f"[replan] Truncated from step {step_number}, dropped tables: {tables_dropped}")
+
+        # Also clear in-memory scratchpad entries >= step_number
+        if hasattr(self, 'scratchpad') and self.scratchpad:
+            self.scratchpad._entries = [
+                e for e in getattr(self.scratchpad, '_entries', [])
+                if e.get('step_number', 0) < step_number
+            ]
+
+        # Build replan prompt
+        if mode == 'edit':
+            refinement = f"Refinement: {edited_goal}"
+        elif mode == 'delete':
+            refinement = f"Do NOT: {original_goal}"
+        else:  # redo
+            refinement = f"Re-execute: {original_goal}"
+
+        prompt = (
+            f"Continue the plan.\n\n"
+            f"Objective (user requests):\n"
+            + "\n".join(f"- {q}" for q in user_queries)
+            + f"\n\n{refinement}"
+        )
+
+        return self.follow_up(prompt, auto_classify=False)
 
     def _solve_knowledge(self, problem: str) -> dict:
         """

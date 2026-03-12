@@ -498,6 +498,7 @@ export type EventType =
   | 'autocomplete_response'
   | 'synthesizing'
   | 'generating_insights'
+  | 'replan_start'
   | 'entity_rebuild_start'
   | 'entity_rebuild_complete'
   | 'glossary_rebuild_start'

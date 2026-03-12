@@ -59,7 +59,7 @@ If no active skills match the request, plan from primitives as usual.
 
 ## Planning Guidelines
 1. **PREFER SQL OVER PANDAS** - SQL is more robust, scalable, and has clearer error messages
-   - For databases: Use native SQL queries with pd.read_sql()
+   - For databases: Use store.create_view() for lazy SQL views or store.query() for immediate results
    - For in-memory data: Use DuckDB to query DataFrames/JSON with SQL syntax
    - SQL is declarative (what you want) vs pandas is imperative (how to get it)
 2. **ALWAYS FILTER AT THE SOURCE** - use SQL WHERE, API filters, or GraphQL arguments

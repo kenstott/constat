@@ -619,7 +619,7 @@ RULES:
             referenced_section = ""
             if referenced_tables:
                 referenced_section = f"""
-REFERENCED TABLES (query with pd.read_sql(sql, db_<name>)):
+REFERENCED TABLES (query with store.query('SELECT ... FROM db_name.table') or store.create_view()):
 {chr(10).join(referenced_tables)}
 """
 
@@ -697,8 +697,9 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
 
             # Build dynamic data source descriptions
             data_source_apis = [
-                "- store.query(sql) -> pd.DataFrame (for datastore tables)",
-                "- store.save_dataframe(name, df)",
+                "- store.query('SELECT ... FROM db_name.table') -> pd.DataFrame",
+                "- store.create_view('name', 'SELECT ... FROM db_name.table', step_number=N) — lazy, preferred",
+                "- store.save_dataframe(name, df) — only for Python-computed results",
             ]
 
             # SQL databases
@@ -707,10 +708,9 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 for db_name in self.schema_manager.connections.keys():
                     conn = self.schema_manager.get_connection(db_name)
                     if isinstance(conn, TranspilingConnection):
-                        data_source_apis.append(f"- pd.read_sql(query, db_{db_name}) -> DataFrame")
-                        data_source_apis.append(f"- sql_{db_name}(query) -> DataFrame (auto-transpiles SQL)")
+                        data_source_apis.append(f"- Tables in '{db_name}' queryable as {db_name}.table_name")
                     else:
-                        data_source_apis.append(f"- pd.read_sql(query, db_{db_name}) -> DataFrame")
+                        data_source_apis.append(f"- Tables in '{db_name}' queryable as {db_name}.table_name")
                 # NoSQL
                 for db_name in self.schema_manager.nosql_connections.keys():
                     data_source_apis.append(f"- db_{db_name}: NoSQL connector")

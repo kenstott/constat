@@ -352,6 +352,10 @@ def _check_entities(
     for name in expected:
         entity = _resolve_entity_name(relational, name, session_id, user_id, domain_ids)
         if not entity:
+            # Entity not in NER store — check if proven grounding exists
+            # (proof validated this entity against a real data source)
+            if relational.get_proven_grounding(name):
+                continue
             failures.append(f'missing "{_dn(name)}"')
     return LayerResult(
         layer="entities",
@@ -403,16 +407,33 @@ def _check_grounding(
     failures = []
     for ga in assertions:
         entity = _resolve_entity_name(relational, ga.entity, session_id, user_id, domain_ids)
+
+        # Try deterministic proven grounding first — use resolved name or raw assertion name
+        proven_name = entity.name if entity else ga.entity
+        proven_patterns = relational.get_proven_grounding(proven_name)
+        if proven_patterns:
+            if not ga.strict:
+                continue  # proven patterns exist → grounded
+            matched = any(
+                _matches_grounding(expected, proven_patterns)
+                for expected in ga.resolves_to
+            )
+            if not matched:
+                failures.append(
+                    f'"{_dn(ga.entity)}" not grounded to any of {ga.resolves_to} '
+                    f"(proven: {proven_patterns})"
+                )
+            continue
+
+        # Fall back to chunk-entity associations (non-deterministic)
         if not entity:
             failures.append(f'entity "{_dn(ga.entity)}" not found for grounding check')
             continue
         doc_names = relational.get_entity_document_names(entity.id)
         if not ga.strict:
-            # Loose mode — just verify entity grounds to something
             if not doc_names:
                 failures.append(f'"{_dn(ga.entity)}" has no grounding (expected at least one data source)')
             continue
-        # Strict mode — must match specific resolves_to patterns
         matched = any(
             _matches_grounding(expected, doc_names)
             for expected in ga.resolves_to

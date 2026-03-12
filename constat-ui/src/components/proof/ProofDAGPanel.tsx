@@ -277,6 +277,11 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   const popSelectedNode = () => { setSelectedIdStack(prev => prev.slice(0, -1)); setCodeExpanded(false) }
   const clearSelectedNodes = () => setSelectedIdStack([])
   const [dimensions, setDimensions] = useState({ width: 600, height: 400 })
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const isPanningDag = useRef(false)
+  const panStart = useRef({ x: 0, y: 0 })
+  const dagDragDistance = useRef(0)
   const [panelSize, setPanelSize] = useState(() => {
     try {
       const saved = localStorage.getItem('constat-proof-panel-geometry')
@@ -440,10 +445,12 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     }
   }, [dagData])
 
-  // Update dimensions when layout changes
+  // Update dimensions and reset zoom/pan when layout changes
   useEffect(() => {
     if (layout) {
       setDimensions({ width: layout.width, height: layout.height })
+      setZoom(1)
+      setPan({ x: 0, y: 0 })
     }
   }, [layout])
 
@@ -645,7 +652,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
           })
         }}
         onMouseLeave={() => setHoveredNode(null)}
-        onClick={() => pushSelectedNode(nodeData)}
+        onClick={() => { if (dagDragDistance.current < 5) pushSelectedNode(nodeData) }}
       >
         {/* Critical path glow */}
         {isOnCriticalPath && (
@@ -759,11 +766,41 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
               </div>
             </div>
           ) : layout ? (
+            <div className="relative">
             <svg
               ref={svgRef}
               width={dimensions.width}
               height={dimensions.height}
               className="block mx-auto"
+              style={{ cursor: isPanningDag.current ? 'grabbing' : 'grab' }}
+              onWheel={(e) => {
+                e.preventDefault()
+                const scale = e.deltaY > 0 ? 0.9 : 1.1
+                const newZoom = Math.min(3, Math.max(0.3, zoom * scale))
+                const svgRect = svgRef.current!.getBoundingClientRect()
+                const cx = e.clientX - svgRect.left
+                const cy = e.clientY - svgRect.top
+                setPan(p => ({
+                  x: cx - (cx - p.x) * (newZoom / zoom),
+                  y: cy - (cy - p.y) * (newZoom / zoom),
+                }))
+                setZoom(newZoom)
+              }}
+              onMouseDown={(e) => {
+                if (e.button !== 0) return
+                isPanningDag.current = true
+                panStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y }
+                dagDragDistance.current = 0
+              }}
+              onMouseMove={(e) => {
+                if (!isPanningDag.current) return
+                const dx = e.clientX - panStart.current.x - pan.x
+                const dy = e.clientY - panStart.current.y - pan.y
+                dagDragDistance.current += Math.sqrt(dx * dx + dy * dy)
+                setPan({ x: e.clientX - panStart.current.x, y: e.clientY - panStart.current.y })
+              }}
+              onMouseUp={() => { isPanningDag.current = false }}
+              onMouseLeave={() => { isPanningDag.current = false }}
             >
               {/* Definitions for markers */}
               <defs>
@@ -808,6 +845,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                 </marker>
               </defs>
 
+              <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
               {/* Render edges first (below nodes) */}
               <g className="edges">
                 {Array.from(layout.graph.links()).map((link) => {
@@ -845,7 +883,46 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                   )
                 })}
               </g>
+              </g>
             </svg>
+            {/* Zoom controls */}
+            <div className="absolute bottom-2 right-2 flex gap-1">
+              <button
+                onClick={() => setZoom(z => Math.min(3, z * 1.2))}
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-sm font-bold hover:bg-gray-100 dark:hover:bg-gray-700 shadow-sm"
+              >+</button>
+              <button
+                onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 shadow-sm"
+              >1:1</button>
+              <button
+                onClick={() => setZoom(z => Math.max(0.3, z / 1.2))}
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-sm font-bold hover:bg-gray-100 dark:hover:bg-gray-700 shadow-sm"
+              >−</button>
+              <button
+                onClick={() => {
+                  if (!svgRef.current) return
+                  const container = svgRef.current.parentElement
+                  if (!container) return
+                  const cw = container.clientWidth
+                  const ch = container.clientHeight
+                  const fitZoom = Math.min(cw / dimensions.width, ch / dimensions.height, 1) * 0.95
+                  const offsetX = (cw - dimensions.width * fitZoom) / 2
+                  const offsetY = (ch - dimensions.height * fitZoom) / 2
+                  setZoom(fitZoom)
+                  setPan({ x: offsetX, y: offsetY })
+                }}
+                title="Fit to window"
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 shadow-sm flex items-center justify-center"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="2" width="12" height="12" rx="1" />
+                  <polyline points="2,6 5,6 5,2" />
+                  <polyline points="14,10 11,10 11,14" />
+                </svg>
+              </button>
+            </div>
+            </div>
           ) : (
             <div className="text-center text-gray-500 py-8 min-w-[500px]">
               <p>Building graph layout...</p>

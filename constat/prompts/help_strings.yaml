@@ -17,6 +17,12 @@ help_commands:
   - ["/state", "Show session state", "Session"]
   - ["/reset", "Clear session state and start fresh", "Session"]
   - ["/redo [instruction]", "Retry last query (with optional modifications)", "Session"]
+  - ["/objectives", "List session objectives", "Session"]
+  - ["/objective-edit <N> <text>", "Edit objective N and replan", "Session"]
+  - ["/objective-delete <N>", "Delete objective N and replan", "Session"]
+  - ["/step-redo <N>", "Redo from step N", "Session"]
+  - ["/step-delete <N>", "Delete step N and replan", "Session"]
+  - ["/step-edit <N> <goal>", "Edit step N goal and replan", "Session"]
   - ["/update, /refresh", "Refresh metadata and rebuild cache", "Session"]
   - ["/context", "Show context size and token usage", "Session"]
   - ["/compact", "Compact context to reduce token usage", "Session"]
@@ -139,6 +145,12 @@ command_descriptions:
   skill-deactivate: "Deactivate a skill"
   skill-draft: "Draft a skill using AI"
   skill-download: "Download skill as Claude Desktop zip"
+  objectives: "List session objectives"
+  objective-edit: "Edit an objective and replan"
+  objective-delete: "Delete an objective and replan"
+  step-redo: "Redo from a step"
+  step-delete: "Delete a step and replan"
+  step-edit: "Edit a step goal and replan"
   reason: "Verify conversation with auditable reasoning chain"
   glossary: "Show glossary terms"
   define: "Add a glossary definition"

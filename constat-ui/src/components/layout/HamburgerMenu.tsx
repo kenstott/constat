@@ -9,6 +9,8 @@ import {
   PlusIcon,
   ArrowRightOnRectangleIcon,
   UserCircleIcon,
+  ChevronRightIcon,
+  GlobeAltIcon,
 } from '@heroicons/react/24/outline'
 import { useUIStore } from '@/store/uiStore'
 import { useSessionStore } from '@/store/sessionStore'
@@ -16,6 +18,7 @@ import { useArtifactStore } from '@/store/artifactStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import * as sessionsApi from '@/api/sessions'
 import type { Session } from '@/types/api'
+import DomainPanel from '@/components/artifacts/DomainPanel'
 
 interface HamburgerMenuProps {
   onNewSession?: () => void
@@ -79,6 +82,7 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
   // Loading state for session operations
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null)
   const [creatingSession, setCreatingSession] = useState(false)
+  const [domainCollapsed, setDomainCollapsed] = useState(false)
 
   // Fetch sessions, projects, and skills when menu opens
   useEffect(() => {
@@ -338,6 +342,21 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                           })
                         )}
                       </div>
+                    </div>
+
+                    {/* Domain */}
+                    <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                      <button
+                        onClick={() => setDomainCollapsed(!domainCollapsed)}
+                        className="w-full flex items-center justify-between mb-2"
+                      >
+                        <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide flex items-center gap-1.5">
+                          <GlobeAltIcon className="w-4 h-4" />
+                          Domain
+                        </h3>
+                        <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${domainCollapsed ? '' : 'rotate-90'}`} />
+                      </button>
+                      {!domainCollapsed && <DomainPanel />}
                     </div>
 
                     {/* Settings */}

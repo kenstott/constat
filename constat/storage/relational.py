@@ -1965,3 +1965,22 @@ class RelationalStore:
             """,
             params,
         ).fetchall()
+
+    # ------------------------------------------------------------------
+    # Proven grounding
+    # ------------------------------------------------------------------
+
+    def save_proven_grounding(self, entity_name: str, source_patterns: list[str]) -> None:
+        for pattern in source_patterns:
+            self._conn.execute(
+                "INSERT INTO proven_grounding (entity_name, source_pattern) "
+                "VALUES (?, ?) ON CONFLICT DO NOTHING",
+                [entity_name, pattern],
+            )
+
+    def get_proven_grounding(self, entity_name: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT source_pattern FROM proven_grounding WHERE entity_name = ?",
+            [entity_name],
+        ).fetchall()
+        return [r[0] for r in rows]

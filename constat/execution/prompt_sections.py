@@ -354,19 +354,19 @@ viz.save_binary('report', buffer.getvalue(), ext='xlsx', title='Excel Report')
 
 Each step runs in complete isolation. The ONLY way to share data between steps is through `store`.
 
-### DataFrames
+### DataFrames & Views
 ```python
-# Save a DataFrame for later steps
-store.save_dataframe('customers', df, step_number=1, description='Customer data')
+# PREFERRED: Create a lazy view when result is SQL-derivable (no data copied)
+store.create_view('customers_filtered', 'SELECT * FROM hr.customers WHERE active = true', step_number=1)
+
+# Only use save_dataframe when result requires Python computation (LLM calls, pandas transforms)
+store.save_dataframe('enriched', df_with_llm_scores, step_number=1, description='LLM-enriched data')
 
 # Load a DataFrame from a previous step
 customers = store.load_dataframe('customers')
 
-# Query saved data with SQL (DuckDB syntax)
+# Query saved data/views with SQL
 result = store.query('SELECT * FROM customers WHERE revenue > 1000')
-
-# List available tables
-tables = store.list_tables()
 ```
 
 ### Simple Values (numbers, strings, lists, dicts)

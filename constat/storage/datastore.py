@@ -194,6 +194,8 @@ class DataStore:
                     narrative TEXT,
                     tables_created TEXT,
                     code TEXT,
+                    user_query TEXT,
+                    objective_index INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
@@ -227,6 +229,19 @@ class DataStore:
                 try:
                     conn.execute(text(
                         f"ALTER TABLE {tbl} ADD COLUMN version INTEGER DEFAULT 1"
+                    ))
+                    if nested:
+                        nested.commit()
+                except (SAOperationalError, SAProgrammingError):
+                    if nested:
+                        nested.rollback()  # Column already exists
+
+            # Add user_query and objective_index columns to scratchpad for existing databases
+            for col_def in ("user_query TEXT", "objective_index INTEGER"):
+                nested = conn.begin_nested() if _use_savepoint else None
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE _constat_scratchpad ADD COLUMN {col_def}"
                     ))
                     if nested:
                         nested.commit()
@@ -728,6 +743,14 @@ class DataStore:
                 {"step": step_number}
             )
 
+    def update_table_step_number(self, name: str, step_number: int) -> None:
+        """Update step_number for a table in the registry."""
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("UPDATE _constat_table_registry SET step_number = :step WHERE table_name = :name"),
+                {"step": step_number, "name": name},
+            )
+
     def export_state_summary(self) -> dict:
         """
         Export a summary of datastore state for context.
@@ -751,6 +774,8 @@ class DataStore:
         narrative: str,
         tables_created: Optional[list[str]] = None,
         code: Optional[str] = None,
+        user_query: Optional[str] = None,
+        objective_index: Optional[int] = None,
     ) -> None:
         """
         Add or update a scratchpad entry for a step.
@@ -761,20 +786,27 @@ class DataStore:
             narrative: Step result narrative (printed output)
             tables_created: List of table names created by this step
             code: Generated Python code for this step (for replay)
+            user_query: The user query that produced this step
+            objective_index: Index into user_queries list for this step's objective
         """
         tables_str = ",".join(tables_created) if tables_created else ""
+        data = {"goal": goal, "narrative": narrative, "tables_created": tables_str, "code": code or ""}
+        if user_query is not None:
+            data["user_query"] = user_query
+        if objective_index is not None:
+            data["objective_index"] = objective_index
         self._upsert(
             "_constat_scratchpad",
             "step_number",
             step_number,
-            {"goal": goal, "narrative": narrative, "tables_created": tables_str, "code": code or ""}
+            data,
         )
 
     def get_scratchpad_entry(self, step_number: int) -> Optional[dict]:
         """Get scratchpad entry for a step."""
         with self.engine.connect() as conn:
             result = conn.execute(
-                text("SELECT goal, narrative, tables_created, code FROM _constat_scratchpad WHERE step_number = :step"),
+                text("SELECT goal, narrative, tables_created, code, user_query, objective_index FROM _constat_scratchpad WHERE step_number = :step"),
                 {"step": step_number}
             ).fetchone()
 
@@ -785,6 +817,8 @@ class DataStore:
                 "narrative": result[1],
                 "tables_created": result[2].split(",") if result[2] else [],
                 "code": result[3] or "",
+                "user_query": result[4] or "",
+                "objective_index": result[5],
             }
         return None
 
@@ -792,7 +826,7 @@ class DataStore:
         """Get all scratchpad entries in order."""
         with self.engine.connect() as conn:
             rows = conn.execute(text("""
-                SELECT step_number, goal, narrative, tables_created, code
+                SELECT step_number, goal, narrative, tables_created, code, user_query, objective_index
                 FROM _constat_scratchpad
                 ORDER BY step_number
             """)).fetchall()
@@ -804,6 +838,8 @@ class DataStore:
                 "narrative": row[2],
                 "tables_created": row[3].split(",") if row[3] else [],
                 "code": row[4] or "",
+                "user_query": row[5] or "",
+                "objective_index": row[6],
             }
             for row in rows
         ]
@@ -841,6 +877,33 @@ class DataStore:
             conn.execute(text("DELETE FROM _constat_plan_steps"))
             conn.execute(text("DELETE FROM _constat_state"))
             conn.commit()
+
+    def truncate_from_step(self, from_step: int) -> list[str]:
+        """Delete scratchpad entries >= from_step, drop their tables, clean state.
+
+        Returns list of dropped table names.
+        """
+        entries = self.get_scratchpad()
+        tables_dropped = []
+        for e in entries:
+            if e['step_number'] >= from_step:
+                if e.get('tables_created'):
+                    for t in e['tables_created']:
+                        t = t.strip()
+                        if t and self.drop_table(t):
+                            tables_dropped.append(t)
+
+        with self.engine.begin() as conn:
+            conn.execute(text("DELETE FROM _constat_scratchpad WHERE step_number >= :step"),
+                         {"step": from_step})
+            conn.execute(text("DELETE FROM _constat_state WHERE step_number >= :step"),
+                         {"step": from_step})
+            conn.execute(text("DELETE FROM _constat_artifacts WHERE step_number >= :step"),
+                         {"step": from_step})
+            conn.execute(text("DELETE FROM _constat_plan_steps WHERE step_number >= :step"),
+                         {"step": from_step})
+
+        return tables_dropped
 
     def get_execution_history_table(self, include_all_attempts: bool = True) -> Optional["pd.DataFrame"]:
         """

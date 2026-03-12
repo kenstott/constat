@@ -45,6 +45,7 @@ class EventType(str, Enum):
     PROOF_START = "proof_start"
     REPLANNING = "replanning"
     PLAN_READY = "plan_ready"
+    PLAN_UPDATED = "plan_updated"
     PLAN_APPROVED = "plan_approved"
     PLAN_REJECTED = "plan_rejected"
 

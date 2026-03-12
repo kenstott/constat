@@ -520,12 +520,12 @@ NOT_POSSIBLE: <reason>
                         dialect = "mysql"
                     elif uri_lower.startswith("duckdb"):
                         dialect = "duckdb"
-                source_hints.append(f"- {db_name} ({dialect}): use pd.read_sql(query, db_{db_name})")
+                source_hints.append(f"- {db_name} ({dialect}): use store.query('SELECT ... FROM {db_name}.table')")
 
         # Add hints for dynamically added databases (from domains)
         for db_name in self.schema_manager.connections.keys():
             if db_name not in config_db_names:
-                source_hints.append(f"- {db_name} (sql): use pd.read_sql(query, db_{db_name})")
+                source_hints.append(f"- {db_name} (sql): use store.query('SELECT ... FROM {db_name}.table')")
         for db_name in self.schema_manager.nosql_connections.keys():
             if db_name not in config_db_names:
                 source_hints.append(f"- {db_name} (nosql): use db_{db_name} connector methods")
@@ -567,7 +567,7 @@ IMPORTANT - PREFER SQL OVER PANDAS:
 Example for SQL database:
 ```python
 def get_result():
-    df = pd.read_sql("SELECT SUM(amount) as total FROM orders", db_sales)
+    df = store.query("SELECT SUM(amount) as total FROM sales.orders")
     return df.iloc[0, 0]  # Return scalar
 ```
 

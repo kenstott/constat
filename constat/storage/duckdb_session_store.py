@@ -265,6 +265,17 @@ class DuckDBSessionStore:
         if df.empty or len(df.columns) == 0:
             return
 
+        # Auto-convert to view if data is an unmodified query result
+        source_sql = getattr(df, 'attrs', {}).get('_source_sql')
+        if (
+            source_sql
+            and list(df.columns) == df.attrs.get('_source_columns', [])
+            and len(df) == df.attrs.get('_source_len', -1)
+        ):
+            logger.info(f"Auto-converting save_dataframe('{name}') to create_view (data from query)")
+            self.create_view(name, source_sql, step_number=step_number, description=description)
+            return
+
         validated = _validate_table_name(name)
 
         with self._locked_conn() as conn:
@@ -349,7 +360,12 @@ class DuckDBSessionStore:
         from constat.catalog.sql_transpiler import transpile_sql
         duckdb_sql = transpile_sql(sql, target_dialect="duckdb", source_dialect="postgres")
         with self._locked_conn() as conn:
-            return conn.execute(duckdb_sql).fetchdf()
+            df = conn.execute(duckdb_sql).fetchdf()
+        # Tag result so save_dataframe can auto-convert to view
+        df.attrs["_source_sql"] = sql
+        df.attrs["_source_columns"] = list(df.columns)
+        df.attrs["_source_len"] = len(df)
+        return df
 
     def list_tables(self) -> list[dict]:
         tables = self._registry.list_tables(
@@ -509,13 +525,36 @@ class DuckDBSessionStore:
     # Federation: views, attach, file registration
     # ------------------------------------------------------------------
 
-    def create_view(self, name: str, pg_sql: str, step_number: int = 0) -> None:
+    def create_view(self, name: str, pg_sql: str, step_number: int = 0, description: str = "") -> None:
         """Create a lazy SQL view. PG SQL is transpiled to DuckDB."""
         from constat.catalog.sql_transpiler import transpile_sql
         validated = _validate_table_name(name)
         duckdb_sql = transpile_sql(pg_sql, target_dialect="duckdb", source_dialect="postgres")
         with self._locked_conn() as conn:
             conn.execute(f"CREATE OR REPLACE VIEW {validated} AS {duckdb_sql}")
+
+            # Probe row count and columns from the view
+            try:
+                row_count = conn.execute(f"SELECT COUNT(*) FROM {validated}").fetchone()[0]
+                col_info = conn.execute(f"DESCRIBE {validated}").fetchall()
+                columns = [{"name": row[0], "type": row[1]} for row in col_info]
+            except Exception:
+                row_count = 0
+                columns = []
+
+            self._upsert_registry(conn, validated, step_number, row_count, description, None, 1)
+
+        # Register in central registry
+        self._registry.register_table(
+            user_id=self._user_id,
+            session_id=self._session_id,
+            name=name,
+            file_path=str(self._db_path),
+            row_count=row_count,
+            columns=columns,
+            description=description or None,
+            step_number=step_number,
+        )
 
     def attach(self, name: str, path: str, db_type: str = "sqlite", read_only: bool = True) -> None:
         """ATTACH a source SQLite/DuckDB file. Tables queryable as schema.table.

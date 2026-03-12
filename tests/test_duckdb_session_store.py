@@ -316,6 +316,50 @@ class TestCreateView:
         assert result is not None
         assert len(result) == 2
 
+    def test_view_registered_in_list_tables(self, store):
+        store.save_dataframe("base", pd.DataFrame({"x": [1, 2, 3]}))
+        store.create_view("my_view", "SELECT * FROM base WHERE x > 1", step_number=2, description="filtered")
+        tables = {t["name"] for t in store.list_tables()}
+        assert "my_view" in tables
+
+    def test_auto_convert_query_to_view(self, store):
+        """save_dataframe auto-converts to view when data is unmodified query result."""
+        store.save_dataframe("source", pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]}))
+        df = store.query("SELECT * FROM source WHERE a > 1")
+        assert "_source_sql" in df.attrs
+        # save_dataframe should auto-convert to view
+        store.save_dataframe("derived", df, step_number=1)
+        # Verify it's queryable and has correct data
+        result = store.load_dataframe("derived")
+        assert len(result) == 2
+        # Verify it's in list_tables
+        tables = {t["name"] for t in store.list_tables()}
+        assert "derived" in tables
+
+    def test_no_auto_convert_when_columns_changed(self, store):
+        """save_dataframe does NOT auto-convert when columns differ from original query."""
+        store.save_dataframe("source", pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]}))
+        df = store.query("SELECT * FROM source")
+        # Column selection: attrs are shared but columns differ from _source_columns
+        subset = df[["a"]]
+        assert list(subset.columns) != df.attrs.get("_source_columns")
+        # This should do a normal save, not a view
+        store.save_dataframe("subset", subset, step_number=1)
+        result = store.load_dataframe("subset")
+        assert len(result) == 3
+        assert list(result.columns) == ["a"]
+
+    def test_no_auto_convert_when_rows_filtered(self, store):
+        """save_dataframe does NOT auto-convert when rows are filtered."""
+        store.save_dataframe("source", pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]}))
+        df = store.query("SELECT * FROM source")
+        filtered = df[df["a"] > 1]
+        # Rows differ from _source_len
+        assert len(filtered) != df.attrs.get("_source_len")
+        store.save_dataframe("filtered", filtered, step_number=1)
+        result = store.load_dataframe("filtered")
+        assert len(result) == 2
+
 
 class TestAttachSQLite:
     def test_attach_and_query(self, store, tmp_dir):

@@ -536,6 +536,14 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         """)
 
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS proven_grounding (
+                entity_name TEXT NOT NULL,
+                source_pattern TEXT NOT NULL,
+                PRIMARY KEY (entity_name, source_pattern)
+            )
+        """)
+
         self._create_ner_scope_cache_tables()
 
     def _create_ner_scope_cache_tables(self) -> None:
@@ -610,6 +618,13 @@ class DuckDBVectorStore(VectorStoreBackend):
                 cluster_id INTEGER NOT NULL,
                 session_id VARCHAR NOT NULL,
                 PRIMARY KEY (term_name, session_id)
+            )
+        """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS proven_grounding (
+                entity_name TEXT NOT NULL,
+                source_pattern TEXT NOT NULL,
+                PRIMARY KEY (entity_name, source_pattern)
             )
         """)
         self._create_ner_scope_cache_tables()
@@ -912,6 +927,12 @@ class DuckDBVectorStore(VectorStoreBackend):
 
     def get_non_ignored_entities_for_chunk(self, *a, **kw):
         return self._relational.get_non_ignored_entities_for_chunk(*a, **kw)
+
+    def save_proven_grounding(self, *a, **kw):
+        return self._relational.save_proven_grounding(*a, **kw)
+
+    def get_proven_grounding(self, *a, **kw):
+        return self._relational.get_proven_grounding(*a, **kw)
 
     # Phase 2 vector delegations
 

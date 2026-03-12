@@ -18,7 +18,10 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 
 ## Data Loading
 **SQL databases** (SQLite, PostgreSQL, DuckDB):
-- `pd.read_sql("SELECT ...", db_<name>)` - ALWAYS use pd.read_sql(), NEVER use db.execute()
+- **Preferred**: `store.create_view('name', 'SELECT ... FROM db_name.table', step_number=N)` — lazy, no materialization
+- **Preferred**: `store.query('SELECT ... FROM db_name.table')` — when you just need the result as DataFrame
+- Fallback: `pd.read_sql(query, db_<name>)` — only when you need pandas ops before saving
+- NEVER use `db.execute()` or `db_<name>.execute()`
 
 **NoSQL databases** (MongoDB, Cassandra, Elasticsearch):
 - MongoDB: `pd.DataFrame(list(db_<name>['collection'].find(query)))`
@@ -30,8 +33,6 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 - JSON: `pd.read_json(file_<name>)`
 - Parquet: `pd.read_parquet(file_<name>)`
 
-**CRITICAL for SQL**: Do NOT use `db.execute()` or `db_<name>.execute()` - this does not work. Use `pd.read_sql(query, db_<name>)` instead.
-
 ## Variable vs Hardcoded Values
 - Relative terms ("today", "last month") -> use `datetime.now()`, relative calculations
 - Explicit values ("January 2006", "above 100") -> hardcode
@@ -39,7 +40,8 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 ## Code Rules
 1. Use discovery tools first to understand available data
 2. Use appropriate access pattern for database type (see Data Loading above)
-3. Print a clear, formatted answer at the end
+3. **Save results with `store.create_view()`** for SQL-derivable results, `store.save_dataframe()` only for Python-computed results. Self-check: if your code does `df = store.query(sql)` then `store.save_dataframe(name, df)`, replace with `store.create_view(name, sql)`.
+4. Print a clear, formatted answer at the end
 
 ## Error Prevention
 - DataFrame: verify columns before access -> `if 'col' in df.columns`

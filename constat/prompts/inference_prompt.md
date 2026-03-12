@@ -29,8 +29,8 @@ CRITICAL Rules:
    - RIGHT: Getting all rows that meet criteria
 2. Use `if len(df) > 0:` not `if df:` for DataFrame checks
 3. End with `_result = <value>`
-4. ALWAYS save result: store.save_dataframe('{table_name}', result_df)
-5. For REFERENCED database tables, use pd.read_sql(query, db_<name>) with the specific database connection
+4. ALWAYS save result: use `store.create_view('{table_name}', sql, step_number=N)` when the result is SQL-derivable (joins, filters, aggregations over source/store tables). Use `store.save_dataframe('{table_name}', result_df, step_number=N)` ONLY when the result requires Python computation (LLM calls, pandas transforms, API data).
+5. For REFERENCED database tables, use `store.query('SELECT ... FROM db_name.table')` or `store.create_view('name', 'SELECT ... FROM db_name.table ...', step_number=N)`
 6. For API SOURCES, use api_<name>() to fetch data, then convert to DataFrame with pd.DataFrame()
    REST APIs often wrap data in paginated responses. Always extract the array:
    ```

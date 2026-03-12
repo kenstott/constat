@@ -847,7 +847,7 @@ class ExecutionMixin:
                     "attempt": attempt,
                     "max_attempts": max_attempts,
                     "is_retry": attempt > 1,
-                    "goal": step.goal[:50] + "..." if len(step.goal) > 50 else step.goal,
+                    "goal": step.goal,
                     "retry_reason": last_error[:100] if attempt > 1 and last_error else None,
                 }
             ))
@@ -1605,16 +1605,16 @@ class ExecutionMixin:
         """Build data source summary for retry prompts so LLM knows where tables live."""
         lines = []
 
-        # Database tables (source data — accessed via pd.read_sql)
+        # Database tables (source data — queryable via store.query/create_view as db_name.table)
         if self.schema_manager:
             by_db: dict[str, list[str]] = {}
             for table_meta in self.schema_manager.metadata_cache.values():
                 by_db.setdefault(table_meta.database, []).append(table_meta.name)
             if by_db:
-                lines.append("\nDATA SOURCES (use pd.read_sql(query, db_<name>)):")
+                lines.append("\nDATA SOURCES (use store.query('SELECT ... FROM db_name.table') or store.create_view()):")
                 for db_name in sorted(by_db):
                     tables = sorted(by_db[db_name])
-                    lines.append(f"  db_{db_name}: {', '.join(tables)}")
+                    lines.append(f"  {db_name}: {', '.join(tables)}")
 
         # Store tables (intermediate data from previous steps)
         if self.datastore:
