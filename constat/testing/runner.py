@@ -423,8 +423,9 @@ def _run_e2e_with_events(
         if api.session.datastore:
             try:
                 tables = api.session.datastore.list_tables()
-                for tbl_name in tables[:5]:
-                    df = api.session.datastore.load_table(tbl_name)
+                for tbl in tables[:5]:
+                    tbl_name = tbl["name"] if isinstance(tbl, dict) else tbl
+                    df = api.session.datastore.load_dataframe(tbl_name)
                     if df is not None and len(df) > 0:
                         artifact_data += f"\n--- {tbl_name} ({len(df)} rows) ---\n"
                         artifact_data += df.head(20).to_string(index=False) + "\n"
