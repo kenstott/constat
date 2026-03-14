@@ -45,7 +45,7 @@ golden_questions:
     [Structured: "No budget constraints"]
 
 
-    Save the final result as a table named ''results''.'
+'
   tags:
   - from-reason-chain
   expect:
@@ -115,7 +115,7 @@ golden_questions:
       [Structured: "No budget constraints"]
 
 
-      Save the final result as a table named ''results''.'
+  '
     objectives:
     - 'Calculate raises for all employees based on the performance review guidelines
       within the business_rules and their most recent performance review. DO NOT USE
@@ -137,7 +137,7 @@ golden_questions:
       [Structured: "No budget constraints"]
 
 
-      Save the final result as a table named ''results''.'
+  '
     step_hints: &id001
     - step_number: 1
       goal: Query all employees with their most recent performance review from the
@@ -213,5 +213,5 @@ golden_questions:
     [Structured: "No budget constraints"]
 
 
-    Save the final result as a table named ''results''.'
+'
   step_hints: *id001

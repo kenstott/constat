@@ -156,7 +156,7 @@ function QuestionForm({
           className={`${inputClass} h-20 font-mono text-[11px]`}
           value={validatorCode}
           onChange={e => setValidatorCode(e.target.value)}
-          placeholder={'# result = expected_output or last table, tables = all by name\nassert len(result) == 15'}
+          placeholder={'# result = last table created, tables = all by name\nassert len(result) == 15'}
         />
       </div>
 
