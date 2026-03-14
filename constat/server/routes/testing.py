@@ -155,16 +155,21 @@ def _resolve_expectations(
 
 
 def _gq_to_response(index: int, raw: dict) -> GoldenQuestionResponse:
+    from constat.testing.models import _parse_expectations
     expect_raw = raw.get("expect", {})
+    parsed = _parse_expectations(expect_raw)
     return GoldenQuestionResponse(
         index=index,
         question=raw.get("question", ""),
         tags=raw.get("tags", []),
         expect=GoldenQuestionExpectations(
-            terms=expect_raw.get("terms", []),
-            grounding=expect_raw.get("grounding", []),
-            relationships=expect_raw.get("relationships", []),
-            end_to_end=expect_raw.get("end_to_end"),
+            terms=[{"name": t.name, "has_definition": t.has_definition, "domain": t.domain, "parent": t.parent} for t in parsed.terms],
+            grounding=[{"entity": g.entity, "resolves_to": g.resolves_to, "strict": g.strict} for g in parsed.grounding],
+            relationships=[{"subject": r.subject, "verb": r.verb, "object": r.object, "min_confidence": r.min_confidence} for r in parsed.relationships],
+            end_to_end={
+                "judge_prompt": parsed.end_to_end.judge_prompt,
+                "result_contains": parsed.end_to_end.result_contains,
+            } if parsed.end_to_end else None,
             suggested_question=expect_raw.get("suggested_question"),
             step_hints=expect_raw.get("step_hints", []),
         ),
