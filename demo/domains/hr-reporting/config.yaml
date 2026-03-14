@@ -66,11 +66,29 @@ golden_questions:
     relationships: []
     glossary: []
     end_to_end:
-      semantic_match: Answer must calculate raises using only the performance review
-        guidelines from business_rules (not compensation guidelines), apply percentage
-        increases to current salary based on each employee's most recent performance
-        review rating from the last 12 months, and present results without considering
-        budget constraints.
+      judge_prompt: >-
+        You are a regression test evaluator. You are given:
+
+        1. A question that was asked
+
+        2. The proof system's prose summary of the answer
+
+        3. The actual computed artifacts (tables with data)
+
+
+        The artifacts are the PRIMARY evidence. The prose summary may omit details
+        that exist in the artifact data. If the artifacts contain the expected data,
+        the test PASSES even if the prose summary is incomplete.
+
+
+        Criteria: The answer must calculate raises using ONLY the performance review
+        guidelines from business_rules (not compensation guidelines). Each employee
+        must have a raise percentage derived from their most recent performance rating
+        (1-5 scale) from the last 12 months, applied as a percentage of current salary,
+        with no budget constraints. All 15 employees should be covered.
+
+
+        Reply with exactly YES or NO on the first line, then one sentence explaining why.
     suggested_question: 'Calculate raises for all employees based on the performance
       review guidelines within the business_rules and their most recent performance
       review. DO NOT USE compensation guidelines.
