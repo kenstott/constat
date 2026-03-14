@@ -42,11 +42,25 @@ class TermAssertion:
     parent: str | None = None
 
 
+_DEFAULT_JUDGE_PROMPT = (
+    "You are a regression test evaluator. You are given:\n"
+    "1. A question that was asked\n"
+    "2. The proof system's prose summary of the answer\n"
+    "3. The actual computed artifacts (tables with data)\n\n"
+    "The artifacts are the PRIMARY evidence. The prose summary may omit details "
+    "that exist in the artifact data. If the artifacts contain the expected data "
+    "(correct columns, reasonable values, all employees covered), the test PASSES "
+    "even if the prose summary is incomplete.\n\n"
+    "Reply with exactly YES or NO on the first line, then one sentence explaining why."
+)
+
+
 @dataclass
 class EndToEndAssertion:
     """Phase 2 — run question through real pipeline, LLM-judge evaluates."""
     result_contains: list[str] = field(default_factory=list)
     semantic_match: str | None = None
+    judge_prompt: str = _DEFAULT_JUDGE_PROMPT
     plan_min_steps: int = 1
     expect_success: bool = True
 
@@ -171,6 +185,7 @@ def _parse_expectations(raw: dict) -> GoldenExpectations:
         end_to_end = EndToEndAssertion(
             result_contains=e2e_raw.get("result_contains", []),
             semantic_match=e2e_raw.get("semantic_match"),
+            judge_prompt=e2e_raw.get("judge_prompt", _DEFAULT_JUDGE_PROMPT),
             plan_min_steps=e2e_raw.get("plan_min_steps", 1),
             expect_success=e2e_raw.get("expect_success", True),
         )

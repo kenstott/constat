@@ -454,7 +454,11 @@ async def extract_expectations(
                 config, original_question, proof_summary, grounded_entities,
             )
             if semantic_match:
-                end_to_end = {"semantic_match": semantic_match}
+                from constat.testing.models import _DEFAULT_JUDGE_PROMPT
+                end_to_end = {
+                    "semantic_match": semantic_match,
+                    "judge_prompt": _DEFAULT_JUDGE_PROMPT,
+                }
         except Exception as e:
             logger.warning(f"Failed to generate test metadata via LLM: {e}")
 

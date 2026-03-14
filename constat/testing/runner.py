@@ -448,7 +448,7 @@ def _run_e2e_with_events(
             evt_queue.put("Checking: semantic match...")
             passed, reasoning = _llm_judge(
                 gq.question, answer, assertion.semantic_match, config,
-                artifact_data=artifact_data,
+                artifact_data=artifact_data, judge_prompt=assertion.judge_prompt,
             )
             judge_reasoning = reasoning
             if not passed:
@@ -556,7 +556,7 @@ def _run_e2e_question(
     if assertion.semantic_match and answer:
         passed, reasoning = _llm_judge(
             gq.question, answer, assertion.semantic_match, config,
-            artifact_data=artifact_data,
+            artifact_data=artifact_data, judge_prompt=assertion.judge_prompt,
         )
         judge_reasoning = reasoning
         if not passed:
@@ -644,26 +644,17 @@ def _collect_artifact_data(api, solve_result) -> str:
 
 def _llm_judge(
     question: str, answer: str, criteria: str, config: Config,
-    *, artifact_data: str = "",
+    *, artifact_data: str = "", judge_prompt: str = "",
 ) -> tuple[bool, str]:
     """Use the config's LLM to evaluate if answer meets criteria.
 
     Returns (passed, reasoning).
     """
     from constat.providers.router import TaskRouter
+    from constat.testing.models import _DEFAULT_JUDGE_PROMPT
 
     router = TaskRouter(config.llm)
-    system = (
-        "You are a regression test evaluator. You are given:\n"
-        "1. A question that was asked\n"
-        "2. The proof system's prose summary of the answer\n"
-        "3. The actual computed artifacts (tables with data)\n\n"
-        "The artifacts are the PRIMARY evidence. The prose summary may omit details "
-        "that exist in the artifact data. If the artifacts contain the expected data "
-        "(correct columns, reasonable values, all employees covered), the test PASSES "
-        "even if the prose summary is incomplete.\n\n"
-        "Reply with exactly YES or NO on the first line, then one sentence explaining why."
-    )
+    system = judge_prompt or _DEFAULT_JUDGE_PROMPT
     user_parts = [
         f"Question: {question}",
         f"Answer summary: {answer[:3000]}",
