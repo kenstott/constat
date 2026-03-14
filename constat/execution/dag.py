@@ -608,17 +608,17 @@ def validate_proof_plan(
         id_to_name[fact_id] = name
         defined_inferences.add(fact_id)
 
-    # Check for unused premises
+    # Check for unused premises — warn but don't block (constraints like
+    # "last 12 months" or "no budget constraints" may not feed into inferences
+    # directly but still constrain the generated code)
     unused_premises = premise_ids - used_premises
     if unused_premises:
         unused_list = sorted(unused_premises)
         unused_names = [f"{pid} ({id_to_name.get(pid, '?')})" for pid in unused_list]
-        errors.append(PlanValidationError(
-            fact_id="PLAN",
-            error_type="unused_premises",
-            message=f"Premises not used in any inference: {', '.join(unused_names)}",
-            invalid_refs=list(unused_premises),
-        ))
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            f"[PLAN_VALIDATION] Unused premises (kept as constraints): {', '.join(unused_names)}"
+        )
 
     return PlanValidationResult(
         valid=len(errors) == 0,

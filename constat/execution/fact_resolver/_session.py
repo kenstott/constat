@@ -40,7 +40,7 @@ class SessionMixin:
         if not params:
             return fact_name
         # Exclude metadata params that don't affect resolution
-        cache_params = {k: v for k, v in params.items() if k not in ("fact_description",)}
+        cache_params = {k: v for k, v in params.items() if k not in ("fact_description", "source_document")}
         if not cache_params:
             return fact_name
         param_str = ",".join(f"{k}={v}" for k, v in sorted(cache_params.items()))
@@ -285,7 +285,7 @@ IMPORTANT for logic:
 Respond with ONLY the JSON object, no explanation."""
 
         try:
-            response = self.llm.generate(
+            response = self._llm_generate(
                 system="You are a data resolution expert. Generate resolution specs in JSON format.",
                 user_message=prompt,
                 max_tokens=self.llm.max_output_tokens,
@@ -559,7 +559,7 @@ REASONING: User is focused on US region analysis
 """
 
         try:
-            response = self.llm.generate(
+            response = self._llm_generate(
                 system="You are a fact extraction assistant. Extract structured facts from natural language.",
                 user_message=prompt,
                 max_tokens=self.llm.max_output_tokens,

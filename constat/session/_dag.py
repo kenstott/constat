@@ -391,7 +391,11 @@ RULES:
             else:
                 # Generic resolution (document, user, or other sources)
                 logger.debug(f"[DAG] Using tiered resolution for {fact_id} '{fact_name}' (source={source})")
-                fact, _ = self.fact_resolver.resolve_tiered(fact_name, fact_description=fact_desc)
+                # Pass source document hint so document resolver can filter
+                extra_params = {}
+                if node.source == "document" and node.source_db:
+                    extra_params["source_document"] = node.source_db
+                fact, _ = self.fact_resolver.resolve_tiered(fact_name, fact_description=fact_desc, **extra_params)
 
             if fact and fact.value is not None:
                 resolved_premises[fact_id] = fact

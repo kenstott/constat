@@ -423,14 +423,21 @@ export default function RegressionPanel({ sessionId }: Props) {
                   </div>
                 )}
                 {progress.phase && (
-                  <div className="flex items-center gap-1.5 pl-4">
-                    <svg className="animate-spin h-3 w-3 text-blue-500" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                    <span className="text-[10px] uppercase font-medium text-blue-600 dark:text-blue-400">
-                      {progress.phase === 'e2e' ? 'Integration test (LLM)' : 'Unit tests'}
-                    </span>
+                  <div className="space-y-0.5 pl-4">
+                    <div className="flex items-center gap-1.5">
+                      <svg className="animate-spin h-3 w-3 text-blue-500" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      <span className="text-[10px] uppercase font-medium text-blue-600 dark:text-blue-400">
+                        {progress.phase === 'e2e' ? 'Integration test (LLM)' : 'Unit tests'}
+                      </span>
+                    </div>
+                    {progress.detail && (
+                      <div className="text-[10px] text-gray-500 dark:text-gray-400 pl-[18px] truncate transition-all duration-200">
+                        {progress.detail}
+                      </div>
+                    )}
                   </div>
                 )}
                 {progress.questionTotal > 0 && (

@@ -7,13 +7,14 @@ export async function listTestableDomains(sessionId: string): Promise<TestableDo
 }
 
 export interface TestProgressEvent {
-  event: 'domain_start' | 'question_start' | 'question_done' | 'domain_done' | 'complete'
+  event: 'domain_start' | 'question_start' | 'question_done' | 'domain_done' | 'complete' | 'e2e_progress'
   domain: string
   domain_name: string
   question: string
   question_index: number
   question_total: number
   phase: string
+  detail?: string
   result?: Record<string, unknown>
 }
 

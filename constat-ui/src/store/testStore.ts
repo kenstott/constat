@@ -10,6 +10,7 @@ interface TestProgress {
   questionIndex: number
   questionTotal: number
   phase: string  // "metadata" (unit) | "e2e" (integration) | ""
+  detail: string // Sub-step description
 }
 
 interface TestState {
@@ -80,8 +81,16 @@ export const useTestStore = create<TestState>((set, get) => ({
                 questionIndex: evt.question_index,
                 questionTotal: evt.question_total,
                 phase: evt.phase,
+                detail: evt.detail ?? '',
               },
             })
+          } else if (evt.event === 'e2e_progress') {
+            const prev = get().progress
+            if (prev) {
+              set({
+                progress: { ...prev, detail: evt.detail ?? '' },
+              })
+            }
           }
         },
       )

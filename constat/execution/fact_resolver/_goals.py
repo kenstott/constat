@@ -97,7 +97,7 @@ Use uppercase for Variables that need binding, lowercase for constants.
 
         self._emit_event("decomposing_goal", {"question": question})
 
-        response = self.llm.generate(
+        response = self._llm_generate(
             system="You decompose questions into Prolog-style goals and rules.",
             user_message=decompose_prompt,
             max_tokens=self.llm.max_output_tokens,
@@ -440,7 +440,7 @@ VARIABLES:
 
         self._emit_event("template_generating", {"question": question})
 
-        template_response = self.llm.generate(
+        template_response = self._llm_generate(
             system="You create answer templates with variables. Be thorough - include ALL variables needed.",
             user_message=template_prompt,
             max_tokens=self.llm.max_output_tokens,
@@ -486,7 +486,7 @@ Example:
 {{avg_order_value}}: [{{total_revenue}}, {{order_count}}]
 """
 
-        dep_response = self.llm.generate(
+        dep_response = self._llm_generate(
             system="You analyze variable dependencies.",
             user_message=dependency_prompt,
             max_tokens=self.llm.max_output_tokens,
@@ -693,7 +693,7 @@ FACT: violations_count - Number of policy violations found
 
 Be specific and exhaustive - list ALL facts needed to verify the claim."""
 
-        decompose_text = self.llm.generate(
+        decompose_text = self._llm_generate(
             system="You are analyzing verification requests to identify required facts.",
             user_message=decompose_prompt,
             max_tokens=self.llm.max_output_tokens,
@@ -820,7 +820,7 @@ ANSWER: <your answer>
 CONFIDENCE: <HIGH/MEDIUM/LOW> - <justification>
 CAVEATS: <any limitations or caveats>"""
 
-        synthesis_text = self.llm.generate(
+        synthesis_text = self._llm_generate(
             system="You are synthesizing verification results from resolved facts.",
             user_message=synthesis_prompt,
             max_tokens=self.llm.max_output_tokens,

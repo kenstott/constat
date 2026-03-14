@@ -596,12 +596,15 @@ export interface GoldenQuestionExpectations {
   glossary: Array<Record<string, unknown>>
   end_to_end?: Record<string, unknown> | null
   suggested_question?: string | null
+  objectives?: string[]
+  step_hints?: Array<Record<string, unknown>>
 }
 
 export interface GoldenQuestionRequest {
   question: string
   tags: string[]
   expect: GoldenQuestionExpectations
+  objectives?: string[]
 }
 
 export interface GoldenQuestionResponse {
@@ -609,4 +612,5 @@ export interface GoldenQuestionResponse {
   question: string
   tags: string[]
   expect: GoldenQuestionExpectations
+  objectives?: string[]
 }

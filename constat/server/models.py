@@ -1061,12 +1061,15 @@ class GoldenQuestionExpectations(BaseModel):
     glossary: list[dict[str, Any]] = Field(default_factory=list)
     end_to_end: dict[str, Any] | None = None
     suggested_question: str | None = None
+    objectives: list[str] = Field(default_factory=list)
+    step_hints: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GoldenQuestionRequest(BaseModel):
     question: str
     tags: list[str] = Field(default_factory=list)
     expect: GoldenQuestionExpectations = Field(default_factory=GoldenQuestionExpectations)
+    objectives: list[str] = Field(default_factory=list)
 
 
 class GoldenQuestionResponse(BaseModel):
@@ -1074,3 +1077,4 @@ class GoldenQuestionResponse(BaseModel):
     question: str
     tags: list[str] = Field(default_factory=list)
     expect: GoldenQuestionExpectations = Field(default_factory=GoldenQuestionExpectations)
+    objectives: list[str] = Field(default_factory=list)

@@ -575,7 +575,7 @@ class ResolutionStrategy:
     ])
 
     # Tier 1 timeout in seconds - collect results within this window
-    tier1_timeout: float = 15.0
+    tier1_timeout: float = 30.0
 
     # Legacy: source_priority kept for backward compatibility
     # New code should use tier1_sources + tiered resolution

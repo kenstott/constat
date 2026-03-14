@@ -319,7 +319,9 @@ class SolveMixin:
                 analysis = self._analyze_question(problem)
 
         # Create session + datastore (idempotent — may already exist from skill execution)
+        logger.info("[SOLVE_TRACE] ensuring session datastore")
         self._ensure_session_datastore(problem)
+        logger.info("[SOLVE_TRACE] session datastore ready")
 
         # Initialize session state
         # noinspection PyAttributeOutsideInit
@@ -381,11 +383,13 @@ class SolveMixin:
                     logger.warning(f"[PARALLEL] planning failed: {e}")
                     speculative_plan = None
                 executor.shutdown(wait=False)
+                logger.info(f"[SOLVE_TRACE] executor shutdown, speculative_plan={speculative_plan is not None}, complexity={planning_complexity}")
 
                 if speculative_plan is not None and planning_complexity != "low":
                     logger.debug("[PARALLEL] Using speculative plan (saved ~1 LLM call)")
                     planner_response = speculative_plan
                     self.plan = planner_response.plan
+                    logger.info(f"[SOLVE_TRACE] plan set, steps={len(self.plan.steps) if self.plan else 'None'}")
                 elif speculative_plan is not None and planning_complexity == "low":
                     logger.debug("[PARALLEL] Discarding speculative plan — re-planning with low-complexity directive")
                     self._sync_user_facts_to_planner()
@@ -418,6 +422,7 @@ class SolveMixin:
                 self.plan = planner_response.plan
 
             # Emit planning complete event
+            logger.info(f"[SOLVE_TRACE] emitting planning_complete, plan_steps={len(self.plan.steps) if self.plan else 'None'}")
             self._emit_event(StepEvent(
                 event_type="planning_complete",
                 step_number=0,
@@ -425,6 +430,7 @@ class SolveMixin:
             ))
 
             # Record plan to plan directory
+            logger.info("[SOLVE_TRACE] saving plan data to history")
             self.history.save_plan_data(
                 self.session_id,
                 raw_response=planner_response.raw_response or None,
@@ -587,6 +593,7 @@ class SolveMixin:
                 break
             else:
                 # No approval required - auto-approved
+                logger.info("[SOLVE_TRACE] auto-approving plan")
                 self.history.save_plan_data(
                     self.session_id,
                     approval_decision="auto_approved",
@@ -595,6 +602,7 @@ class SolveMixin:
                 break
 
         # Save plan to datastore (for UI restoration)
+        logger.info("[SOLVE_TRACE] saving plan to datastore")
         self.datastore.set_session_meta("status", "executing")
         self.datastore.set_session_meta("mode", "exploratory")
         for step in self.plan.steps:
@@ -624,10 +632,12 @@ class SolveMixin:
             ))
 
         # Materialize facts table before execution starts
+        logger.info("[SOLVE_TRACE] materializing facts table")
         self._materialize_facts_table()
 
         # Execute steps in parallel waves based on dependencies
         # Phase 4: Reset cancellation state before starting execution
+        logger.info("[SOLVE_TRACE] starting execution")
         self.reset_cancellation()
         all_results: list[tuple[Step, StepResult]] = []
 

@@ -69,8 +69,6 @@ def _can_modify_domain(domain, user_id: str, server_config: ServerConfig) -> boo
     perms = get_user_permissions(server_config, user_id)
     if perms.is_admin:
         return True
-    if domain.tier == "system":
-        return False
     if domain.owner and domain.owner != user_id and domain.steward != user_id:
         return False
     return True
@@ -164,7 +162,10 @@ def _gq_to_response(index: int, raw: dict) -> GoldenQuestionResponse:
             relationships=expect_raw.get("relationships", []),
             glossary=expect_raw.get("glossary", []),
             end_to_end=expect_raw.get("end_to_end"),
+            suggested_question=expect_raw.get("suggested_question"),
+            step_hints=expect_raw.get("step_hints", []),
         ),
+        objectives=raw.get("objectives", []),
     )
 
 
@@ -223,35 +224,52 @@ def _generate_test_metadata(
     config, original_question: str | None, proof_summary: str | None,
     entities: list[str],
 ) -> tuple[str | None, str | None]:
-    """Use LLM to generate a concise test question name and semantic_match criteria.
+    """Generate test question and semantic_match criteria.
+
+    If the original question has no follow-ups, use it directly.
+    Only use LLM to merge when follow-ups exist.
 
     Returns (suggested_question, semantic_match).
     """
     from constat.providers.router import TaskRouter
-    from constat.discovery.models import display_entity_name as _dn
 
+    has_followups = original_question and "Follow-up requests:" in original_question
+
+    if original_question and not has_followups:
+        # Single question — strip any "Original request:" prefix, use as-is
+        question = original_question.removeprefix("Original request:").strip()
+        # Still need LLM for semantic_match criteria only
+        router = TaskRouter(config.llm)
+        system = (
+            "Given a data analytics question, produce a single-line criteria string "
+            "describing what a correct answer should contain. "
+            "Reply with exactly one line starting with CRITERIA:"
+        )
+        response = router.generate(system=system, user_message=f"Question: {question}")
+        semantic_match = None
+        for line in response.strip().split("\n"):
+            line = line.strip()
+            if line.upper().startswith("CRITERIA:"):
+                semantic_match = line.split(":", 1)[1].strip()
+                break
+        return question, semantic_match
+
+    # Multiple questions/follow-ups — LLM merges into single coherent question
     router = TaskRouter(config.llm)
-    entity_names = ", ".join(_dn(e) for e in entities[:10])
-
-    context_parts = []
-    if original_question:
-        context_parts.append(f"Original question: {original_question}")
-    if proof_summary:
-        context_parts.append(f"Proof summary: {proof_summary[:500]}")
-    if entity_names:
-        context_parts.append(f"Entities involved: {entity_names}")
-
     system = (
-        "You generate regression test metadata for a data analytics system. "
-        "Given context about a reasoning chain, produce:\n"
-        "1. A concise test question (imperative, 3-8 words, like 'Calculate employee raises' or 'Find top revenue products')\n"
-        "2. A semantic_match criteria string describing what a correct answer should contain\n\n"
+        "You are merging a multi-turn conversation into a single test question. "
+        "The input contains an original question and follow-up corrections/refinements. "
+        "Produce a SINGLE question that incorporates ALL constraints from ALL turns. "
+        "If a follow-up contradicts the original, the follow-up takes precedence. "
+        "DO NOT reference proof results, data values, row counts, or execution details. "
+        "Only reference the user's INTENT: what they want computed, from what sources, "
+        "with what filters and exclusions.\n\n"
         "Reply with exactly two lines:\n"
-        "QUESTION: <the test question>\n"
+        "QUESTION: <merged question preserving all constraints>\n"
         "CRITERIA: <what a correct answer should demonstrate>"
     )
-    user_message = "\n".join(context_parts)
-    response = router.generate(system=system, user_message=user_message, max_tokens=128)
+    user_message = original_question or ""
+    response = router.generate(system=system, user_message=user_message)
 
     suggested_question = None
     semantic_match = None
@@ -424,14 +442,19 @@ async def extract_expectations(
     # Use LLM to generate a concise test question name and semantic_match criteria
     suggested_question = None
     end_to_end = None
-    original_question = body.original_question if body else None
     proof_summary = body.proof_summary if body else None
 
-    # Fall back to server-side proof result for original question
+    # Server-side proof result has the real analytical question (not slash commands).
+    # Always prefer it over client-supplied originalQuestion.
+    original_question = None
+    proof = getattr(managed.session, 'last_proof_result', None)
+    if proof:
+        original_question = proof.get("problem")
     if not original_question:
-        proof = getattr(managed.session, 'last_proof_result', None)
-        if proof:
-            original_question = proof.get("problem")
+        client_q = body.original_question if body else None
+        # Skip slash commands
+        if client_q and not client_q.strip().startswith("/"):
+            original_question = client_q
 
     if original_question or entities:
         try:
@@ -444,6 +467,40 @@ async def extract_expectations(
         except Exception as e:
             logger.warning(f"Failed to generate test metadata via LLM: {e}")
 
+    # Extract structured objectives from proof result
+    objectives: list[str] = []
+    if original_question:
+        if "Follow-up requests:" in original_question:
+            # Parse combined problem into structured objectives
+            parts = original_question.split("Follow-up requests:")
+            main_q = parts[0].removeprefix("Original request:").strip()
+            if main_q:
+                objectives.append(main_q)
+            if len(parts) > 1:
+                followup_text = parts[1].split("Prove all of the above")[0].strip()
+                for line in followup_text.split("\n"):
+                    line = line.strip().lstrip("- ").strip()
+                    if line:
+                        objectives.append(line)
+        else:
+            objectives.append(original_question.removeprefix("Original request:").strip())
+
+    # Capture step code hints from the exploratory session — these provide
+    # reference SQL/Python with correct table and column names that the
+    # reasoning chain uses to generate accurate inference code.
+    step_hints: list[dict] = []
+    session = managed.session
+    if session.history and session.session_id:
+        try:
+            step_codes = session.history.list_step_codes(session.session_id)
+            step_hints = [
+                {"step_number": s.get("step_number"), "goal": s.get("goal", ""), "code": s.get("code", "")}
+                for s in step_codes if s.get("code")
+            ]
+            logger.info(f"[extract_expectations] captured {len(step_hints)} step code hints")
+        except Exception as e:
+            logger.debug(f"[extract_expectations] could not load step codes: {e}")
+
     return GoldenQuestionExpectations(
         entities=entities,
         grounding=grounding,
@@ -451,6 +508,8 @@ async def extract_expectations(
         glossary=glossary,
         end_to_end=end_to_end,
         suggested_question=suggested_question,
+        objectives=objectives,
+        step_hints=step_hints,
     )
 
 
@@ -546,6 +605,7 @@ async def run_tests(
                     "question_index": evt.question_index,
                     "question_total": evt.question_total,
                     "phase": evt.phase,
+                    "detail": evt.detail,
                 }
                 if evt.result:
                     qr_dict = _question_result_to_dict(evt.result)
@@ -679,6 +739,12 @@ async def create_golden_question(
     domain_path, data = _read_domain_yaml(dc)
     gq_list = data.setdefault("golden_questions", [])
     new_entry = {"question": body.question, "tags": body.tags, "expect": expect}
+    if body.objectives:
+        new_entry["objectives"] = body.objectives
+    # Step hints from expect (captured from exploratory session)
+    step_hints = expect.get("step_hints") if isinstance(expect, dict) else getattr(body.expect, 'step_hints', [])
+    if step_hints:
+        new_entry["step_hints"] = step_hints
     gq_list.append(new_entry)
     _write_domain_yaml(domain_path, data, dc)
 
@@ -709,6 +775,8 @@ async def update_golden_question(
         raise HTTPException(status_code=404, detail=f"Golden question index {index} out of range")
 
     updated_entry = {"question": body.question, "tags": body.tags, "expect": body.expect.model_dump()}
+    if body.objectives:
+        updated_entry["objectives"] = body.objectives
     gq_list[index] = updated_entry
     data["golden_questions"] = gq_list
     _write_domain_yaml(domain_path, data, dc)
@@ -741,3 +809,52 @@ async def delete_golden_question(
     gq_list.pop(index)
     data["golden_questions"] = gq_list
     _write_domain_yaml(domain_path, data, dc)
+
+
+@router.post(
+    "/{session_id}/tests/{domain}/questions/{index}/move",
+    response_model=GoldenQuestionResponse,
+)
+async def move_golden_question(
+    session_id: str,
+    domain: str,
+    index: int,
+    body: dict,
+    user_id: CurrentUserId,
+    sm: SessionManager = Depends(_get_session_manager),
+    server_config: ServerConfig = Depends(_get_server_config),
+) -> GoldenQuestionResponse:
+    """Move a golden question from one domain to another."""
+    target_domain = body.get("target_domain")
+    if not target_domain:
+        raise HTTPException(status_code=400, detail="target_domain is required")
+
+    managed = sm.get_session(session_id)
+    config = managed.session.config
+
+    # Load source domain and remove the question
+    src_dc = _load_domain_or_404(config, domain)
+    if not _can_modify_domain(src_dc, user_id, server_config):
+        raise HTTPException(status_code=403, detail="You do not have permission to modify the source domain")
+
+    src_path, src_data = _read_domain_yaml(src_dc)
+    src_list = src_data.get("golden_questions", [])
+    if index < 0 or index >= len(src_list):
+        raise HTTPException(status_code=404, detail=f"Golden question index {index} out of range")
+
+    entry = src_list.pop(index)
+
+    # Load target domain and add the question
+    tgt_dc = _load_domain_or_404(config, target_domain)
+    if not _can_modify_domain(tgt_dc, user_id, server_config):
+        raise HTTPException(status_code=403, detail="You do not have permission to modify the target domain")
+
+    tgt_path, tgt_data = _read_domain_yaml(tgt_dc)
+    tgt_list = tgt_data.setdefault("golden_questions", [])
+    tgt_list.append(entry)
+
+    # Write both files
+    _write_domain_yaml(src_path, src_data, src_dc)
+    _write_domain_yaml(tgt_path, tgt_data, tgt_dc)
+
+    return _gq_to_response(len(tgt_list) - 1, entry)

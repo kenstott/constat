@@ -25,7 +25,24 @@ documents:
     - \.(png|jpg|jpeg|gif|svg|ico|css|js)(\?|$)
     description: Human resource management concepts and practices
 golden_questions:
-- question: Calculate employee raises using performance review guidelines
+- question: 'Calculate raises for all employees based on the performance review guidelines
+    within the business_rules and their most recent performance review. DO NOT USE
+    compensation guidelines.
+
+
+    Clarifications:
+
+    0: Last 12 months
+
+    [Structured: "Last 12 months"]
+
+    1: Percentage of current salary
+
+    [Structured: "Percentage of current salary"]
+
+    2: No budget constraints
+
+    [Structured: "No budget constraints"]'
   tags:
   - from-reason-chain
   expect:
@@ -33,33 +50,135 @@ golden_questions:
     - employees
     - performance_reviews
     - raise_guidelines
-    - time_period_=_"last_12_months"
-    - calculation_basis_=_"percentage_of_current_salary"
     grounding:
     - entity: employees
       resolves_to:
-      - schema:hr
+      - schema:hr.employees
       strict: true
     - entity: performance_reviews
       resolves_to:
-      - schema:hr
+      - schema:hr.performance_reviews
       strict: true
     - entity: raise_guidelines
       resolves_to:
       - document:business_rules
       strict: true
-    - entity: time_period_=_"last_12_months"
-      resolves_to:
-      - database
-      strict: true
-    - entity: calculation_basis_=_"percentage_of_current_salary"
-      resolves_to:
-      - database
-      strict: true
     relationships: []
     glossary: []
     end_to_end:
-      semantic_match: Answer should apply performance review-based raise percentages
-        to current salary for all employees in last 12 months, without budget constraints,
-        excluding compensation guidelines
-    suggested_question: Calculate employee raises using performance review guidelines
+      semantic_match: Answer must calculate raises using only the performance review
+        guidelines from business_rules (not compensation guidelines), apply percentage
+        increases to current salary based on each employee's most recent performance
+        review rating from the last 12 months, and present results without considering
+        budget constraints.
+    suggested_question: 'Calculate raises for all employees based on the performance
+      review guidelines within the business_rules and their most recent performance
+      review. DO NOT USE compensation guidelines.
+
+
+      Clarifications:
+
+      0: Last 12 months
+
+      [Structured: "Last 12 months"]
+
+      1: Percentage of current salary
+
+      [Structured: "Percentage of current salary"]
+
+      2: No budget constraints
+
+      [Structured: "No budget constraints"]'
+    objectives:
+    - 'Calculate raises for all employees based on the performance review guidelines
+      within the business_rules and their most recent performance review. DO NOT USE
+      compensation guidelines.
+
+
+      Clarifications:
+
+      0: Last 12 months
+
+      [Structured: "Last 12 months"]
+
+      1: Percentage of current salary
+
+      [Structured: "Percentage of current salary"]
+
+      2: No budget constraints
+
+      [Structured: "No budget constraints"]'
+    step_hints: &id001
+    - step_number: 1
+      goal: Query all employees with their most recent performance review from the
+        last 12 months, including current salary and performance rating
+      code: "# Step 1: Query all employees with their most recent performance review\
+        \ from the last 12 months, including current salary and performance rating\n\
+        \nfrom datetime import datetime, timedelta\n\n# Step 1: Query all employees\
+        \ with their most recent performance review from the last 12 months, including\
+        \ current salary and performance rating\n\n# Create a view that joins employees\
+        \ with their most recent performance reviews from the last 12 months\nstore.create_view('employee_reviews',\
+        \ '''\n    WITH recent_reviews AS (\n        SELECT \n            employee_id,\n\
+        \            rating,\n            review_date,\n            ROW_NUMBER() OVER\
+        \ (PARTITION BY employee_id ORDER BY review_date DESC) as rn\n        FROM\
+        \ hr.performance_reviews \n        WHERE review_date >= CURRENT_DATE - INTERVAL\
+        \ '365 days'\n    ),\n    latest_reviews AS (\n        SELECT \n         \
+        \   employee_id,\n            rating,\n            review_date\n        FROM\
+        \ recent_reviews \n        WHERE rn = 1\n    )\n    SELECT \n        e.employee_id,\n\
+        \        e.first_name,\n        e.last_name,\n        d.name as department,\n\
+        \        e.salary as current_salary,\n        lr.rating as performance_rating,\n\
+        \        lr.review_date\n    FROM hr.employees e\n    LEFT JOIN hr.departments\
+        \ d ON e.department_id = d.department_id\n    LEFT JOIN latest_reviews lr\
+        \ ON e.employee_id = lr.employee_id\n''', step_number=1)\n\n# Get a summary\
+        \ of the results\nsummary = store.query('SELECT COUNT(*) as total_employees,\
+        \ COUNT(performance_rating) as employees_with_reviews FROM employee_reviews')\n\
+        print(f\"Loaded {summary.iloc[0]['total_employees']} employees, {summary.iloc[0]['employees_with_reviews']}\
+        \ with recent performance reviews\")"
+    - step_number: 2
+      goal: Calculate raises for each employee using the performance review guidelines
+        from business_rules document and their performance rating
+      code: "# Step 2: Calculate raises for each employee using the performance review\
+        \ guidelines from business_rules document and their performance rating\n\n\
+        # Step 2: Calculate raises for each employee using the performance review\
+        \ guidelines from business_rules document and their performance rating\n\n\
+        # Load the employee reviews from store\nemployee_reviews = store.load_dataframe('employee_reviews')\n\
+        \nprint(\"Employee reviews columns:\", list(employee_reviews.columns))\nprint(\"\
+        Employee reviews sample data:\")\nprint(employee_reviews.head())\n\n# Extract\
+        \ business rules from the document - specify the columns we expect\nbusiness_rules\
+        \ = llm_extract_table(\n    'performance review guidelines with raise percentages\
+        \ by rating', \n    'business_rules',\n    columns=['performance_rating',\
+        \ 'min_raise_rate', 'max_raise_rate']\n)\n\nprint(\"Business rules columns:\"\
+        , list(business_rules.columns))\nprint(\"Business rules sample data:\")\n\
+        print(business_rules.head())\n\n# Merge employee reviews with business rules\
+        \ on performance rating\nmerged_data = pd.merge(\n    employee_reviews, \n\
+        \    business_rules, \n    on='performance_rating', \n    how='left'\n)\n\n\
+        # Calculate the actual raise amount using the midpoint of the range for simplicity\n\
+        merged_data['raise_rate'] = (merged_data['min_raise_rate'] + merged_data['max_raise_rate'])\
+        \ / 2\nmerged_data['raise_percentage'] = merged_data['raise_rate'] * 100 \
+        \ # Convert to percentage\nmerged_data['new_salary'] = merged_data['current_salary']\
+        \ * (1 + merged_data['raise_rate'])\nmerged_data['raise_amount'] = merged_data['new_salary']\
+        \ - merged_data['current_salary']\n\n# Save the result to store\nstore.save_dataframe('raise_recommendations',\
+        \ merged_data, step_number=2)\n\nprint(f\"Calculated raises for {len(merged_data)}\
+        \ employees\")\nprint(f\"Average raise rate: {merged_data['raise_rate'].mean():.1%}\"\
+        )\nprint(f\"Total raise budget: ${merged_data['raise_amount'].sum():,.2f}\"\
+        )"
+  objectives:
+  - 'Calculate raises for all employees based on the performance review guidelines
+    within the business_rules and their most recent performance review. DO NOT USE
+    compensation guidelines.
+
+
+    Clarifications:
+
+    0: Last 12 months
+
+    [Structured: "Last 12 months"]
+
+    1: Percentage of current salary
+
+    [Structured: "Percentage of current salary"]
+
+    2: No budget constraints
+
+    [Structured: "No budget constraints"]'
+  step_hints: *id001

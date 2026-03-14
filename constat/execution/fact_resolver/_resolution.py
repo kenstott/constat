@@ -355,7 +355,7 @@ class ResolutionMixin:
 
         response = ""
         try:
-            response = self.llm.generate(
+            response = self._llm_generate(
                 system="You assess fact resolution strategies. Respond only with valid JSON.",
                 user_message=prompt,
                 max_tokens=self.llm.max_output_tokens,

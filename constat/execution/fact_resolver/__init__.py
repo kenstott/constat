@@ -103,8 +103,10 @@ class FactResolver(GoalsMixin, SessionMixin, SourcesMixin, ResolutionMixin):
         datastore=None,
         doc_tools=None,
         learning_callback=None,
+        router=None,
     ):
         self.llm = llm
+        self.router = router
         self.schema_manager = schema_manager
         self.config = config
         self.strategy = strategy or ResolutionStrategy()
@@ -128,6 +130,25 @@ class FactResolver(GoalsMixin, SessionMixin, SourcesMixin, ResolutionMixin):
 
         # All resolutions this session (for audit)
         self.resolution_log: list[Fact] = []
+
+    def _llm_generate(self, system: str, user_message: str, max_tokens: int = 4096) -> str:
+        """Generate via router (retry+escalation) when available, else raw provider."""
+        if self.router:
+            from constat.core.models import TaskType
+            result = self.router.execute(
+                task_type=TaskType.FACT_RESOLUTION,
+                system=system,
+                user_message=user_message,
+                max_tokens=max_tokens,
+            )
+            if not result.success:
+                raise RuntimeError(result.content)
+            return result.content
+        return self.llm.generate(
+            system=system,
+            user_message=user_message,
+            max_tokens=max_tokens,
+        )
 
     def _emit_event(self, event_type: str, data: dict) -> None:
         """Emit a resolution event if callback is registered."""

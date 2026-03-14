@@ -163,6 +163,7 @@ class CoreMixin:
             config=self.config,
             event_callback=self._handle_fact_resolver_event,
             doc_tools=self.doc_tools,  # Enable document-based fact resolution
+            router=self.router,
         )
 
         # Learning store for corrections and patterns
@@ -386,7 +387,10 @@ class CoreMixin:
     def _emit_event(self, event: StepEvent) -> None:
         """Emit an event to all handlers."""
         for handler in self._event_handlers:
-            handler(event)
+            try:
+                handler(event)
+            except Exception as e:
+                logger.warning(f"[EVENT] Handler error for {event.event_type}: {e}")
 
     def _handle_fact_resolver_event(self, event_type: str, data: dict) -> None:
         """Convert fact resolver events to StepEvents and emit them."""

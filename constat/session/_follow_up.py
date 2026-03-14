@@ -1093,8 +1093,10 @@ Prove all of the above claims and provide a complete audit trail."""
 
         logger.debug(f"[prove_conversation] Running proof for: {combined_problem[:150]}...")
 
-        # Gather step codes from exploratory session as hints for inference generation
-        self._proof_step_hints = []
+        # Gather step codes from exploratory session as hints for inference generation.
+        # Preserve any externally-set hints (e.g. from regression test runner)
+        # and only overwrite if session history provides them.
+        existing_hints = getattr(self, '_proof_step_hints', [])
         if self.history and self.session_id:
             try:
                 step_codes = self.history.list_step_codes(self.session_id)
@@ -1103,6 +1105,9 @@ Prove all of the above claims and provide a complete audit trail."""
                     logger.info(f"[prove_conversation] Loaded {len(step_codes)} step code hints for proof")
             except Exception as e:
                 logger.debug(f"[prove_conversation] Could not load step codes: {e}")
+        if not self._proof_step_hints and existing_hints:
+            self._proof_step_hints = existing_hints
+            logger.info(f"[prove_conversation] Using {len(existing_hints)} externally-provided step code hints")
 
         # Clear old inference codes from previous proof runs
         if self.history and self.session_id:

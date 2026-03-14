@@ -290,8 +290,7 @@ class ConstatAPIImpl:
         def session_event_handler(event):
             callback(event.event_type, event.data)
 
-        # noinspection PyUnresolvedReferences
-        self._session.add_event_handler(session_event_handler)
+        self._session.on_event(session_event_handler)
 
     def set_clarification_callback(self, callback: Callable) -> None:
         """Set callback for clarification requests."""

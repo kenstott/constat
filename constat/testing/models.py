@@ -64,6 +64,8 @@ class GoldenQuestion:
     question: str
     tags: list[str]
     expect: GoldenExpectations
+    objectives: list[str] = field(default_factory=list)  # original question + follow-ups
+    step_hints: list[dict] = field(default_factory=list)  # reference code from exploratory session
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +172,8 @@ def parse_golden_questions(raw: list[dict]) -> list[GoldenQuestion]:
                 question=item["question"],
                 tags=item.get("tags", []),
                 expect=_parse_expectations(expect_raw),
+                objectives=item.get("objectives", []),
+                step_hints=item.get("step_hints", []),
             )
         )
     return results

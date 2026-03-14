@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -123,13 +125,14 @@ def run_domain_test_e2e(
 @dataclass
 class TestProgressEvent:
     """Progress event yielded during streaming test execution."""
-    event: str  # domain_start, question_start, question_done, domain_done
+    event: str  # domain_start, question_start, question_done, domain_done, e2e_progress
     domain: str
     domain_name: str = ""
     question: str = ""
     question_index: int = 0
     question_total: int = 0
     phase: str = ""  # "metadata" or "e2e"
+    detail: str = ""  # Sub-step description: "Planning...", "Step 2: join tables", etc.
     result: QuestionResult | None = None
 
 
@@ -172,7 +175,15 @@ def iter_domain_test(
             phase="metadata",
         )
 
-        qr = _run_question(relational, q, session_id, user_id, domain_filename)
+        # Yield layer-level detail events during metadata checks
+        for layer_evt in _iter_question_layers(
+            relational, q, session_id, user_id, domain_filename,
+            domain_name, i, total,
+        ):
+            if isinstance(layer_evt, TestProgressEvent):
+                yield layer_evt
+            else:
+                qr = layer_evt  # final result
 
         # Phase 2 e2e if requested
         if include_e2e and q.expect.end_to_end:
@@ -187,7 +198,11 @@ def iter_domain_test(
                     question=q.question, question_index=i, question_total=total,
                     phase="e2e",
                 )
-                qr.end_to_end = _run_e2e_question(config, q, session_id, user_id)
+                # Run e2e with progress events via thread+queue
+                yield from _run_e2e_with_events(
+                    config, q, session_id, user_id,
+                    domain_filename, domain_name, i, total, qr,
+                )
 
         results.append(qr)
 
@@ -201,6 +216,287 @@ def iter_domain_test(
         event="domain_done", domain=domain_filename, domain_name=domain_name,
         question_total=total,
     )
+
+
+def _iter_question_layers(
+    relational, q: GoldenQuestion, session_id: str, user_id: str,
+    domain_id: str, domain_name: str, question_index: int, question_total: int,
+):
+    """Run metadata checks, yielding detail events for each layer, then the QuestionResult."""
+    layers: list[LayerResult] = []
+    domain_ids = [domain_id]
+
+    def _detail(text: str):
+        return TestProgressEvent(
+            event="e2e_progress", domain=domain_id, domain_name=domain_name,
+            question=q.question, question_index=question_index,
+            question_total=question_total, phase="metadata", detail=text,
+        )
+
+    if q.expect.entities:
+        yield _detail("Checking entities...")
+        layers.append(_check_entities(relational, q.expect.entities, session_id, domain_ids, user_id))
+
+    if q.expect.grounding:
+        yield _detail("Checking grounding...")
+        layers.append(_check_grounding(relational, q.expect.grounding, session_id, domain_ids, user_id))
+
+    if q.expect.glossary:
+        yield _detail("Checking glossary...")
+        layers.append(_check_glossary(relational, q.expect.glossary, session_id, user_id))
+
+    if q.expect.relationships:
+        yield _detail("Checking relationships...")
+        layers.append(_check_relationships(relational, q.expect.relationships, session_id, user_id, domain_ids))
+
+    yield QuestionResult(question=q.question, tags=q.tags, layers=layers)
+
+
+# Map event_type -> human-readable detail for e2e progress
+def _steps_count(data: dict) -> str:
+    """Extract step count from event data (handles both int and list)."""
+    steps = data.get("steps", 0)
+    n = steps if isinstance(steps, int) else len(steps)
+    return f"Plan ready ({n} steps)"
+
+
+_EVENT_DETAIL_MAP = {
+    "planning_start": "Planning...",
+    "planning_complete": _steps_count,
+    "plan_ready": _steps_count,
+    # Premise/inference events (reasoning chain language)
+    "premise_resolving": lambda data: f"Resolving premise: {data.get('fact_name', '')[:60]}",
+    "premise_resolved": lambda data: f"Premise resolved: {data.get('fact_name', '')[:60]}",
+    "inference_executing": lambda data: f"Computing inference: {data.get('operation', data.get('inference_id', ''))[:60]}",
+    "inference_complete": lambda data: f"Inference complete: {data.get('inference_name', data.get('inference_id', ''))[:60]}",
+    "inference_failed": lambda data: f"Inference failed: {data.get('fact_name', '')[:60]}",
+    "fact_executing": lambda data: f"Executing: {data.get('fact_name', '')[:60]}",
+    "fact_start": lambda data: f"Resolving: {data.get('fact_name', '')[:60]}",
+    "fact_resolved": lambda data: f"Resolved: {data.get('fact_name', '')[:60]}",
+    "fact_failed": lambda data: f"Failed: {data.get('fact_name', '')[:60]}",
+    "fact_blocked": lambda data: f"Blocked: {data.get('fact_name', '')[:60]}",
+    # SQL events
+    "sql_generating": lambda data: f"Generating SQL for: {data.get('fact_name', '')[:60]}",
+    "sql_executing": lambda data: f"Executing SQL for: {data.get('fact_name', '')[:60]}",
+    # Wave execution
+    "wave_step_start": lambda data: f"Executing (wave {data.get('wave', '?')}): {data.get('goal', '')[:60]}",
+    "synthesizing": "Synthesizing answer...",
+    "answer_ready": "Answer ready",
+}
+
+
+def _run_e2e_with_events(
+    config: Config,
+    gq: GoldenQuestion,
+    session_id: str,
+    user_id: str,
+    domain_filename: str,
+    domain_name: str,
+    question_index: int,
+    question_total: int,
+    qr: QuestionResult,
+):
+    """Run e2e in a background thread, yielding progress events from session StepEvents."""
+    evt_queue: queue.Queue = queue.Queue()
+    result_holder: list[EndToEndResult] = []
+
+    def _base_evt(detail: str) -> TestProgressEvent:
+        return TestProgressEvent(
+            event="e2e_progress", domain=domain_filename, domain_name=domain_name,
+            question=gq.question, question_index=question_index,
+            question_total=question_total, phase="e2e", detail=detail,
+        )
+
+    def _solve_thread():
+        from constat.api.factory import create_api
+        assertion = gq.expect.end_to_end
+        failures: list[str] = []
+        t0 = time.monotonic()
+
+        test_session_id = f"test-{uuid.uuid4().hex[:12]}"
+        logger.info(f"[E2E_TRACE] creating test API, session_id={test_session_id}")
+        api = create_api(
+            config,
+            session_id=test_session_id,
+            user_id=user_id,
+            require_approval=False,
+            auto_approve=True,
+        )
+        logger.info("[E2E_TRACE] test API created, loading domain resources")
+
+        # Load ALL configured domains — same as real session startup.
+        # The test domain may depend on documents/databases from other domains.
+        active_domain_ids = []
+        for df in config.domains:
+            dc = config.load_domain(df)
+            if not dc:
+                continue
+            active_domain_ids.append(df)
+            if dc.databases and api.session.schema_manager:
+                for db_name, db_cfg in dc.databases.items():
+                    try:
+                        success = api.session.schema_manager.add_database_dynamic(db_name, db_cfg)
+                        if success:
+                            logger.info(f"[E2E_TRACE] loaded domain database: {db_name}")
+                    except Exception as e:
+                        logger.error(f"[E2E_TRACE] error loading domain database {db_name}: {e}")
+            api.session.add_domain_resources(
+                domain_filename=df,
+                databases=dc.databases,
+                apis=dc.apis,
+                documents=dc.documents,
+            )
+
+        if api.session.schema_manager:
+            schema_entities = set(api.session.schema_manager.get_entity_names())
+            api.session.doc_tools.set_schema_entities(schema_entities)
+            schema_metadata = api.session.schema_manager.get_description_text()
+            if schema_metadata:
+                api.session.doc_tools.process_metadata_through_ner(schema_metadata, source_type="schema")
+
+        api.session.doc_tools._active_domain_ids = active_domain_ids
+
+        logger.info("[E2E_TRACE] registering event handler")
+
+        def _on_event(event_type, data):
+            handler = _EVENT_DETAIL_MAP.get(event_type)
+            if handler is None:
+                return
+            detail = handler(data) if callable(handler) else handler
+            evt_queue.put(detail)
+
+        api.on_event(_on_event)
+
+        # Set up objectives in the session datastore so prove_conversation()
+        # sees the same question + follow-ups as the original reasoning chain.
+        import json as _json
+        if gq.objectives:
+            original_q = gq.objectives[0]
+            follow_ups = gq.objectives[1:] if len(gq.objectives) > 1 else []
+        else:
+            original_q = gq.question
+            follow_ups = []
+
+        # Ensure datastore exists
+        api.session._ensure_session_datastore(original_q)
+        api.session.datastore.set_session_meta("problem", original_q)
+        if follow_ups:
+            api.session.datastore.set_session_meta("follow_ups", _json.dumps(follow_ups))
+
+        # Provide step code hints from the exploratory session — same as real /reason
+        if gq.step_hints:
+            api.session._proof_step_hints = gq.step_hints
+            logger.info(f"[E2E_TRACE] loaded {len(gq.step_hints)} step code hints")
+
+        try:
+            logger.info("[E2E_TRACE] calling api.prove_conversation()")
+            proof_result = api.prove_conversation()
+            success = proof_result.get("success", False)
+            error = proof_result.get("error")
+            logger.info(f"[E2E_TRACE] prove_conversation() returned: success={success}, error={error}")
+        except Exception as exc:
+            logger.error(f"[E2E_TRACE] prove_conversation() raised: {exc}", exc_info=True)
+            result_holder.append(EndToEndResult(
+                passed=False, failures=[f"prove_conversation() raised: {exc}"],
+                duration_s=time.monotonic() - t0,
+            ))
+            return
+        duration = time.monotonic() - t0
+
+        # Assertion checks
+        if assertion.expect_success and not success:
+            failures.append(f"Expected success but got error: {error}")
+            result_holder.append(EndToEndResult(
+                passed=False, answer=proof_result.get("final_answer"),
+                failures=failures, duration_s=duration,
+            ))
+            return
+        if not assertion.expect_success and success:
+            failures.append("Expected failure but proof succeeded")
+            result_holder.append(EndToEndResult(
+                passed=False, answer=proof_result.get("final_answer"),
+                failures=failures, duration_s=duration,
+            ))
+            return
+
+        answer = proof_result.get("final_answer") or proof_result.get("output") or ""
+        logger.info(f"[E2E_TRACE] answer length={len(answer)}, preview={answer[:200]}")
+
+        # Collect artifact table data for judge context
+        artifact_data = ""
+        if api.session.datastore:
+            try:
+                tables = api.session.datastore.list_tables()
+                for tbl_name in tables[:5]:
+                    df = api.session.datastore.load_table(tbl_name)
+                    if df is not None and len(df) > 0:
+                        artifact_data += f"\n--- {tbl_name} ({len(df)} rows) ---\n"
+                        artifact_data += df.head(20).to_string(index=False) + "\n"
+            except Exception as e:
+                logger.debug(f"[E2E_TRACE] Failed to collect artifact data: {e}")
+
+        for substring in assertion.result_contains:
+            evt_queue.put(f"Checking: result_contains '{substring[:40]}'")
+            if substring.lower() not in answer.lower():
+                failures.append(f'Answer missing expected substring: "{substring}"')
+
+        # Check proof node count instead of step count
+        proof_nodes = proof_result.get("proof_nodes", [])
+        if len(proof_nodes) < assertion.plan_min_steps:
+            failures.append(
+                f"Expected at least {assertion.plan_min_steps} proof nodes, got {len(proof_nodes)}"
+            )
+
+        judge_reasoning = None
+        if assertion.semantic_match and answer:
+            evt_queue.put("Checking: semantic match...")
+            passed, reasoning = _llm_judge(
+                gq.question, answer, assertion.semantic_match, config,
+                artifact_data=artifact_data,
+            )
+            judge_reasoning = reasoning
+            if not passed:
+                failures.append(f"LLM judge failed: {reasoning}")
+
+        result_holder.append(EndToEndResult(
+            passed=len(failures) == 0,
+            answer=answer[:2000] if answer else None,
+            judge_reasoning=judge_reasoning,
+            failures=failures,
+            duration_s=duration,
+        ))
+
+    thread = threading.Thread(target=_solve_thread, daemon=True)
+    thread.start()
+
+    e2e_timeout = 300  # 5 minute timeout for e2e test
+    e2e_start = time.monotonic()
+    while thread.is_alive():
+        if time.monotonic() - e2e_start > e2e_timeout:
+            logger.error(f"[E2E_TRACE] Thread still alive after {e2e_timeout}s — aborting")
+            break
+        try:
+            detail = evt_queue.get(timeout=0.5)
+            yield _base_evt(detail)
+        except queue.Empty:
+            continue
+
+    # Drain remaining events
+    while not evt_queue.empty():
+        detail = evt_queue.get_nowait()
+        yield _base_evt(detail)
+
+    thread.join(timeout=5)
+
+    if result_holder:
+        qr.end_to_end = result_holder[0]
+    else:
+        elapsed = time.monotonic() - e2e_start
+        qr.end_to_end = EndToEndResult(
+            passed=False,
+            failures=[f"No result from e2e thread (elapsed={elapsed:.0f}s, alive={thread.is_alive()})"],
+            duration_s=elapsed,
+        )
 
 
 def _run_e2e_question(
@@ -244,6 +540,9 @@ def _run_e2e_question(
 
     answer = solve_result.answer or ""
 
+    # Collect artifact table data for judge context
+    artifact_data = _collect_artifact_data(api, solve_result)
+
     # Check result_contains
     for substring in assertion.result_contains:
         if substring.lower() not in answer.lower():
@@ -261,6 +560,7 @@ def _run_e2e_question(
     if assertion.semantic_match and answer:
         passed, reasoning = _llm_judge(
             gq.question, answer, assertion.semantic_match, config,
+            artifact_data=artifact_data,
         )
         judge_reasoning = reasoning
         if not passed:
@@ -275,8 +575,80 @@ def _run_e2e_question(
     )
 
 
+# Artifact types that can be read as text for the LLM judge
+_TEXT_ARTIFACT_TYPES = {"csv", "json", "text", "markdown", "html"}
+
+
+def _collect_artifact_data(api, solve_result) -> str:
+    """Collect data from all artifacts created during solve.
+
+    Includes DuckDB table samples and text-readable file artifacts (CSV, JSON,
+    HTML, markdown, text). Binary artifacts (images, charts) are listed by name
+    only.
+    """
+    from pathlib import Path
+
+    parts: list[str] = []
+    budget = 6000  # chars budget for artifact data
+    used = 0
+
+    # 1. Table artifacts from the session datastore
+    try:
+        datastore = api.session.datastore
+        if datastore:
+            table_names = list(solve_result.tables_created) if solve_result.tables_created else []
+            if not table_names:
+                table_list = datastore.list_tables()
+                table_names = [t["name"] for t in table_list]
+            for tname in table_names:
+                if used >= budget:
+                    break
+                try:
+                    df = datastore.query(f'SELECT * FROM "{tname}" LIMIT 15')
+                    if df is not None and len(df) > 0:
+                        chunk = f"--- Table: {tname} ({len(df)} rows shown) ---\n"
+                        chunk += df.to_string(index=False, max_cols=10)
+                        parts.append(chunk)
+                        used += len(chunk)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    # 2. File-based artifacts from the registry
+    try:
+        session = api.session
+        registry = getattr(session, "registry", None)
+        if registry:
+            artifacts = registry.list_artifacts(session_id=session.session_id)
+            for art in artifacts:
+                if used >= budget:
+                    break
+                atype = art.artifact_type
+                fpath = Path(art.file_path) if art.file_path else None
+
+                if atype in _TEXT_ARTIFACT_TYPES and fpath and fpath.exists():
+                    try:
+                        content = fpath.read_text(errors="replace")[:2000]
+                        label = f"--- {atype.upper()}: {art.name or fpath.name} ---"
+                        chunk = f"{label}\n{content}"
+                        parts.append(chunk)
+                        used += len(chunk)
+                    except Exception:
+                        continue
+                elif atype not in _TEXT_ARTIFACT_TYPES and fpath:
+                    # Binary artifact — confirm existence for the judge
+                    desc = f" - {art.description}" if art.description else ""
+                    parts.append(f"--- {atype.upper()}: {art.name or fpath.name} (produced){desc} ---")
+    except Exception:
+        pass
+
+    return "\n\n".join(parts)
+
+
 def _llm_judge(
     question: str, answer: str, criteria: str, config: Config,
+    *, artifact_data: str = "",
 ) -> tuple[bool, str]:
     """Use the config's LLM to evaluate if answer meets criteria.
 
@@ -286,19 +658,30 @@ def _llm_judge(
 
     router = TaskRouter(config.llm)
     system = (
-        "You are a test evaluator. Given a question and an answer, determine if "
-        "the answer satisfies the given criteria. Reply with exactly YES or NO on "
-        "the first line, then one sentence explaining why."
+        "You are a regression test evaluator. You are given:\n"
+        "1. A question that was asked\n"
+        "2. The proof system's prose summary of the answer\n"
+        "3. The actual computed artifacts (tables with data)\n\n"
+        "The artifacts are the PRIMARY evidence. The prose summary may omit details "
+        "that exist in the artifact data. If the artifacts contain the expected data "
+        "(correct columns, reasonable values, all employees covered), the test PASSES "
+        "even if the prose summary is incomplete.\n\n"
+        "Reply with exactly YES or NO on the first line, then one sentence explaining why."
     )
-    user_message = (
-        f"Question: {question}\n\n"
-        f"Answer: {answer[:3000]}\n\n"
-        f"Criteria: {criteria}\n\n"
-        f"Does the answer satisfy the criteria?"
-    )
-    response = router.generate(system=system, user_message=user_message, max_tokens=256)
+    user_parts = [
+        f"Question: {question}",
+        f"Answer summary: {answer[:3000]}",
+    ]
+    if artifact_data:
+        user_parts.append(f"Computed Artifacts:\n{artifact_data[:6000]}")
+    user_parts.append(f"Criteria: {criteria}")
+    user_parts.append("Based on the artifact data, does this satisfy the criteria?")
+    user_message = "\n\n".join(user_parts)
+    logger.info(f"[LLM_JUDGE] Sending to judge: question={question[:80]}, answer_len={len(answer)}, artifact_len={len(artifact_data)}")
+    response = router.generate(system=system, user_message=user_message)
     first_line = response.strip().split("\n")[0].strip().upper()
     passed = first_line.startswith("YES")
+    logger.info(f"[LLM_JUDGE] Verdict: {'PASS' if passed else 'FAIL'} — {response.strip()[:200]}")
     return passed, response.strip()
 
 

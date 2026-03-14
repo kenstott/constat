@@ -193,7 +193,7 @@ NOT_POSSIBLE: <reason>
 """
 
         try:
-            response = self.llm.generate(
+            response = self._llm_generate(
                 system="You are an API expert. Determine which API can provide the requested data and how to query it.",
                 user_message=prompt,
                 max_tokens=self.llm.max_output_tokens,
@@ -608,7 +608,7 @@ If this fact cannot be DIRECTLY resolved from the available sources, respond wit
         for attempt in range(1, max_retries + 1):
             # Generate code
             if attempt == 1:
-                response = self.llm.generate(
+                response = self._llm_generate(
                     system="You are a Python data expert. Generate code to extract facts from data sources.",
                     user_message=prompt,
                     max_tokens=self.llm.max_output_tokens,
@@ -628,7 +628,7 @@ Please fix the error and regenerate the code.
 
 Original request:
 {prompt}"""
-                response = self.llm.generate(
+                response = self._llm_generate(
                     system="You are a Python data expert. Generate code to extract facts from data sources.",
                     user_message=retry_prompt,
                     max_tokens=self.llm.max_output_tokens,
@@ -767,8 +767,9 @@ Original request:
         cache_key = self._cache_key(fact_name, params)
 
         try:
-            # Build search query from fact name and params
-            param_str = ' '.join(str(v) for v in params.values() if v)
+            # Build search query from fact name and params (exclude metadata keys)
+            _meta_keys = {"fact_description", "source_document"}
+            param_str = ' '.join(str(v) for k, v in params.items() if v and k not in _meta_keys)
             fact_readable = fact_name.replace('_', ' ')
             search_query = f"{fact_readable} {param_str}".strip()
 
@@ -778,6 +779,15 @@ Original request:
             # Get more results (top 10) and let the LLM evaluate relevance
             # Don't filter by score - semantic search scores can be misleading
             search_results = doc_tools.search_documents(search_query, limit=10)
+
+            # Filter to specific document if source hint provided by plan
+            source_doc = params.get("source_document")
+            if source_doc and search_results:
+                filtered = [r for r in search_results if r.get('document') == source_doc]
+                if filtered:
+                    logger.debug(f"DOC: Filtered {len(search_results)} results to {len(filtered)} from '{source_doc}'")
+                    search_results = filtered
+
             logger.debug(f"DOC: Search returned {len(search_results) if search_results else 0} results")
 
             if not search_results:
@@ -788,6 +798,9 @@ Original request:
             best_relevance = max(r.get('relevance', 0) for r in search_results)
             logger.debug(f"DOC: Best relevance: {best_relevance}")
             logger.debug(f"[_resolve_from_document] Best relevance: {best_relevance}")
+
+            # Deterministic source_name from search results (top hit's document name)
+            deterministic_source = search_results[0].get('document', 'document') if search_results else 'document'
 
             # Include ALL results - let the LLM decide what's relevant
             # Semantic search scores are not reliable for filtering
@@ -830,7 +843,7 @@ NOT_FOUND
 """
 
             logger.debug(f"DOC: Calling LLM to extract fact...")
-            response = self.llm.generate(
+            response = self._llm_generate(
                 system="You extract facts and policies from documents. Return content in its natural format.",
                 user_message=prompt,
                 max_tokens=self.llm.max_output_tokens,
@@ -884,16 +897,17 @@ NOT_FOUND
                 elif line.startswith("REASONING:"):
                     reasoning = line.split(":", 1)[1].strip()
 
-            logger.debug(f"DOC: Parsed value: {value}, confidence: {confidence}, source: {source_name}")
+            # Use deterministic source from search results, not LLM output
+            logger.debug(f"DOC: Parsed value: {value}, confidence: {confidence}, source: {deterministic_source} (LLM said: {source_name})")
             if value is not None:
                 logger.debug(f"DOC: SUCCESS! Resolved {fact_name} = {value}")
-                logger.debug(f"[_resolve_from_document] Resolved {fact_name} = {value} from {source_name}")
+                logger.debug(f"[_resolve_from_document] Resolved {fact_name} = {value} from {deterministic_source}")
                 return Fact(
                     name=cache_key,
                     value=value,
                     confidence=confidence,
                     source=FactSource.DOCUMENT,
-                    source_name=source_name,
+                    source_name=deterministic_source,
                     reasoning=reasoning,
                 )
             else:
@@ -936,7 +950,7 @@ UNKNOWN
 """
 
         try:
-            response = self.llm.generate(
+            response = self._llm_generate(
                 system="You are a knowledgeable assistant. Provide facts you're confident about.",
                 user_message=prompt,
                 max_tokens=self.llm.max_output_tokens,
@@ -1079,7 +1093,7 @@ Remember: 2+ DISTINCT inputs with a FORMULA, or return None if not derivable.
             try:
                 # Generate or regenerate code
                 if attempt == 1:
-                    response = self.llm.generate(
+                    response = self._llm_generate(
                         system="You are a Python expert. Generate fact derivation functions. Keep code simple and complete.",
                         user_message=prompt,
                         max_tokens=self.llm.max_output_tokens,
@@ -1099,7 +1113,7 @@ Please fix the error and regenerate the derive() function.
 
 Original request:
 {prompt}"""
-                    response = self.llm.generate(
+                    response = self._llm_generate(
                         system="You are a Python expert. Generate fact derivation functions. Keep code simple and complete.",
                         user_message=retry_prompt,
                         max_tokens=self.llm.max_output_tokens,

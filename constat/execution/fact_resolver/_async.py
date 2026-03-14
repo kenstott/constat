@@ -129,7 +129,7 @@ class AsyncFactResolver(FactResolver):
                 # noinspection PyTypeChecker
                 return await loop.run_in_executor(
                     self._executor,
-                    lambda: self.llm.generate(
+                    lambda: self._llm_generate(
                         system=system,
                         user_message=user_message,
                         max_tokens=max_tokens,

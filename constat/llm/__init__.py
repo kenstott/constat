@@ -194,6 +194,8 @@ def _execute(system: str, user_message: str, *, task_type=None) -> tuple[str, st
             user_message=user_message,
             max_tokens=backend.max_output_tokens,
         )
+        if not result.success:
+            raise RuntimeError(result.content)
         return (
             result.content.strip(),
             getattr(result, "model", "unknown"),

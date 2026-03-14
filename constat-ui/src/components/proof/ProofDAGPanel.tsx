@@ -8,6 +8,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useUIStore } from '@/store/uiStore'
 import { useTestStore } from '@/store/testStore'
+import { useSessionStore } from '@/store/sessionStore'
 import { createSkillFromProof } from '@/api/skills'
 import { extractExpectations } from '@/api/testing'
 import { listDomains } from '@/api/sessions'
@@ -259,6 +260,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   const panelRef = useRef<HTMLDivElement>(null)
   const [allDomains, setAllDomains] = useState<DomainInfo[]>([])
   const saveGoldenQuestion = useTestStore(s => s.saveGoldenQuestion)
+  const currentQuery = useSessionStore(s => s.currentQuery)
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
   const [selectedIdStack, setSelectedIdStack] = useState<string[]>([])
   // Derive selectedNode from live facts map so updates (code, elapsed_ms) are reflected
@@ -1131,12 +1133,15 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                       source: f.source,
                       status: f.status,
                     }))
-                    const expect = await extractExpectations(sessionId, fallbackNodes, undefined, summary ?? undefined)
-                    const questionText = expect.suggested_question || finalNode?.description || finalNode?.name?.replace(/^I\d+:\s*/, '') || 'Untitled question'
+                    const expect = await extractExpectations(sessionId, fallbackNodes, currentQuery || undefined, summary ?? undefined)
+                    // LLM-synthesized question preserves all constraints from possibly multiple
+                    // exploratory questions + follow-ups. Fall back to currentQuery if unavailable.
+                    const questionText = expect.suggested_question || currentQuery || finalNode?.description || finalNode?.name?.replace(/^I\d+:\s*/, '') || 'Untitled question'
                     const body: GoldenQuestionRequest = {
                       question: questionText,
                       tags: ['from-reason-chain'],
                       expect,
+                      objectives: expect.objectives ?? [],
                     }
                     await saveGoldenQuestion(sessionId, testDomain, null, body)
                     setShowTestForm(false)
