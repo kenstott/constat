@@ -8,6 +8,8 @@ import {
   TrashIcon,
   PlusIcon,
   ArrowsRightLeftIcon,
+  ArrowsPointingOutIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline'
 import { useTestStore } from '@/store/testStore'
 import type { GoldenQuestionExpectations, GoldenQuestionRequest, GoldenQuestionResponse } from '@/types/api'
@@ -185,6 +187,7 @@ export default function RegressionPanel({ sessionId }: Props) {
   const [manageMode, setManageMode] = useState(false)
   const [manageDomains, setManageDomains] = useState<Set<string>>(new Set())
   const [movingQuestion, setMovingQuestion] = useState<{ domain: string; index: number } | null>(null)
+  const [expanded, setExpanded] = useState(false)
 
   useEffect(() => {
     loadTestableDomains(sessionId)
@@ -221,29 +224,38 @@ export default function RegressionPanel({ sessionId }: Props) {
     )
   }
 
-  return (
-    <div className="px-3 py-2 space-y-3 text-sm">
-      {/* Mode toggle */}
-      <div className="flex gap-1 border rounded dark:border-gray-700 p-0.5">
+  const content = (
+    <div className={expanded ? "p-4 space-y-3 text-sm h-full overflow-y-auto" : "px-3 py-2 space-y-3 text-sm"}>
+      {/* Mode toggle + expand */}
+      <div className="flex gap-1 items-center">
+        <div className="flex gap-1 border rounded dark:border-gray-700 p-0.5 flex-1">
+          <button
+            onClick={() => setManageMode(false)}
+            className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+              !manageMode
+                ? 'bg-blue-600 text-white'
+                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+            }`}
+          >
+            Run
+          </button>
+          <button
+            onClick={() => setManageMode(true)}
+            className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+              manageMode
+                ? 'bg-blue-600 text-white'
+                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+            }`}
+          >
+            Manage
+          </button>
+        </div>
         <button
-          onClick={() => setManageMode(false)}
-          className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
-            !manageMode
-              ? 'bg-blue-600 text-white'
-              : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
-          }`}
+          onClick={() => setExpanded(!expanded)}
+          className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+          title={expanded ? "Collapse" : "Expand"}
         >
-          Run
-        </button>
-        <button
-          onClick={() => setManageMode(true)}
-          className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
-            manageMode
-              ? 'bg-blue-600 text-white'
-              : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
-          }`}
-        >
-          Manage
+          {expanded ? <XMarkIcon className="w-4 h-4" /> : <ArrowsPointingOutIcon className="w-4 h-4" />}
         </button>
       </div>
 
@@ -632,4 +644,37 @@ export default function RegressionPanel({ sessionId }: Props) {
       )}
     </div>
   )
+
+  if (expanded) {
+    return (
+      <>
+        {/* Inline placeholder so accordion doesn't collapse */}
+        <div className="px-3 py-2 text-xs text-gray-400 dark:text-gray-500">
+          <button onClick={() => setExpanded(false)} className="hover:text-gray-600 dark:hover:text-gray-300">
+            Viewing in expanded mode. Click to collapse.
+          </button>
+        </div>
+        {/* Modal overlay */}
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setExpanded(false)}>
+          <div
+            className="bg-white dark:bg-gray-900 rounded-lg shadow-xl border dark:border-gray-700 flex flex-col"
+            style={{ width: '80%', height: '80%' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-2 border-b dark:border-gray-700">
+              <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Regression Tests</h2>
+              <button onClick={() => setExpanded(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {content}
+            </div>
+          </div>
+        </div>
+      </>
+    )
+  }
+
+  return content
 }
