@@ -444,11 +444,11 @@ def _run_e2e_with_events(
             )
 
         judge_reasoning = None
-        if assertion.semantic_match and answer:
-            evt_queue.put("Checking: semantic match...")
+        if assertion.judge_prompt and answer:
+            evt_queue.put("Checking: LLM judge...")
             passed, reasoning = _llm_judge(
-                gq.question, answer, assertion.semantic_match, config,
-                artifact_data=artifact_data, judge_prompt=assertion.judge_prompt,
+                gq.question, answer, assertion.judge_prompt, config,
+                artifact_data=artifact_data,
             )
             judge_reasoning = reasoning
             if not passed:
@@ -551,12 +551,12 @@ def _run_e2e_question(
             f"Expected at least {assertion.plan_min_steps} steps, got {step_count}"
         )
 
-    # LLM judge for semantic_match
+    # LLM judge
     judge_reasoning = None
-    if assertion.semantic_match and answer:
+    if assertion.judge_prompt and answer:
         passed, reasoning = _llm_judge(
-            gq.question, answer, assertion.semantic_match, config,
-            artifact_data=artifact_data, judge_prompt=assertion.judge_prompt,
+            gq.question, answer, assertion.judge_prompt, config,
+            artifact_data=artifact_data,
         )
         judge_reasoning = reasoning
         if not passed:
@@ -643,29 +643,27 @@ def _collect_artifact_data(api, solve_result) -> str:
 
 
 def _llm_judge(
-    question: str, answer: str, criteria: str, config: Config,
-    *, artifact_data: str = "", judge_prompt: str = "",
+    question: str, answer: str, judge_prompt: str, config: Config,
+    *, artifact_data: str = "",
 ) -> tuple[bool, str]:
-    """Use the config's LLM to evaluate if answer meets criteria.
+    """Use the config's LLM to evaluate if answer meets judge_prompt.
 
+    The judge_prompt is the complete system prompt including any criteria.
     Returns (passed, reasoning).
     """
     from constat.providers.router import TaskRouter
-    from constat.testing.models import _DEFAULT_JUDGE_PROMPT
 
     router = TaskRouter(config.llm)
-    system = judge_prompt or _DEFAULT_JUDGE_PROMPT
     user_parts = [
         f"Question: {question}",
         f"Answer summary: {answer[:3000]}",
     ]
     if artifact_data:
         user_parts.append(f"Computed Artifacts:\n{artifact_data[:6000]}")
-    user_parts.append(f"Criteria: {criteria}")
-    user_parts.append("Based on the artifact data, does this satisfy the criteria?")
+    user_parts.append("Does this pass the test?")
     user_message = "\n\n".join(user_parts)
     logger.info(f"[LLM_JUDGE] Sending to judge: question={question[:80]}, answer_len={len(answer)}, artifact_len={len(artifact_data)}")
-    response = router.generate(system=system, user_message=user_message)
+    response = router.generate(system=judge_prompt, user_message=user_message)
     first_line = response.strip().split("\n")[0].strip().upper()
     passed = first_line.startswith("YES")
     logger.info(f"[LLM_JUDGE] Verdict: {'PASS' if passed else 'FAIL'} — {response.strip()[:200]}")

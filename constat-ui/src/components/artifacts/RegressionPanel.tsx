@@ -49,9 +49,6 @@ function QuestionForm({
       object: r.object ? dn(String(r.object)) : '',
     }))
   )
-  const [semanticMatch, setSemanticMatch] = useState(
-    String(initial?.expect.end_to_end?.semantic_match ?? '')
-  )
   const [judgePrompt, setJudgePrompt] = useState(
     String(initial?.expect.end_to_end?.judge_prompt ?? '')
   )
@@ -67,10 +64,7 @@ function QuestionForm({
         subject: norm(String(r.subject ?? '')),
         object: norm(String(r.object ?? '')),
       })),
-      end_to_end: semanticMatch.trim() ? {
-        semantic_match: semanticMatch.trim(),
-        ...(judgePrompt.trim() ? { judge_prompt: judgePrompt.trim() } : {}),
-      } : undefined,
+      end_to_end: judgePrompt.trim() ? { judge_prompt: judgePrompt.trim() } : undefined,
     }
     onSave({ question, tags, expect })
   }
@@ -142,17 +136,11 @@ function QuestionForm({
         ))}
       </div>
 
-      {/* Integration test (LLM-as-judge) */}
+      {/* LLM-as-judge prompt */}
       <div>
-        <div className={labelClass}>Integration test criteria</div>
-        <input className={inputClass} value={semanticMatch} onChange={e => setSemanticMatch(e.target.value)} placeholder="Answer should contain raise calculations for all employees..." />
+        <div className={labelClass}>LLM judge prompt</div>
+        <textarea className={`${inputClass} h-20`} value={judgePrompt} onChange={e => setJudgePrompt(e.target.value)} placeholder="System prompt for the LLM judge. Leave blank to skip integration test." />
       </div>
-      {semanticMatch.trim() && (
-        <div>
-          <div className={labelClass}>Judge prompt</div>
-          <textarea className={`${inputClass} h-20`} value={judgePrompt} onChange={e => setJudgePrompt(e.target.value)} placeholder="System prompt for the LLM judge (leave blank for default)" />
-        </div>
-      )}
 
       <div className="flex gap-2 pt-1">
         <button onClick={handleSave} disabled={!question.trim()} className="px-3 py-1 rounded bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50">Save</button>

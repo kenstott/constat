@@ -59,7 +59,6 @@ _DEFAULT_JUDGE_PROMPT = (
 class EndToEndAssertion:
     """Phase 2 — run question through real pipeline, LLM-judge evaluates."""
     result_contains: list[str] = field(default_factory=list)
-    semantic_match: str | None = None
     judge_prompt: str = _DEFAULT_JUDGE_PROMPT
     plan_min_steps: int = 1
     expect_success: bool = True
@@ -182,10 +181,14 @@ def _parse_expectations(raw: dict) -> GoldenExpectations:
     e2e_raw = raw.get("end_to_end")
     end_to_end = None
     if e2e_raw:
+        judge_prompt = e2e_raw.get("judge_prompt", "")
+        # Legacy: if old semantic_match exists but no judge_prompt, fold it in
+        legacy_criteria = e2e_raw.get("semantic_match")
+        if legacy_criteria and not judge_prompt:
+            judge_prompt = f"{_DEFAULT_JUDGE_PROMPT}\n\nCriteria: {legacy_criteria}"
         end_to_end = EndToEndAssertion(
             result_contains=e2e_raw.get("result_contains", []),
-            semantic_match=e2e_raw.get("semantic_match"),
-            judge_prompt=e2e_raw.get("judge_prompt", _DEFAULT_JUDGE_PROMPT),
+            judge_prompt=judge_prompt or _DEFAULT_JUDGE_PROMPT,
             plan_min_steps=e2e_raw.get("plan_min_steps", 1),
             expect_success=e2e_raw.get("expect_success", True),
         )

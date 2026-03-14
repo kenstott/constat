@@ -430,7 +430,7 @@ async def extract_expectations(
         f"{len(relationships)} relationships"
     )
 
-    # Use LLM to generate a concise test question name and semantic_match criteria
+    # Use LLM to generate a concise test question name and judge prompt
     suggested_question = None
     end_to_end = None
     proof_summary = body.proof_summary if body else None
@@ -449,16 +449,17 @@ async def extract_expectations(
 
     if original_question or grounded_entities:
         try:
+            from constat.testing.models import _DEFAULT_JUDGE_PROMPT
             config = managed.session.config
-            suggested_question, semantic_match = _generate_test_metadata(
+            suggested_question, criteria = _generate_test_metadata(
                 config, original_question, proof_summary, grounded_entities,
             )
-            if semantic_match:
-                from constat.testing.models import _DEFAULT_JUDGE_PROMPT
+            if criteria:
                 end_to_end = {
-                    "semantic_match": semantic_match,
-                    "judge_prompt": _DEFAULT_JUDGE_PROMPT,
+                    "judge_prompt": f"{_DEFAULT_JUDGE_PROMPT}\n\nCriteria: {criteria}",
                 }
+            else:
+                end_to_end = {"judge_prompt": _DEFAULT_JUDGE_PROMPT}
         except Exception as e:
             logger.warning(f"Failed to generate test metadata via LLM: {e}")
 
