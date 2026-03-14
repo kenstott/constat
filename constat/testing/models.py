@@ -60,6 +60,7 @@ class EndToEndAssertion:
     """Phase 2 — run question through real pipeline, LLM-judge evaluates."""
     result_contains: list[str] = field(default_factory=list)
     judge_prompt: str = _DEFAULT_JUDGE_PROMPT
+    validator_code: str = ""  # Python code that validates tables; raise AssertionError to fail
     plan_min_steps: int = 1
     expect_success: bool = True
 
@@ -189,6 +190,7 @@ def _parse_expectations(raw: dict) -> GoldenExpectations:
         end_to_end = EndToEndAssertion(
             result_contains=e2e_raw.get("result_contains", []),
             judge_prompt=judge_prompt or _DEFAULT_JUDGE_PROMPT,
+            validator_code=e2e_raw.get("validator_code", ""),
             plan_min_steps=e2e_raw.get("plan_min_steps", 1),
             expect_success=e2e_raw.get("expect_success", True),
         )

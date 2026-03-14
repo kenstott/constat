@@ -418,19 +418,9 @@ def _run_e2e_with_events(
         answer = proof_result.get("final_answer") or proof_result.get("output") or ""
         logger.info(f"[E2E_TRACE] answer length={len(answer)}, preview={answer[:200]}")
 
-        # Collect artifact table data for judge context
-        artifact_data = ""
-        if api.session.datastore:
-            try:
-                tables = api.session.datastore.list_tables()
-                for tbl in tables:
-                    tbl_name = tbl["name"] if isinstance(tbl, dict) else tbl
-                    df = api.session.datastore.load_dataframe(tbl_name)
-                    if df is not None and len(df) > 0:
-                        artifact_data += f"\n--- {tbl_name} ({len(df)} rows) ---\n"
-                        artifact_data += df.to_string(index=False) + "\n"
-            except Exception as e:
-                logger.debug(f"[E2E_TRACE] Failed to collect artifact data: {e}")
+        # Collect tables for validator and judge
+        tables = _collect_tables(api)
+        artifact_summary = _collect_artifact_summary(tables)
 
         for substring in assertion.result_contains:
             evt_queue.put(f"Checking: result_contains '{substring[:40]}'")
@@ -444,12 +434,20 @@ def _run_e2e_with_events(
                 f"Expected at least {assertion.plan_min_steps} proof nodes, got {len(proof_nodes)}"
             )
 
+        # Run Python validator if provided
+        if assertion.validator_code:
+            evt_queue.put("Checking: data validator...")
+            v_passed, v_msg = _run_validator(assertion.validator_code, tables)
+            logger.info(f"[VALIDATOR] {'PASS' if v_passed else 'FAIL'} — {v_msg}")
+            if not v_passed:
+                failures.append(f"Data validator failed: {v_msg}")
+
         judge_reasoning = None
         if assertion.judge_prompt and answer:
             evt_queue.put("Checking: LLM judge...")
             passed, reasoning = _llm_judge(
                 gq.question, answer, assertion.judge_prompt, config,
-                artifact_data=artifact_data,
+                artifact_data=artifact_summary,
             )
             judge_reasoning = reasoning
             if not passed:
@@ -537,8 +535,9 @@ def _run_e2e_question(
 
     answer = solve_result.answer or ""
 
-    # Collect artifact table data for judge context
-    artifact_data = _collect_artifact_data(api, solve_result)
+    # Collect tables for validator and judge
+    tables = _collect_tables(api)
+    artifact_summary = _collect_artifact_summary(tables)
 
     # Check result_contains
     for substring in assertion.result_contains:
@@ -552,12 +551,19 @@ def _run_e2e_question(
             f"Expected at least {assertion.plan_min_steps} steps, got {step_count}"
         )
 
+    # Run Python validator if provided
+    if assertion.validator_code:
+        v_passed, v_msg = _run_validator(assertion.validator_code, tables, assertion.expected_output)
+        logger.info(f"[VALIDATOR] {'PASS' if v_passed else 'FAIL'} — {v_msg}")
+        if not v_passed:
+            failures.append(f"Data validator failed: {v_msg}")
+
     # LLM judge
     judge_reasoning = None
     if assertion.judge_prompt and answer:
         passed, reasoning = _llm_judge(
             gq.question, answer, assertion.judge_prompt, config,
-            artifact_data=artifact_data,
+            artifact_data=artifact_summary,
         )
         judge_reasoning = reasoning
         if not passed:
@@ -572,65 +578,75 @@ def _run_e2e_question(
     )
 
 
-# Artifact types that can be read as text for the LLM judge
-_TEXT_ARTIFACT_TYPES = {"csv", "json", "text", "markdown", "html"}
+def _summarize_table(name: str, df) -> str:
+    """Generate stats + sample rows for a DataFrame."""
+    import pandas as pd
+    lines = [f"--- Table: {name} ({len(df)} rows, {len(df.columns)} columns) ---"]
+    lines.append(f"Columns: {', '.join(df.columns)}")
+    lines.append(f"Dtypes: {', '.join(f'{c}={t}' for c, t in zip(df.columns, df.dtypes))}")
+    # Numeric stats
+    numeric = df.select_dtypes(include="number")
+    if len(numeric.columns) > 0:
+        stats = numeric.describe().round(2)
+        lines.append(f"Stats:\n{stats.to_string()}")
+    # Sample rows — first 3 and last 2 if table is large
+    if len(df) <= 5:
+        lines.append(f"All rows:\n{df.to_string(index=False)}")
+    else:
+        lines.append(f"First 3 rows:\n{df.head(3).to_string(index=False)}")
+        lines.append(f"Last 2 rows:\n{df.tail(2).to_string(index=False)}")
+    return "\n".join(lines)
 
 
-def _collect_artifact_data(api, solve_result) -> str:
-    """Collect data from all artifacts created during solve.
-
-    Includes DuckDB table samples and text-readable file artifacts (CSV, JSON,
-    HTML, markdown, text). Binary artifacts (images, charts) are listed by name
-    only.
-    """
-    from pathlib import Path
-
-    parts: list[str] = []
-    # 1. Table artifacts from the session datastore
+def _collect_tables(api) -> dict:
+    """Collect all tables from the session datastore as {name: DataFrame}."""
+    import pandas as pd
+    tables: dict = {}
     try:
         datastore = api.session.datastore
         if datastore:
-            table_names = list(solve_result.tables_created) if solve_result.tables_created else []
-            if not table_names:
-                table_list = datastore.list_tables()
-                table_names = [t["name"] for t in table_list]
-            for tname in table_names:
+            for tbl in datastore.list_tables():
+                tbl_name = tbl["name"] if isinstance(tbl, dict) else tbl
                 try:
-                    df = datastore.query(f'SELECT * FROM "{tname}"')
+                    df = datastore.load_dataframe(tbl_name)
                     if df is not None and len(df) > 0:
-                        chunk = f"--- Table: {tname} ({len(df)} rows) ---\n"
-                        chunk += df.to_string(index=False)
-                        parts.append(chunk)
+                        tables[tbl_name] = df
                 except Exception:
                     continue
     except Exception:
         pass
+    return tables
 
-    # 2. File-based artifacts from the registry
-    try:
-        session = api.session
-        registry = getattr(session, "registry", None)
-        if registry:
-            artifacts = registry.list_artifacts(session_id=session.session_id)
-            for art in artifacts:
-                atype = art.artifact_type
-                fpath = Path(art.file_path) if art.file_path else None
 
-                if atype in _TEXT_ARTIFACT_TYPES and fpath and fpath.exists():
-                    try:
-                        content = fpath.read_text(errors="replace")
-                        label = f"--- {atype.upper()}: {art.name or fpath.name} ---"
-                        parts.append(f"{label}\n{content}")
-                    except Exception:
-                        continue
-                elif atype not in _TEXT_ARTIFACT_TYPES and fpath:
-                    # Binary artifact — confirm existence for the judge
-                    desc = f" - {art.description}" if art.description else ""
-                    parts.append(f"--- {atype.upper()}: {art.name or fpath.name} (produced){desc} ---")
-    except Exception:
-        pass
-
+def _collect_artifact_summary(tables: dict) -> str:
+    """Build a stats+sample summary of all tables for the LLM judge."""
+    parts = [_summarize_table(name, df) for name, df in tables.items()]
     return "\n\n".join(parts)
+
+
+def _run_validator(validator_code: str, tables: dict) -> tuple[bool, str]:
+    """Execute Python validator code against the collected tables.
+
+    The code has access to:
+      - result: the last (final) dataset created
+      - tables: dict[str, DataFrame]
+      - pd: pandas module
+
+    Returns (passed, message).
+    """
+    import pandas as pd
+    result = list(tables.values())[-1] if tables else pd.DataFrame()
+    namespace = {"tables": tables, "pd": pd, "result": result}
+    # Make each table accessible by name directly
+    for name, df in tables.items():
+        namespace[name] = df
+    try:
+        exec(validator_code, namespace)
+        return True, "Validator passed"
+    except AssertionError as e:
+        return False, f"Validator assertion failed: {e}"
+    except Exception as e:
+        return False, f"Validator error: {type(e).__name__}: {e}"
 
 
 def _llm_judge(

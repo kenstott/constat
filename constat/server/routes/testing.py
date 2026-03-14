@@ -169,6 +169,7 @@ def _gq_to_response(index: int, raw: dict) -> GoldenQuestionResponse:
             end_to_end={
                 "judge_prompt": parsed.end_to_end.judge_prompt,
                 "result_contains": parsed.end_to_end.result_contains,
+                "validator_code": parsed.end_to_end.validator_code,
             } if parsed.end_to_end else None,
             suggested_question=expect_raw.get("suggested_question"),
             step_hints=expect_raw.get("step_hints", []),

@@ -42,7 +42,10 @@ golden_questions:
 
     2: No budget constraints
 
-    [Structured: "No budget constraints"]'
+    [Structured: "No budget constraints"]
+
+
+    Save the final result as a table named ''results''.'
   tags:
   - from-reason-chain
   expect:
@@ -88,6 +91,10 @@ golden_questions:
         boundaries. Focus on whether the overall computation is correct.
 
         Reply with exactly YES or NO on the first line, then one sentence explaining why.
+      validator_code: |
+        assert len(result) == 15, f"Expected 15 employees, got {len(result)}"
+        assert 'raise_amount' in result.columns or 'raise_rate' in result.columns, "Missing raise column"
+        assert 'performance_rating' in result.columns, "Missing performance_rating column"
     suggested_question: 'Calculate raises for all employees based on the performance
       review guidelines within the business_rules and their most recent performance
       review. DO NOT USE compensation guidelines.
@@ -105,7 +112,10 @@ golden_questions:
 
       2: No budget constraints
 
-      [Structured: "No budget constraints"]'
+      [Structured: "No budget constraints"]
+
+
+      Save the final result as a table named ''results''.'
     objectives:
     - 'Calculate raises for all employees based on the performance review guidelines
       within the business_rules and their most recent performance review. DO NOT USE
@@ -124,7 +134,10 @@ golden_questions:
 
       2: No budget constraints
 
-      [Structured: "No budget constraints"]'
+      [Structured: "No budget constraints"]
+
+
+      Save the final result as a table named ''results''.'
     step_hints: &id001
     - step_number: 1
       goal: Query all employees with their most recent performance review from the
@@ -197,5 +210,8 @@ golden_questions:
 
     2: No budget constraints
 
-    [Structured: "No budget constraints"]'
+    [Structured: "No budget constraints"]
+
+
+    Save the final result as a table named ''results''.'
   step_hints: *id001

@@ -54,6 +54,9 @@ function QuestionForm({
   const [judgePrompt, setJudgePrompt] = useState(
     String(initial?.expect.end_to_end?.judge_prompt ?? '')
   )
+  const [validatorCode, setValidatorCode] = useState(
+    String(initial?.expect.end_to_end?.validator_code ?? '')
+  )
 
   const handleSave = () => {
     const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, '_')
@@ -66,7 +69,9 @@ function QuestionForm({
         subject: norm(String(r.subject ?? '')),
         object: norm(String(r.object ?? '')),
       })),
-      end_to_end: judgePrompt.trim() ? { judge_prompt: judgePrompt.trim() } : undefined,
+      end_to_end: judgePrompt.trim() || validatorCode.trim()
+        ? { judge_prompt: judgePrompt.trim(), validator_code: validatorCode.trim() }
+        : undefined,
     }
     onSave({ question, tags, expect })
   }
@@ -142,6 +147,17 @@ function QuestionForm({
       <div>
         <div className={labelClass}>LLM judge prompt</div>
         <textarea className={`${inputClass} h-20`} value={judgePrompt} onChange={e => setJudgePrompt(e.target.value)} placeholder="System prompt for the LLM judge. Leave blank to skip integration test." />
+      </div>
+
+      {/* Python data validator */}
+      <div>
+        <div className={labelClass}>Data validator (Python)</div>
+        <textarea
+          className={`${inputClass} h-20 font-mono text-[11px]`}
+          value={validatorCode}
+          onChange={e => setValidatorCode(e.target.value)}
+          placeholder={'# result = expected_output or last table, tables = all by name\nassert len(result) == 15'}
+        />
       </div>
 
       <div className="flex gap-2 pt-1">
