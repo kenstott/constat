@@ -34,9 +34,10 @@ class RelationshipAssertion:
 
 
 @dataclass
-class GlossaryAssertion:
+class TermAssertion:
+    """Unified term/entity/alias check — replaces separate entities + glossary layers."""
     name: str
-    has_definition: bool = True
+    has_definition: bool = False
     domain: str | None = None
     parent: str | None = None
 
@@ -52,10 +53,9 @@ class EndToEndAssertion:
 
 @dataclass
 class GoldenExpectations:
-    entities: list[str] = field(default_factory=list)
+    terms: list[TermAssertion] = field(default_factory=list)
     grounding: list[GroundingAssertion] = field(default_factory=list)
     relationships: list[RelationshipAssertion] = field(default_factory=list)
-    glossary: list[GlossaryAssertion] = field(default_factory=list)
     end_to_end: EndToEndAssertion | None = None
 
 
@@ -122,6 +122,36 @@ class DomainTestResult:
 # ---------------------------------------------------------------------------
 
 def _parse_expectations(raw: dict) -> GoldenExpectations:
+    # Merge legacy "entities" and "glossary" into unified "terms"
+    terms: list[TermAssertion] = []
+    seen_terms: set[str] = set()
+    for t in raw.get("terms", []):
+        name = t["name"]
+        if name not in seen_terms:
+            seen_terms.add(name)
+            terms.append(TermAssertion(
+                name=name,
+                has_definition=t.get("has_definition", False),
+                domain=t.get("domain"),
+                parent=t.get("parent"),
+            ))
+    # Legacy: convert old "entities" list into TermAssertions
+    for e in raw.get("entities", []):
+        if e not in seen_terms:
+            seen_terms.add(e)
+            terms.append(TermAssertion(name=e))
+    # Legacy: convert old "glossary" list into TermAssertions
+    for gl in raw.get("glossary", []):
+        name = gl["name"]
+        if name not in seen_terms:
+            seen_terms.add(name)
+            terms.append(TermAssertion(
+                name=name,
+                has_definition=gl.get("has_definition", False),
+                domain=gl.get("domain"),
+                parent=gl.get("parent"),
+            ))
+
     grounding = [
         GroundingAssertion(entity=g["entity"], resolves_to=g.get("resolves_to", []), strict=g.get("strict", True))
         for g in raw.get("grounding", [])
@@ -135,15 +165,6 @@ def _parse_expectations(raw: dict) -> GoldenExpectations:
         )
         for r in raw.get("relationships", [])
     ]
-    glossary = [
-        GlossaryAssertion(
-            name=gl["name"],
-            has_definition=gl.get("has_definition", True),
-            domain=gl.get("domain"),
-            parent=gl.get("parent"),
-        )
-        for gl in raw.get("glossary", [])
-    ]
     e2e_raw = raw.get("end_to_end")
     end_to_end = None
     if e2e_raw:
@@ -154,10 +175,9 @@ def _parse_expectations(raw: dict) -> GoldenExpectations:
             expect_success=e2e_raw.get("expect_success", True),
         )
     return GoldenExpectations(
-        entities=raw.get("entities", []),
+        terms=terms,
         grounding=grounding,
         relationships=relationships,
-        glossary=glossary,
         end_to_end=end_to_end,
     )
 

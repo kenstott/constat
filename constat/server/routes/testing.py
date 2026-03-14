@@ -107,18 +107,22 @@ def _resolve_expectations(
     "Inventory Items" may not match the NER entity name "inventory items".
     This resolves each name, keeping the original if no match is found.
     """
-    # Resolve entity names — only keep entities that resolve to real store names.
-    # Unresolvable premise labels (transient facts, intermediate tables) are dropped.
-    resolved_entities = []
+    # Resolve term names — only keep terms that resolve to real store names.
     name_map: dict[str, str] = {}  # original -> resolved
-    for name in expect.get("entities", []):
+    resolved_terms = []
+    for ta in expect.get("terms", []):
+        name = ta.get("name", "") if isinstance(ta, dict) else ta
         resolved = _resolve_entity_to_store_name(relational, name, session_id, user_id, domain_ids)
         if resolved:
             name_map[name] = resolved
-            resolved_entities.append(resolved)
+            if isinstance(ta, dict):
+                ta["name"] = resolved
+            else:
+                ta = {"name": resolved}
+            resolved_terms.append(ta)
         else:
-            logger.debug(f"Dropping unresolvable entity from expectations: {name!r}")
-    expect["entities"] = resolved_entities
+            logger.debug(f"Dropping unresolvable term from expectations: {name!r}")
+    expect["terms"] = resolved_terms
 
     # Resolve entity names in grounding assertions — drop unresolvable
     resolved_grounding = []
@@ -157,10 +161,9 @@ def _gq_to_response(index: int, raw: dict) -> GoldenQuestionResponse:
         question=raw.get("question", ""),
         tags=raw.get("tags", []),
         expect=GoldenQuestionExpectations(
-            entities=expect_raw.get("entities", []),
+            terms=expect_raw.get("terms", []),
             grounding=expect_raw.get("grounding", []),
             relationships=expect_raw.get("relationships", []),
-            glossary=expect_raw.get("glossary", []),
             end_to_end=expect_raw.get("end_to_end"),
             suggested_question=expect_raw.get("suggested_question"),
             step_hints=expect_raw.get("step_hints", []),
@@ -345,10 +348,7 @@ async def extract_expectations(
 
     domain_ids = list(getattr(doc_tools, '_active_domain_ids', None) or []) if doc_tools else []
 
-    entities: list[str] = []
     grounding: list[dict] = []
-    glossary: list[dict] = []
-    glossary_seen: set[str] = set()
     seen: set[str] = set()
 
     for node in proof_nodes:
@@ -388,8 +388,6 @@ async def extract_expectations(
             continue
         seen.add(resolved_name)
 
-        entities.append(resolved_name)
-
         # Build grounding assertion from proof node source data.
         resolves_to = build_source_patterns(node)
         if not resolves_to:
@@ -397,20 +395,13 @@ async def extract_expectations(
 
         grounding.append({"entity": resolved_name, "resolves_to": resolves_to, "strict": True})
 
-        # Build glossary assertion if resolved via glossary term
-        if term_obj and resolved_name not in glossary_seen:
-            glossary_seen.add(resolved_name)
-            ga = {"name": resolved_name, "has_definition": bool(term_obj.definition)}
-            if term_obj.domain:
-                ga["domain"] = term_obj.domain
-            glossary.append(ga)
-
-    # Extract relationships between resolved entities
+    # Extract relationships between grounded entities
     relationships: list[dict] = []
-    if relational and entities:
-        entity_set = set(e.lower() for e in entities)
+    grounded_entities = [g["entity"] for g in grounding]
+    if relational and grounded_entities:
+        entity_set = set(e.lower() for e in grounded_entities)
         rel_seen: set[tuple[str, str, str]] = set()
-        for entity_name in entities:
+        for entity_name in grounded_entities:
             try:
                 rels = relational.get_relationships_for_entity(entity_name, session_id)
             except Exception as e:
@@ -435,8 +426,8 @@ async def extract_expectations(
         logger.info(f"[extract_expectations] extracted {len(relationships)} relationships from entity store")
 
     logger.info(
-        f"[extract_expectations] result: {len(entities)} entities, {len(grounding)} grounding, "
-        f"{len(relationships)} relationships, {len(glossary)} glossary"
+        f"[extract_expectations] result: {len(grounding)} grounding, "
+        f"{len(relationships)} relationships"
     )
 
     # Use LLM to generate a concise test question name and semantic_match criteria
@@ -456,11 +447,11 @@ async def extract_expectations(
         if client_q and not client_q.strip().startswith("/"):
             original_question = client_q
 
-    if original_question or entities:
+    if original_question or grounded_entities:
         try:
             config = managed.session.config
             suggested_question, semantic_match = _generate_test_metadata(
-                config, original_question, proof_summary, entities,
+                config, original_question, proof_summary, grounded_entities,
             )
             if semantic_match:
                 end_to_end = {"semantic_match": semantic_match}
@@ -502,10 +493,9 @@ async def extract_expectations(
             logger.debug(f"[extract_expectations] could not load step codes: {e}")
 
     return GoldenQuestionExpectations(
-        entities=entities,
+        terms=[],
         grounding=grounding,
         relationships=relationships,
-        glossary=glossary,
         end_to_end=end_to_end,
         suggested_question=suggested_question,
         objectives=objectives,
@@ -728,9 +718,9 @@ async def create_golden_question(
             relational = getattr(doc_tools._vector_store, '_relational', None)
             if relational:
                 domain_ids = list(getattr(doc_tools, '_active_domain_ids', None) or [])
-                logger.info(f"Resolving expectations: entities={expect.get('entities')}, domain_ids={domain_ids}, session_id={session_id}")
+                logger.info(f"Resolving expectations: terms={expect.get('terms')}, domain_ids={domain_ids}, session_id={session_id}")
                 expect = _resolve_expectations(relational, expect, session_id, user_id, domain_ids)
-                logger.info(f"Resolved expectations: entities={expect.get('entities')}, grounding={expect.get('grounding')}")
+                logger.info(f"Resolved expectations: terms={expect.get('terms')}, grounding={expect.get('grounding')}")
             else:
                 logger.warning("Cannot resolve expectations: no relational store available")
         else:

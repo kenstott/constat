@@ -7,6 +7,7 @@ import {
   PencilIcon,
   TrashIcon,
   PlusIcon,
+  ArrowsRightLeftIcon,
 } from '@heroicons/react/24/outline'
 import { useTestStore } from '@/store/testStore'
 import type { GoldenQuestionExpectations, GoldenQuestionRequest, GoldenQuestionResponse } from '@/types/api'
@@ -35,7 +36,9 @@ function QuestionForm({
 }) {
   const [question, setQuestion] = useState(initial?.question ?? '')
   const [tagsStr, setTagsStr] = useState((initial?.tags ?? []).join(', '))
-  const [entitiesStr, setEntitiesStr] = useState((initial?.expect.entities ?? []).map(dn).join(', '))
+  const [terms, setTerms] = useState<Array<Record<string, unknown>>>(
+    (initial?.expect.terms ?? []).map(t => ({ ...t, name: t.name ? dn(String(t.name)) : '' }))
+  )
   const [grounding, setGrounding] = useState<Array<Record<string, unknown>>>(
     (initial?.expect.grounding ?? []).map(g => ({ ...g, entity: g.entity ? dn(String(g.entity)) : '' }))
   )
@@ -46,23 +49,18 @@ function QuestionForm({
       object: r.object ? dn(String(r.object)) : '',
     }))
   )
-  const [glossary, setGlossary] = useState<Array<Record<string, unknown>>>(
-    (initial?.expect.glossary ?? []).map(g => ({ ...g, name: g.name ? dn(String(g.name)) : '' }))
-  )
 
   const handleSave = () => {
     const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, '_')
     const tags = tagsStr.split(',').map(s => s.trim()).filter(Boolean)
-    const entities = entitiesStr.split(',').map(s => s.trim()).filter(Boolean).map(norm)
     const expect: GoldenQuestionExpectations = {
-      entities,
+      terms: terms.map(t => ({ ...t, name: norm(String(t.name ?? '')) })),
       grounding: grounding.map(g => ({ ...g, entity: norm(String(g.entity ?? '')) })),
       relationships: relationships.map(r => ({
         ...r,
         subject: norm(String(r.subject ?? '')),
         object: norm(String(r.object ?? '')),
       })),
-      glossary: glossary.map(g => ({ ...g, name: norm(String(g.name ?? '')) })),
     }
     onSave({ question, tags, expect })
   }
@@ -80,9 +78,22 @@ function QuestionForm({
         <div className={labelClass}>Tags (comma-separated)</div>
         <input className={inputClass} value={tagsStr} onChange={e => setTagsStr(e.target.value)} placeholder="smoke, revenue" />
       </div>
+      {/* Term rows */}
       <div>
-        <div className={labelClass}>Expected entities (comma-separated)</div>
-        <input className={inputClass} value={entitiesStr} onChange={e => setEntitiesStr(e.target.value)} placeholder="revenue, orders" />
+        <div className="flex items-center justify-between">
+          <div className={labelClass}>Expected terms</div>
+          <button onClick={() => setTerms([...terms, { name: '', has_definition: false }])} className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline">+ row</button>
+        </div>
+        {terms.map((t, i) => (
+          <div key={i} className="flex gap-1 mt-0.5 items-center">
+            <input className={inputClass} placeholder="name" value={String(t.name ?? '')} onChange={e => { const next = [...terms]; next[i] = { ...next[i], name: e.target.value }; setTerms(next) }} />
+            <label className="flex items-center gap-0.5 text-[10px] text-gray-500 whitespace-nowrap">
+              <input type="checkbox" checked={!!t.has_definition} onChange={e => { const next = [...terms]; next[i] = { ...next[i], has_definition: e.target.checked }; setTerms(next) }} />
+              def
+            </label>
+            <button onClick={() => setTerms(terms.filter((_, j) => j !== i))} className="text-red-500 hover:text-red-700 px-1"><TrashIcon className="w-3 h-3" /></button>
+          </div>
+        ))}
       </div>
 
       {/* Grounding rows */}
@@ -121,26 +132,6 @@ function QuestionForm({
         ))}
       </div>
 
-      {/* Glossary rows */}
-      <div>
-        <div className="flex items-center justify-between">
-          <div className={labelClass}>Glossary</div>
-          <button onClick={() => setGlossary([...glossary, { name: '', has_definition: true }])} className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline">+ row</button>
-        </div>
-        {glossary.map((g, i) => (
-          <div key={i} className="flex gap-1 mt-0.5 items-center">
-            <input className={inputClass} placeholder="name" value={String(g.name ?? '')} onChange={e => { const next = [...glossary]; next[i] = { ...next[i], name: e.target.value }; setGlossary(next) }} />
-            <label className="flex items-center gap-0.5 text-[10px] text-gray-500 whitespace-nowrap">
-              <input type="checkbox" checked={!!g.has_definition} onChange={e => { const next = [...glossary]; next[i] = { ...next[i], has_definition: e.target.checked }; setGlossary(next) }} />
-              def
-            </label>
-            <input className={inputClass} placeholder="domain" value={String(g.domain ?? '')} onChange={e => { const next = [...glossary]; next[i] = { ...next[i], domain: e.target.value }; setGlossary(next) }} />
-            <input className={inputClass} placeholder="parent" value={String(g.parent ?? '')} onChange={e => { const next = [...glossary]; next[i] = { ...next[i], parent: e.target.value }; setGlossary(next) }} />
-            <button onClick={() => setGlossary(glossary.filter((_, j) => j !== i))} className="text-red-500 hover:text-red-700 px-1"><TrashIcon className="w-3 h-3" /></button>
-          </div>
-        ))}
-      </div>
-
       <div className="flex gap-2 pt-1">
         <button onClick={handleSave} disabled={!question.trim()} className="px-3 py-1 rounded bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50">Save</button>
         <button onClick={onCancel} className="px-3 py-1 rounded border text-xs text-gray-600 dark:text-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700">Cancel</button>
@@ -174,6 +165,7 @@ export default function RegressionPanel({ sessionId }: Props) {
     loadGoldenQuestions,
     saveGoldenQuestion,
     deleteGoldenQuestion,
+    moveGoldenQuestion,
     setEditingQuestion,
     clearEditing,
   } = useTestStore()
@@ -182,6 +174,7 @@ export default function RegressionPanel({ sessionId }: Props) {
   const [expandedQuestions, setExpandedQuestions] = useState<Set<string>>(new Set())
   const [manageMode, setManageMode] = useState(false)
   const [manageDomains, setManageDomains] = useState<Set<string>>(new Set())
+  const [movingQuestion, setMovingQuestion] = useState<{ domain: string; index: number } | null>(null)
 
   useEffect(() => {
     loadTestableDomains(sessionId)
@@ -287,7 +280,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                               onCancel={clearEditing}
                             />
                           ) : (
-                            <div className="flex items-center gap-2 px-3 py-1.5 text-xs group">
+                            <div className="flex items-center gap-2 px-3 py-1.5 text-xs group relative">
                               <span className="text-gray-700 dark:text-gray-300 truncate flex-1">{q.question}</span>
                               <div className="flex gap-1 flex-shrink-0">
                                 {q.tags.map(t => (
@@ -301,6 +294,17 @@ export default function RegressionPanel({ sessionId }: Props) {
                                 <PencilIcon className="w-3.5 h-3.5" />
                               </button>
                               <button
+                                onClick={() => setMovingQuestion(
+                                  movingQuestion?.domain === d.filename && movingQuestion.index === q.index
+                                    ? null
+                                    : { domain: d.filename, index: q.index }
+                                )}
+                                className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-opacity"
+                                title="Move to another domain"
+                              >
+                                <ArrowsRightLeftIcon className="w-3.5 h-3.5" />
+                              </button>
+                              <button
                                 onClick={() => {
                                   if (window.confirm(`Delete question: "${q.question}"?`)) {
                                     deleteGoldenQuestion(sessionId, d.filename, q.index)
@@ -310,6 +314,26 @@ export default function RegressionPanel({ sessionId }: Props) {
                               >
                                 <TrashIcon className="w-3.5 h-3.5" />
                               </button>
+                              {movingQuestion?.domain === d.filename && movingQuestion.index === q.index && (
+                                <div className="absolute right-0 top-full z-10 mt-0.5 bg-white dark:bg-gray-800 border dark:border-gray-700 rounded shadow-lg py-1 min-w-[140px]">
+                                  <div className="px-2 py-0.5 text-[10px] text-gray-400 uppercase">Move to</div>
+                                  {testableDomains
+                                    .filter(td => td.filename !== d.filename)
+                                    .map(td => (
+                                      <button
+                                        key={td.filename}
+                                        onClick={async () => {
+                                          await moveGoldenQuestion(sessionId, d.filename, q.index, td.filename)
+                                          setMovingQuestion(null)
+                                        }}
+                                        className="w-full text-left px-2 py-1 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                      >
+                                        {td.name}
+                                      </button>
+                                    ))
+                                  }
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>

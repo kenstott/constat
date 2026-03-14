@@ -109,6 +109,18 @@ export async function deleteGoldenQuestion(
   return del<void>(`/sessions/${sessionId}/tests/${domain}/questions/${index}`)
 }
 
+export async function moveGoldenQuestion(
+  sessionId: string,
+  sourceDomain: string,
+  index: number,
+  targetDomain: string,
+): Promise<GoldenQuestionResponse> {
+  return post<GoldenQuestionResponse>(
+    `/sessions/${sessionId}/tests/${sourceDomain}/questions/${index}/move`,
+    { target_domain: targetDomain },
+  )
+}
+
 export interface ProofNodeInput {
   id: string
   name: string

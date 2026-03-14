@@ -1055,10 +1055,9 @@ class TestableDomainInfo(BaseModel):
 
 
 class GoldenQuestionExpectations(BaseModel):
-    entities: list[str] = Field(default_factory=list)
+    terms: list[dict[str, Any]] = Field(default_factory=list)
     grounding: list[dict[str, Any]] = Field(default_factory=list)
     relationships: list[dict[str, Any]] = Field(default_factory=list)
-    glossary: list[dict[str, Any]] = Field(default_factory=list)
     end_to_end: dict[str, Any] | None = None
     suggested_question: str | None = None
     objectives: list[str] = Field(default_factory=list)

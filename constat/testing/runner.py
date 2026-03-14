@@ -25,11 +25,11 @@ from constat.testing.models import (
     EndToEndAssertion,
     EndToEndResult,
     GoldenQuestion,
-    GlossaryAssertion,
     GroundingAssertion,
     LayerResult,
     QuestionResult,
     RelationshipAssertion,
+    TermAssertion,
     parse_golden_questions,
 )
 
@@ -233,17 +233,13 @@ def _iter_question_layers(
             question_total=question_total, phase="metadata", detail=text,
         )
 
-    if q.expect.entities:
-        yield _detail("Checking entities...")
-        layers.append(_check_entities(relational, q.expect.entities, session_id, domain_ids, user_id))
+    if q.expect.terms:
+        yield _detail("Checking terms...")
+        layers.append(_check_terms(relational, q.expect.terms, session_id, domain_ids, user_id))
 
     if q.expect.grounding:
         yield _detail("Checking grounding...")
         layers.append(_check_grounding(relational, q.expect.grounding, session_id, domain_ids, user_id))
-
-    if q.expect.glossary:
-        yield _detail("Checking glossary...")
-        layers.append(_check_glossary(relational, q.expect.glossary, session_id, user_id))
 
     if q.expect.relationships:
         yield _detail("Checking relationships...")
@@ -696,14 +692,11 @@ def _run_question(
     # Include the domain being tested so cross-domain entities are visible
     domain_ids = [domain_id]
 
-    if q.expect.entities:
-        layers.append(_check_entities(relational, q.expect.entities, session_id, domain_ids, user_id))
+    if q.expect.terms:
+        layers.append(_check_terms(relational, q.expect.terms, session_id, domain_ids, user_id))
 
     if q.expect.grounding:
         layers.append(_check_grounding(relational, q.expect.grounding, session_id, domain_ids, user_id))
-
-    if q.expect.glossary:
-        layers.append(_check_glossary(relational, q.expect.glossary, session_id, user_id))
 
     if q.expect.relationships:
         layers.append(_check_relationships(relational, q.expect.relationships, session_id, user_id, domain_ids))
@@ -727,23 +720,47 @@ def _resolve_entity_name(relational, name: str, session_id: str, user_id: str, d
     return None
 
 
-def _check_entities(
-    relational, expected: list[str], session_id: str, domain_ids: list[str],
-    user_id: str = "default",
+def _check_terms(
+    relational, assertions: list[TermAssertion], session_id: str,
+    domain_ids: list[str], user_id: str = "default",
 ) -> LayerResult:
+    """Unified term/entity/alias check — merges old entities + glossary layers."""
     failures = []
-    for name in expected:
-        entity = _resolve_entity_name(relational, name, session_id, user_id, domain_ids)
-        if not entity:
-            # Entity not in NER store — check if proven grounding exists
-            # (proof validated this entity against a real data source)
-            if relational.get_proven_grounding(name):
+    for ta in assertions:
+        # Try glossary first (richer match: term name, alias, definition)
+        term = relational.get_glossary_term_by_name_or_alias(ta.name, session_id, user_id=user_id)
+        if not term:
+            # Fall back to entity existence
+            entity = _resolve_entity_name(relational, ta.name, session_id, user_id, domain_ids)
+            if not entity:
+                # Last resort: proven grounding
+                if relational.get_proven_grounding(ta.name):
+                    continue
+                failures.append(f'term "{_dn(ta.name)}" not found')
                 continue
-            failures.append(f'missing "{_dn(name)}"')
+            # Entity exists but no glossary term
+            if ta.has_definition:
+                failures.append(f'"{_dn(ta.name)}" exists as entity but has no glossary definition')
+            continue
+        # Glossary term found — check optional constraints
+        if ta.has_definition and not term.definition:
+            failures.append(f'"{_dn(ta.name)}" has no definition')
+        if ta.domain and term.domain != ta.domain:
+            failures.append(f'"{_dn(ta.name)}" domain: expected "{ta.domain}", got "{term.domain}"')
+        if ta.parent:
+            if not term.parent_id:
+                failures.append(f'"{_dn(ta.name)}" has no parent (expected "{_dn(ta.parent)}")')
+            else:
+                parent = relational.get_glossary_term_by_id(term.parent_id)
+                parent_name = parent.name if parent else None
+                if not parent_name or parent_name.lower() != ta.parent.lower():
+                    failures.append(
+                        f'"{_dn(ta.name)}" parent: expected "{_dn(ta.parent)}", got "{_dn(parent_name) if parent_name else None}"'
+                    )
     return LayerResult(
-        layer="entities",
-        passed=len(expected) - len(failures),
-        total=len(expected),
+        layer="terms",
+        passed=len(assertions) - len(failures),
+        total=len(assertions),
         failures=failures,
     )
 
@@ -833,62 +850,6 @@ def _check_grounding(
         failures=failures,
     )
 
-
-def _check_glossary(
-    relational,
-    assertions: list[GlossaryAssertion],
-    session_id: str,
-    user_id: str,
-) -> LayerResult:
-    failures = []
-    for ga in assertions:
-        term = relational.get_glossary_term_by_name_or_alias(ga.name, session_id, user_id=user_id)
-        if not term:
-            # Fall back to entity existence — the unified glossary includes
-            # self-describing entities that have no glossary_terms row.
-            entity = relational.find_entity_by_name(
-                ga.name, session_id=session_id, cross_session=True,
-            )
-            if not entity:
-                failures.append(f'glossary term "{_dn(ga.name)}" not found')
-                continue
-            # Entity exists but no glossary definition
-            if ga.has_definition:
-                failures.append(f'"{_dn(ga.name)}" exists as entity but has no glossary definition')
-            # Check grounding on bare entity
-            doc_names = relational.get_entity_document_names(entity.id)
-            if not doc_names:
-                failures.append(f'"{_dn(ga.name)}" is not grounded to any data source')
-            # Can't check domain/parent on bare entity — skip those checks
-            continue
-        if ga.has_definition and not term.definition:
-            failures.append(f'"{_dn(ga.name)}" has no definition')
-        # Check grounding — term's entity must be grounded to at least one data source
-        entity = relational.find_entity_by_name(term.name, session_id=session_id, cross_session=True)
-        if not entity:
-            failures.append(f'"{_dn(ga.name)}" has glossary term but no entity')
-        else:
-            doc_names = relational.get_entity_document_names(entity.id)
-            if not doc_names:
-                failures.append(f'"{_dn(ga.name)}" is not grounded to any data source')
-        if ga.domain and term.domain != ga.domain:
-            failures.append(f'"{_dn(ga.name)}" domain: expected "{ga.domain}", got "{term.domain}"')
-        if ga.parent:
-            if not term.parent_id:
-                failures.append(f'"{_dn(ga.name)}" has no parent (expected "{_dn(ga.parent)}")')
-            else:
-                parent = relational.get_glossary_term_by_id(term.parent_id)
-                parent_name = parent.name if parent else None
-                if not parent_name or parent_name.lower() != ga.parent.lower():
-                    failures.append(
-                        f'"{_dn(ga.name)}" parent: expected "{_dn(ga.parent)}", got "{_dn(parent_name) if parent_name else None}"'
-                    )
-    return LayerResult(
-        layer="glossary",
-        passed=len(assertions) - len(failures),
-        total=len(assertions),
-        failures=failures,
-    )
 
 
 def _check_relationships(
