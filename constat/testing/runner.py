@@ -667,7 +667,7 @@ def _llm_judge(
     response = router.generate(system=judge_prompt, user_message=user_message)
     first_line = response.strip().split("\n")[0].strip().upper()
     passed = first_line.startswith("YES")
-    logger.info(f"[LLM_JUDGE] Verdict: {'PASS' if passed else 'FAIL'} — {response.strip()[:200]}")
+    logger.info(f"[LLM_JUDGE] Verdict: {'PASS' if passed else 'FAIL'} — {response.strip()[:500]}")
     return passed, response.strip()
 
 

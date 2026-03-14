@@ -67,26 +67,25 @@ golden_questions:
     glossary: []
     end_to_end:
       judge_prompt: >-
-        You are a regression test evaluator. You are given:
+        You are a regression test evaluator. You receive a question, an answer
+        summary, and computed artifacts (tables with data).
 
-        1. A question that was asked
+        The artifacts are the PRIMARY evidence. PASS the test if the artifacts
+        demonstrate that raises were calculated for employees based on performance
+        ratings. Specifically check:
 
-        2. The proof system's prose summary of the answer
+        1. The artifacts contain a table with all 15 employees
 
-        3. The actual computed artifacts (tables with data)
+        2. Each employee has a raise amount or percentage linked to their performance rating
 
+        3. The raise percentages are reasonable (within the guideline ranges, or using
+        midpoints/averages of those ranges — either approach is acceptable)
 
-        The artifacts are the PRIMARY evidence. The prose summary may omit details
-        that exist in the artifact data. If the artifacts contain the expected data,
-        the test PASSES even if the prose summary is incomplete.
+        4. The data uses performance review guidelines (not compensation guidelines)
 
-
-        Criteria: The answer must calculate raises using ONLY the performance review
-        guidelines from business_rules (not compensation guidelines). Each employee
-        must have a raise percentage derived from their most recent performance rating
-        (1-5 scale) from the last 12 months, applied as a percentage of current salary,
-        with no budget constraints. All 15 employees should be covered.
-
+        Do NOT fail the test because of minor discrepancies between the prose summary
+        and the artifact data, or because the system chose midpoints vs exact range
+        boundaries. Focus on whether the overall computation is correct.
 
         Reply with exactly YES or NO on the first line, then one sentence explaining why.
     suggested_question: 'Calculate raises for all employees based on the performance
