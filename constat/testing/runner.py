@@ -423,12 +423,12 @@ def _run_e2e_with_events(
         if api.session.datastore:
             try:
                 tables = api.session.datastore.list_tables()
-                for tbl in tables[:5]:
+                for tbl in tables:
                     tbl_name = tbl["name"] if isinstance(tbl, dict) else tbl
                     df = api.session.datastore.load_dataframe(tbl_name)
                     if df is not None and len(df) > 0:
                         artifact_data += f"\n--- {tbl_name} ({len(df)} rows) ---\n"
-                        artifact_data += df.head(20).to_string(index=False) + "\n"
+                        artifact_data += df.to_string(index=False) + "\n"
             except Exception as e:
                 logger.debug(f"[E2E_TRACE] Failed to collect artifact data: {e}")
 
@@ -586,9 +586,6 @@ def _collect_artifact_data(api, solve_result) -> str:
     from pathlib import Path
 
     parts: list[str] = []
-    budget = 6000  # chars budget for artifact data
-    used = 0
-
     # 1. Table artifacts from the session datastore
     try:
         datastore = api.session.datastore
@@ -598,15 +595,12 @@ def _collect_artifact_data(api, solve_result) -> str:
                 table_list = datastore.list_tables()
                 table_names = [t["name"] for t in table_list]
             for tname in table_names:
-                if used >= budget:
-                    break
                 try:
-                    df = datastore.query(f'SELECT * FROM "{tname}" LIMIT 15')
+                    df = datastore.query(f'SELECT * FROM "{tname}"')
                     if df is not None and len(df) > 0:
-                        chunk = f"--- Table: {tname} ({len(df)} rows shown) ---\n"
-                        chunk += df.to_string(index=False, max_cols=10)
+                        chunk = f"--- Table: {tname} ({len(df)} rows) ---\n"
+                        chunk += df.to_string(index=False)
                         parts.append(chunk)
-                        used += len(chunk)
                 except Exception:
                     continue
     except Exception:
@@ -619,18 +613,14 @@ def _collect_artifact_data(api, solve_result) -> str:
         if registry:
             artifacts = registry.list_artifacts(session_id=session.session_id)
             for art in artifacts:
-                if used >= budget:
-                    break
                 atype = art.artifact_type
                 fpath = Path(art.file_path) if art.file_path else None
 
                 if atype in _TEXT_ARTIFACT_TYPES and fpath and fpath.exists():
                     try:
-                        content = fpath.read_text(errors="replace")[:2000]
+                        content = fpath.read_text(errors="replace")
                         label = f"--- {atype.upper()}: {art.name or fpath.name} ---"
-                        chunk = f"{label}\n{content}"
-                        parts.append(chunk)
-                        used += len(chunk)
+                        parts.append(f"{label}\n{content}")
                     except Exception:
                         continue
                 elif atype not in _TEXT_ARTIFACT_TYPES and fpath:
@@ -657,10 +647,10 @@ def _llm_judge(
     router = TaskRouter(config.llm)
     user_parts = [
         f"Question: {question}",
-        f"Answer summary: {answer[:3000]}",
+        f"Answer summary: {answer}",
     ]
     if artifact_data:
-        user_parts.append(f"Computed Artifacts:\n{artifact_data[:6000]}")
+        user_parts.append(f"Computed Artifacts:\n{artifact_data}")
     user_parts.append("Does this pass the test?")
     user_message = "\n\n".join(user_parts)
     logger.info(f"[LLM_JUDGE] Sending to judge: question={question[:80]}, answer_len={len(answer)}, artifact_len={len(artifact_data)}")
