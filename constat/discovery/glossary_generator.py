@@ -577,7 +577,7 @@ def generate_glossary(
     # Prune ungrounded terms — LLM-created parents that failed to link children
     if on_progress:
         on_progress("Pruning ungrounded", 75)
-    pruned = _prune_ungrounded(session_id, vector_store, user_id=user_id)
+    pruned = _prune_ungrounded(session_id, vector_store, active_domains=active_domains, user_id=user_id)
     if pruned:
         generated_terms = [t for t in generated_terms if t.name not in pruned]
 
@@ -585,7 +585,13 @@ def generate_glossary(
     return generated_terms
 
 
-def _prune_ungrounded(session_id: str, vector_store, *, user_id: str | None = None) -> set[str]:
+def _prune_ungrounded(
+    session_id: str,
+    vector_store,
+    *,
+    active_domains: list[str] | None = None,
+    user_id: str | None = None,
+) -> set[str]:
     """Delete LLM-generated glossary terms that aren't grounded.
 
     A term is grounded if it has a matching visible entity with physical
@@ -605,8 +611,8 @@ def _prune_ungrounded(session_id: str, vector_store, *, user_id: str | None = No
     # Find terms directly grounded to a visible entity with physical chunks
     grounded: set[str] = set()
     for t in terms:
-        entity = vector_store.find_entity_by_name(t.name, session_id=session_id)
-        if entity and _entity_has_physical_chunks(entity, vector_store):
+        entity = vector_store.find_entity_by_name(t.name, domain_ids=active_domains, session_id=session_id)
+        if entity and _entity_has_physical_chunks(entity, vector_store, domain_ids=active_domains):
             grounded.add(t.id)
 
     # A term is valid if:
@@ -739,6 +745,7 @@ def reconcile_alias_entities(
     session_id: str,
     vector_store,
     *,
+    active_domains: list[str] | None = None,
     user_id: str | None = None,
 ) -> int:
     """Reconcile entities that match glossary term aliases.
@@ -762,20 +769,20 @@ def reconcile_alias_entities(
             continue
 
         # Skip if a direct entity already exists for this term
-        direct = vector_store.find_entity_by_name(term.name, session_id=session_id)
+        direct = vector_store.find_entity_by_name(term.name, domain_ids=active_domains, session_id=session_id)
         if direct:
             # Check it has physical chunks (not just glossary-grounded)
-            if _entity_has_physical_chunks(direct, vector_store):
+            if _entity_has_physical_chunks(direct, vector_store, domain_ids=active_domains):
                 continue
 
         # Check each alias for a matching entity
         for alias in term.aliases:
             if not alias:
                 continue
-            alias_entity = vector_store.find_entity_by_name(alias, session_id=session_id)
+            alias_entity = vector_store.find_entity_by_name(alias, domain_ids=active_domains, session_id=session_id)
             if not alias_entity:
                 continue
-            if not _entity_has_physical_chunks(alias_entity, vector_store):
+            if not _entity_has_physical_chunks(alias_entity, vector_store, domain_ids=active_domains):
                 continue
 
             # Rename the alias entity to the canonical term name
@@ -948,9 +955,9 @@ def resolve_physical_resources(
     return []
 
 
-def _entity_has_physical_chunks(entity, vector_store) -> bool:
+def _entity_has_physical_chunks(entity, vector_store, domain_ids: list[str] | None = None) -> bool:
     """Check if an entity has non-glossary/relationship chunks."""
-    chunks = vector_store.get_chunks_for_entity(entity.id)
+    chunks = vector_store.get_chunks_for_entity(entity.id, domain_ids=domain_ids)
     return any(
         not c.document_name.startswith("glossary:") and not c.document_name.startswith("rel:")
         for _, c, _ in chunks

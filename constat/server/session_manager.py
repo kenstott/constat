@@ -839,7 +839,7 @@ class SessionManager:
 
             # Reconcile alias entities (rename "platinum" → "platinum tier")
             from constat.discovery.glossary_generator import reconcile_alias_entities
-            reconcile_alias_entities(session_id, vector_store, user_id=managed.user_id)
+            reconcile_alias_entities(session_id, vector_store, active_domains=active_domains, user_id=managed.user_id)
 
             # Embed generated terms as glossary chunks
             if terms:

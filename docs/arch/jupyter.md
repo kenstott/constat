@@ -16,10 +16,10 @@ The notebook client talks to a running constat server. Rationale:
 
 ## Package Location
 
-`constat/notebook/` within the main package. Shares types with server.
+`constat-jupyter/` — separate pip-installable package alongside the main constat repo.
 
 ```
-constat/notebook/
+constat-jupyter/constat_jupyter/
     __init__.py          # Public API: ConstatClient, configure
     client.py            # HTTP + WebSocket client
     display.py           # IPython rich display formatters
@@ -31,7 +31,7 @@ constat/notebook/
 ## Public API Surface
 
 ```python
-from constat.notebook import ConstatClient
+from constat_jupyter import ConstatClient
 
 # Connect to server
 client = ConstatClient("http://localhost:8000", token="...")
@@ -46,16 +46,16 @@ result = session.solve("What are the top 10 items by value?")
 result = session.follow_up("Break that down by region")
 
 # Auditable mode — reasoning chain with full provenance
-result = session.prove("Calculate raises based on performance guidelines")
-result.proof_tree          # ProofTree DAG
-result.proof_tree.display()  # Visual DAG rendering in notebook
+result = session.reason_chain("Calculate raises based on performance guidelines")
+result.chain               # ReasoningChain DAG
+result.chain.display()     # Visual DAG rendering in notebook
 
 # Result access
 result.answer           # str - synthesized answer
 result.tables           # dict[str, polars.DataFrame]
 result.artifacts        # list[Artifact] with .display() method
 result.suggestions      # list[str]
-result.proof_tree       # ProofTree (if auditable mode)
+result.chain            # ReasoningChain DAG (if auditable mode)
 
 # Direct table access
 df = session.table("results")                    # -> polars.DataFrame
@@ -109,17 +109,17 @@ test_result.failures()                         # detailed failure info
 7. On query_error -> raise ConstatError with details
 ```
 
-### prove()
+### reason_chain()
 
 ```
-1. POST /api/sessions/{id}/prove
+1. POST /api/sessions/{id}/reason_chain
 2. Connect WebSocket /api/sessions/{id}/ws
 3. Stream events -> render DAG progress (premise resolution, inference execution)
-   - proof_start -> show DAG skeleton
+   - chain_start -> show DAG skeleton
    - fact_start/fact_resolved/fact_failed -> update premise nodes
    - inference_executing/inference_complete -> update inference nodes
-   - proof_complete -> finalize
-4. On proof_summary_ready -> build ProveResult with proof tree
+   - chain_complete -> finalize
+4. On chain_summary_ready -> build ReasoningChainResult with chain DAG
 5. On query_error -> raise ConstatError
 ```
 
@@ -154,7 +154,7 @@ Step 3/3: Join with metadata ░░░░░░░░░░ pending
 Synthesizing answer...
 ```
 
-### Auditable mode (prove)
+### Auditable mode (reason_chain)
 
 ```
 Reasoning Chain: "Calculate raises based on guidelines"
@@ -241,12 +241,12 @@ class SolveResult:
 
 ```python
 @dataclass
-class ProveResult(SolveResult):
-    proof_tree: ProofTree | None             # DAG with premises + inferences
-    proof_nodes: list[ProofNode]             # Flat list of resolved nodes
+class ReasoningChainResult(SolveResult):
+    chain: ReasoningChain | None             # DAG with premises + inferences
+    chain_nodes: list[ChainNode]             # Flat list of resolved nodes
 
     def display(self):
-        """Rich display: answer + proof tree visualization + tables."""
+        """Rich display: answer + reasoning chain visualization + tables."""
 ```
 
 `_repr_markdown_` gives automatic rich rendering when the result is the
@@ -376,7 +376,7 @@ Endpoints used:
 - `GET /api/sessions/{id}/tables` / `GET /api/sessions/{id}/tables/{name}`
 - `POST /api/sessions/{id}/plan/approve`
 
-### Phase 2: Rich Display + Widgets + Prove
+### Phase 2: Rich Display + Widgets + Reasoning Chain
 
 Files: `display.py`, `widgets.py`, `progress.py`
 
@@ -385,9 +385,9 @@ Files: `display.py`, `widgets.py`, `progress.py`
 - Step progress bars (ipywidgets)
 - `Artifact.display()` with type-specific rendering
 - `SolveResult.display()` full rich output
-- `Session.prove()` with DAG progress rendering
-- `ProveResult` with proof tree visualization
-- Proof node progress (premise/inference status updates)
+- `Session.reason_chain()` with DAG progress rendering
+- `ReasoningChainResult` with chain visualization
+- Chain node progress (premise/inference status updates)
 
 ### Phase 3: Performance + Domain Features
 
@@ -439,7 +439,7 @@ The client must handle these event types for progress rendering:
 - `synthesizing`, `query_complete`, `query_error`
 
 ### Auditable mode (additional)
-- `proof_start`, `proof_complete`, `proof_summary_ready`
+- `chain_start`, `chain_complete`, `chain_summary_ready`
 - `fact_start`, `fact_resolved`, `fact_failed`, `fact_blocked`
 - `dag_execution_start`
 - `inference_code`, `inference_executing`, `inference_complete`
@@ -447,7 +447,7 @@ The client must handle these event types for progress rendering:
 ## Example Notebook
 
 ```python
-from constat.notebook import ConstatClient
+from constat_jupyter import ConstatClient
 
 client = ConstatClient()
 session = client.create_session()
@@ -475,10 +475,10 @@ result2.artifacts[0].display()
 
 ```python
 # Auditable mode — reasoning chain with provenance
-result3 = session.prove("Calculate raises based on performance review guidelines")
+result3 = session.reason_chain("Calculate raises based on performance review guidelines")
 
-# View the proof tree
-result3.proof_tree.display()
+# View the reasoning chain
+result3.chain.display()
 
 # Access computed tables
 raises = result3.tables["raise_recommendations"]

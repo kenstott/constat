@@ -794,6 +794,41 @@ Type-safe URL-based navigation for artifact panel sections:
 - `userPermissions`, `supersededStepNumbers`
 - Real-time update methods for WebSocket events
 
+### Jupyter Notebook Client
+
+A separate pip-installable package (`constat-jupyter`) provides a synchronous Python client for running Constat queries inside Jupyter notebooks.
+
+```
+constat-jupyter/
+├── constat_jupyter/
+│   ├── __init__.py      # Exports: ConstatClient, Session, SolveResult, Artifact
+│   ├── client.py        # HTTP + WebSocket client (ConstatClient, Session)
+│   ├── models.py        # SolveResult, ReasoningChainResult, Artifact, StepInfo
+│   ├── progress.py      # PrintProgress event handler
+│   └── config.py        # ConstatConfig (server_url, token)
+```
+
+**Usage:**
+```python
+from constat_jupyter import ConstatClient
+
+client = ConstatClient("http://localhost:8000")
+session = client.create_session()
+result = session.solve("Top 10 items by value")       # live progress + plan approval
+result2 = session.follow_up("Break down by region")   # follow-up in same session
+result3 = session.reason_chain("Verify VIP status")   # auditable reasoning chain
+df = result.tables["top_items"]                        # Polars DataFrame via Parquet
+```
+
+**Key design:**
+- `nest_asyncio` + threading wrapper lets synchronous `solve()` calls consume WebSocket events inside Jupyter's running event loop
+- Tables downloaded as Parquet for zero-copy DataFrame construction
+- `SolveResult` auto-renders via `_repr_html_()` / `_repr_markdown_()` when last expression in a cell
+- Artifacts (Plotly, HTML, Markdown, PNG) rendered inline
+- Plan approval and clarification prompts fall back to `input()` when ipywidgets unavailable
+
+**Configuration:** `CONSTAT_SERVER_URL` and `CONSTAT_AUTH_TOKEN` environment variables, or constructor args.
+
 ## Key Design Decisions
 
 ### Step Isolation

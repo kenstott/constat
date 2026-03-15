@@ -3,6 +3,7 @@
 
 # Server configuration (for API server mode)
 server:
+  admin_token: "my-dev-token"
   auth_disabled: ${AUTH_DISABLED}
   firebase_project_id: ${FIREBASE_PROJECT_ID}
   # runtime_dir: .  # Base directory for .constat/ data (default: current directory)

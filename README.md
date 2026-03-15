@@ -554,6 +554,36 @@ npm run dev
 
 **Tech stack:** React 18, TypeScript, Vite, Tailwind CSS, Zustand, React Query, D3 + d3-dag, Plotly.js, Headless UI + Heroicons
 
+## Jupyter Notebook
+
+A separate pip-installable package (`constat-jupyter`) provides a synchronous Python client for interactive notebook use.
+
+```bash
+pip install -e constat-jupyter/
+```
+
+```python
+from constat_jupyter import ConstatClient
+
+client = ConstatClient("http://localhost:8000")
+session = client.create_session()
+
+result = session.solve("Top 10 items by value")       # live progress + plan approval
+result2 = session.follow_up("Break down by region")   # follow-up in same session
+result3 = session.reason_chain("Verify VIP status")   # auditable reasoning chain
+
+df = result.tables["top_items"]                        # Polars DataFrame via Parquet
+result.artifacts[0].display()                          # render chart/HTML inline
+```
+
+**Features:**
+- Live WebSocket progress streaming (plan approval, step execution, synthesis)
+- `SolveResult` auto-renders as markdown/HTML in notebook cells
+- Inline artifact rendering (Plotly charts, HTML, Markdown, images)
+- Tables downloaded as Parquet for zero-copy Polars/Pandas DataFrames
+- Schema browsing, glossary, facts, and session management
+- Configurable via `CONSTAT_SERVER_URL` / `CONSTAT_AUTH_TOKEN` env vars or constructor args
+
 ## REST API
 
 Constat provides a REST API via FastAPI with WebSocket support for real-time streaming.
