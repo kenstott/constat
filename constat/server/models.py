@@ -1054,10 +1054,17 @@ class TestableDomainInfo(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class ExpectedOutputModel(BaseModel):
+    name: str
+    type: str = "table"  # table, image, document, markdown, json, xml, pdf, ...
+    columns: list[str] = Field(default_factory=list)  # only for type=table
+
+
 class GoldenQuestionExpectations(BaseModel):
     terms: list[dict[str, Any]] = Field(default_factory=list)
     grounding: list[dict[str, Any]] = Field(default_factory=list)
     relationships: list[dict[str, Any]] = Field(default_factory=list)
+    expected_outputs: list[ExpectedOutputModel] = Field(default_factory=list)
     end_to_end: dict[str, Any] | None = None
     suggested_question: str | None = None
     objectives: list[str] = Field(default_factory=list)

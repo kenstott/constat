@@ -66,10 +66,19 @@ class EndToEndAssertion:
 
 
 @dataclass
+class ExpectedOutput:
+    """Expected output artifact — table, image, document, or markdown."""
+    name: str
+    type: str = "table"  # table, image, document, markdown, json, xml, pdf, ...
+    columns: list[str] = field(default_factory=list)  # only for type=table
+
+
+@dataclass
 class GoldenExpectations:
     terms: list[TermAssertion] = field(default_factory=list)
     grounding: list[GroundingAssertion] = field(default_factory=list)
     relationships: list[RelationshipAssertion] = field(default_factory=list)
+    expected_outputs: list[ExpectedOutput] = field(default_factory=list)
     end_to_end: EndToEndAssertion | None = None
 
 
@@ -179,6 +188,10 @@ def _parse_expectations(raw: dict) -> GoldenExpectations:
         )
         for r in raw.get("relationships", [])
     ]
+    expected_outputs = [
+        ExpectedOutput(name=o["name"], type=o.get("type", "table"), columns=o.get("columns", []))
+        for o in raw.get("expected_outputs", [])
+    ]
     e2e_raw = raw.get("end_to_end")
     end_to_end = None
     if e2e_raw:
@@ -198,6 +211,7 @@ def _parse_expectations(raw: dict) -> GoldenExpectations:
         terms=terms,
         grounding=grounding,
         relationships=relationships,
+        expected_outputs=expected_outputs,
         end_to_end=end_to_end,
     )
 

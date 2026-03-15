@@ -207,6 +207,7 @@ INFERENCE RULES:
 - Each inference must reference at least one premise (P1/P2/etc) or prior inference (I1/I2/etc)
 - CRITICAL: ALL premises MUST be used in the inference chain. Never define a premise that isn't referenced.
 - CRITICAL: Each inference result_name MUST be GLOBALLY UNIQUE. NEVER reuse any name. BAD: two inferences both named "data_verified". GOOD: "validation_result" then "final_verification".
+- CRITICAL: If the question specifies "Expected outputs" with named artifacts, use those EXACT names as inference result_names. Example: if expected output is "raise_recommendations", the inference must be: I3: raise_recommendations = calculate(...). Do NOT invent alternative names like "raise_calculations" or "raise_recommendations_table".
 - CRITICAL: The final inference(s) should COMPUTE THE ACTUAL ANSWER, not just verify data exists. If the user asks for recommendations, calculate them. If they ask for comparisons, compute them.
 - CRITICAL: Only ONE verify_exists() at the very end, referencing the computed answer. Do NOT add validate() or verify() steps before it.
 - CRITICAL: Do NOT add intermediate analysis steps that are not required by the question. If the question asks to "match X to Y", plan ONE inference that does the matching — do NOT plan separate steps to "analyze characteristics", "classify categories", "score complexity" etc. unless explicitly requested.

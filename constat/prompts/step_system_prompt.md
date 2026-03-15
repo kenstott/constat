@@ -154,6 +154,9 @@ Do NOT import skill modules. The functions are already available as globals, jus
   - BEST: `df['score'] = llm_score(df['text'].tolist(), 0, 1, "Rate sentiment")`
 - If an expected column is missing, raise an error listing the actual columns: `raise KeyError(f"Expected 'col' but columns are: {list(df.columns)}")`. NEVER silently default to zero or skip — this produces corrupt data that passes downstream undetected.
 - NEVER use `if df:` on DataFrames - use `if df.empty:` or `if not df.empty:` instead
+- **Prefer SQL JOINs over `pd.merge`** when combining tables in the store. SQL JOINs are lazier (views), avoid DataFrame round-trips, and handle type mismatches with CAST. When join keys may differ in type (e.g., integer from SQL vs float/string from LLM extraction), use `CAST(key AS INTEGER)` on both sides:
+  - WRONG: `df1 = store.load_dataframe('a'); df2 = store.load_dataframe('b'); merged = pd.merge(df1, df2, on='id')` — silent nulls on type mismatch
+  - RIGHT: `store.create_view('merged', 'SELECT ... FROM a JOIN b ON CAST(a.id AS INTEGER) = CAST(b.id AS INTEGER)', step_number=N)`
 - **NEVER use `input()`** — it blocks the server. To ask users questions, the step must have `task_type: user_input` with `ask_user()`. Regular steps cannot interact with users.
 - **NEVER hardcode mapping dicts, classification tables, or extracted constants**. Use `llm_map()`, `llm_extract()`, or `llm_summarize()`. Hardcoded data breaks auditability and won't update when source data changes.
 - **No external NLP libraries** (TextBlob, VADER, spaCy, nltk, etc.) are available. For sentiment analysis, scoring, or text classification use `llm_score()` or `llm_map(..., allow_none=True)` — they are already provided and model-routed.

@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from constat.server.auth import CurrentUserId
 from constat.server.config import ServerConfig
 from constat.server.models import (
+    ExpectedOutputModel,
     GoldenQuestionExpectations,
     GoldenQuestionRequest,
     GoldenQuestionResponse,
@@ -166,6 +167,7 @@ def _gq_to_response(index: int, raw: dict) -> GoldenQuestionResponse:
             terms=[{"name": t.name, "has_definition": t.has_definition, "domain": t.domain, "parent": t.parent} for t in parsed.terms],
             grounding=[{"entity": g.entity, "resolves_to": g.resolves_to, "strict": g.strict} for g in parsed.grounding],
             relationships=[{"subject": r.subject, "verb": r.verb, "object": r.object, "min_confidence": r.min_confidence} for r in parsed.relationships],
+            expected_outputs=[ExpectedOutputModel(name=o.name, type=o.type, columns=o.columns) for o in parsed.expected_outputs],
             end_to_end={
                 "judge_prompt": parsed.end_to_end.judge_prompt,
                 "result_contains": parsed.end_to_end.result_contains,
@@ -503,10 +505,44 @@ async def extract_expectations(
         except Exception as e:
             logger.debug(f"[extract_expectations] could not load step codes: {e}")
 
+    # Auto-extract expected_outputs from session tables.
+    # Tables created in the final step are the deliverables; earlier tables
+    # are intermediates.  Include all tables from the last step that produced
+    # tables, plus any tables that are explicitly starred/published.
+    expected_outputs: list[dict] = []
+    datastore = getattr(session, "datastore", None)
+    if datastore:
+        try:
+            all_tables = datastore.list_tables()
+            if all_tables:
+                max_step = max(t.get("step_number", 0) or 0 for t in all_tables)
+                for t in all_tables:
+                    step = t.get("step_number", 0) or 0
+                    is_final = step == max_step or t.get("is_published")
+                    if not is_final:
+                        continue
+                    name = t["name"]
+                    schema = datastore.get_table_schema(name)
+                    columns = [c["name"] for c in schema] if schema else []
+                    expected_outputs.append({
+                        "name": name,
+                        "type": "table",
+                        "columns": columns,
+                    })
+                logger.info(
+                    f"[extract_expectations] auto-extracted {len(expected_outputs)} "
+                    f"expected outputs from step {max_step}"
+                )
+        except Exception as e:
+            logger.debug(f"[extract_expectations] could not extract expected outputs: {e}")
+
     return GoldenQuestionExpectations(
         terms=[],
         grounding=grounding,
         relationships=relationships,
+        expected_outputs=[
+            ExpectedOutputModel(**eo) for eo in expected_outputs
+        ],
         end_to_end=end_to_end,
         suggested_question=suggested_question,
         objectives=objectives,

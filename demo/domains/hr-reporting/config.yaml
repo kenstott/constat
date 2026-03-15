@@ -25,27 +25,14 @@ documents:
     - \.(png|jpg|jpeg|gif|svg|ico|css|js)(\?|$)
     description: Human resource management concepts and practices
 golden_questions:
-- question: 'Calculate raises for all employees based on the performance review guidelines
-    within the business_rules and their most recent performance review. DO NOT USE
-    compensation guidelines.
-
-
-    Clarifications:
-
-    0: Last 12 months
-
-    [Structured: "Last 12 months"]
-
-    1: Percentage of current salary
-
-    [Structured: "Percentage of current salary"]
-
-    2: No budget constraints
-
-    [Structured: "No budget constraints"]
-
-
-'
+- question: &question >-
+    Calculate raises for all employees based on the performance review guidelines
+    within the business_rules and their most recent performance review.
+    DO NOT USE compensation guidelines.
+    Use reviews from the last 12 months, express raises as percentage of current
+    salary, assume no budget constraints.
+    Use SQL joins (not pandas merge) when combining tables — cast join keys to
+    the same type to avoid type mismatches.
   tags:
   - from-reason-chain
   expect:
@@ -68,150 +55,136 @@ golden_questions:
       strict: true
     relationships: []
     glossary: []
+    expected_outputs:
+    - name: raise_guidelines
+      type: table
+      columns:
+      - performance_rating
+      - min_raise_rate
+      - max_raise_rate
+    - name: raise_recommendations
+      type: table
+      columns:
+      - employee_id
+      - first_name
+      - last_name
+      - department
+      - current_salary
+      - performance_rating
+      - raise_rate
+      - raise_amount
+      - new_salary
     end_to_end:
       judge_prompt: >-
         You are a regression test evaluator. You receive a question, an answer
         summary, and computed artifacts (tables with data).
 
-        The artifacts are the PRIMARY evidence. PASS the test if the artifacts
-        demonstrate that raises were calculated for employees based on performance
-        ratings. Specifically check:
+        IMPORTANT: Only evaluate the tables named "raise_guidelines" and
+        "raise_recommendations". IGNORE all other intermediate tables — they
+        are work-in-progress artifacts and may contain incomplete data.
 
-        1. The artifacts contain a table with all 15 employees
+        PASS the test if these two tables demonstrate that raises were calculated
+        for employees based on performance ratings. Specifically check:
 
-        2. Each employee has a raise amount or percentage linked to their performance rating
+        1. "raise_recommendations" contains all 15 employees with non-null
+        raise_rate, raise_amount, and new_salary values
 
-        3. The raise percentages are reasonable (within the guideline ranges, or using
-        midpoints/averages of those ranges — either approach is acceptable)
+        2. Each employee's raise is linked to their performance rating
+
+        3. "raise_guidelines" shows the guideline rates extracted from the
+        business_rules document, and the rates in raise_recommendations
+        correspond to these guideline ranges
 
         4. The data uses performance review guidelines (not compensation guidelines)
 
-        Do NOT fail the test because of minor discrepancies between the prose summary
-        and the artifact data, or because the system chose midpoints vs exact range
-        boundaries. Focus on whether the overall computation is correct.
+        Do NOT fail because of minor discrepancies, midpoint vs boundary choices,
+        or issues in other tables. Focus only on the two named output tables.
 
         Reply with exactly YES or NO on the first line, then one sentence explaining why.
       validator_code: |
-        assert len(result) == 15, f"Expected 15 employees, got {len(result)}"
-        assert 'raise_amount' in result.columns or 'raise_rate' in result.columns, "Missing raise column"
-        assert 'performance_rating' in result.columns, "Missing performance_rating column"
-    suggested_question: 'Calculate raises for all employees based on the performance
-      review guidelines within the business_rules and their most recent performance
-      review. DO NOT USE compensation guidelines.
+        rg = tables['raise_guidelines']
+        assert len(rg) >= 3, f"Expected at least 3 guideline rows, got {len(rg)}"
+        assert 'min_raise_rate' in rg.columns, f"raise_guidelines missing min_raise_rate (has: {list(rg.columns)})"
+        assert 'max_raise_rate' in rg.columns, f"raise_guidelines missing max_raise_rate (has: {list(rg.columns)})"
 
-
-      Clarifications:
-
-      0: Last 12 months
-
-      [Structured: "Last 12 months"]
-
-      1: Percentage of current salary
-
-      [Structured: "Percentage of current salary"]
-
-      2: No budget constraints
-
-      [Structured: "No budget constraints"]
-
-
-  '
+        rr = tables['raise_recommendations']
+        assert len(rr) == 15, f"Expected 15 employees, got {len(rr)}"
+        assert rr['raise_rate'].notna().all(), f"raise_rate has nulls: {rr['raise_rate'].isna().sum()} null rows"
+        assert (rr['raise_rate'] >= 0).all(), "All raise_rate values should be >= 0"
+        assert (rr['raise_rate'] < 0.5).all(), "All raise_rate values should be < 50%"
+    suggested_question: *question
     objectives:
-    - 'Calculate raises for all employees based on the performance review guidelines
-      within the business_rules and their most recent performance review. DO NOT USE
-      compensation guidelines.
-
-
-      Clarifications:
-
-      0: Last 12 months
-
-      [Structured: "Last 12 months"]
-
-      1: Percentage of current salary
-
-      [Structured: "Percentage of current salary"]
-
-      2: No budget constraints
-
-      [Structured: "No budget constraints"]
-
-
-  '
-    step_hints: &id001
+    - *question
+    step_hints: &step_hints
     - step_number: 1
       goal: Query all employees with their most recent performance review from the
         last 12 months, including current salary and performance rating
-      code: "# Step 1: Query all employees with their most recent performance review\
-        \ from the last 12 months, including current salary and performance rating\n\
-        \nfrom datetime import datetime, timedelta\n\n# Step 1: Query all employees\
-        \ with their most recent performance review from the last 12 months, including\
-        \ current salary and performance rating\n\n# Create a view that joins employees\
-        \ with their most recent performance reviews from the last 12 months\nstore.create_view('employee_reviews',\
-        \ '''\n    WITH recent_reviews AS (\n        SELECT \n            employee_id,\n\
-        \            rating,\n            review_date,\n            ROW_NUMBER() OVER\
-        \ (PARTITION BY employee_id ORDER BY review_date DESC) as rn\n        FROM\
-        \ hr.performance_reviews \n        WHERE review_date >= CURRENT_DATE - INTERVAL\
-        \ '365 days'\n    ),\n    latest_reviews AS (\n        SELECT \n         \
-        \   employee_id,\n            rating,\n            review_date\n        FROM\
-        \ recent_reviews \n        WHERE rn = 1\n    )\n    SELECT \n        e.employee_id,\n\
-        \        e.first_name,\n        e.last_name,\n        d.name as department,\n\
-        \        e.salary as current_salary,\n        lr.rating as performance_rating,\n\
-        \        lr.review_date\n    FROM hr.employees e\n    LEFT JOIN hr.departments\
-        \ d ON e.department_id = d.department_id\n    LEFT JOIN latest_reviews lr\
-        \ ON e.employee_id = lr.employee_id\n''', step_number=1)\n\n# Get a summary\
-        \ of the results\nsummary = store.query('SELECT COUNT(*) as total_employees,\
-        \ COUNT(performance_rating) as employees_with_reviews FROM employee_reviews')\n\
-        print(f\"Loaded {summary.iloc[0]['total_employees']} employees, {summary.iloc[0]['employees_with_reviews']}\
-        \ with recent performance reviews\")"
+      code: |
+        # Create a view that joins employees with their most recent performance reviews
+        store.create_view('employee_reviews', '''
+            WITH recent_reviews AS (
+                SELECT
+                    employee_id,
+                    rating,
+                    review_date,
+                    ROW_NUMBER() OVER (PARTITION BY employee_id ORDER BY review_date DESC) as rn
+                FROM hr.performance_reviews
+                WHERE review_date >= CURRENT_DATE - INTERVAL '365 days'
+            ),
+            latest_reviews AS (
+                SELECT employee_id, rating, review_date
+                FROM recent_reviews
+                WHERE rn = 1
+            )
+            SELECT
+                e.employee_id,
+                e.first_name,
+                e.last_name,
+                d.name as department,
+                e.salary as current_salary,
+                lr.rating as performance_rating,
+                lr.review_date
+            FROM hr.employees e
+            LEFT JOIN hr.departments d ON e.department_id = d.department_id
+            LEFT JOIN latest_reviews lr ON e.employee_id = lr.employee_id
+        ''', step_number=1)
+
+        summary = store.query('SELECT COUNT(*) as total_employees, COUNT(performance_rating) as employees_with_reviews FROM employee_reviews')
+        print(f"Loaded {summary.iloc[0]['total_employees']} employees, {summary.iloc[0]['employees_with_reviews']} with recent performance reviews")
     - step_number: 2
-      goal: Calculate raises for each employee using the performance review guidelines
-        from business_rules document and their performance rating
-      code: "# Step 2: Calculate raises for each employee using the performance review\
-        \ guidelines from business_rules document and their performance rating\n\n\
-        # Step 2: Calculate raises for each employee using the performance review\
-        \ guidelines from business_rules document and their performance rating\n\n\
-        # Load the employee reviews from store\nemployee_reviews = store.load_dataframe('employee_reviews')\n\
-        \nprint(\"Employee reviews columns:\", list(employee_reviews.columns))\nprint(\"\
-        Employee reviews sample data:\")\nprint(employee_reviews.head())\n\n# Extract\
-        \ business rules from the document - specify the columns we expect\nbusiness_rules\
-        \ = llm_extract_table(\n    'performance review guidelines with raise percentages\
-        \ by rating', \n    'business_rules',\n    columns=['performance_rating',\
-        \ 'min_raise_rate', 'max_raise_rate']\n)\n\nprint(\"Business rules columns:\"\
-        , list(business_rules.columns))\nprint(\"Business rules sample data:\")\n\
-        print(business_rules.head())\n\n# Merge employee reviews with business rules\
-        \ on performance rating\nmerged_data = pd.merge(\n    employee_reviews, \n\
-        \    business_rules, \n    on='performance_rating', \n    how='left'\n)\n\n\
-        # Calculate the actual raise amount using the midpoint of the range for simplicity\n\
-        merged_data['raise_rate'] = (merged_data['min_raise_rate'] + merged_data['max_raise_rate'])\
-        \ / 2\nmerged_data['raise_percentage'] = merged_data['raise_rate'] * 100 \
-        \ # Convert to percentage\nmerged_data['new_salary'] = merged_data['current_salary']\
-        \ * (1 + merged_data['raise_rate'])\nmerged_data['raise_amount'] = merged_data['new_salary']\
-        \ - merged_data['current_salary']\n\n# Save the result to store\nstore.save_dataframe('raise_recommendations',\
-        \ merged_data, step_number=2)\n\nprint(f\"Calculated raises for {len(merged_data)}\
-        \ employees\")\nprint(f\"Average raise rate: {merged_data['raise_rate'].mean():.1%}\"\
-        )\nprint(f\"Total raise budget: ${merged_data['raise_amount'].sum():,.2f}\"\
-        )"
+      goal: Extract raise guidelines from business_rules document, save as table,
+        then SQL-join with employee reviews to calculate raises
+      code: |
+        # Extract business rules from the document
+        business_rules = llm_extract_table(
+            'performance review guidelines with raise percentages by rating',
+            'business_rules',
+            columns=['performance_rating', 'min_raise_rate', 'max_raise_rate']
+        )
+        print("Business rules:", business_rules.to_string())
+
+        # Save extracted rules as a table so we can SQL-join
+        store.save_dataframe('raise_guidelines', business_rules, step_number=2)
+
+        # SQL join with CAST to handle int vs float type mismatch on performance_rating
+        store.create_view('raise_recommendations', '''
+            SELECT
+                e.employee_id,
+                e.first_name,
+                e.last_name,
+                e.department,
+                e.current_salary,
+                e.performance_rating,
+                (g.min_raise_rate + g.max_raise_rate) / 2.0 AS raise_rate,
+                e.current_salary * ((g.min_raise_rate + g.max_raise_rate) / 2.0) AS raise_amount,
+                e.current_salary * (1.0 + (g.min_raise_rate + g.max_raise_rate) / 2.0) AS new_salary
+            FROM employee_reviews e
+            LEFT JOIN raise_guidelines g
+                ON CAST(e.performance_rating AS INTEGER) = CAST(g.performance_rating AS INTEGER)
+        ''', step_number=2)
+
+        result = store.query('SELECT COUNT(*) as n, COUNT(raise_rate) as with_rate FROM raise_recommendations')
+        print(f"Calculated raises for {result.iloc[0]['n']} employees, {result.iloc[0]['with_rate']} with rates")
   objectives:
-  - 'Calculate raises for all employees based on the performance review guidelines
-    within the business_rules and their most recent performance review. DO NOT USE
-    compensation guidelines.
-
-
-    Clarifications:
-
-    0: Last 12 months
-
-    [Structured: "Last 12 months"]
-
-    1: Percentage of current salary
-
-    [Structured: "Percentage of current salary"]
-
-    2: No budget constraints
-
-    [Structured: "No budget constraints"]
-
-
-'
-  step_hints: *id001
+  - *question
+  step_hints: *step_hints

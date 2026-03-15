@@ -24,6 +24,7 @@ from constat.testing.models import (
     DomainTestResult,
     EndToEndAssertion,
     EndToEndResult,
+    ExpectedOutput,
     GoldenQuestion,
     GroundingAssertion,
     LayerResult,
@@ -373,6 +374,16 @@ def _run_e2e_with_events(
             original_q = gq.question
             follow_ups = []
 
+        # Append expected output specs so the LLM knows what artifacts to produce
+        if gq.expect.expected_outputs:
+            output_lines = []
+            for eo in gq.expect.expected_outputs:
+                if eo.type == "table" and eo.columns:
+                    output_lines.append(f'- "{eo.name}" ({eo.type}) with columns: {", ".join(eo.columns)}')
+                else:
+                    output_lines.append(f'- "{eo.name}" ({eo.type})')
+            original_q = original_q.rstrip() + "\n\nExpected outputs:\n" + "\n".join(output_lines)
+
         # Ensure datastore exists
         api.session._ensure_session_datastore(original_q)
         api.session.datastore.set_session_meta("problem", original_q)
@@ -420,7 +431,15 @@ def _run_e2e_with_events(
 
         # Collect tables for validator and judge
         tables = _collect_tables(api)
-        artifact_summary = _collect_artifact_summary(tables)
+
+        # When expected_outputs is defined, only show those tables to the judge
+        # to prevent intermediate/broken tables from confusing the evaluation.
+        if gq.expect.expected_outputs:
+            eo_names = {eo.name for eo in gq.expect.expected_outputs}
+            judge_tables = {k: v for k, v in tables.items() if k in eo_names}
+        else:
+            judge_tables = tables
+        artifact_summary = _collect_artifact_summary(judge_tables)
 
         for substring in assertion.result_contains:
             evt_queue.put(f"Checking: result_contains '{substring[:40]}'")
@@ -434,7 +453,13 @@ def _run_e2e_with_events(
                 f"Expected at least {assertion.plan_min_steps} proof nodes, got {len(proof_nodes)}"
             )
 
-        # Run Python validator if provided
+        # Check expected output artifacts
+        if gq.expect.expected_outputs:
+            evt_queue.put("Checking: expected outputs...")
+            eo_failures = _check_expected_outputs(gq.expect.expected_outputs, tables)
+            failures.extend(eo_failures)
+
+        # Run Python validator if provided (gets ALL tables for flexibility)
         if assertion.validator_code:
             evt_queue.put("Checking: data validator...")
             v_passed, v_msg = _run_validator(assertion.validator_code, tables)
@@ -516,7 +541,17 @@ def _run_e2e_question(
         auto_approve=True,
     )
 
-    solve_result = api.solve(gq.question, require_approval=False, force_plan=True)
+    question_text = gq.question
+    if gq.expect.expected_outputs:
+        output_lines = []
+        for eo in gq.expect.expected_outputs:
+            if eo.type == "table" and eo.columns:
+                output_lines.append(f'- "{eo.name}" ({eo.type}) with columns: {", ".join(eo.columns)}')
+            else:
+                output_lines.append(f'- "{eo.name}" ({eo.type})')
+        question_text = question_text.rstrip() + "\n\nExpected outputs:\n" + "\n".join(output_lines)
+
+    solve_result = api.solve(question_text, require_approval=False, force_plan=True)
     duration = time.monotonic() - t0
 
     # Check expect_success
@@ -537,7 +572,14 @@ def _run_e2e_question(
 
     # Collect tables for validator and judge
     tables = _collect_tables(api)
-    artifact_summary = _collect_artifact_summary(tables)
+
+    # When expected_outputs is defined, only show those tables to the judge
+    if gq.expect.expected_outputs:
+        eo_names = {eo.name for eo in gq.expect.expected_outputs}
+        judge_tables = {k: v for k, v in tables.items() if k in eo_names}
+    else:
+        judge_tables = tables
+    artifact_summary = _collect_artifact_summary(judge_tables)
 
     # Check result_contains
     for substring in assertion.result_contains:
@@ -551,9 +593,14 @@ def _run_e2e_question(
             f"Expected at least {assertion.plan_min_steps} steps, got {step_count}"
         )
 
+    # Check expected output artifacts
+    if gq.expect.expected_outputs:
+        eo_failures = _check_expected_outputs(gq.expect.expected_outputs, tables)
+        failures.extend(eo_failures)
+
     # Run Python validator if provided
     if assertion.validator_code:
-        v_passed, v_msg = _run_validator(assertion.validator_code, tables, assertion.expected_output)
+        v_passed, v_msg = _run_validator(assertion.validator_code, tables)
         logger.info(f"[VALIDATOR] {'PASS' if v_passed else 'FAIL'} — {v_msg}")
         if not v_passed:
             failures.append(f"Data validator failed: {v_msg}")
@@ -624,19 +671,37 @@ def _collect_artifact_summary(tables: dict) -> str:
     return "\n\n".join(parts)
 
 
+def _check_expected_outputs(expected_outputs: list[ExpectedOutput], tables: dict) -> list[str]:
+    """Validate that expected output artifacts exist. For tables, also check columns."""
+    failures = []
+    for eo in expected_outputs:
+        if eo.name not in tables:
+            failures.append(
+                f"Expected output '{eo.name}' (type={eo.type}) not found (artifacts: {list(tables.keys())})"
+            )
+            continue
+        if eo.type == "table" and eo.columns:
+            df = tables[eo.name]
+            missing = [c for c in eo.columns if c not in df.columns]
+            if missing:
+                failures.append(
+                    f"Table '{eo.name}' missing columns: {missing} (has: {list(df.columns)})"
+                )
+    return failures
+
+
 def _run_validator(validator_code: str, tables: dict) -> tuple[bool, str]:
     """Execute Python validator code against the collected tables.
 
     The code has access to:
-      - result: the last (final) dataset created
-      - tables: dict[str, DataFrame]
+      - tables: dict[str, DataFrame] — all tables by name
+      - Each table is also accessible directly by name (e.g. ``raise_recommendations``)
       - pd: pandas module
 
     Returns (passed, message).
     """
     import pandas as pd
-    result = list(tables.values())[-1] if tables else pd.DataFrame()
-    namespace = {"tables": tables, "pd": pd, "result": result}
+    namespace = {"tables": tables, "pd": pd}
     # Make each table accessible by name directly
     for name, df in tables.items():
         namespace[name] = df

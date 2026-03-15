@@ -589,10 +589,17 @@ export interface TestableDomainInfo {
   tags: string[]
 }
 
+export interface ExpectedOutput {
+  name: string
+  type: string  // table, image, document, markdown, json, xml, pdf, ...
+  columns: string[]  // only for type=table
+}
+
 export interface GoldenQuestionExpectations {
   terms: Array<Record<string, unknown>>
   grounding: Array<Record<string, unknown>>
   relationships: Array<Record<string, unknown>>
+  expected_outputs?: ExpectedOutput[]
   end_to_end?: Record<string, unknown> | null
   suggested_question?: string | null
   objectives?: string[]

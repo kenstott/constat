@@ -752,7 +752,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                         blocks.append(f"# Step: {goal}\n{code_text}")
                 if blocks:
                     step_hints_section = (
-                        "\n\nREFERENCE CODE from exploratory session (use as hints, adapt as needed):\n"
+                        "\n\nREFERENCE CODE from exploratory session — use the EXACT table and view names from this code:\n"
                         + "\n---\n".join(blocks) + "\n"
                     )
 
