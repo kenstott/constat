@@ -75,22 +75,22 @@ SOURCES:
 subgoal1: DATABASE | DOCUMENT | LLM_KNOWLEDGE | USER_PROVIDED
 subgoal2: DATABASE | DOCUMENT | LLM_KNOWLEDGE | USER_PROVIDED
 
-Example for "What was revenue by customer tier in Q3?":
+Example for "What was the metric by category in Q3?":
 
-GOAL: revenue_by_tier(q3, Tier, Revenue)
+GOAL: metric_by_category(q3, Category, Value)
 
 RULES:
-revenue_by_tier(Quarter, Tier, Revenue) :-
+metric_by_category(Quarter, Category, Value) :-
     date_range(Quarter, StartDate, EndDate),
-    tier_criteria(Tier, Criteria),
-    customers_matching(Criteria, Customers),
-    sum_revenue(Customers, StartDate, EndDate, Revenue).
+    category_criteria(Category, Criteria),
+    items_matching(Criteria, Items),
+    sum_metric(Items, StartDate, EndDate, Value).
 
 SOURCES:
 date_range: LLM_KNOWLEDGE (calendar knowledge)
-tier_criteria: DOCUMENT or USER_PROVIDED (business definition)
-customers_matching: DATABASE (query customers table)
-sum_revenue: DATABASE (aggregate orders table)
+category_criteria: DOCUMENT or USER_PROVIDED (business definition)
+items_matching: DATABASE (query matching records)
+sum_metric: DATABASE (aggregate values)
 
 Use uppercase for Variables that need binding, lowercase for constants.
 """

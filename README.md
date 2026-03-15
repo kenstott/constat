@@ -249,6 +249,11 @@ df = pd.read_parquet(file_transactions)
            |                          |
            +------------+-------------+
                         |
+              +---------v---------+
+              | Session (mixin-   |
+              |  based modules)   |
+              +---------+---------+
+                        |
                 +-------v-------+
                 | Intent        |
                 | Classifier    |
@@ -263,22 +268,31 @@ df = pd.read_parquet(file_transactions)
        |                                 |
 +------v------+                   +------v------+
 | Multi-Step  |                   |    Fact     |
-|   Planner   |                   |  Resolver   |
+| DAG Planner |                   |  Resolver   |
 +------+------+                   +------+------+
        |                                 |
        +----------------+----------------+
                         |
           +-------------v-------------+
           |     Discovery Tools       |
-          |  (tool-based or prompt)   |
-          +-------------+-------------+
-                        |
-+-------+-------+-------+-------+-------+-------+
-|       |       |       |       |       |       |
-SQL   MongoDB Cassandra DynamoDB  Files  CosmosDB
-                                (CSV/JSON/
+          |  (tool-based, on-demand)  |
+          +------+------+------+-----+
+                 |             |
+    +------------v--+    +----v-----------+
+    | DuckDB Session|    | DuckDB Vector  |
+    | Store (tables,|    | Store (embeds, |
+    | views, meta)  |    |  FTS, BM25)   |
+    +------+--------+    +----+-----------+
+           |                   |
++-------+--+----+-------+-----+--+-------+
+|       |       |       |        |       |
+SQL   MongoDB Cassandra DynamoDB Files  APIs
+                                (CSV/   (GraphQL/
+                                 JSON/   OpenAPI)
                                  Parquet)
 ```
+
+For detailed architecture, see [docs/architecture.md](docs/architecture.md).
 
 ### Discovery Mode
 
@@ -530,12 +544,15 @@ npm run dev
 - Real-time streaming via WebSocket
 - Plan approval dialog before execution
 - Clarification dialog with interactive widgets (choice, ranking, curation, mapping, tree, table, annotation)
-- Artifact panel with tables, charts, and code
-- Reasoning Chain DAG visualization (D3-based directed acyclic graph)
-- Firebase authentication for multi-user deployments
+- Artifact panel with tables, charts, code, scratchpad (execution narrative), and glossary
+- Reasoning Chain DAG visualization (D3-based directed acyclic graph) with skill extraction
+- Domain management with tier promotion (user → shared → system)
+- Golden question regression testing UI with streaming progress
+- Deep linking for artifact panel navigation
+- Firebase authentication with role-based visibility/write permissions
 - Responsive layout with collapsible panels
 
-**Tech stack:** React 18, TypeScript, Vite, Tailwind CSS, Zustand, React Query, D3, Plotly.js
+**Tech stack:** React 18, TypeScript, Vite, Tailwind CSS, Zustand, React Query, D3 + d3-dag, Plotly.js, Headless UI + Heroicons
 
 ## REST API
 
@@ -563,14 +580,24 @@ constat serve -c config.yaml --port 8000
 
 | Prefix | Description |
 |--------|-------------|
-| `/api/sessions/{id}/...` | Data exploration, files, databases |
-| `/api/schema` | Schema introspection |
-| `/api/users` | User management |
-| `/api/sessions/roles` | Role management |
-| `/api/skills` | Skill management |
-| `/api/learnings` | Learning management |
-| `/api/sessions/{id}/tests/...` | Regression test execution and results |
+| `/api/sessions/{id}/tables` | Table CRUD, versions, starring |
+| `/api/sessions/{id}/artifacts` | Artifact listing, versions, deletion |
+| `/api/sessions/{id}/facts` | Fact CRUD, persistence |
+| `/api/sessions/{id}/steps` | Step code listing (exploratory mode) |
+| `/api/sessions/{id}/scratchpad` | Execution narrative (goal + narrative per step) |
+| `/api/sessions/{id}/inference-codes` | Inference code (auditable mode) |
 | `/api/sessions/{id}/glossary/...` | Glossary terms, relationships, taxonomy |
+| `/api/sessions/{id}/sources` | Unified data sources (databases, APIs, documents) |
+| `/api/sessions/{id}/proof-tree` | Proof DAG for auditable mode |
+| `/api/sessions/{id}/proof-facts` | Proof fact persistence for session restore |
+| `/api/schema` | Schema introspection |
+| `/api/users` | User management, permissions |
+| `/api/sessions/agents` | Agent management |
+| `/api/sessions/agents` | Agent management |
+| `/api/skills` | Skill CRUD, activation |
+| `/api/learnings` | Learnings, rules, exemplar generation |
+| `/api/fine-tune/...` | Fine-tuning job lifecycle |
+| `/api/testing/...` | Golden question CRUD and regression test execution |
 | `/api/domains/...` | Domain CRUD, tree, move, promote |
 
 Full OpenAPI documentation is available at `/docs` when the server is running.
@@ -691,7 +718,7 @@ Content flows upward: user → shared → system (read-only). User domains are p
 
 ## Glossary
 
-The glossary is a unified view of auto-generated entities (from NER extraction) married with curated business definitions. Every extracted entity is a glossary term. Most are self-describing — physical metadata communicates their meaning. Some get curated definitions where physical metadata is insufficient.
+The glossary is a unified view of auto-generated entities (from NER extraction) married with curated business definitions. Every extracted entity is a self-describing glossary term from a user's perspective. Definitions are added when the term is not adequately self-describing.
 
 **Glossary features:**
 - **Definitions** — business meaning for terms, with AI-assisted generation and refinement
@@ -728,11 +755,11 @@ constat test -c config.yaml --tags smoke       # Filter by tag
 
 The UI provides a Regression panel for golden question CRUD and test execution with SSE streaming for real-time progress.
 
-## Roles
+## Agents
 
-Roles are user-defined personas that customize the LLM's behavior for specific analysis contexts. Each role provides a custom system prompt that shapes how the LLM approaches queries.
+Agents are specialist personas that customize the LLM's behavior for specific analysis contexts. Each agent provides a custom system prompt that shapes how the LLM approaches queries. The planner can delegate steps to agents for isolated, expertise-specific execution.
 
-Roles are stored per-user at `.constat/{user_id}/roles.yaml` and can be managed via the API or UI.
+Agents are stored per-user at `.constat/{user_id}/agents.yaml` and can be managed via the API or UI.
 
 ## Skills
 
@@ -831,6 +858,72 @@ For API docs, check [the official guide](https://example.com/docs.md).
 4. Optionally add referenced files in subdirectories (e.g., `references/`)
 
 Skills are automatically discovered and can be loaded when relevant to a query.
+
+## Domains
+
+Domains are the primary organizational unit. Everything — data sources, glossary terms, skills, agents, rules — is scoped to a domain. Domains form a strict DAG and are organized in three tiers:
+
+| Tier | Location | Editable | Purpose |
+|------|----------|----------|---------|
+| **system** | `config.yaml` domains | No | Curated by admin, read-only |
+| **shared** | `.constat/shared/domains/` | Owner only | Promoted from user, visible to all |
+| **user** | `.constat/{user_id}/domains/` | Yes | Personal sandbox, persists across sessions |
+
+Content flows upward: user → shared → system. User domains are persistent staging areas — experiments, draft skills, and what-if rules survive across sessions until promoted or deleted.
+
+**Domain resources:** databases, APIs, documents, glossary terms, skills, agents, rules, golden questions, system prompts.
+
+Move resources between domains via drag-and-drop in the domain panel or the `/domains/move-*` endpoints. Promote user domains to shared via the UI or `POST /domains/{filename}/promote`.
+
+## Glossary
+
+The glossary unifies auto-generated entities (from NER extraction) with curated business definitions. Features include definitions, parent/child taxonomy, aliases, tags, SVO relationships, status workflow (draft → reviewed → approved), and domain scoping — all with AI-assisted generation.
+
+## Regression Testing
+
+Golden questions let you define expected outcomes for a domain and verify them automatically:
+
+```bash
+constat test -c config.yaml                    # All domains
+constat test -c config.yaml -d sales-analytics # Specific domain
+constat test -c config.yaml --tags smoke       # Filter by tag
+constat test -c config.yaml --e2e              # Include end-to-end (LLM)
+```
+
+**Five assertion layers:**
+
+| Layer | What | Cost |
+|-------|------|------|
+| Entity extraction | Expected entities appear in NER output | Free |
+| Grounding | Entities resolve to expected sources | Free |
+| Glossary | Terms have definitions, correct domain | Free |
+| Relationships | Expected SVO triples exist | Free |
+| End-to-end | LLM plan + execution + answer validation | LLM call |
+
+The first four layers are pure database lookups. End-to-end is opt-in (`--e2e`). The UI provides a Regression panel for golden question CRUD and test execution with SSE streaming.
+
+## LLM Primitives
+
+Generated code has access to LLM wrapper functions for in-step operations:
+
+```python
+# Map values to an allowed set
+mapped = llm_map(df['category'], ['Electronics', 'Clothing', 'Food'])
+
+# Classify text into categories
+labels = llm_classify(df['comment'], ['positive', 'negative', 'neutral'])
+
+# Score text on a numeric scale
+scores = llm_score(df['review'], min_val=0, max_val=1, instruction="sentiment score")
+
+# Extract structured fields from text
+facts = llm_extract(text, fields=["company", "revenue", "date"])
+
+# Summarize text
+summary = llm_summarize(df['description'].tolist())
+```
+
+These auto-detect the provider from environment variables and handle deduplication for efficiency.
 
 ## Key Concepts
 
@@ -1393,123 +1486,77 @@ server:
 
 ### User Permissions
 
-Control access to resources per-user. Permissions determine what metadata the LLM sees during analysis—resources without permission are hidden from discovery.
+Access control uses **personas** (UI visibility + write/feedback permissions) and **resource-level RBAC** (data source access per UID).
+
+#### Personas
+
+Each user is assigned a persona that controls which UI sections they see and what they can modify. Personas are defined in `constat/server/personas.yaml`:
+
+| Persona | Visibility | Writes | Feedback |
+|---------|------------|--------|----------|
+| `platform_admin` | All sections | All resources | flag_answers |
+| `domain_builder` | All sections | All resources | flag_answers |
+| `sme` | Results, learnings, facts, glossary, entities, query history | Glossary, facts, learnings, entities | flag_answers, auto_approve, suggest_entities |
+| `domain_user` | Results, query history | None | flag_answers, suggest_glossary |
+| `viewer` | Results only | None | None |
+
+#### Resource-Level RBAC
+
+Per-user resource access lists are configured by UID in `config.yaml`:
 
 ```yaml
-# permissions.yaml
-users:
-  admin@company.com:
-    admin: true          # Full access to ALL resources + can manage projects
-    projects: []         # (ignored for admins)
-    databases: []        # (ignored for admins)
-    documents: []        # (ignored for admins)
-    apis: []             # (ignored for admins)
+permissions:
+  users:
+    8TgdzQHw7EbTHSJY9osIuCElbGF2:
+      persona: platform_admin
+      domains: []          # Empty = admin sees all
+      databases: []
+      documents: []
+      apis: []
 
-  analyst@company.com:
-    admin: false
-    projects:
-      - sales-analytics        # Can activate these projects (use project key, not filename)
-    databases:
-      - inventory              # Can query these databases (from core config)
-      - web_metrics
-    documents:
-      - business_rules         # Can access these documents (from core config)
-    apis:
-      - countries              # Can call these APIs (from core config)
+    xK9mPqR2wYnZaB4cD7eF1gH3iJ5:
+      persona: domain_user
+      domains:
+        - sales-analytics.yaml
+      databases:
+        - sales
+        - inventory
+      documents: []
+      apis: []
 
-# Default permissions for unlisted users
-default:
-  admin: false
-  projects: []
-  databases: []
-  documents: []
-  apis: []
+  default:
+    persona: viewer
+    domains: []
+    databases: []
+    documents: []
+    apis: []
 ```
 
 #### Permission Rules
 
-**Admin Users (`admin: true`):**
-- Full access to ALL resources across all projects and core config
-- Can manage projects from the UI (create, edit, delete)
-- Permission arrays are ignored—admins see everything
-
-**Non-Admin Users:**
-- Only see resources explicitly listed in their permission arrays
-- Project access grants access to ALL resources within that project
-- Core config resources require explicit permission in the user's arrays
-
-**Unlisted Users:**
-- Get the `default` permissions (typically empty = no access)
-
-#### No Permissions = Full Access
-
-If no `permissions` section is configured in `server` settings, ALL resources are available to everyone. This is intentional for development/single-user scenarios.
-
-```yaml
-# config.yaml without permissions = everything available
-server:
-  auth_disabled: true
-  # No permissions configured → no filtering
-```
-
-#### Project Permissions and Resource Access
-
-When a user has access to a project, they automatically get access to all resources defined within that project:
-
-```yaml
-# Example: analyst has access to sales-analytics project
-# This grants them access to all databases, APIs, and documents in that project
-projects:
-  sales-analytics:
-    $ref: ./projects/sales-analytics.yaml
-```
-
-```yaml
-# projects/sales-analytics.yaml
-name: Sales Analytics
-databases:
-  sales:           # analyst can query this
-    uri: sqlite:///demo/data/sales.db
-apis:
-  salesforce:      # analyst can call this
-    type: rest
-    url: https://api.salesforce.com/...
-documents:
-  sales_glossary:  # analyst can search this
-    type: file
-    path: ./docs/sales-terms.md
-```
-
-The user's effective permissions are the **union** of:
-1. Explicit permissions in their user entry
-2. All resources from their accessible active projects
+- **Admins** (`platform_admin` persona): Full access to all resources, permission arrays ignored
+- **Non-admin users**: Only see resources explicitly listed in their permission arrays
+- **Domain access**: Grants access to all resources within that domain, intersected with domain-scoped `permissions.yaml` if present (least-privilege)
+- **Unlisted users**: Get `default` permissions
+- **No permissions configured**: Everything available (development mode)
+- **Auth disabled** (`auth_disabled: true`): All permissions granted
 
 #### How Permission Filtering Works
 
-Permissions are enforced at the **metadata level**, not runtime:
-
-1. **Discovery Tools**: `list_tables`, `list_apis`, `list_documents` only return allowed resources
-2. **Schema Manager**: Database summaries exclude databases the user cannot access
-3. **System Prompts**: API/document/database descriptions only include allowed resources
-4. **Semantic Search**: Only indexes and searches allowed documents
-
-The LLM never sees metadata for resources the user cannot access. Since the LLM doesn't know about restricted resources, it cannot generate code to query them.
-
-```
-User Query → Permission Check → Filtered Metadata → LLM → Generated Code
-                                     ↓
-                            Only sees allowed
-                            databases, APIs, docs
-```
-
-#### Permission Filtering by Resource Type
+Permissions are enforced at the **metadata level** — the LLM never sees metadata for resources the user cannot access:
 
 | Resource | Filtered In | Effect |
 |----------|-------------|--------|
 | Databases | `list_tables`, `search_tables`, schema summary | LLM doesn't see table schemas |
 | APIs | `list_apis`, `list_api_operations`, system prompt | LLM doesn't see API endpoints |
 | Documents | `list_documents`, `search_documents` | LLM can't search restricted docs |
-| Projects | Project activation | User can't load restricted projects |
+| Domains | Domain activation | User can't load restricted domains |
+| Skills | Skill selection | LLM can't use restricted skills |
+| Agents | Agent assignment | Planner can't delegate to restricted agents |
+
+#### Advanced Authorization
+
+For more complex requirements (e.g., resolving data source rights from external identity providers), create an integration with Constat to map UIDs to data source access using your chosen third-party policy engine.
 
 ### Database Credentials
 

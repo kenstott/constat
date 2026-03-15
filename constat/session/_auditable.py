@@ -221,31 +221,31 @@ CONCLUSION:
 C: <final sentence describing what the final inference contains - use ENGLISH NAMES not I1/I2 references>
 IMPORTANT: In the conclusion, ALWAYS use the English result_name (e.g., "raise_recommendations") NOT the ID (e.g., "I4")
 
-EXAMPLE 1 - "What is revenue multiplied by Pi?":
+EXAMPLE 1 - "What is the total multiplied by Pi?":
 
 PREMISES:
-P1: orders = ? (All orders with amounts) [source: database:sales_db]
+P1: records = ? (All records with numeric values) [source: database:main_db]
 P2: pi_value = 3.14159 (Mathematical constant) [source: llm_knowledge]
 
 INFERENCE:
-I1: total_revenue = sum(P1.amount) -- Sum all order amounts
-I2: adjusted_revenue = multiply(I1, P2) -- Multiply by Pi
+I1: total = sum(P1.value) -- Sum all values
+I2: adjusted_total = multiply(I1, P2) -- Multiply by Pi
 
 CONCLUSION:
-C: The revenue multiplied by Pi is provided in adjusted_revenue, calculated by multiplying total_revenue by pi_value.
+C: The total multiplied by Pi is provided in adjusted_total, calculated by multiplying total by pi_value.
 
-EXAMPLE 2 - "Monthly revenue trend for last 12 months":
+EXAMPLE 2 - "Monthly trend for last 12 months":
 
 PREMISES:
-P1: orders = ? (All orders with date and amount) [source: database:sales_db]
+P1: events = ? (All events with date and metric) [source: database:main_db]
 
 INFERENCE:
-I1: recent_orders = filter(P1, last_12_months) -- Filter to last 12 months
-I2: monthly_revenue = group_sum(I1, month, amount) -- Group by month, sum amounts
+I1: recent_events = filter(P1, last_12_months) -- Filter to last 12 months
+I2: monthly_totals = group_sum(I1, month, metric) -- Group by month, sum metric
 I3: trend = analyze(I2) -- Calculate trend direction
 
 CONCLUSION:
-C: Monthly revenue trend is provided in trend, showing direction based on monthly_revenue analysis.
+C: Monthly trend is provided in trend, showing direction based on monthly_totals analysis.
 
 EXAMPLE 3 - "Recommend raises based on performance reviews and guidelines":
 

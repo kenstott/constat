@@ -25,7 +25,7 @@ Usage:
     resolver.register_sql_executor(lambda db, sql: pd.read_sql(sql, engines[db]))
 
     # Resolve a fact
-    result = resolver.resolve_fact("monthly_revenue_by_tier", params={})
+    result = resolver.resolve_fact("monthly_metric_by_group", params={})
     print(result.proof.to_trace())  # Shows symbolic proof tree
 """
 
@@ -187,7 +187,7 @@ class ProbLogResolver:
         4. Proof tree is built from resolution log
 
         Args:
-            fact_name: The fact to resolve (e.g., "monthly_revenue_by_tier")
+            fact_name: The fact to resolve (e.g., "monthly_metric_by_group")
             params: Parameters for the fact
             generate_rules: If True, ask LLM to generate resolution rules
             user_facts: User-provided facts (from clarifications) to include
