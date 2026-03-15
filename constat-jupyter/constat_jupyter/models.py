@@ -77,10 +77,15 @@ class SolveResult:
 
     @staticmethod
     def _strip_trailing_json(text: str) -> str:
-        """Remove trailing JSON array/object from answer text."""
-        import re
-        # Strip trailing JSON array like [{...}, {...}]
-        return re.sub(r'\n\s*\[\s*\{[\s\S]*\}\s*\]\s*$', '', text)
+        """Remove trailing JSON arrays from answer text."""
+        lines = text.split('\n')
+        while lines and lines[-1].strip() == '':
+            lines.pop()
+        while lines and (lines[-1].strip().startswith('[{') or lines[-1].strip().startswith('{"')):
+            lines.pop()
+            while lines and lines[-1].strip() == '':
+                lines.pop()
+        return '\n'.join(lines).rstrip()
 
     def _repr_html_(self) -> str:
         """Auto-display answer + tables when result is last expression in cell."""
@@ -92,10 +97,7 @@ class SolveResult:
             parts.append(f"<div>{answer}</div>")
         for name, df in self.tables.items():
             parts.append(f"<h4>{name}</h4>")
-            if hasattr(df, '_repr_html_'):
-                parts.append(df._repr_html_())
-            else:
-                parts.append(f"<pre>{df}</pre>")
+            parts.append(f"<pre>{df}</pre>")
         return "\n".join(parts)
 
     def _repr_markdown_(self) -> str:
@@ -123,7 +125,7 @@ class SolveResult:
                 if name in self.tables:
                     print(f"\n--- {name} ---")
                     df = self.tables[name]
-                    display(df) if hasattr(df, '_repr_html_') else print(df)
+                    print(df)
 
             # Only starred artifacts (skip virtual table artifacts with negative IDs)
             for a in self._session.artifacts():
@@ -135,6 +137,6 @@ class SolveResult:
             display(Markdown(self._strip_trailing_json(self.answer)))
             for name, df in self.tables.items():
                 print(f"\n--- {name} ---")
-                display(df) if hasattr(df, '_repr_html_') else print(df)
+                print(df)
             for artifact in self.artifacts:
                 artifact.display()

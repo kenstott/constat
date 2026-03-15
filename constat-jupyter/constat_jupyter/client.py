@@ -40,6 +40,18 @@ def _run_async(coro):
     return result[0]
 
 
+def _strip_trailing_json(text: str) -> str:
+    """Remove trailing JSON arrays/objects from server output."""
+    lines = text.split('\n')
+    while lines and lines[-1].strip() == '':
+        lines.pop()
+    while lines and (lines[-1].strip().startswith('[{') or lines[-1].strip().startswith('{"')):
+        lines.pop()
+        while lines and lines[-1].strip() == '':
+            lines.pop()
+    return '\n'.join(lines).rstrip()
+
+
 def _extract_plan(data: dict) -> tuple[str, list[dict]]:
     """Extract problem and steps from plan_ready event data (handles both nested and flat formats)."""
     plan = data.get("plan", {})
@@ -268,9 +280,10 @@ class Session:
 
                 elif event_type == "query_complete":
                     result.success = True
-                    result.answer = data.get("output", "")
+                    raw = data.get("output", "")
+                    result.raw_output = raw
+                    result.answer = _strip_trailing_json(raw)
                     result.suggestions = data.get("suggestions", [])
-                    result.raw_output = data.get("output")
                     break
 
                 elif event_type == "query_error":
