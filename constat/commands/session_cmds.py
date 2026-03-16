@@ -841,6 +841,25 @@ def objectives_command(ctx: CommandContext) -> CommandResult:
     return TextResult(success=True, content="Session objectives:\n" + "\n".join(lines))
 
 
+def redo_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /redo [guidance] — replan and re-execute the last query"""
+    session = ctx.session
+    if not session.datastore:
+        return ErrorResult(error="No previous session to redo. Please run an analysis first.")
+    problem = session.datastore.get_session_meta("problem")
+    if not problem:
+        return ErrorResult(error="No previous problem found to redo.")
+    guidance = ctx.args.strip() if ctx.args else None
+    session_mode = session.datastore.get_session_meta("mode")
+    if session_mode == "auditable":
+        result = session.prove_conversation(guidance=guidance)
+    else:
+        if guidance:
+            problem = f"{problem}\n\nAdditional instructions: {guidance}"
+        result = session.solve(problem, force_plan=True)
+    return TextResult(success=result.get("success", False), content=result.get("output", "Redo complete."))
+
+
 def step_redo_command(ctx: CommandContext) -> CommandResult:
     """Usage: /step-redo <step_number>"""
     if not ctx.args.strip():

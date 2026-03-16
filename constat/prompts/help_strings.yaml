@@ -148,6 +148,7 @@ command_descriptions:
   objectives: "List session objectives"
   objective-edit: "Edit an objective and replan"
   objective-delete: "Delete an objective and replan"
+  redo: "Replan and re-execute the last query"
   step-redo: "Redo from a step"
   step-delete: "Delete a step and replan"
   step-edit: "Edit a step goal and replan"

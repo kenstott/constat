@@ -51,6 +51,7 @@ from constat.commands.session_cmds import (
     skill_draft_command,
     skill_download_command,
     prove_command,
+    redo_command,
     step_redo_command,
     step_delete_command,
     step_edit_command,
@@ -132,6 +133,8 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     (("/objectives",), objectives_command, _cmd_desc["objectives"]),
     (("/objective-edit",), objective_edit_command, _cmd_desc["objective-edit"]),
     (("/objective-delete",), objective_delete_command, _cmd_desc["objective-delete"]),
+    # Redo
+    (("/redo",), redo_command, _cmd_desc["redo"]),
     # Step editing
     (("/step-redo",), step_redo_command, _cmd_desc["step-redo"]),
     (("/step-delete",), step_delete_command, _cmd_desc["step-delete"]),

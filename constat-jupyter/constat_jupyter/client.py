@@ -683,7 +683,7 @@ class Session:
     async def redo(self, instruction: str | None = None, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
         """Re-run last query, optionally with modified instruction."""
         cmd = f"/redo {instruction}" if instruction else "/redo"
-        return await self._execute_async(cmd, is_followup=False, auto_approve=auto_approve, timeout=timeout)
+        return await self._execute_async(cmd, is_followup=True, auto_approve=auto_approve, timeout=timeout)
 
     async def audit(self) -> SolveResult:
         """Audit last result."""
