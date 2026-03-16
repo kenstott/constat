@@ -141,6 +141,7 @@ class SessionConfig:
     require_approval: bool = True
     max_replan_attempts: int = 3
     auto_approve: bool = False
+    force_approval: bool = False
     ask_clarifications: bool = True
     skip_clarification: bool = False
     enable_insights: bool = True

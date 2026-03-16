@@ -219,6 +219,10 @@ class QueryRequest(BaseModel):
         default=False,
         description="Whether this is a follow-up to the previous query",
     )
+    require_approval: bool | None = Field(
+        default=None,
+        description="Override server auto-approval. When True, always require plan approval even for simple plans.",
+    )
 
 
 class QueryResponse(BaseModel):

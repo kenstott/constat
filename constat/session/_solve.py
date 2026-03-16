@@ -454,10 +454,14 @@ class SolveMixin:
 
             # Request approval if required — auto-approve simple plans
             # Auto-approve: ≤2 steps (unless high complexity), or low complexity with ≤3 steps
+            # Exception: force_approval overrides simple plan auto-approval
             n_steps = len(self.plan.steps)
             simple_plan = (
-                (n_steps <= 2 and planning_complexity != "high")
-                or (planning_complexity == "low" and n_steps <= 3)
+                not self.session_config.force_approval
+                and (
+                    (n_steps <= 2 and planning_complexity != "high")
+                    or (planning_complexity == "low" and n_steps <= 3)
+                )
             )
             if simple_plan:
                 logger.info(f"[PLANNING] Auto-approving simple plan ({n_steps} steps, complexity={planning_complexity})")

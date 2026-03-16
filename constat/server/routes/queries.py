@@ -645,6 +645,12 @@ async def submit_query(
     managed.execution_id = execution_id
     managed.status = SessionStatus.PLANNING
 
+    # Override approval setting if client explicitly requested it
+    if body.require_approval is not None:
+        managed.session.session_config.require_approval = body.require_approval
+        managed.session.session_config.auto_approve = not body.require_approval
+        managed.session.session_config.force_approval = body.require_approval
+
     # Register event handler if not already registered
     handler = _create_event_handler(managed)
     # Remove any existing handlers first to avoid duplicates

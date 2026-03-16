@@ -388,9 +388,12 @@ class Session:
         async with websockets.connect(self._ws_url(), additional_headers=self._ws_headers()) as ws:
             await asyncio.wait_for(ws.recv(), timeout=10)
 
+            body: dict[str, Any] = {"problem": question, "is_followup": is_followup}
+            if not auto_approve:
+                body["require_approval"] = True
             resp = self._client._http.post(
                 f"/api/sessions/{self.session_id}/query",
-                json={"problem": question, "is_followup": is_followup},
+                json=body,
             )
             resp.raise_for_status()
 
