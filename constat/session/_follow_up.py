@@ -1235,7 +1235,7 @@ Prove all of the above claims and provide a complete audit trail."""
         if not entries:
             raise ValueError("No stored steps to replay")
 
-        # Emit planning complete (we're using stored plan)
+        # Emit planning complete (we're using stored plan, auto-approve since it's a replay)
         self._emit_event(StepEvent(
             event_type="plan_ready",
             step_number=0,
@@ -1246,6 +1246,7 @@ Prove all of the above claims and provide a complete audit trail."""
                 ],
                 "reasoning": "Replaying stored execution",
                 "is_followup": False,
+                "auto_approved": True,
             }
         ))
 
