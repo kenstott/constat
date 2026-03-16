@@ -304,15 +304,20 @@ class Session:
             if "step_number" in payload:
                 data.setdefault("step_number", payload["step_number"])
 
+            # Server may auto-approve simple plans — check before prompting
+            server_auto_approved = (event_type == "plan_ready" and data.get("auto_approved"))
+            needs_client_approval = not auto_approve and not server_auto_approved
+
             # Skip progress display for pre-approval events when using interactive widgets
-            if HAS_WIDGETS and not auto_approve and event_type in ("planning_start", "plan_ready", "clarification_needed"):
+            if HAS_WIDGETS and needs_client_approval and event_type in ("planning_start", "plan_ready", "clarification_needed"):
                 pass  # Widget handles display
             else:
                 self._progress.handle_event(event_type, data)
 
             if event_type == "plan_ready":
-                if auto_approve:
-                    await ws.send(json.dumps({"action": "approve"}))
+                if auto_approve or server_auto_approved:
+                    if not server_auto_approved:
+                        await ws.send(json.dumps({"action": "approve"}))
                 else:
                     decision = (widget_plan_approval(data) if HAS_WIDGETS
                                 else _prompt_plan_approval(data))
