@@ -304,8 +304,8 @@ class Session:
             if "step_number" in payload:
                 data.setdefault("step_number", payload["step_number"])
 
-            # Skip progress display for events handled by interactive widgets
-            if HAS_WIDGETS and not auto_approve and event_type in ("plan_ready", "clarification_needed"):
+            # Skip progress display for pre-approval events when using interactive widgets
+            if HAS_WIDGETS and not auto_approve and event_type in ("planning_start", "plan_ready", "clarification_needed"):
                 pass  # Widget handles display
             else:
                 self._progress.handle_event(event_type, data)
