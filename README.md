@@ -459,6 +459,12 @@ Once in the interactive REPL, these commands are available:
 - Relative terms ("today", "last month", "within policy") are evaluated dynamically on each replay
 - Explicit values ("January 2006", "above 100 units") are hardcoded as specified
 
+**Session Replay:**
+
+Any exploratory session can be replayed — the stored scratchpad code is re-executed without LLM codegen. This is useful for demos, testing with updated data, or resuming work after a break. Each query's steps are tracked by `objective_index`, so individual objectives can be replayed independently.
+
+In Jupyter notebooks, session replay is automatic. When you restart the kernel and Run All, each `%%constat` cell replays only its own query's stored code rather than re-generating via LLM. The notebook magic tracks which cell corresponds to which objective and replays them in order. New cells added after the stored objectives fall through to normal `follow_up()` execution.
+
 **Brief mode:** Use keywords like "briefly", "tl;dr", "just show" in your query to skip the synthesis step and get raw results faster.
 
 ### Interactive Visualizations
@@ -583,6 +589,7 @@ result.artifacts[0].display()                          # render chart/HTML inlin
 - Tables downloaded as Parquet for zero-copy Polars/Pandas DataFrames
 - Schema browsing, glossary, facts, and session management
 - Configurable via `CONSTAT_SERVER_URL` / `CONSTAT_AUTH_TOKEN` env vars or constructor args
+- **Automatic session replay:** Kernel restart + Run All replays each cell's stored code without LLM regeneration. A per-notebook sidecar file persists the session ID across restarts, and each cell replays only its own objective's scratchpad entries.
 
 ## REST API
 

@@ -38,6 +38,8 @@ The primary notebook experience. Zero Python knowledge required.
 %constat connect sales-analytics,hr-reporting
 ```
 
+On first connect, a sidecar file (`<notebook>.constat.json`) is written with the session ID and domains. On subsequent connects (after kernel restart), the magic restores the session and enables per-cell replay.
+
 ### Asking Questions
 
 ```python
@@ -199,6 +201,37 @@ client.skill_info("data-quality")             # skill details
 # Regression testing
 results = session.run_tests(domains=["hr-reporting"])
 ```
+
+## Session Replay
+
+Exploratory sessions can be replayed — stored scratchpad code is re-executed without LLM codegen. This is useful for demos, testing with updated data, or resuming work after a break.
+
+### Automatic Per-Cell Replay (Kernel Restart + Run All)
+
+The notebook magic makes replay seamless. A per-notebook sidecar file (`<notebook>.constat.json`) persists the session ID and domains across kernel restarts.
+
+When `%constat connect` detects a stored session with scratchpad data:
+1. It restores the session and fetches the stored cell records from the server (distinct `objective_index` values from scratchpad entries)
+2. Each subsequent `%%constat` cell replays only its own objective's steps via `session.replay(question, objective_index=N)`
+3. Once all stored cells are replayed, new `%%constat` cells fall through to normal `follow_up()` — so you can extend the analysis after a restart
+
+No approval widget is shown during replay (plans are auto-approved since they use stored code).
+
+### Manual Replay (Python API)
+
+```python
+# Replay entire session
+result = await session.replay("Original question")
+
+# Replay a single objective
+result = await session.replay("Original question", objective_index=0)
+```
+
+### Server-Side
+
+`Session.replay(problem, objective_index=None)` loads scratchpad entries and re-executes stored code. When `objective_index` is provided, only entries with that index are replayed. The `plan_ready` event is emitted with `auto_approved: True` so clients skip the approval widget.
+
+The `POST /api/sessions/{id}/query` endpoint accepts `replay: true` and optional `objective_index` in the request body.
 
 ## Execution Flow
 
