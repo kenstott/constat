@@ -402,8 +402,6 @@ class Session:
             await asyncio.wait_for(ws.recv(), timeout=10)
 
             body: dict[str, Any] = {"problem": question, "is_followup": is_followup}
-            if not auto_approve:
-                body["require_approval"] = True
             resp = self._client._http.post(
                 f"/api/sessions/{self.session_id}/query",
                 json=body,

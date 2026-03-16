@@ -253,6 +253,7 @@ class WidgetProgress:
         self._step_goals: list[str] = []
         self._step_statuses: list[str] = []  # "pending" | "running" | "done" | "error"
         self._step_durations: list[float | None] = []
+        self._step_details: list[str] = []  # current sub-status text
         self._displayed = False
 
         self._status_label = W.HTML(value="<b>Waiting...</b>")
@@ -277,14 +278,17 @@ class WidgetProgress:
         for i, goal in enumerate(self._step_goals):
             status = self._step_statuses[i]
             dur = self._step_durations[i]
+            detail = self._step_details[i]
             num = i + 1
             if status == "done":
                 dur_str = f" ({dur / 1000:.1f}s)" if dur else ""
                 lines.append(f"&nbsp;&nbsp;\u2713 Step {num}: {goal}{dur_str}")
             elif status == "running":
-                lines.append(f"&nbsp;&nbsp;\u27f3 Step {num}: {goal}...")
+                suffix = f" \u2014 {detail}" if detail else "..."
+                lines.append(f"&nbsp;&nbsp;\u27f3 Step {num}: {goal}{suffix}")
             elif status == "error":
-                lines.append(f"&nbsp;&nbsp;\u2717 Step {num}: {goal}")
+                suffix = f" \u2014 {detail}" if detail else ""
+                lines.append(f"&nbsp;&nbsp;\u2717 Step {num}: {goal}{suffix}")
             else:
                 lines.append(f"&nbsp;&nbsp;\u25cb Step {num}: {goal}")
         self._step_list.value = "<br>".join(lines)
@@ -309,6 +313,7 @@ class WidgetProgress:
                 self._step_goals = [s.get("goal", "") for s in steps]
                 self._step_statuses = ["pending"] * self._total_steps
                 self._step_durations = [None] * self._total_steps
+                self._step_details = [""] * self._total_steps
                 self._progress_bar.max = max(self._total_steps, 1)
                 self._progress_bar.value = 0
                 self._status_label.value = f"<b>Plan: {problem} ({self._total_steps} steps)</b>"
@@ -324,8 +329,40 @@ class WidgetProgress:
                 self._status_label.value = f"<b>Step {n}/{self._total_steps}: {goal}</b>"
                 self._render_steps()
 
-            case "step_generating" | "step_executing":
-                pass
+            case "step_generating":
+                n = data.get("step_number", self._current_step)
+                idx = n - 1
+                attempt = data.get("attempt", 1)
+                if 0 <= idx < self._total_steps:
+                    if data.get("is_retry"):
+                        self._step_details[idx] = f"generating (retry #{attempt - 1})"
+                    else:
+                        self._step_details[idx] = "generating..."
+                    self._step_statuses[idx] = "running"
+                self._status_label.value = f"<b>Step {n}/{self._total_steps}: generating code...</b>"
+                self._render_steps()
+
+            case "step_executing":
+                n = data.get("step_number", self._current_step)
+                idx = n - 1
+                attempt = data.get("attempt", 1)
+                if 0 <= idx < self._total_steps:
+                    if data.get("is_retry"):
+                        self._step_details[idx] = f"executing (retry #{attempt - 1})"
+                    else:
+                        self._step_details[idx] = "executing..."
+                    self._step_statuses[idx] = "running"
+                self._status_label.value = f"<b>Step {n}/{self._total_steps}: executing...</b>"
+                self._render_steps()
+
+            case "model_escalation":
+                n = data.get("step_number", self._current_step)
+                idx = n - 1
+                to_model = data.get("to_model", "")
+                if 0 <= idx < self._total_steps:
+                    self._step_details[idx] = f"escalated to {to_model}"
+                self._status_label.value = f"<b>Step {n}/{self._total_steps}: escalated to {to_model}</b>"
+                self._render_steps()
 
             case "step_complete":
                 n = data.get("step_number", self._current_step)
@@ -333,15 +370,29 @@ class WidgetProgress:
                 if 0 <= idx < self._total_steps:
                     self._step_statuses[idx] = "done"
                     self._step_durations[idx] = data.get("duration_ms")
+                    self._step_details[idx] = ""
                 self._progress_bar.value = sum(
                     1 for s in self._step_statuses if s == "done"
                 )
                 self._render_steps()
 
-            case "step_error" | "step_failed":
-                idx = self._current_step - 1
+            case "step_error":
+                n = data.get("step_number", self._current_step)
+                idx = n - 1
+                attempt = data.get("attempt", 1)
+                max_attempts = data.get("max_attempts", "?")
+                if 0 <= idx < self._total_steps:
+                    self._step_details[idx] = f"error (attempt {attempt}/{max_attempts})"
+                    self._step_statuses[idx] = "error"
+                self._status_label.value = f"<b>Step {n}: error, retrying ({attempt}/{max_attempts})...</b>"
+                self._render_steps()
+
+            case "step_failed":
+                n = data.get("step_number", self._current_step)
+                idx = n - 1
                 if 0 <= idx < self._total_steps:
                     self._step_statuses[idx] = "error"
+                    self._step_details[idx] = f"failed after {data.get('attempts', '?')} attempts"
                 self._render_steps()
 
             case "synthesizing":

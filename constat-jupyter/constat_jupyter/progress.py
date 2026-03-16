@@ -32,16 +32,44 @@ class PrintProgress:
                 self._current_step = n
                 print(f"[step {n}/{self._total_steps}] {goal}...")
 
-            case "step_generating" | "step_executing":
-                pass
+            case "step_generating":
+                n = data.get("step_number", self._current_step)
+                attempt = data.get("attempt", 1)
+                if data.get("is_retry"):
+                    print(f"  step {n} generating (retry #{attempt - 1})...")
+                else:
+                    print(f"  step {n} generating...")
+
+            case "step_executing":
+                n = data.get("step_number", self._current_step)
+                attempt = data.get("attempt", 1)
+                if data.get("is_retry"):
+                    print(f"  step {n} executing (retry #{attempt - 1})...")
+                else:
+                    print(f"  step {n} executing...")
+
+            case "model_escalation":
+                n = data.get("step_number", self._current_step)
+                to_model = data.get("to_model", "")
+                reason = data.get("reason", "")
+                print(f"  step {n} escalated to {to_model}: {reason}")
 
             case "step_complete":
                 d = data.get("duration_ms")
                 n = data.get("step_number", self._current_step)
                 print(f"  step {n} done ({d / 1000:.1f}s)" if d else f"  step {n} done")
 
-            case "step_error" | "step_failed":
-                print(f"  step {self._current_step} retrying...")
+            case "step_error":
+                n = data.get("step_number", self._current_step)
+                attempt = data.get("attempt", 1)
+                max_attempts = data.get("max_attempts", "?")
+                error = (data.get("error", "") or "").split("\n")[0][:80]
+                print(f"  step {n} error (attempt {attempt}/{max_attempts}): {error}")
+
+            case "step_failed":
+                n = data.get("step_number", self._current_step)
+                attempts = data.get("attempts", "?")
+                print(f"  step {n} failed after {attempts} attempts")
 
             case "synthesizing":
                 print("[synthesizing] Generating answer...")

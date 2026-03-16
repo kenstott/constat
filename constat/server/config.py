@@ -36,6 +36,13 @@ def _get_bool_env(key: str) -> bool | None:
     return value.lower() in ("true", "1", "yes")
 
 
+class LocalUser(BaseModel):
+    """A local user for server-local authentication."""
+
+    password_hash: str
+    email: str = ""
+
+
 class UserPermissions(BaseModel):
     """Permissions for a single user."""
 
@@ -148,9 +155,17 @@ class ServerConfig(BaseModel):
         default=None,
         description="Firebase project ID for JWT validation (required when auth enabled)",
     )
+    firebase_api_key: Optional[str] = Field(
+        default=None,
+        description="Firebase Web API key for server-side email/password login",
+    )
     admin_token: Optional[str] = Field(
         default=None,
         description="Admin token for local CLI/script access (bypasses Firebase auth)",
+    )
+    local_users: dict[str, LocalUser] = Field(
+        default_factory=dict,
+        description="Local users for server-local auth (keyed by username)",
     )
     runtime_dir: str = Field(
         default=".",
@@ -178,6 +193,11 @@ class ServerConfig(BaseModel):
         firebase_env = os.environ.get("FIREBASE_PROJECT_ID")
         if firebase_env is not None:
             self.firebase_project_id = firebase_env
+
+        # FIREBASE_API_KEY env var overrides YAML/default
+        firebase_api_key_env = os.environ.get("FIREBASE_API_KEY")
+        if firebase_api_key_env is not None:
+            self.firebase_api_key = firebase_api_key_env
 
         # CONSTAT_ADMIN_TOKEN env var overrides YAML/default
         admin_token_env = os.environ.get("CONSTAT_ADMIN_TOKEN")

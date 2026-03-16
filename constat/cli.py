@@ -709,6 +709,19 @@ execution:
     console.print("\n[dim]Edit the file to configure your databases and API key.[/dim]")
 
 
+@cli.command("hash-password")
+def hash_password_cmd():
+    """Hash a password for config.yaml local_users."""
+    import getpass
+    from constat.server.local_auth import hash_password
+    pw = getpass.getpass("Password: ")
+    confirm = getpass.getpass("Confirm: ")
+    if pw != confirm:
+        click.echo("Passwords do not match", err=True)
+        raise SystemExit(1)
+    click.echo(hash_password(pw))
+
+
 def main():
     """Entry point for the CLI."""
     cli()

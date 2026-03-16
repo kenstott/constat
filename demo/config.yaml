@@ -6,7 +6,15 @@ server:
   admin_token: "my-dev-token"
   auth_disabled: ${AUTH_DISABLED}
   firebase_project_id: ${FIREBASE_PROJECT_ID}
+  # firebase_api_key: set FIREBASE_API_KEY env var for server-side Firebase login
   # runtime_dir: .  # Base directory for .constat/ data (default: current directory)
+
+  # Local users for server-local auth (no Firebase required)
+  # Generate password hashes with: constat hash-password
+  local_users:
+    demo:
+      password_hash: "scrypt:361e4f00c6e26f4cf259a51278d6aa43:09bcddba4646086be14ebeebc1f8fb679edebf294cf25ac6f478484837195577"
+      email: demo@localhost
 
   # User permissions - include from separate file for easier management
   permissions:

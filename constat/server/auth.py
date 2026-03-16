@@ -78,6 +78,15 @@ async def get_current_user_id(
             request.state.user_email = "admin@localhost"
             return "admin"
 
+    # Check local token
+    if credentials:
+        from constat.server.local_auth import validate_local_token
+        result = validate_local_token(credentials.credentials)
+        if result is not None:
+            user_id, email = result
+            request.state.user_email = email
+            return user_id
+
     # Auth is enabled - validate token
     if not credentials:
         raise HTTPException(

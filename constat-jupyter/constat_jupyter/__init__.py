@@ -7,3 +7,8 @@ from .models import SolveResult, Artifact, StepInfo, ConstatError
 
 __all__ = ["ConstatClient", "Session", "SolveResult", "Artifact", "StepInfo", "ConstatError"]
 __version__ = "0.1.1"
+
+
+def load_ipython_extension(ipython):
+    from .magic import ConstatMagic
+    ipython.register_magics(ConstatMagic)

@@ -576,6 +576,10 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
             "auth": {
                 "auth_disabled": server_config.auth_disabled,
                 "firebase_project_id": server_config.firebase_project_id,
+                "auth_methods": (
+                    (["local"] if server_config.local_users else [])
+                    + (["firebase"] if server_config.firebase_project_id else [])
+                ),
             },
         }
 
@@ -620,8 +624,15 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.fine_tune import router as fine_tune_router
     from constat.server.routes.public import router as public_router
 
+    from constat.server.routes.auth_routes import router as auth_router
+
     # IMPORTANT: Register routers with specific paths BEFORE routers with /{session_id} wildcards
     # Otherwise the wildcard routes will match paths like /agents, /skills, etc.
+    fastapi_app.include_router(
+        auth_router,
+        prefix="/api/auth",
+        tags=["auth"],
+    )
     fastapi_app.include_router(
         public_router,
         prefix="/api/public",
