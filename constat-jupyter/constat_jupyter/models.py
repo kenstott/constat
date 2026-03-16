@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+try:
+    import itables
+    HAS_ITABLES = True
+except ImportError:
+    HAS_ITABLES = False
+
 
 class ConstatError(Exception):
     """Error from the Constat server."""
@@ -87,6 +93,16 @@ class SolveResult:
                 lines.pop()
         return '\n'.join(lines).rstrip()
 
+    @staticmethod
+    def _df_to_html(df: Any) -> str:
+        """Render a DataFrame as HTML, using iTables when available."""
+        if HAS_ITABLES:
+            return itables.to_html_datatable(
+                df.to_pandas() if hasattr(df, "to_pandas") else df,
+                buttons=["csvHtml5", "excelHtml5"],
+            )
+        return f"<pre>{df}</pre>"
+
     def _repr_html_(self) -> str:
         """Auto-display answer + tables when result is last expression in cell."""
         parts = []
@@ -97,13 +113,26 @@ class SolveResult:
             parts.append(f"<div>{answer}</div>")
         for name, df in self.tables.items():
             parts.append(f"<h4>{name}</h4>")
-            parts.append(f"<pre>{df}</pre>")
+            parts.append(self._df_to_html(df))
         return "\n".join(parts)
 
     def _repr_markdown_(self) -> str:
         if self.error:
             return f"**Error:** {self.error}"
         return self._strip_trailing_json(self.answer)
+
+    def _display_table(self, name: str, df: Any) -> None:
+        """Display a single table, using iTables when available."""
+        from IPython.display import display, HTML
+        if HAS_ITABLES:
+            display(HTML(f"<h4>{name}</h4>"))
+            itables.show(
+                df.to_pandas() if hasattr(df, "to_pandas") else df,
+                buttons=["csvHtml5", "excelHtml5"],
+            )
+        else:
+            print(f"\n--- {name} ---")
+            print(df)
 
     def display(self, published: bool = False) -> None:
         """Rich display: answer + tables + artifacts.
@@ -123,9 +152,7 @@ class SolveResult:
             starred = {t["name"] for t in table_list if t.get("is_starred")}
             for name in starred:
                 if name in self.tables:
-                    print(f"\n--- {name} ---")
-                    df = self.tables[name]
-                    print(df)
+                    self._display_table(name, self.tables[name])
 
             # Only starred artifacts (skip virtual table artifacts with negative IDs)
             for a in self._session.artifacts():
@@ -136,7 +163,6 @@ class SolveResult:
         else:
             display(Markdown(self._strip_trailing_json(self.answer)))
             for name, df in self.tables.items():
-                print(f"\n--- {name} ---")
-                print(df)
+                self._display_table(name, df)
             for artifact in self.artifacts:
                 artifact.display()

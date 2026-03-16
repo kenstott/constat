@@ -15,6 +15,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-widgets = ["ipywidgets>=8"]
+widgets = ["ipywidgets>=8", "itables>=2.0"]
 pandas = ["pandas>=2"]
 all = ["constat-jupyter[widgets,pandas]"]

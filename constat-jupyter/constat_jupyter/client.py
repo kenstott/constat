@@ -13,6 +13,11 @@ from .config import ConstatConfig
 from .models import Artifact, ConstatError, SolveResult, StepInfo
 from .progress import PrintProgress
 
+try:
+    from .widgets import HAS_WIDGETS, widget_plan_approval, widget_clarification, WidgetProgress
+except ImportError:
+    HAS_WIDGETS = False
+
 
 def _run_async(coro):
     """Run async coroutine in a dedicated thread to avoid Jupyter event loop conflicts."""
@@ -177,6 +182,64 @@ class ConstatClient:
         resp.raise_for_status()
         return resp.json()
 
+    def create_skill(self, name: str, content: str) -> dict:
+        resp = self._http.post("/api/skills", json={"name": name, "content": content})
+        resp.raise_for_status()
+        return resp.json()
+
+    def edit_skill(self, name: str, content: str) -> dict:
+        resp = self._http.put(f"/api/skills/{name}", json={"content": content})
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_skill(self, name: str) -> None:
+        resp = self._http.delete(f"/api/skills/{name}")
+        resp.raise_for_status()
+
+    def draft_skill(self, name: str, description: str) -> dict:
+        resp = self._http.post("/api/skills/draft", json={"name": name, "description": description})
+        resp.raise_for_status()
+        return resp.json()
+
+    def download_skill(self, name: str) -> bytes:
+        resp = self._http.get(f"/api/skills/{name}/download")
+        resp.raise_for_status()
+        return resp.content
+
+    # -- Schema search --
+
+    def search_schema(self, query: str) -> dict:
+        resp = self._http.get("/api/schema/search", params={"query": query})
+        resp.raise_for_status()
+        return resp.json()
+
+    # -- Learnings & Rules --
+
+    def learnings(self, category: str | None = None) -> list[dict]:
+        params = {"category": category} if category else {}
+        resp = self._http.get("/api/learnings", params=params)
+        resp.raise_for_status()
+        return resp.json().get("learnings", [])
+
+    def compact_learnings(self) -> dict:
+        resp = self._http.post("/api/learnings/compact")
+        resp.raise_for_status()
+        return resp.json()
+
+    def add_rule(self, text: str) -> dict:
+        resp = self._http.post("/api/rules", json={"text": text})
+        resp.raise_for_status()
+        return resp.json()
+
+    def edit_rule(self, rule_id: int, text: str) -> dict:
+        resp = self._http.put(f"/api/rules/{rule_id}", json={"text": text})
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_rule(self, rule_id: int) -> None:
+        resp = self._http.delete(f"/api/rules/{rule_id}")
+        resp.raise_for_status()
+
     # -- Lifecycle --
 
     def close(self) -> None:
@@ -195,7 +258,7 @@ class Session:
     def __init__(self, client: ConstatClient, session_id: str):
         self._client = client
         self.session_id = session_id
-        self._progress = PrintProgress()
+        self._progress = WidgetProgress() if HAS_WIDGETS else PrintProgress()
 
     # -- Query execution --
 
@@ -211,6 +274,99 @@ class Session:
         """Auditable reasoning chain execution."""
         return _run_async(self._execute_async(question, is_followup=False, auto_approve=auto_approve, timeout=timeout))
 
+    # -- WebSocket infrastructure --
+
+    def _ws_url(self) -> str:
+        ws_url = self._client._base_url.replace("http://", "ws://").replace("https://", "wss://")
+        return f"{ws_url}/api/sessions/{self.session_id}/ws"
+
+    def _ws_headers(self) -> dict:
+        if self._client._token:
+            return {"Authorization": f"Bearer {self._client._token}"}
+        return {}
+
+    async def _ws_event_loop(self, ws, auto_approve: bool, timeout: float) -> SolveResult:
+        """Shared WS event processing loop."""
+        result = SolveResult(success=False, answer="")
+        while True:
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+            except asyncio.TimeoutError:
+                raise ConstatError(f"Timed out after {timeout}s")
+
+            msg = json.loads(raw)
+            if msg.get("type") != "event":
+                continue
+
+            payload = msg.get("payload", {})
+            event_type = payload.get("event_type", "")
+            data = dict(payload.get("data", {}))
+            if "step_number" in payload:
+                data.setdefault("step_number", payload["step_number"])
+
+            self._progress.handle_event(event_type, data)
+
+            if event_type == "plan_ready":
+                if auto_approve:
+                    await ws.send(json.dumps({"action": "approve"}))
+                else:
+                    decision = (widget_plan_approval(data) if HAS_WIDGETS
+                                else _prompt_plan_approval(data))
+                    if decision.get("approved"):
+                        approve_data: dict[str, Any] = {}
+                        if decision.get("deleted_steps"):
+                            approve_data["deleted_steps"] = decision["deleted_steps"]
+                        if decision.get("edited_steps"):
+                            approve_data["edited_steps"] = decision["edited_steps"]
+                        msg = {"action": "approve"}
+                        if approve_data:
+                            msg["data"] = approve_data
+                        await ws.send(json.dumps(msg))
+                    else:
+                        await ws.send(json.dumps({"action": "reject", "data": {"feedback": decision.get("feedback", "")}}))
+
+            elif event_type == "clarification_needed":
+                answers = (widget_clarification(data) if HAS_WIDGETS
+                           else _prompt_clarifications(data))
+                if answers:
+                    await ws.send(json.dumps({"action": "clarify", "data": {"answers": answers}}))
+                else:
+                    await ws.send(json.dumps({"action": "skip_clarification"}))
+
+            elif event_type == "query_complete":
+                result.success = True
+                raw_output = data.get("output", "")
+                result.raw_output = raw_output
+                result.answer = _strip_trailing_json(raw_output)
+                result.suggestions = data.get("suggestions", [])
+                break
+
+            elif event_type == "query_error":
+                result.error = data.get("error", "Unknown error")
+                break
+
+            elif event_type == "query_cancelled":
+                result.error = "Query was cancelled"
+                break
+
+            elif event_type == "step_complete":
+                result.steps.append(StepInfo(
+                    number=data.get("step_number", 0),
+                    goal=data.get("goal", ""),
+                    status="complete",
+                    duration_ms=data.get("duration_ms"),
+                ))
+
+            elif event_type in ("step_error", "step_failed"):
+                result.steps.append(StepInfo(
+                    number=data.get("step_number", 0),
+                    goal=data.get("goal", ""),
+                    status="error",
+                    error=data.get("error"),
+                ))
+
+        return result
+
     async def _execute_async(
         self,
         question: str,
@@ -220,97 +376,43 @@ class Session:
     ) -> SolveResult:
         import websockets
 
-        http = self._client._http
-        sid = self.session_id
-
-        ws_url = self._client._base_url.replace("http://", "ws://").replace("https://", "wss://")
-        ws_url = f"{ws_url}/api/sessions/{sid}/ws"
-        extra_headers = {}
-        if self._client._token:
-            extra_headers["Authorization"] = f"Bearer {self._client._token}"
-
-        result = SolveResult(success=False, answer="")
-
-        async with websockets.connect(ws_url, additional_headers=extra_headers) as ws:
-            # Wait for welcome
+        async with websockets.connect(self._ws_url(), additional_headers=self._ws_headers()) as ws:
             await asyncio.wait_for(ws.recv(), timeout=10)
 
-            # Start query
-            resp = http.post(
-                f"/api/sessions/{sid}/query",
+            resp = self._client._http.post(
+                f"/api/sessions/{self.session_id}/query",
                 json={"problem": question, "is_followup": is_followup},
             )
             resp.raise_for_status()
 
-            # Event loop
-            while True:
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
-                except asyncio.TimeoutError:
-                    raise ConstatError(f"Query timed out after {timeout}s")
+            result = await self._ws_event_loop(ws, auto_approve, timeout)
 
-                msg = json.loads(raw)
-                if msg.get("type") != "event":
-                    continue
+        if result.success:
+            result.tables = self._fetch_all_tables()
+            result._session = self
 
-                payload = msg.get("payload", {})
-                event_type = payload.get("event_type", "")
-                data = dict(payload.get("data", {}))
-                if "step_number" in payload:
-                    data.setdefault("step_number", payload["step_number"])
+        return result
 
-                self._progress.handle_event(event_type, data)
+    async def _ws_action_async(
+        self,
+        action: str,
+        data: dict | None = None,
+        auto_approve: bool = True,
+        timeout: float = 300,
+    ) -> SolveResult:
+        """Send a WebSocket action (replan_from, edit_objective, etc.) and stream events."""
+        import websockets
 
-                if event_type == "plan_ready":
-                    if auto_approve:
-                        await ws.send(json.dumps({"action": "approve"}))
-                    else:
-                        decision = _prompt_plan_approval(data)
-                        if decision.get("approved"):
-                            await ws.send(json.dumps({"action": "approve"}))
-                        else:
-                            await ws.send(json.dumps({"action": "reject", "data": {"feedback": decision.get("feedback", "")}}))
+        async with websockets.connect(self._ws_url(), additional_headers=self._ws_headers()) as ws:
+            await asyncio.wait_for(ws.recv(), timeout=10)
 
-                elif event_type == "clarification_needed":
-                    answers = _prompt_clarifications(data)
-                    if answers:
-                        await ws.send(json.dumps({"action": "clarify", "data": {"answers": answers}}))
-                    else:
-                        await ws.send(json.dumps({"action": "skip_clarification"}))
+            msg: dict[str, Any] = {"action": action}
+            if data:
+                msg["data"] = data
+            await ws.send(json.dumps(msg))
 
-                elif event_type == "query_complete":
-                    result.success = True
-                    raw = data.get("output", "")
-                    result.raw_output = raw
-                    result.answer = _strip_trailing_json(raw)
-                    result.suggestions = data.get("suggestions", [])
-                    break
+            result = await self._ws_event_loop(ws, auto_approve, timeout)
 
-                elif event_type == "query_error":
-                    result.error = data.get("error", "Unknown error")
-                    break
-
-                elif event_type == "query_cancelled":
-                    result.error = "Query was cancelled"
-                    break
-
-                elif event_type == "step_complete":
-                    result.steps.append(StepInfo(
-                        number=data.get("step_number", 0),
-                        goal=data.get("goal", ""),
-                        status="complete",
-                        duration_ms=data.get("duration_ms"),
-                    ))
-
-                elif event_type in ("step_error", "step_failed"):
-                    result.steps.append(StepInfo(
-                        number=data.get("step_number", 0),
-                        goal=data.get("goal", ""),
-                        status="error",
-                        error=data.get("error"),
-                    ))
-
-        # Fetch tables after WS closes
         if result.success:
             result.tables = self._fetch_all_tables()
             result._session = self
@@ -381,6 +483,19 @@ class Session:
             mime_type=a.get("mime_type"),
         )
 
+    # -- Data sources --
+
+    def sources(self) -> dict:
+        """List all data sources: databases, APIs, documents."""
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/sources")
+        resp.raise_for_status()
+        return resp.json()
+
+    def databases(self) -> list[dict]:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/databases")
+        resp.raise_for_status()
+        return resp.json().get("databases", [])
+
     # -- Glossary --
 
     def glossary(self) -> list[dict]:
@@ -424,8 +539,455 @@ class Session:
         resp = self._client._http.post(f"/api/sessions/{self.session_id}/cancel")
         resp.raise_for_status()
 
+    # -- Commands (sent as /slash query text, processed by backend command dispatcher) --
+
+    def command(self, cmd: str, timeout: float = 120) -> SolveResult:
+        """Send a REPL slash command (e.g. '/compact', '/summarize plan').
+
+        Commands are sent as query text via POST /query. The backend command
+        dispatcher intercepts queries starting with '/' before the normal
+        planning/execution pipeline.
+        """
+        return _run_async(self._execute_async(cmd, is_followup=False, auto_approve=True, timeout=timeout))
+
+    def compact(self) -> SolveResult:
+        """Compact context to reduce token usage."""
+        return self.command("/compact")
+
+    def save_plan(self, name: str) -> SolveResult:
+        """Save current plan for replay."""
+        return self.command(f"/save {name}")
+
+    def share_plan(self, name: str) -> SolveResult:
+        """Save plan as shared (all users)."""
+        return self.command(f"/share {name}")
+
+    def list_plans(self) -> SolveResult:
+        """List saved plans."""
+        return self.command("/plans")
+
+    def replay_plan(self, name: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
+        """Replay a saved plan."""
+        return _run_async(self._execute_async(f"/replay {name}", is_followup=False, auto_approve=auto_approve, timeout=timeout))
+
+    def summarize(self, target: str) -> SolveResult:
+        """Summarize plan|session|facts|<table_name>."""
+        return self.command(f"/summarize {target}")
+
+    def discover(self, query: str) -> SolveResult:
+        """Search all data sources (tables, APIs, documents, glossary)."""
+        return self.command(f"/discover {query}")
+
+    def redo(self, instruction: str | None = None, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
+        """Re-run last query, optionally with modified instruction."""
+        cmd = f"/redo {instruction}" if instruction else "/redo"
+        return _run_async(self._execute_async(cmd, is_followup=False, auto_approve=auto_approve, timeout=timeout))
+
+    def audit(self) -> SolveResult:
+        """Audit last result."""
+        return self.command("/audit")
+
+    def set_verbose(self, on: bool | None = None) -> SolveResult:
+        """Toggle verbose mode."""
+        arg = " on" if on is True else " off" if on is False else ""
+        return self.command(f"/verbose{arg}")
+
+    def set_raw(self, on: bool | None = None) -> SolveResult:
+        """Toggle raw output display."""
+        arg = " on" if on is True else " off" if on is False else ""
+        return self.command(f"/raw{arg}")
+
+    def set_insights(self, on: bool | None = None) -> SolveResult:
+        """Toggle insight synthesis."""
+        arg = " on" if on is True else " off" if on is False else ""
+        return self.command(f"/insights{arg}")
+
+    def preferences(self) -> SolveResult:
+        """Show current preferences."""
+        return self.command("/preferences")
+
+    def objectives(self) -> SolveResult:
+        """List session objectives."""
+        return self.command("/objectives")
+
+    # -- WS actions (step & objective manipulation, triggers replanning) --
+
+    def step_edit(self, step_number: int, goal: str, auto_approve: bool = True) -> SolveResult:
+        """Edit a plan step goal and replan from that step."""
+        return _run_async(self._ws_action_async(
+            "replan_from",
+            {"step_number": step_number, "mode": "edit", "edited_goal": goal},
+            auto_approve=auto_approve,
+        ))
+
+    def step_delete(self, step_number: int, auto_approve: bool = True) -> SolveResult:
+        """Delete a plan step and replan."""
+        return _run_async(self._ws_action_async(
+            "replan_from",
+            {"step_number": step_number, "mode": "delete"},
+            auto_approve=auto_approve,
+        ))
+
+    def step_redo(self, step_number: int, auto_approve: bool = True) -> SolveResult:
+        """Re-execute from a specific plan step."""
+        return _run_async(self._ws_action_async(
+            "replan_from",
+            {"step_number": step_number, "mode": "redo"},
+            auto_approve=auto_approve,
+        ))
+
+    def edit_objective(self, index: int, text: str, auto_approve: bool = True) -> SolveResult:
+        """Edit an objective and replan from first affected step."""
+        return _run_async(self._ws_action_async(
+            "edit_objective",
+            {"objective_index": index, "new_text": text},
+            auto_approve=auto_approve,
+        ))
+
+    def delete_objective(self, index: int, auto_approve: bool = True) -> SolveResult:
+        """Delete an objective and replan."""
+        return _run_async(self._ws_action_async(
+            "delete_objective",
+            {"objective_index": index},
+            auto_approve=auto_approve,
+        ))
+
     @property
     def status(self) -> dict:
         resp = self._client._http.get(f"/api/sessions/{self.session_id}")
         resp.raise_for_status()
         return resp.json()
+
+    # -- Session management --
+
+    def reset(self) -> None:
+        resp = self._client._http.post(f"/api/sessions/{self.session_id}/reset-context")
+        resp.raise_for_status()
+
+    def context(self) -> dict:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/prompt-context")
+        resp.raise_for_status()
+        return resp.json()
+
+    # -- Plan & Steps --
+
+    def plan(self) -> dict:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/plan")
+        resp.raise_for_status()
+        return resp.json()
+
+    def steps(self) -> list[dict]:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/steps")
+        resp.raise_for_status()
+        return resp.json().get("steps", [])
+
+    def code(self, step: int | None = None) -> str:
+        if step is not None:
+            codes = self.inference_codes()
+            for c in codes:
+                if c.get("step_number") == step:
+                    return c.get("code", "")
+            return ""
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/download-code")
+        resp.raise_for_status()
+        return resp.text
+
+    def inference_codes(self) -> list[dict]:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/inference-codes")
+        resp.raise_for_status()
+        return resp.json().get("codes", [])
+
+    def download_code(self) -> str:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/download-inference-code")
+        resp.raise_for_status()
+        return resp.text
+
+    # -- DDL & SQL --
+
+    def ddl(self) -> str:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/ddl")
+        resp.raise_for_status()
+        return resp.json().get("ddl", "")
+
+    # -- Diagnostics --
+
+    def search_tables(self, query: str) -> dict:
+        return self._client.search_schema(query)
+
+    def search_apis(self, query: str) -> dict:
+        return self._client.search_schema(query)
+
+    def search_docs(self, query: str) -> dict:
+        return self._client.search_schema(query)
+
+    def search_chunks(self, query: str) -> dict:
+        return self._client.search_schema(query)
+
+    def entities(self) -> list[dict]:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/entities")
+        resp.raise_for_status()
+        return resp.json().get("entities", [])
+
+    def proof_tree(self) -> dict:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/proof-tree")
+        resp.raise_for_status()
+        return resp.json()
+
+    def output(self) -> dict:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/output")
+        resp.raise_for_status()
+        return resp.json()
+
+    def scratchpad(self) -> dict:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/scratchpad")
+        resp.raise_for_status()
+        return resp.json()
+
+    # -- Glossary (write operations) --
+
+    def define(self, name: str, definition: str, **kwargs) -> dict:
+        body = {"name": name, "definition": definition, **kwargs}
+        resp = self._client._http.post(f"/api/sessions/{self.session_id}/glossary", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    def undefine(self, name: str) -> None:
+        resp = self._client._http.delete(f"/api/sessions/{self.session_id}/glossary/{name}")
+        resp.raise_for_status()
+
+    def refine(self, name: str) -> dict:
+        resp = self._client._http.post(f"/api/sessions/{self.session_id}/glossary/{name}/refine")
+        resp.raise_for_status()
+        return resp.json()
+
+    def generate_glossary(self) -> dict:
+        resp = self._client._http.post(f"/api/sessions/{self.session_id}/glossary/generate")
+        resp.raise_for_status()
+        return resp.json()
+
+    # -- Facts (extended) --
+
+    def correct(self, text: str) -> dict:
+        resp = self._client._http.post(
+            f"/api/sessions/{self.session_id}/feedback/flag",
+            json={"text": text},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # -- Data sources (write) --
+
+    def add_database(self, uri: str, name: str | None = None) -> dict:
+        body = {"uri": uri}
+        if name:
+            body["name"] = name
+        resp = self._client._http.post(f"/api/sessions/{self.session_id}/databases", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    def remove_database(self, name: str) -> None:
+        resp = self._client._http.delete(f"/api/sessions/{self.session_id}/databases/{name}")
+        resp.raise_for_status()
+
+    def add_api(self, spec_url: str, name: str | None = None) -> dict:
+        body = {"spec_url": spec_url}
+        if name:
+            body["name"] = name
+        resp = self._client._http.post(f"/api/sessions/{self.session_id}/apis", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    def remove_api(self, name: str) -> None:
+        resp = self._client._http.delete(f"/api/sessions/{self.session_id}/apis/{name}")
+        resp.raise_for_status()
+
+    def add_document(self, uri: str) -> dict:
+        resp = self._client._http.post(
+            f"/api/sessions/{self.session_id}/documents/add-uri",
+            json={"uri": uri},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def upload_document(self, path: str) -> dict:
+        import pathlib
+        p = pathlib.Path(path)
+        with open(p, "rb") as f:
+            resp = self._client._http.post(
+                f"/api/sessions/{self.session_id}/documents/upload",
+                files={"file": (p.name, f)},
+            )
+        resp.raise_for_status()
+        return resp.json()
+
+    def files(self) -> list[dict]:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/files")
+        resp.raise_for_status()
+        return resp.json().get("files", [])
+
+    def upload_file(self, path: str) -> dict:
+        import pathlib
+        p = pathlib.Path(path)
+        with open(p, "rb") as f:
+            resp = self._client._http.post(
+                f"/api/sessions/{self.session_id}/files",
+                files={"file": (p.name, f)},
+            )
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_file(self, file_id: int) -> None:
+        resp = self._client._http.delete(f"/api/sessions/{self.session_id}/files/{file_id}")
+        resp.raise_for_status()
+
+    # -- Agents --
+
+    def agents(self) -> list[dict]:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/agents")
+        resp.raise_for_status()
+        return resp.json().get("agents", [])
+
+    def agent(self, name: str) -> dict:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/agents/{name}")
+        resp.raise_for_status()
+        return resp.json()
+
+    def set_agent(self, name: str) -> None:
+        resp = self._client._http.put(
+            f"/api/sessions/{self.session_id}/agents/current",
+            json={"agent_name": name},
+        )
+        resp.raise_for_status()
+
+    def create_agent(self, name: str, content: str) -> dict:
+        resp = self._client._http.post(
+            f"/api/sessions/{self.session_id}/agents",
+            json={"name": name, "content": content},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def edit_agent(self, name: str, content: str) -> dict:
+        resp = self._client._http.put(
+            f"/api/sessions/{self.session_id}/agents/{name}",
+            json={"content": content},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_agent(self, name: str) -> None:
+        resp = self._client._http.delete(f"/api/sessions/{self.session_id}/agents/{name}")
+        resp.raise_for_status()
+
+    def draft_agent(self, name: str, description: str) -> dict:
+        resp = self._client._http.post(
+            f"/api/sessions/{self.session_id}/agents/draft",
+            json={"name": name, "description": description},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # -- Regression testing --
+
+    def test_domains(self) -> list[dict]:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/tests/domains")
+        resp.raise_for_status()
+        return resp.json().get("domains", [])
+
+    def test_questions(self, domain: str) -> list[dict]:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/tests/{domain}/questions")
+        resp.raise_for_status()
+        return resp.json().get("questions", [])
+
+    def create_test_question(self, domain: str, question: dict) -> dict:
+        resp = self._client._http.post(
+            f"/api/sessions/{self.session_id}/tests/{domain}/questions",
+            json=question,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_test_question(self, domain: str, index: int, question: dict) -> dict:
+        resp = self._client._http.put(
+            f"/api/sessions/{self.session_id}/tests/{domain}/questions/{index}",
+            json=question,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_test_question(self, domain: str, index: int) -> None:
+        resp = self._client._http.delete(
+            f"/api/sessions/{self.session_id}/tests/{domain}/questions/{index}",
+        )
+        resp.raise_for_status()
+
+    def run_tests(self, domains: list[str] | None = None, questions: list[int] | None = None) -> list[dict]:
+        body: dict[str, Any] = {}
+        if domains:
+            body["domains"] = domains
+        if questions:
+            body["question_indices"] = questions
+        results = []
+        with self._client._http.stream(
+            "POST",
+            f"/api/sessions/{self.session_id}/tests/run",
+            json=body,
+            timeout=600,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if line.startswith("data: "):
+                    data = json.loads(line[6:])
+                    event = data.get("event", "")
+                    if event == "question_result":
+                        results.append(data.get("data", {}))
+                        q = data.get("data", {})
+                        status = "PASS" if q.get("passed") else "FAIL"
+                        print(f"  [{status}] {q.get('question', '')[:80]}")
+                    elif event == "run_complete":
+                        summary = data.get("data", {})
+                        print(f"\n[done] {summary.get('passed', 0)}/{summary.get('total', 0)} passed")
+        return results
+
+    # -- Table operations --
+
+    def star_table(self, name: str, starred: bool = True) -> None:
+        resp = self._client._http.post(
+            f"/api/sessions/{self.session_id}/tables/{name}/star",
+            json={"starred": starred},
+        )
+        resp.raise_for_status()
+
+    def delete_table(self, name: str) -> None:
+        resp = self._client._http.delete(f"/api/sessions/{self.session_id}/tables/{name}")
+        resp.raise_for_status()
+
+    def export_table(self, name: str, path: str, fmt: str = "csv") -> None:
+        import pathlib
+        resp = self._client._http.get(
+            f"/api/sessions/{self.session_id}/tables/{name}/download",
+            params={"format": fmt},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        pathlib.Path(path).write_bytes(resp.content)
+
+    # -- Artifact operations --
+
+    def star_artifact(self, artifact_id: int, starred: bool = True) -> None:
+        resp = self._client._http.post(
+            f"/api/sessions/{self.session_id}/artifacts/{artifact_id}/star",
+            json={"starred": starred},
+        )
+        resp.raise_for_status()
+
+    def delete_artifact(self, artifact_id: int) -> None:
+        resp = self._client._http.delete(f"/api/sessions/{self.session_id}/artifacts/{artifact_id}")
+        resp.raise_for_status()
+
+    # -- Messages --
+
+    def messages(self) -> list[dict]:
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/messages")
+        resp.raise_for_status()
+        return resp.json().get("messages", [])
