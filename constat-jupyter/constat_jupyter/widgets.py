@@ -146,7 +146,9 @@ def widget_plan_approval(data: dict) -> dict:
     ])
 
     display(box)
-    return bridge.wait()
+    result = bridge.wait()
+    box.close()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +229,11 @@ def widget_clarification(data: dict) -> dict[str, str] | None:
             all_widgets.append(W.VBox([q_label, spec[1]]))
     all_widgets.append(submit_btn)
 
-    display(W.VBox(all_widgets))
-    return bridge.wait()
+    box = W.VBox(all_widgets)
+    display(box)
+    result = bridge.wait()
+    box.close()
+    return result
 
 
 # ---------------------------------------------------------------------------
