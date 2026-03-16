@@ -40,7 +40,14 @@ htmlcov/
 .DS_Store
 *.log
 
+# Jupyter
+.ipynb_checkpoints/
+Untitled*.ipynb
+
 # Constat session data
 .constat/
+*.constat.json
 .env
 demo/vector_store.duckdb
+demo/notebook_demo.ipynb
+demo/raise_emails.csv
