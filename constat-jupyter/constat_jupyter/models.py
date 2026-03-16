@@ -6,6 +6,15 @@ from typing import Any
 try:
     import itables
     HAS_ITABLES = True
+    # Configure iTables defaults: left-aligned, compact buttons
+    itables.options.style = "table-layout:auto;width:auto;margin-left:0;caption-side:bottom"
+    itables.options.layout = {
+        "topStart": "buttons",
+        "topEnd": "search",
+        "bottomStart": "info",
+        "bottomEnd": "paging",
+    }
+    itables.options.classes = "display nowrap compact"
 except ImportError:
     HAS_ITABLES = False
 
@@ -35,36 +44,55 @@ class Artifact:
     def display(self) -> None:
         """Render artifact inline using IPython display system."""
         from IPython.display import display, HTML, Markdown, Image
-        import base64
 
         if self.content is None:
             raise ConstatError(f"Artifact '{self.name}' has no content. Fetch with session.artifact({self.id}).")
 
-        if self.artifact_type == "PLOTLY":
+        atype = self.artifact_type.lower()
+
+        if atype == "plotly":
             try:
                 import plotly.io as pio
                 fig = pio.from_json(self.content)
                 fig.show()
-                return
             except ImportError:
                 display(HTML(self.content))
-        elif self.artifact_type in ("PNG", "JPEG"):
+        elif atype in ("png", "jpeg"):
+            import base64
             display(Image(data=base64.b64decode(self.content)))
-        elif self.artifact_type == "HTML":
+        elif atype == "html":
             display(HTML(self.content))
-        elif self.artifact_type == "MARKDOWN":
+        elif atype in ("markdown", "md"):
             display(Markdown(self.content))
-        elif self.artifact_type == "TABLE":
-            import polars
-            from io import StringIO
-            display(polars.read_csv(StringIO(self.content)))
+        elif atype == "table":
+            # Table artifacts contain JSON data — render as DataFrame
+            import json as _json
+            try:
+                data = _json.loads(self.content)
+                import pandas as pd
+                df = pd.DataFrame(data)
+                if HAS_ITABLES:
+                    itables.show(df, buttons=["csvHtml5", "excelHtml5"])
+                else:
+                    display(HTML(df.to_html()))
+            except (ValueError, TypeError):
+                display(HTML(f"<pre>{self.content[:500]}</pre>"))
+        elif atype == "json":
+            display(HTML(f"<pre>{self.content}</pre>"))
+        elif atype == "code":
+            display(HTML(f"<pre><code>{self.content}</code></pre>"))
+        elif atype in ("output", "text"):
+            display(HTML(f"<pre>{self.content}</pre>"))
+        elif atype == "error":
+            display(HTML(f"<pre style='color:red'>{self.content}</pre>"))
         else:
-            print(self.content)
+            display(HTML(f"<pre>{self.content}</pre>"))
 
     def _repr_html_(self) -> str:
-        if self.content and self.artifact_type == "HTML":
+        atype = self.artifact_type.lower()
+        if self.content and atype == "html":
             return self.content
-        if self.content and self.artifact_type == "MARKDOWN":
+        if self.content and atype in ("markdown", "md"):
             return f"<pre>{self.content}</pre>"
         return f"<p>Artifact: {self.name} ({self.artifact_type})</p>"
 
@@ -83,22 +111,42 @@ class SolveResult:
 
     @staticmethod
     def _strip_trailing_json(text: str) -> str:
-        """Remove trailing JSON arrays from answer text."""
+        """Remove JSON arrays/objects from answer text."""
+        import json as _json
         lines = text.split('\n')
-        while lines and lines[-1].strip() == '':
-            lines.pop()
-        while lines and (lines[-1].strip().startswith('[{') or lines[-1].strip().startswith('{"')):
-            lines.pop()
-            while lines and lines[-1].strip() == '':
-                lines.pop()
-        return '\n'.join(lines).rstrip()
+        kept = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                kept.append(line)
+                continue
+            # Try to detect JSON arrays/objects
+            if (stripped.startswith('[{') or stripped.startswith('{"')) and (
+                stripped.endswith('}]') or stripped.endswith('}')
+            ):
+                try:
+                    _json.loads(stripped)
+                    continue  # Valid JSON — skip it
+                except _json.JSONDecodeError:
+                    pass
+            kept.append(line)
+        # Collapse multiple blank lines
+        import re
+        result = '\n'.join(kept)
+        result = re.sub(r'\n{3,}', '\n\n', result)
+        return result.strip()
+
+    @staticmethod
+    def _to_pandas(df: Any):
+        """Convert to pandas DataFrame."""
+        return df.to_pandas() if hasattr(df, "to_pandas") else df
 
     @staticmethod
     def _df_to_html(df: Any) -> str:
         """Render a DataFrame as HTML, using iTables when available."""
         if HAS_ITABLES:
             return itables.to_html_datatable(
-                df.to_pandas() if hasattr(df, "to_pandas") else df,
+                SolveResult._to_pandas(df),
                 buttons=["csvHtml5", "excelHtml5"],
             )
         return f"<pre>{df}</pre>"
@@ -127,7 +175,7 @@ class SolveResult:
         if HAS_ITABLES:
             display(HTML(f"<h4>{name}</h4>"))
             itables.show(
-                df.to_pandas() if hasattr(df, "to_pandas") else df,
+                SolveResult._to_pandas(df),
                 buttons=["csvHtml5", "excelHtml5"],
             )
         else:
@@ -154,9 +202,12 @@ class SolveResult:
                 if name in self.tables:
                     self._display_table(name, self.tables[name])
 
-            # Only starred artifacts (skip virtual table artifacts with negative IDs)
+            # Only starred artifacts (skip virtual table artifacts with negative IDs,
+            # and skip table artifacts whose data was already rendered above)
             for a in self._session.artifacts():
                 if a.id < 0 or not a.is_starred:
+                    continue
+                if a.artifact_type.lower() == "table" and a.name in starred:
                     continue
                 full = self._session.artifact(a.id)
                 full.display()

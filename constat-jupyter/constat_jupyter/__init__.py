@@ -6,3 +6,4 @@ from .client import ConstatClient, Session
 from .models import SolveResult, Artifact, StepInfo, ConstatError
 
 __all__ = ["ConstatClient", "Session", "SolveResult", "Artifact", "StepInfo", "ConstatError"]
+__version__ = "0.1.1"

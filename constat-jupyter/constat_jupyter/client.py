@@ -19,42 +19,29 @@ except ImportError:
     HAS_WIDGETS = False
 
 
-def _run_async(coro):
-    """Run async coroutine in a dedicated thread to avoid Jupyter event loop conflicts."""
-    import threading
-
-    result = [None]
-    error = [None]
-
-    def _run():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result[0] = loop.run_until_complete(coro)
-        except Exception as e:
-            error[0] = e
-        finally:
-            loop.close()
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    thread.join()
-
-    if error[0] is not None:
-        raise error[0]
-    return result[0]
-
-
 def _strip_trailing_json(text: str) -> str:
-    """Remove trailing JSON arrays/objects from server output."""
+    """Remove JSON arrays/objects from server output."""
+    import json as _json
+    import re
     lines = text.split('\n')
-    while lines and lines[-1].strip() == '':
-        lines.pop()
-    while lines and (lines[-1].strip().startswith('[{') or lines[-1].strip().startswith('{"')):
-        lines.pop()
-        while lines and lines[-1].strip() == '':
-            lines.pop()
-    return '\n'.join(lines).rstrip()
+    kept = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            kept.append(line)
+            continue
+        if (stripped.startswith('[{') or stripped.startswith('{"')) and (
+            stripped.endswith('}]') or stripped.endswith('}')
+        ):
+            try:
+                _json.loads(stripped)
+                continue
+            except _json.JSONDecodeError:
+                pass
+        kept.append(line)
+    result = '\n'.join(kept)
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    return result.strip()
 
 
 def _extract_plan(data: dict) -> tuple[str, list[dict]]:
@@ -255,24 +242,44 @@ class ConstatClient:
 class Session:
     """A Constat session. Created via ``ConstatClient.create_session()``."""
 
+    _css_injected = False
+
     def __init__(self, client: ConstatClient, session_id: str):
         self._client = client
         self.session_id = session_id
         self._progress = WidgetProgress() if HAS_WIDGETS else PrintProgress()
+        self._inject_css()
+
+    @classmethod
+    def _inject_css(cls) -> None:
+        """Inject global CSS for iTables styling (once per kernel)."""
+        if cls._css_injected:
+            return
+        cls._css_injected = True
+        try:
+            from IPython.display import display, HTML
+            display(HTML(
+                "<style>"
+                ".dt-buttons .dt-button{font-size:11px;padding:2px 8px;}"
+                ".dt-container{display:inline-block;min-width:0;}"
+                "</style>"
+            ))
+        except ImportError:
+            pass
 
     # -- Query execution --
 
-    def solve(self, question: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
+    async def solve(self, question: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
         """Submit a question, stream progress, return result."""
-        return _run_async(self._execute_async(question, is_followup=False, auto_approve=auto_approve, timeout=timeout))
+        return await self._execute_async(question, is_followup=False, auto_approve=auto_approve, timeout=timeout)
 
-    def follow_up(self, question: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
+    async def follow_up(self, question: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
         """Follow-up question in the same session context."""
-        return _run_async(self._execute_async(question, is_followup=True, auto_approve=auto_approve, timeout=timeout))
+        return await self._execute_async(question, is_followup=True, auto_approve=auto_approve, timeout=timeout)
 
-    def reason_chain(self, question: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
+    async def reason_chain(self, question: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
         """Auditable reasoning chain execution."""
-        return _run_async(self._execute_async(question, is_followup=False, auto_approve=auto_approve, timeout=timeout))
+        return await self._execute_async(question, is_followup=False, auto_approve=auto_approve, timeout=timeout)
 
     # -- WebSocket infrastructure --
 
@@ -308,8 +315,8 @@ class Session:
             server_auto_approved = (event_type == "plan_ready" and data.get("auto_approved"))
             needs_client_approval = not auto_approve and not server_auto_approved
 
-            # Skip progress display for pre-approval events when using interactive widgets
-            if HAS_WIDGETS and needs_client_approval and event_type in ("planning_start", "plan_ready", "clarification_needed"):
+            # Skip progress display for events handled by interactive widgets
+            if HAS_WIDGETS and needs_client_approval and event_type in ("planning_start", "clarification_needed"):
                 pass  # Widget handles display
             else:
                 self._progress.handle_event(event_type, data)
@@ -319,8 +326,11 @@ class Session:
                     if not server_auto_approved:
                         await ws.send(json.dumps({"action": "approve"}))
                 else:
-                    decision = (widget_plan_approval(data) if HAS_WIDGETS
-                                else _prompt_plan_approval(data))
+                    if HAS_WIDGETS:
+                        decision = await widget_plan_approval(data)
+                    else:
+                        loop = asyncio.get_event_loop()
+                        decision = await loop.run_in_executor(None, _prompt_plan_approval, data)
                     if decision.get("approved"):
                         approve_data: dict[str, Any] = {}
                         if decision.get("deleted_steps"):
@@ -335,8 +345,11 @@ class Session:
                         await ws.send(json.dumps({"action": "reject", "data": {"feedback": decision.get("feedback", "")}}))
 
             elif event_type == "clarification_needed":
-                answers = (widget_clarification(data) if HAS_WIDGETS
-                           else _prompt_clarifications(data))
+                if HAS_WIDGETS:
+                    answers = await widget_clarification(data)
+                else:
+                    loop = asyncio.get_event_loop()
+                    answers = await loop.run_in_executor(None, _prompt_clarifications, data)
                 if answers:
                     await ws.send(json.dumps({"action": "clarify", "data": {"answers": answers}}))
                 else:
@@ -553,116 +566,116 @@ class Session:
 
     # -- Commands (sent as /slash query text, processed by backend command dispatcher) --
 
-    def command(self, cmd: str, timeout: float = 120) -> SolveResult:
+    async def command(self, cmd: str, timeout: float = 120) -> SolveResult:
         """Send a REPL slash command (e.g. '/compact', '/summarize plan').
 
         Commands are sent as query text via POST /query. The backend command
         dispatcher intercepts queries starting with '/' before the normal
         planning/execution pipeline.
         """
-        return _run_async(self._execute_async(cmd, is_followup=False, auto_approve=True, timeout=timeout))
+        return await self._execute_async(cmd, is_followup=False, auto_approve=True, timeout=timeout)
 
-    def compact(self) -> SolveResult:
+    async def compact(self) -> SolveResult:
         """Compact context to reduce token usage."""
-        return self.command("/compact")
+        return await self.command("/compact")
 
-    def save_plan(self, name: str) -> SolveResult:
+    async def save_plan(self, name: str) -> SolveResult:
         """Save current plan for replay."""
-        return self.command(f"/save {name}")
+        return await self.command(f"/save {name}")
 
-    def share_plan(self, name: str) -> SolveResult:
+    async def share_plan(self, name: str) -> SolveResult:
         """Save plan as shared (all users)."""
-        return self.command(f"/share {name}")
+        return await self.command(f"/share {name}")
 
-    def list_plans(self) -> SolveResult:
+    async def list_plans(self) -> SolveResult:
         """List saved plans."""
-        return self.command("/plans")
+        return await self.command("/plans")
 
-    def replay_plan(self, name: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
+    async def replay_plan(self, name: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
         """Replay a saved plan."""
-        return _run_async(self._execute_async(f"/replay {name}", is_followup=False, auto_approve=auto_approve, timeout=timeout))
+        return await self._execute_async(f"/replay {name}", is_followup=False, auto_approve=auto_approve, timeout=timeout)
 
-    def summarize(self, target: str) -> SolveResult:
+    async def summarize(self, target: str) -> SolveResult:
         """Summarize plan|session|facts|<table_name>."""
-        return self.command(f"/summarize {target}")
+        return await self.command(f"/summarize {target}")
 
-    def discover(self, query: str) -> SolveResult:
+    async def discover(self, query: str) -> SolveResult:
         """Search all data sources (tables, APIs, documents, glossary)."""
-        return self.command(f"/discover {query}")
+        return await self.command(f"/discover {query}")
 
-    def redo(self, instruction: str | None = None, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
+    async def redo(self, instruction: str | None = None, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
         """Re-run last query, optionally with modified instruction."""
         cmd = f"/redo {instruction}" if instruction else "/redo"
-        return _run_async(self._execute_async(cmd, is_followup=False, auto_approve=auto_approve, timeout=timeout))
+        return await self._execute_async(cmd, is_followup=False, auto_approve=auto_approve, timeout=timeout)
 
-    def audit(self) -> SolveResult:
+    async def audit(self) -> SolveResult:
         """Audit last result."""
-        return self.command("/audit")
+        return await self.command("/audit")
 
-    def set_verbose(self, on: bool | None = None) -> SolveResult:
+    async def set_verbose(self, on: bool | None = None) -> SolveResult:
         """Toggle verbose mode."""
         arg = " on" if on is True else " off" if on is False else ""
-        return self.command(f"/verbose{arg}")
+        return await self.command(f"/verbose{arg}")
 
-    def set_raw(self, on: bool | None = None) -> SolveResult:
+    async def set_raw(self, on: bool | None = None) -> SolveResult:
         """Toggle raw output display."""
         arg = " on" if on is True else " off" if on is False else ""
-        return self.command(f"/raw{arg}")
+        return await self.command(f"/raw{arg}")
 
-    def set_insights(self, on: bool | None = None) -> SolveResult:
+    async def set_insights(self, on: bool | None = None) -> SolveResult:
         """Toggle insight synthesis."""
         arg = " on" if on is True else " off" if on is False else ""
-        return self.command(f"/insights{arg}")
+        return await self.command(f"/insights{arg}")
 
-    def preferences(self) -> SolveResult:
+    async def preferences(self) -> SolveResult:
         """Show current preferences."""
-        return self.command("/preferences")
+        return await self.command("/preferences")
 
-    def objectives(self) -> SolveResult:
+    async def objectives(self) -> SolveResult:
         """List session objectives."""
-        return self.command("/objectives")
+        return await self.command("/objectives")
 
     # -- WS actions (step & objective manipulation, triggers replanning) --
 
-    def step_edit(self, step_number: int, goal: str, auto_approve: bool = True) -> SolveResult:
+    async def step_edit(self, step_number: int, goal: str, auto_approve: bool = True) -> SolveResult:
         """Edit a plan step goal and replan from that step."""
-        return _run_async(self._ws_action_async(
+        return await self._ws_action_async(
             "replan_from",
             {"step_number": step_number, "mode": "edit", "edited_goal": goal},
             auto_approve=auto_approve,
-        ))
+        )
 
-    def step_delete(self, step_number: int, auto_approve: bool = True) -> SolveResult:
+    async def step_delete(self, step_number: int, auto_approve: bool = True) -> SolveResult:
         """Delete a plan step and replan."""
-        return _run_async(self._ws_action_async(
+        return await self._ws_action_async(
             "replan_from",
             {"step_number": step_number, "mode": "delete"},
             auto_approve=auto_approve,
-        ))
+        )
 
-    def step_redo(self, step_number: int, auto_approve: bool = True) -> SolveResult:
+    async def step_redo(self, step_number: int, auto_approve: bool = True) -> SolveResult:
         """Re-execute from a specific plan step."""
-        return _run_async(self._ws_action_async(
+        return await self._ws_action_async(
             "replan_from",
             {"step_number": step_number, "mode": "redo"},
             auto_approve=auto_approve,
-        ))
+        )
 
-    def edit_objective(self, index: int, text: str, auto_approve: bool = True) -> SolveResult:
+    async def edit_objective(self, index: int, text: str, auto_approve: bool = True) -> SolveResult:
         """Edit an objective and replan from first affected step."""
-        return _run_async(self._ws_action_async(
+        return await self._ws_action_async(
             "edit_objective",
             {"objective_index": index, "new_text": text},
             auto_approve=auto_approve,
-        ))
+        )
 
-    def delete_objective(self, index: int, auto_approve: bool = True) -> SolveResult:
+    async def delete_objective(self, index: int, auto_approve: bool = True) -> SolveResult:
         """Delete an objective and replan."""
-        return _run_async(self._ws_action_async(
+        return await self._ws_action_async(
             "delete_objective",
             {"objective_index": index},
             auto_approve=auto_approve,
-        ))
+        )
 
     @property
     def status(self) -> dict:

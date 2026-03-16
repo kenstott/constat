@@ -1,13 +1,13 @@
 """Interactive ipywidgets for plan approval, clarification, and progress.
 
 All functions detect ipywidgets at import time and are only called when
-HAS_WIDGETS is True.  The background-thread ↔ main-kernel-thread bridge
-uses threading.Event so the WS event loop can block until widget callbacks fire.
+HAS_WIDGETS is True.  Uses asyncio.Future so ``await`` yields control
+back to the Jupyter event loop, allowing widget comm messages (button
+clicks) to be processed.
 """
 from __future__ import annotations
 
-import threading
-import time
+import asyncio
 from typing import Any
 
 
@@ -24,29 +24,33 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Bridge: background thread ↔ widget callback (main kernel thread)
+# Bridge: asyncio.Future resolved by widget callbacks
 # ---------------------------------------------------------------------------
 class _WidgetBridge:
-    """Block a background thread until a widget callback fires."""
+    """Await a result from a widget callback via asyncio.Future.
+
+    Widget callbacks run on the main kernel thread. The Future is resolved
+    via call_soon_threadsafe so it's safe from any thread context.
+    ``await bridge.wait()`` yields control to the event loop, allowing
+    Jupyter to process widget comm messages until the callback fires.
+    """
 
     def __init__(self) -> None:
-        self._event = threading.Event()
-        self._result: Any = None
+        self._loop = asyncio.get_event_loop()
+        self._future: asyncio.Future = self._loop.create_future()
 
-    def wait(self, timeout: float | None = None) -> Any:
-        self._event.wait(timeout=timeout)
-        return self._result
+    async def wait(self) -> Any:
+        return await self._future
 
     def resolve(self, result: Any) -> None:
-        self._result = result
-        self._event.set()
+        self._loop.call_soon_threadsafe(self._future.set_result, result)
 
 
 # ---------------------------------------------------------------------------
 # Plan approval widget
 # ---------------------------------------------------------------------------
-def widget_plan_approval(data: dict) -> dict:
-    """Display interactive plan approval widget, block until user decides.
+async def widget_plan_approval(data: dict) -> dict:
+    """Display interactive plan approval widget, await until user decides.
 
     Returns dict compatible with existing approve/reject protocol:
       {"approved": True, "deleted_steps": [...], "edited_steps": [...]}
@@ -83,7 +87,7 @@ def widget_plan_approval(data: dict) -> dict:
         label = W.Label(value=f"{num}. {goal}",
                         layout=W.Layout(width="500px"))
         edit_text = W.Text(value=goal, layout=W.Layout(width="500px", display="none"))
-        edit_btn = W.Button(description="✏", layout=W.Layout(width="32px"))
+        edit_btn = W.Button(description="\u270f", layout=W.Layout(width="32px"))
 
         def _toggle_edit(btn, _label=label, _text=edit_text):
             if _text.layout.display == "none":
@@ -146,7 +150,7 @@ def widget_plan_approval(data: dict) -> dict:
     ])
 
     display(box)
-    result = bridge.wait()
+    result = await bridge.wait()
     box.close()
     return result
 
@@ -154,8 +158,8 @@ def widget_plan_approval(data: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Clarification widget
 # ---------------------------------------------------------------------------
-def widget_clarification(data: dict) -> dict[str, str] | None:
-    """Display interactive clarification widget, block until user submits.
+async def widget_clarification(data: dict) -> dict[str, str] | None:
+    """Display interactive clarification widget, await until user submits.
 
     Returns {question_text: answer_text} dict, or None if no questions.
     """
@@ -190,14 +194,12 @@ def widget_clarification(data: dict) -> dict[str, str] | None:
                     _custom.layout.display = "none"
 
             radio.observe(_on_radio_change, names="value")
-            widget = W.VBox([q_label, radio, custom_text])
             question_widgets.append((text, ("radio", radio, custom_text)))
         else:
             text_input = W.Text(
                 placeholder="Your answer...",
                 layout=W.Layout(width="400px"),
             )
-            widget = W.VBox([q_label, text_input])
             question_widgets.append((text, ("text", text_input)))
 
     submit_btn = W.Button(description="Submit", button_style="primary")
@@ -231,7 +233,7 @@ def widget_clarification(data: dict) -> dict[str, str] | None:
 
     box = W.VBox(all_widgets)
     display(box)
-    result = bridge.wait()
+    result = await bridge.wait()
     box.close()
     return result
 
@@ -242,8 +244,7 @@ def widget_clarification(data: dict) -> dict[str, str] | None:
 class WidgetProgress:
     """ipywidgets-based progress display.
 
-    Displayed once from the background thread via display(); subsequent
-    updates are thread-safe property assignments.
+    Displayed once via display(); subsequent updates are property assignments.
     """
 
     def __init__(self) -> None:
@@ -279,13 +280,13 @@ class WidgetProgress:
             num = i + 1
             if status == "done":
                 dur_str = f" ({dur / 1000:.1f}s)" if dur else ""
-                lines.append(f"&nbsp;&nbsp;✓ Step {num}: {goal}{dur_str}")
+                lines.append(f"&nbsp;&nbsp;\u2713 Step {num}: {goal}{dur_str}")
             elif status == "running":
-                lines.append(f"&nbsp;&nbsp;⟳ Step {num}: {goal}...")
+                lines.append(f"&nbsp;&nbsp;\u27f3 Step {num}: {goal}...")
             elif status == "error":
-                lines.append(f"&nbsp;&nbsp;✗ Step {num}: {goal}")
+                lines.append(f"&nbsp;&nbsp;\u2717 Step {num}: {goal}")
             else:
-                lines.append(f"&nbsp;&nbsp;○ Step {num}: {goal}")
+                lines.append(f"&nbsp;&nbsp;\u25cb Step {num}: {goal}")
         self._step_list.value = "<br>".join(lines)
 
     def handle_event(self, event_type: str, data: dict) -> None:
@@ -379,7 +380,6 @@ class WidgetProgress:
                 self._progress_bar.value = self._progress_bar.max
                 self._progress_bar.bar_style = "success"
                 self._status_label.value = "<b>Done</b>"
-                # Mark any remaining as done
                 for i, s in enumerate(self._step_statuses):
                     if s == "running":
                         self._step_statuses[i] = "done"
