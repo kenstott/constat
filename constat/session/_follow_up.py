@@ -733,6 +733,7 @@ User feedback: {suggestion_text}
             "results": all_results,
             "output": combined_output,
             "final_answer": final_answer,
+            "brief": skip_insights,
             "suggestions": suggestions,
             "scratchpad": self.scratchpad.to_markdown(),
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
@@ -1087,6 +1088,15 @@ Prove all of the above claims and provide a complete audit trail."""
         else:
             combined_problem = original_problem
 
+        # Cache check: return cached proof if inputs unchanged and no guidance
+        proof_hash = self._compute_proof_hash(combined_problem)
+        if not guidance and self.last_proof_result and self.last_proof_result.get("success"):
+            stored_hash = (self.history.load_state(self.session_id) or {}).get("proof_inputs_hash")
+            if stored_hash == proof_hash:
+                logger.info("[prove_conversation] Returning cached proof (inputs unchanged)")
+                self._emit_cached_proof_events(self.last_proof_result)
+                return self.last_proof_result
+
         if guidance:
             combined_problem += f"\n\nAdditional guidance for this proof: {guidance}"
             logger.debug(f"[prove_conversation] Added guidance: {guidance[:100]}")
@@ -1187,7 +1197,7 @@ Prove all of the above claims and provide a complete audit trail."""
 
             # noinspection PyAttributeOutsideInit
             self.last_proof_result = result
-            self._save_proof_result(result)
+            self._save_proof_result(result, proof_hash=proof_hash)
             return result
 
         except Exception as e:
@@ -1199,7 +1209,7 @@ Prove all of the above claims and provide a complete audit trail."""
             # noinspection PyAttributeOutsideInit
             self._proof_step_hints = []
 
-    def replay(self, problem: str) -> dict:
+    def replay(self, problem: str, objective_index: int | None = None) -> dict:
         """
         Replay a previous session by re-executing stored code without LLM codegen.
 
@@ -1210,6 +1220,7 @@ Prove all of the above claims and provide a complete audit trail."""
 
         Args:
             problem: The original problem (used for answer synthesis)
+            objective_index: If provided, replay only entries with this objective_index
 
         Returns:
             Dict with results (same format as solve())
@@ -1219,6 +1230,8 @@ Prove all of the above claims and provide a complete audit trail."""
 
         # Load stored scratchpad entries
         entries = self.datastore.get_scratchpad()
+        if objective_index is not None:
+            entries = [e for e in entries if e.get("objective_index") == objective_index]
         if not entries:
             raise ValueError("No stored steps to replay")
 
@@ -1368,7 +1381,139 @@ Prove all of the above claims and provide a complete audit trail."""
             "results": all_results,
             "output": combined_output,
             "final_answer": final_answer,
+            "brief": skip_insights,
             "datastore_tables": self.datastore.list_tables(),
             "duration_ms": total_duration,
             "replay": True,
         }
+
+    def replay_proof(self) -> dict:
+        """
+        Re-execute stored inference codes from the proof chain without LLM codegen.
+
+        Loads inference codes and premises from history, re-executes the code
+        against current data, and rebuilds the proof chain.
+
+        Returns:
+            Dict with proof results
+        """
+        if not self.session_id:
+            return {"error": "No active session"}
+        if not self.datastore:
+            return {"error": "No datastore available"}
+        if not self.history:
+            return {"error": "No history available"}
+
+        # Load stored inference codes
+        inference_codes = self.history.list_inference_codes(self.session_id)
+        if not inference_codes:
+            return {"error": "No stored inference codes to replay"}
+
+        # Load stored premises
+        premises = self.history.list_inference_premises(self.session_id)
+
+        # Get original problem for context
+        original_problem = self.datastore.get_session_meta("problem") or "Unknown"
+
+        self._emit_event(StepEvent(
+            event_type="proof_start",
+            step_number=0,
+            data={"problem": original_problem[:100], "replay": True},
+        ))
+
+        proof_nodes = []
+        exec_globals = self._get_execution_globals()
+
+        for inf in inference_codes:
+            inf_id = inf["inference_id"]
+            name = inf.get("name", inf_id)
+            code = inf.get("code", "")
+
+            if not code:
+                continue
+
+            # Strip comment header line(s) from stored code
+            lines = code.split("\n")
+            code_lines = [l for l in lines if not l.startswith("# ")]
+            clean_code = "\n".join(code_lines).strip()
+            if not clean_code:
+                clean_code = code  # Use original if stripping removed everything
+
+            self._emit_event(StepEvent(
+                event_type="fact_start",
+                step_number=0,
+                data={"name": name, "replay": True},
+            ))
+
+            result = self.executor.execute(clean_code, exec_globals)
+
+            if result.success:
+                # Extract value from execution namespace
+                value = result.stdout.strip() if result.stdout else None
+                # Auto-save any DataFrames produced
+                self._auto_save_results(result.namespace, 0)
+
+                proof_nodes.append({
+                    "name": name,
+                    "value": value,
+                    "source": "replay",
+                    "confidence": 1.0,
+                    "code": clean_code,
+                })
+
+                self._emit_event(StepEvent(
+                    event_type="fact_resolved",
+                    step_number=0,
+                    data={
+                        "name": name,
+                        "value": value,
+                        "source": "replay",
+                        "confidence": 1.0,
+                        "replay": True,
+                    },
+                ))
+
+                # Update exec_globals with new namespace entries for dependent inferences
+                exec_globals.update(result.namespace)
+            else:
+                proof_nodes.append({
+                    "name": name,
+                    "value": None,
+                    "source": "replay",
+                    "confidence": 0.0,
+                    "error": result.stderr,
+                })
+
+                self._emit_event(StepEvent(
+                    event_type="fact_resolved",
+                    step_number=0,
+                    data={
+                        "name": name,
+                        "value": None,
+                        "source": "replay",
+                        "confidence": 0.0,
+                        "error": result.stderr,
+                        "replay": True,
+                    },
+                ))
+
+        success = all(n.get("confidence", 0) > 0 for n in proof_nodes)
+
+        proof_result = {
+            "success": success,
+            "proof_nodes": proof_nodes,
+            "problem": original_problem,
+            "replay": True,
+        }
+
+        self._emit_event(StepEvent(
+            event_type="proof_complete",
+            step_number=0,
+            data={"success": success, "replay": True},
+        ))
+
+        # noinspection PyAttributeOutsideInit
+        self.last_proof_result = proof_result
+        self._save_proof_result(proof_result)
+
+        return proof_result

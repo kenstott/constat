@@ -281,6 +281,10 @@ class Session:
         """Follow-up question in the same session context."""
         return await self._execute_async(question, is_followup=True, auto_approve=auto_approve, require_approval=require_approval, timeout=timeout)
 
+    async def replay(self, question: str, auto_approve: bool = True, timeout: float = 600, objective_index: int | None = None) -> SolveResult:
+        """Replay stored scratchpad code without LLM codegen."""
+        return await self._execute_async(question, is_followup=False, auto_approve=auto_approve, timeout=timeout, replay=True, objective_index=objective_index)
+
     async def reason_chain(self, question: str, auto_approve: bool = True, require_approval: bool | None = None, timeout: float = 600) -> SolveResult:
         """Auditable reasoning chain execution."""
         return await self._execute_async(question, is_followup=False, auto_approve=auto_approve, require_approval=require_approval, timeout=timeout)
@@ -400,6 +404,8 @@ class Session:
         auto_approve: bool,
         timeout: float,
         require_approval: bool | None = None,
+        replay: bool = False,
+        objective_index: int | None = None,
     ) -> SolveResult:
         import websockets
 
@@ -415,6 +421,10 @@ class Session:
             body: dict[str, Any] = {"problem": question, "is_followup": is_followup}
             if require_approval is not None:
                 body["require_approval"] = require_approval
+            if replay:
+                body["replay"] = True
+            if objective_index is not None:
+                body["objective_index"] = objective_index
             resp = self._client._http.post(
                 f"/api/sessions/{self.session_id}/query",
                 json=body,
@@ -844,6 +854,30 @@ class Session:
         resp = self._client._http.get(f"/api/sessions/{self.session_id}/scratchpad")
         resp.raise_for_status()
         return resp.json()
+
+    def has_scratchpad(self) -> bool:
+        """Check if session has stored scratchpad entries (indicates prior execution)."""
+        try:
+            data = self.scratchpad()
+            entries = data.get("entries", data.get("scratchpad", []))
+            return bool(entries)
+        except Exception:
+            return False
+
+    def cached_result(self) -> SolveResult:
+        """Build a SolveResult from existing session tables/artifacts (no execution)."""
+        tables = self._fetch_all_tables()
+        artifacts = self._fetch_all_artifacts()
+        output_data = self.output()
+        answer = output_data.get("output", output_data.get("final_answer", ""))
+        return SolveResult(
+            success=True,
+            answer=_strip_trailing_json(answer) if answer else "",
+            raw_output=answer,
+            tables=tables,
+            artifacts=artifacts,
+            _session=self,
+        )
 
     # -- Glossary (write operations) --
 

@@ -223,6 +223,14 @@ class QueryRequest(BaseModel):
         default=None,
         description="Override server auto-approval. When True, always require plan approval even for simple plans.",
     )
+    replay: bool = Field(
+        default=False,
+        description="Re-execute stored scratchpad code without LLM codegen.",
+    )
+    objective_index: int | None = Field(
+        default=None,
+        description="Replay only scratchpad entries with this objective_index.",
+    )
 
 
 class QueryResponse(BaseModel):

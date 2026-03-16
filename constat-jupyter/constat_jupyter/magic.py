@@ -14,6 +14,7 @@ execution blocks properly until the query completes.
 from __future__ import annotations
 
 import html as _html
+import json as _json
 import shlex
 from pathlib import Path
 from textwrap import dedent
@@ -54,6 +55,57 @@ def _load_cached_token(server_url: str) -> str | None:
         return tokens.get(server_url)
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def _sidecar_path(shell) -> Path | None:
+    """Get per-notebook sidecar path: <notebook_name>.constat.json."""
+    import os
+
+    nb_path = None
+    # Try IPython kernel metadata for notebook path
+    try:
+        nb_path = shell.user_ns.get("__session__")
+    except Exception:
+        pass
+    # VS Code sets __vsc_ipynb_file__
+    if not nb_path:
+        try:
+            nb_path = shell.user_ns.get("__vsc_ipynb_file__")
+        except Exception:
+            pass
+
+    if nb_path:
+        p = Path(nb_path)
+        return p.parent / f"{p.name}.constat.json"
+
+    # Fallback: generic sidecar in CWD (no notebook name available)
+    return Path(os.getcwd()) / ".constat.json"
+
+
+def _load_sidecar(path: Path) -> dict | None:
+    """Load sidecar file, return dict or None.
+
+    Falls back to legacy .constat.json in the same directory if the
+    per-notebook sidecar doesn't exist yet.
+    """
+    if path.exists():
+        try:
+            return _json.loads(path.read_text())
+        except (_json.JSONDecodeError, OSError):
+            return None
+    # Backward compat: try legacy .constat.json
+    legacy = path.parent / ".constat.json"
+    if legacy.exists() and legacy != path:
+        try:
+            return _json.loads(legacy.read_text())
+        except (_json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
+def _save_sidecar(path: Path, session_id: str, domains: list[str]) -> None:
+    """Write sidecar file with session_id and domains."""
+    path.write_text(_json.dumps({"session_id": session_id, "domains": domains}))
 
 
 def _esc(text: str) -> str:
@@ -197,6 +249,9 @@ class ConstatMagic(Magics):
         self.session: Session | None = None
         self.domains: list[str] = []
         self._has_asked: bool = False
+        self._is_resumed: bool = False
+        self._stored_cells: list[dict] = []   # loaded from server on resume
+        self._replay_cell_index: int = 0       # which stored cell we're replaying next
 
     def _ensure_connected(self) -> bool:
         if self.session is None:
@@ -260,25 +315,63 @@ class ConstatMagic(Magics):
             display(_error_html(_esc(str(e))))
             return
 
-        try:
-            self.session = self.client.create_session()
-        except Exception as e:
-            display(_error_html(_esc(str(e))))
-            return
-
+        # Parse requested domains
+        requested_domains = []
         if args:
-            self.domains = [d.strip() for d in args[0].split(",") if d.strip()]
+            requested_domains = [d.strip() for d in args[0].split(",") if d.strip()]
+
+        # Try to restore from sidecar
+        sidecar = _sidecar_path(self.shell)
+        stored = _load_sidecar(sidecar) if sidecar else None
+        restored = False
+
+        if stored and stored.get("session_id"):
+            stored_id = stored["session_id"]
+            stored_domains = stored.get("domains", [])
+            # Only restore if domains match (or none requested)
+            if not requested_domains or set(requested_domains) == set(stored_domains):
+                try:
+                    self.session = self.client.create_session(session_id=stored_id)
+                    # Check if session actually has scratchpad data (was restored)
+                    if self.session.has_scratchpad():
+                        restored = True
+                        self.domains = stored_domains
+                except Exception:
+                    pass  # Fall through to new session
+
+        if not restored:
             try:
-                self.session.set_domains(self.domains)
+                self.session = self.client.create_session()
             except Exception as e:
-                display(_error_html(f"Connected but failed to set domains: {_esc(str(e))}"))
-                self._inject_globals()
+                display(_error_html(_esc(str(e))))
                 return
 
+            self.domains = requested_domains
+            if self.domains:
+                try:
+                    self.session.set_domains(self.domains)
+                except Exception as e:
+                    display(_error_html(f"Connected but failed to set domains: {_esc(str(e))}"))
+                    self._inject_globals()
+                    return
+
+        # Write sidecar for next kernel restart
+        if sidecar and self.session:
+            try:
+                _save_sidecar(sidecar, self.session.session_id, self.domains)
+            except OSError:
+                pass  # Non-critical
+
         self._has_asked = False
+        self._is_resumed = restored
+        self._replay_cell_index = 0
+        if restored:
+            self._stored_cells = self._fetch_stored_cells()
+        else:
+            self._stored_cells = []
         self._inject_globals()
 
-        msg = f"Connected. Session: <code>{_esc(self.session.session_id)}</code>"
+        msg = f"{'Resumed' if restored else 'Connected'}. Session: <code>{_esc(self.session.session_id)}</code>"
         if self.domains:
             msg += f"<br>Domains: {_esc(', '.join(self.domains))}"
         display(_success_html(msg))
@@ -630,8 +723,22 @@ class ConstatMagic(Magics):
                     magic.session = session
                     magic.shell.user_ns['_constat_session'] = session
                     magic._has_asked = False
+                    magic._is_resumed = False
+                    # Update sidecar with new session
+                    sc = _sidecar_path(magic.shell)
+                    if sc:
+                        try:
+                            _save_sidecar(sc, session.session_id, magic.domains)
+                        except OSError:
+                            pass
 
-                if magic._has_asked:
+                # Per-cell replay: on resumed session, replay only this cell's objective
+                if magic._is_resumed and magic._replay_cell_index < len(magic._stored_cells):
+                    cell = magic._stored_cells[magic._replay_cell_index]
+                    result = await session.replay(question, auto_approve=auto_approve, objective_index=cell["objective_index"])
+                    magic._replay_cell_index += 1
+                    magic._has_asked = True
+                elif magic._has_asked:
                     result = await session.follow_up(question, auto_approve=auto_approve, require_approval=require_approval)
                 else:
                     result = await session.solve(question, auto_approve=auto_approve, require_approval=require_approval)
@@ -652,6 +759,25 @@ class ConstatMagic(Magics):
         return _constat_run
 
     # ---- Helpers ----
+
+    def _fetch_stored_cells(self) -> list[dict]:
+        """Derive ordered cell records from server scratchpad data."""
+        if not self.session:
+            return []
+        try:
+            data = self.session.scratchpad()
+            entries = data.get("entries", data.get("scratchpad", []))
+            # Collect distinct objective_index values in order, with their user_query
+            seen: set[int] = set()
+            cells: list[dict] = []
+            for e in entries:
+                oi = e.get("objective_index")
+                if oi is not None and oi not in seen:
+                    seen.add(oi)
+                    cells.append({"question": e.get("user_query", ""), "objective_index": oi})
+            return cells
+        except Exception:
+            return []
 
     def _inject_globals(self):
         """Inject client/session into notebook namespace for power users."""

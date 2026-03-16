@@ -150,6 +150,18 @@ def _api_result_to_dict(result: SolveResult | FollowUpResult) -> dict[str, Any]:
     }
 
 
+def _api_result_to_dict_raw(result: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a raw dict result (from session.replay()) to the standard output format."""
+    output = result.get("final_answer") or result.get("output", "")
+    return {
+        "success": result.get("success", False),
+        "output": output,
+        "final_answer": output,
+        "error": result.get("error"),
+        "suggestions": result.get("suggestions", []),
+    }
+
+
 def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEventLoop):
     """Create an approval callback that bridges sync session to async WebSocket.
 
@@ -400,7 +412,7 @@ def _create_event_handler(managed: ManagedSession):
     return handle_event
 
 
-def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEventLoop, is_followup: bool = False) -> dict[str, Any]:
+def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEventLoop, is_followup: bool = False, replay: bool = False, objective_index: int | None = None) -> dict[str, Any]:
     """Run a query synchronously (called from thread pool).
 
     Uses the ConstatAPI for solve/follow_up operations, ensuring
@@ -411,6 +423,8 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
         problem: Query problem text
         loop: Event loop for async bridge
         is_followup: Whether this is a follow-up to a previous query
+        replay: Whether to replay stored code instead of LLM codegen
+        objective_index: If replaying, only replay entries with this objective_index
 
     Returns:
         Query result dict
@@ -437,7 +451,7 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
         # command registry — skip them here so they fall through.
         stripped = problem.strip()
         _lower = stripped.lower()
-        _passthrough_commands = ("/redo", "/reason")
+        _passthrough_commands = ("/redo", "/reason", "/replay-reason", "/replay")
         if stripped.startswith("/") and not any(_lower.startswith(c) for c in _passthrough_commands):
             from constat.commands.registry import is_command
             if is_command(stripped):
@@ -450,6 +464,25 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
                     "final_answer": output,
                     "error": result.get("error") if not success else None,
                 }
+
+        # Replay-reason path: re-execute stored inference codes without LLM codegen
+        if _lower.startswith("/replay-reason"):
+            logger.info(f"Replaying proof code for session {managed.session_id}")
+            result = managed.session.replay_proof()
+            return _api_result_to_dict_raw(result)
+
+        # Replay path: re-execute stored scratchpad code without LLM codegen
+        # Triggered by replay=true in body OR /replay slash command
+        if replay or _lower.startswith("/replay"):
+            logger.info(f"Replaying stored code for session {managed.session_id}")
+            replay_problem = problem
+            if _lower.startswith("/replay"):
+                # Use stored problem from session
+                replay_problem = managed.session.datastore.get_session_meta("problem") if managed.session.datastore else None
+                if not replay_problem:
+                    return {"success": False, "error": "No previous problem found to replay."}
+            result = managed.session.replay(replay_problem, objective_index=objective_index)
+            return _api_result_to_dict_raw(result)
 
         # Auto-detect follow-up: if session already has datastore tables, treat as follow-up
         if not is_followup and managed.session.datastore and managed.session.datastore.list_tables():
@@ -485,6 +518,8 @@ async def _execute_query_async(
     problem: str,
     execution_id: str,
     is_followup: bool = False,
+    replay: bool = False,
+    objective_index: int | None = None,
 ) -> None:
     """Execute query in background and update session state.
 
@@ -493,6 +528,8 @@ async def _execute_query_async(
         problem: Query problem text
         execution_id: Execution tracking ID
         is_followup: Whether this is a follow-up to a previous query
+        replay: Whether to replay stored code instead of LLM codegen
+        objective_index: If replaying, only replay entries with this objective_index
     """
     loop = asyncio.get_event_loop()
 
@@ -501,7 +538,7 @@ async def _execute_query_async(
         # noinspection PyTypeChecker
         result = await loop.run_in_executor(
             _executor,
-            lambda: _run_query(managed, problem, loop, is_followup)
+            lambda: _run_query(managed, problem, loop, is_followup, replay=replay, objective_index=objective_index)
         )
 
         # Queue completion event
@@ -515,6 +552,7 @@ async def _execute_query_async(
                 "data": {
                     "execution_id": execution_id,
                     "output": final_output,
+                    "brief": result.get("brief", False),
                     "tables": result.get("datastore_tables", []),
                     "suggestions": result.get("suggestions", []),
                 },
@@ -619,7 +657,7 @@ async def submit_query(
     # Exception: /reason needs the async pipeline for real-time event delivery
     stripped = body.problem.strip()
     _lower = stripped.lower()
-    _async_commands = ("/redo", "/reason")
+    _async_commands = ("/redo", "/reason", "/replay")
     if stripped.startswith("/") and not any(_lower.startswith(c) for c in _async_commands):
         try:
             from constat.commands.registry import is_command
@@ -659,7 +697,7 @@ async def submit_query(
 
     # Start background execution using asyncio.create_task for better shutdown control
     task = asyncio.create_task(
-        _execute_query_async(managed, body.problem, execution_id, body.is_followup)
+        _execute_query_async(managed, body.problem, execution_id, body.is_followup, replay=body.replay, objective_index=body.objective_index)
     )
     _active_tasks.add(task)
     task.add_done_callback(_active_tasks.discard)
