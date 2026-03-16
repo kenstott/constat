@@ -110,6 +110,9 @@ export function applyDeepLink(link: DeepLink) {
 
   const store = useUIStore.getState()
 
+  // Ensure the artifact panel is visible
+  store.showArtifactPanel()
+
   // Expand the relevant accordion section
   const sectionMap: Record<string, string> = {
     table: 'databases',
@@ -173,6 +176,7 @@ interface UIState {
   setMenuOpen: (open: boolean) => void
   toggleConversationPanel: () => void
   toggleArtifactPanel: () => void
+  showArtifactPanel: () => void
   setArtifactPanelWidth: (width: number) => void
   toggleArtifactSection: (section: string) => void
   expandArtifactSection: (section: string) => void
@@ -268,6 +272,9 @@ export const useUIStore = create<UIState>()(
         // Only one panel can be hidden at a time
         conversationPanelHidden: !state.artifactPanelHidden ? false : state.conversationPanelHidden,
       })),
+      showArtifactPanel: () => set((state) =>
+        state.artifactPanelHidden ? { artifactPanelHidden: false } : state
+      ),
       setArtifactPanelWidth: (width) => set({ artifactPanelWidth: width }),
 
       toggleArtifactSection: (section) =>

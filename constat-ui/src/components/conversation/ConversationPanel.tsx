@@ -23,9 +23,10 @@ export function ConversationPanel() {
   const { session, messages, submitQuery, queuedMessages, removeQueuedMessage, isCreatingSession, shareSession, replanFromStep } = useSessionStore()
   const { openPanel: openProofPanel } = useProofStore()
   const { tables, artifacts } = useArtifactStore()
-  const { expandArtifactSection, expandResultStep } = useUIStore()
+  const { expandArtifactSection, expandResultStep, showArtifactPanel } = useUIStore()
 
   const handleRoleClick = (role: string) => {
+    showArtifactPanel()
     expandArtifactSection('agents')
     setTimeout(() => {
       const el = document.getElementById(`agent-${role}`)
@@ -38,7 +39,8 @@ export function ConversationPanel() {
   }
 
   const handleOutputClick = (stepNumber: number | undefined, output: { type: 'table' | 'artifact'; name: string; id: string }) => {
-    // Ensure the results accordion section is open
+    // Ensure the artifact panel is visible and results section is open
+    showArtifactPanel()
     expandArtifactSection('results')
     // Ensure the step group is expanded
     if (stepNumber) expandResultStep(stepNumber)

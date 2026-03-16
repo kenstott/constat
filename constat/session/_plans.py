@@ -392,6 +392,7 @@ class PlansMixin:
             "results": all_results,
             "output": combined_output,
             "final_answer": final_answer,
+            "brief": skip_insights,
             "datastore_tables": self.datastore.list_tables(),
             "duration_ms": total_duration,
             "replay": True,

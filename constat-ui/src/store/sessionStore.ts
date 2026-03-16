@@ -1182,10 +1182,30 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Compute total elapsed time from query submission to now
         const { querySubmittedAt } = get()
         const totalElapsedMs = querySubmittedAt ? Date.now() - querySubmittedAt : undefined
-        // Mark the last step message as isFinalInsight (avoids duplicate output bubble)
+        // Show synthesized summary (unless brief mode skipped synthesis)
         const { messages: currentMessages } = get()
         const lastStepMsg = [...currentMessages].reverse().find((m) => m.type === 'step')
-        if (lastStepMsg) {
+        const isBrief = event.data.brief as boolean
+        const summaryOutput = (event.data.output as string) || ''
+
+        if (lastStepMsg && !isBrief && summaryOutput) {
+          // Add synthesis summary as a separate message after the steps
+          addMessage({
+            type: 'output',
+            content: summaryOutput,
+            isFinalInsight: true,
+            stepDurationMs: totalElapsedMs,
+          })
+          // Mark last step with total elapsed (for results panel timing)
+          set((state) => ({
+            messages: state.messages.map((m) =>
+              m.id === lastStepMsg.id
+                ? { ...m, stepDurationMs: totalElapsedMs ?? m.stepDurationMs }
+                : m
+            ),
+          }))
+        } else if (lastStepMsg) {
+          // Brief mode — just mark last step as final
           set((state) => ({
             messages: state.messages.map((m) =>
               m.id === lastStepMsg.id
@@ -1194,11 +1214,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ),
           }))
         } else {
-          // No step messages (e.g. control intent) — add output bubble as before
-          const output = (event.data.output as string) || 'Analysis complete'
+          // No step messages (e.g. control intent) — add output bubble
           addMessage({
             type: 'output',
-            content: output,
+            content: summaryOutput || 'Analysis complete',
             isFinalInsight: true,
             stepDurationMs: totalElapsedMs,
           })

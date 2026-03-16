@@ -841,6 +841,21 @@ def objectives_command(ctx: CommandContext) -> CommandResult:
     return TextResult(success=True, content="Session objectives:\n" + "\n".join(lines))
 
 
+def replay_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /replay — re-execute stored code without LLM codegen"""
+    session = ctx.session
+    if not session.datastore:
+        return ErrorResult(error="No previous session to replay.")
+    problem = session.datastore.get_session_meta("problem")
+    if not problem:
+        return ErrorResult(error="No previous problem found to replay.")
+    try:
+        result = session.replay(problem)
+    except ValueError as e:
+        return ErrorResult(error=str(e))
+    return TextResult(success=result.get("success", False), content=result.get("output", "Replay complete."))
+
+
 def redo_command(ctx: CommandContext) -> CommandResult:
     """Usage: /redo [guidance] — replan and re-execute the last query"""
     session = ctx.session
@@ -889,6 +904,20 @@ def step_edit_command(ctx: CommandContext) -> CommandResult:
         return ErrorResult(error="Usage: /step-edit <step_number> <new_goal>")
     result = ctx.session.replan_from_step(step, mode='edit', edited_goal=new_goal)
     return TextResult(success=True, content=result.get('output', 'Replanned.'))
+
+
+def replay_reason_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /replay-reason — re-execute stored proof code without LLM codegen"""
+    session = ctx.session
+    if not session.datastore:
+        return ErrorResult(error="No active session to replay proof.")
+    result = session.replay_proof()
+    if result.get("error"):
+        return ErrorResult(error=result["error"])
+    return TextResult(
+        success=result.get("success", False),
+        content="Proof replay complete. See the Reasoning Chain panel for results.",
+    )
 
 
 def prove_command(ctx: CommandContext) -> CommandResult:

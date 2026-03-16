@@ -987,6 +987,7 @@ class SolveMixin:
             "results": [r for _, r in all_results],
             "output": combined_output,
             "final_answer": final_answer,
+            "brief": skip_insights,
             "suggestions": suggestions,
             "scratchpad": self.scratchpad.to_markdown(),
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],

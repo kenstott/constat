@@ -603,10 +603,66 @@ class CoreMixin:
         """
         return self._conversation_state.phase == Phase.EXECUTING
 
-    def _save_proof_result(self, result: dict) -> None:
+    def _compute_proof_hash(self, combined_problem: str) -> str:
+        """Hash proof inputs to detect when re-proof is needed."""
+        import hashlib
+        parts = [combined_problem]
+        if self.datastore:
+            entries = self.datastore.get_scratchpad()
+            parts.append(str(len(entries)))
+            for t in self.datastore.list_tables():
+                parts.append(f"{t['name']}:{t.get('version', 1)}")
+        return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
+    def _emit_cached_proof_events(self, result: dict) -> None:
+        """Emit proof events from cached result so UI updates correctly."""
+        self._emit_event(StepEvent(
+            event_type="proof_start",
+            step_number=0,
+            data={"problem": result.get("problem", "")[:100], "cached": True},
+        ))
+        for node in result.get("proof_nodes", []):
+            self._emit_event(StepEvent(
+                event_type="fact_resolved",
+                step_number=0,
+                data={
+                    "name": node["name"],
+                    "value": node.get("value"),
+                    "source": node.get("source", ""),
+                    "confidence": node.get("confidence", 1.0),
+                    "cached": True,
+                },
+            ))
+        self._emit_event(StepEvent(
+            event_type="proof_complete",
+            step_number=0,
+            data={
+                "success": True,
+                "confidence": result.get("confidence", 0.0),
+                "cached": True,
+            },
+        ))
+        summary = result.get("summary")
+        if not summary and self.datastore:
+            try:
+                art = self.datastore.get_artifact("proof_summary")
+                if art:
+                    summary = art.get("content", "")
+            except Exception:
+                pass
+        if summary:
+            self._emit_event(StepEvent(
+                event_type="proof_summary_ready",
+                step_number=0,
+                data={"summary": summary},
+            ))
+
+    def _save_proof_result(self, result: dict, proof_hash: str | None = None) -> None:
         """Persist last_proof_result to session state.json and proven grounding."""
         state = self.history.load_state(self.session_id) or {}
         state["last_proof_result"] = result
+        if proof_hash:
+            state["proof_inputs_hash"] = proof_hash
         self.history.save_state(self.session_id, state)
         self._persist_proven_grounding(result)
 

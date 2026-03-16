@@ -41,9 +41,26 @@ class Artifact:
     mime_type: str | None = None
     is_starred: bool = False
 
+    @staticmethod
+    def _highlight_code(code: str, language: str = "") -> str:
+        """Syntax-highlight code, falling back to plain <pre> if Pygments unavailable."""
+        try:
+            from pygments import highlight
+            from pygments.formatters import HtmlFormatter
+            from pygments.lexers import get_lexer_by_name, guess_lexer, TextLexer
+            try:
+                lexer = get_lexer_by_name(language) if language else guess_lexer(code)
+            except Exception:
+                lexer = TextLexer()
+            formatter = HtmlFormatter(nowrap=False, noclasses=True, style="default")
+            return highlight(code, lexer, formatter)
+        except ImportError:
+            import html as _html
+            return f"<pre><code>{_html.escape(code)}</code></pre>"
+
     def display(self) -> None:
         """Render artifact inline using IPython display system."""
-        from IPython.display import display, HTML, Markdown, Image
+        from IPython.display import display, HTML, Markdown, Image, SVG
 
         if self.content is None:
             raise ConstatError(f"Artifact '{self.name}' has no content. Fetch with session.artifact({self.id}).")
@@ -57,15 +74,16 @@ class Artifact:
                 fig.show()
             except ImportError:
                 display(HTML(self.content))
-        elif atype in ("png", "jpeg"):
+        elif atype in ("png", "jpeg", "gif", "webp"):
             import base64
             display(Image(data=base64.b64decode(self.content)))
+        elif atype == "svg":
+            display(SVG(data=self.content))
         elif atype == "html":
             display(HTML(self.content))
         elif atype in ("markdown", "md"):
             display(Markdown(self.content))
         elif atype == "table":
-            # Table artifacts contain JSON data — render as DataFrame
             import json as _json
             try:
                 data = _json.loads(self.content)
@@ -77,10 +95,25 @@ class Artifact:
                     display(HTML(df.to_html()))
             except (ValueError, TypeError):
                 display(HTML(f"<pre>{self.content[:500]}</pre>"))
+        elif atype == "csv":
+            import io as _io
+            try:
+                import pandas as pd
+                df = pd.read_csv(_io.StringIO(self.content))
+                if HAS_ITABLES:
+                    itables.show(df, buttons=["csvHtml5", "excelHtml5"])
+                else:
+                    display(HTML(df.to_html()))
+            except Exception:
+                display(HTML(f"<pre>{self.content}</pre>"))
         elif atype == "json":
-            display(HTML(f"<pre>{self.content}</pre>"))
+            display(HTML(self._highlight_code(self.content, "json")))
+        elif atype == "sql":
+            display(HTML(self._highlight_code(self.content, "sql")))
+        elif atype == "python":
+            display(HTML(self._highlight_code(self.content, "python")))
         elif atype == "code":
-            display(HTML(f"<pre><code>{self.content}</code></pre>"))
+            display(HTML(self._highlight_code(self.content)))
         elif atype in ("output", "text"):
             display(HTML(f"<pre>{self.content}</pre>"))
         elif atype == "error":
@@ -182,38 +215,109 @@ class SolveResult:
             print(f"\n--- {name} ---")
             print(df)
 
-    def display(self, published: bool = False) -> None:
-        """Rich display: answer + tables + artifacts.
+    _DEFAULT_HIDDEN = frozenset(("code", "sql", "python", "output", "text", "error"))
+    # Normalize aliases so users can write "md" or "markdown"
+    _TYPE_ALIASES = {"md": "markdown", "markdown": "markdown"}
+
+    @classmethod
+    def _normalize_types(cls, types: set[str] | None) -> set[str] | None:
+        if types is None:
+            return None
+        return {cls._TYPE_ALIASES.get(t, t) for t in types}
+
+    def _should_show_artifact(
+        self,
+        artifact: "Artifact",
+        *,
+        skip_tables: set[str],
+        include_types: set[str] | None = None,
+        exclude_types: set[str] | None = None,
+    ) -> bool:
+        atype = self._TYPE_ALIASES.get(artifact.artifact_type.lower(), artifact.artifact_type.lower())
+        # Duplicate table artifacts already rendered as DataFrames
+        if atype == "table" and artifact.name in skip_tables:
+            return False
+        # Explicit whitelist takes priority
+        if include_types is not None:
+            return atype in include_types
+        # Explicit blacklist
+        if exclude_types is not None:
+            return atype not in exclude_types
+        # Default: hide code and step-output types
+        return atype not in self._DEFAULT_HIDDEN
+
+    def _should_show_tables(
+        self, include_types: set[str] | None, exclude_types: set[str] | None,
+    ) -> bool:
+        """Whether DataFrame tables should be rendered."""
+        if include_types is not None:
+            return "table" in include_types
+        if exclude_types is not None:
+            return "table" not in exclude_types
+        return True
+
+    def display(
+        self,
+        published: bool = False,
+        show_code: bool = False,
+        show_output: bool = False,
+        include_types: set[str] | None = None,
+        exclude_types: set[str] | None = None,
+    ) -> None:
+        """Rich display: answer + new tables + new artifacts.
+
+        Only shows tables/artifacts from the current query (self.tables,
+        self.artifacts), not accumulated results from previous queries.
 
         Args:
-            published: If True, only show starred/published tables and artifacts.
+            published: If True, only show starred items among the new results.
+            show_code: If True, also display code/sql artifacts (hidden by default).
+            show_output: If True, also display step output/text/error artifacts (hidden by default).
+            include_types: Whitelist — only show these types (applies to both tables
+                and artifacts). Use ``{"md"}`` to show only markdown artifacts.
+            exclude_types: Blacklist — hide these types.
         """
         from IPython.display import display, Markdown
 
+        include_types = self._normalize_types(include_types)
+        exclude_types = self._normalize_types(exclude_types)
+
+        # show_code / show_output modify exclude set when no explicit filter given
+        if include_types is None and exclude_types is None:
+            if show_code or show_output:
+                exclude_types = set(self._DEFAULT_HIDDEN)
+                if show_code:
+                    exclude_types -= {"code", "sql", "python"}
+                if show_output:
+                    exclude_types -= {"output", "text", "error"}
+
+        show_tables = self._should_show_tables(include_types, exclude_types)
+        filter_kw = dict(include_types=include_types, exclude_types=exclude_types)
+
+        display(Markdown(self._strip_trailing_json(self.answer)))
+
         if published:
-            if self._session is None:
-                raise ConstatError("No session reference.")
-            display(Markdown(self._strip_trailing_json(self.answer)))
-
-            # Only starred tables
-            table_list = self._session.tables()
-            starred = {t["name"] for t in table_list if t.get("is_starred")}
-            for name in starred:
-                if name in self.tables:
-                    self._display_table(name, self.tables[name])
-
-            # Only starred artifacts (skip virtual table artifacts with negative IDs,
-            # and skip table artifacts whose data was already rendered above)
-            for a in self._session.artifacts():
-                if a.id < 0 or not a.is_starred:
-                    continue
-                if a.artifact_type.lower() == "table" and a.name in starred:
-                    continue
-                full = self._session.artifact(a.id)
-                full.display()
-        else:
-            display(Markdown(self._strip_trailing_json(self.answer)))
-            for name, df in self.tables.items():
-                self._display_table(name, df)
+            starred: set[str] = set()
+            if self._session is not None:
+                try:
+                    starred = {t["name"] for t in self._session.tables() if t.get("is_starred")}
+                except Exception:
+                    pass
+            if show_tables:
+                for name, df in self.tables.items():
+                    if name in starred:
+                        self._display_table(name, df)
             for artifact in self.artifacts:
-                artifact.display()
+                if not artifact.is_starred:
+                    continue
+                if self._should_show_artifact(artifact, skip_tables=starred if show_tables else set(), **filter_kw):
+                    artifact.display()
+        else:
+            shown_tables: set[str] = set()
+            if show_tables:
+                shown_tables = set(self.tables.keys())
+                for name, df in self.tables.items():
+                    self._display_table(name, df)
+            for artifact in self.artifacts:
+                if self._should_show_artifact(artifact, skip_tables=shown_tables, **filter_kw):
+                    artifact.display()
