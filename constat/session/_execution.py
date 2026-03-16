@@ -825,10 +825,15 @@ class ExecutionMixin:
         previous_role_id = self._current_agent_id
         self._current_agent_id = step.role_id
 
+        step_start_data: dict = {"goal": step.goal}
+        if step.role_id:
+            step_start_data["agent"] = step.role_id
+        if step.skill_ids:
+            step_start_data["skills"] = step.skill_ids
         self._emit_event(StepEvent(
             event_type="step_start",
             step_number=step.number,
-            data={"goal": step.goal}
+            data=step_start_data,
         ))
 
         max_attempts = self.session_config.max_retries_per_step

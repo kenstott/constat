@@ -6,6 +6,10 @@ Usage::
     %constat connect sales-analytics,hr-reporting
     %%constat
     What are the top 10 products by revenue?
+
+Cell magic (%%constat) is handled via an input transformer that rewrites
+the cell into ``await _constat_run(...)``, so Jupyter's native async
+execution blocks properly until the query completes.
 """
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ import shlex
 from pathlib import Path
 from textwrap import dedent
 
-from IPython.core.magic import Magics, magics_class, line_cell_magic, no_var_expand
+from IPython.core.magic import Magics, magics_class, line_magic, no_var_expand
 from IPython.display import display, HTML
 
 from .client import ConstatClient, Session
@@ -114,7 +118,74 @@ _USAGE = dedent("""\
     <code>%%constat</code> — Ask a question (cell body)<br>
     <code>%%constat new</code> — New session, then ask<br>
     <code>%%constat published</code> — Ask, display starred only<br>
+    <code>%%constat code</code> — Ask, also display code artifacts<br>
+    <code>%%constat output</code> — Ask, also display step output artifacts<br>
+    <code>%%constat verbose</code> — Ask, display all artifacts (code + output)<br>
+    <code>%%constat approve</code> — Ask, always require plan approval<br>
+    <code>%%constat auto</code> — Ask, auto-approve all plans (no widget)<br>
+    <code>%%constat include:md,html</code> — Only show these artifact types<br>
+    <code>%%constat exclude:table</code> — Hide these artifact types<br>
 """)
+
+
+# ---------------------------------------------------------------------------
+# Input transformer: rewrites %%constat cells into await _constat_run(...)
+# ---------------------------------------------------------------------------
+
+def _constat_cell_transform(lines: list[str]) -> list[str]:
+    """Rewrite ``%%constat`` cells into ``await _constat_run(...)``."""
+    if not lines:
+        return lines
+    first = lines[0].strip()
+    if not first.startswith('%%constat'):
+        return lines
+
+    after_magic = first[len('%%constat'):].strip()
+    tokens = after_magic.split() if after_magic else []
+    question = ''.join(lines[1:]).strip()
+
+    if not question:
+        return lines  # Let it error naturally
+
+    # Parse flags and type filters from tokens
+    flags: list[str] = []
+    include_types: list[str] = []
+    exclude_types: list[str] = []
+    for tok in tokens:
+        low = tok.lower()
+        if low.startswith("include:"):
+            include_types.extend(low[len("include:"):].split(","))
+        elif low.startswith("exclude:"):
+            exclude_types.extend(low[len("exclude:"):].split(","))
+        else:
+            flags.append(low)
+
+    published = 'published' in flags
+    new_session = 'new' in flags
+    show_code = 'code' in flags
+    show_output = 'output' in flags
+    if 'verbose' in flags:
+        show_code = show_output = True
+
+    # Approval modes:
+    #   (default)     — conditional: server auto-approves simple plans, widget for complex
+    #   "approve"     — always ask: force approval widget for every plan
+    #   "auto"        — never ask: client auto-approves everything
+    if 'auto' in flags:
+        auto_approve = True
+        require_approval = "None"
+    elif 'approve' in flags:
+        auto_approve = False
+        require_approval = "True"
+    else:
+        # Conditional: let server decide, show widget when server asks
+        auto_approve = False
+        require_approval = "None"
+
+    inc = repr(set(include_types)) if include_types else "None"
+    exc = repr(set(exclude_types)) if exclude_types else "None"
+
+    return [f"await _constat_run({repr(question)}, published={published}, new_session={new_session}, show_code={show_code}, show_output={show_output}, include_types={inc}, exclude_types={exc}, auto_approve={auto_approve}, require_approval={require_approval})\n"]
 
 
 @magics_class
@@ -133,16 +204,12 @@ class ConstatMagic(Magics):
             return False
         return True
 
-    # ---- Line / Cell magic ----
+    # ---- Line magic ----
 
     @no_var_expand
-    @line_cell_magic
-    def constat(self, line: str, cell: str | None = None):
-        """Constat magic: line mode dispatches subcommands, cell mode asks questions."""
-        if cell is not None:
-            return self._cell_handler(line, cell)
-
-        # Line magic mode
+    @line_magic
+    def constat(self, line: str):
+        """Constat line magic: dispatches subcommands."""
         line = line.strip()
         if not line:
             display(_info_html(_USAGE))
@@ -538,71 +605,51 @@ class ConstatMagic(Magics):
         except Exception as e:
             display(_error_html(_esc(str(e))))
 
-    def _cell_handler(self, line: str, cell: str):
-        if not self._ensure_connected():
-            return
+    # ---- Async run function (injected into user namespace) ----
 
-        question = cell.strip()
-        if not question:
-            display(_error_html("Cell body is empty. Write your question below <code>%%constat</code>."))
-            return
+    def _make_run_fn(self):
+        """Create the async _constat_run function bound to this magic instance."""
+        magic = self
 
-        flags = line.strip().lower().split() if line.strip() else []
-        published = "published" in flags
-        new_session = "new" in flags
+        async def _constat_run(
+            question: str, *, published: bool = False, new_session: bool = False,
+            show_code: bool = False, show_output: bool = False,
+            include_types: set[str] | None = None, exclude_types: set[str] | None = None,
+            auto_approve: bool = False, require_approval: bool | None = None,
+        ):
+            if magic.session is None:
+                display(_error_html("Not connected. Run <code>%constat connect</code> first."))
+                return None
 
-        # Build code lines to execute via IPython's native async cell runner.
-        # This runs on Jupyter's event loop so widgets, progress, and plan
-        # approval all work correctly.
-        body_lines: list[str] = []
+            try:
+                session = magic.session
+                if new_session:
+                    session = magic.client.create_session()
+                    if magic.domains:
+                        session.set_domains(magic.domains)
+                    magic.session = session
+                    magic.shell.user_ns['_constat_session'] = session
+                    magic._has_asked = False
 
-        if new_session:
-            body_lines.append("_constat_session = _constat_client.create_session()")
-            if self.domains:
-                body_lines.append(f"_constat_session.set_domains({repr(self.domains)})")
-            method = "solve"
-        elif self._has_asked:
-            method = "follow_up"
-        else:
-            method = "solve"
+                if magic._has_asked:
+                    result = await session.follow_up(question, auto_approve=auto_approve, require_approval=require_approval)
+                else:
+                    result = await session.solve(question, auto_approve=auto_approve, require_approval=require_approval)
 
-        body_lines.append(
-            f"_constat_result = await _constat_session.{method}({repr(question)}, auto_approve=False)"
-        )
+                magic._has_asked = True
+                magic.shell.user_ns['_constat_result'] = result
 
-        if published:
-            body_lines.append("_constat_result.display(published=True)")
-        else:
-            body_lines.append("_constat_result")
+                # Always use display() which renders answer as Markdown
+                result.display(
+                    published=published, show_code=show_code, show_output=show_output,
+                    include_types=include_types, exclude_types=exclude_types,
+                )
+                return None
+            except Exception as e:
+                display(_error_html(_esc(str(e))))
+                return None
 
-        body = "\n    ".join(body_lines)
-        code = (
-            f"try:\n"
-            f"    {body}\n"
-            f"except Exception as _constat_err:\n"
-            f"    import html as _html\n"
-            f"    from IPython.display import display, HTML\n"
-            f"    display(HTML("
-            f"'<div style=\"color:red;padding:8px;border:1px solid red;border-radius:4px\">"
-            f"<b>Error:</b> ' + _html.escape(str(_constat_err)) + '</div>'))"
-        )
-
-        # Use run_cell_async to run on Jupyter's event loop (supports await,
-        # widgets, and interactive plan approval). Schedule it as a task so
-        # it executes after this sync magic returns.
-        import asyncio
-
-        async def _run():
-            result = await self.shell.run_cell_async(code)
-            # Sync state after execution
-            ns = self.shell.user_ns
-            if new_session and "_constat_session" in ns:
-                self.session = ns["_constat_session"]
-                self._has_asked = True
-            elif not new_session:
-                self._has_asked = True
-
-        asyncio.ensure_future(_run())
+        return _constat_run
 
     # ---- Helpers ----
 
@@ -610,3 +657,4 @@ class ConstatMagic(Magics):
         """Inject client/session into notebook namespace for power users."""
         self.shell.user_ns["_constat_client"] = self.client
         self.shell.user_ns["_constat_session"] = self.session
+        self.shell.user_ns["_constat_run"] = self._make_run_fn()

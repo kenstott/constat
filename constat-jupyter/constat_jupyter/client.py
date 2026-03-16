@@ -247,8 +247,12 @@ class Session:
     def __init__(self, client: ConstatClient, session_id: str):
         self._client = client
         self.session_id = session_id
-        self._progress = WidgetProgress() if HAS_WIDGETS else PrintProgress()
+        self._progress = None  # Created fresh per query
         self._inject_css()
+
+    def _new_progress(self):
+        """Create a fresh progress widget for the current cell."""
+        self._progress = WidgetProgress() if HAS_WIDGETS else PrintProgress()
 
     @classmethod
     def _inject_css(cls) -> None:
@@ -269,17 +273,17 @@ class Session:
 
     # -- Query execution --
 
-    async def solve(self, question: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
+    async def solve(self, question: str, auto_approve: bool = True, require_approval: bool | None = None, timeout: float = 600) -> SolveResult:
         """Submit a question, stream progress, return result."""
-        return await self._execute_async(question, is_followup=False, auto_approve=auto_approve, timeout=timeout)
+        return await self._execute_async(question, is_followup=False, auto_approve=auto_approve, require_approval=require_approval, timeout=timeout)
 
-    async def follow_up(self, question: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
+    async def follow_up(self, question: str, auto_approve: bool = True, require_approval: bool | None = None, timeout: float = 600) -> SolveResult:
         """Follow-up question in the same session context."""
-        return await self._execute_async(question, is_followup=True, auto_approve=auto_approve, timeout=timeout)
+        return await self._execute_async(question, is_followup=True, auto_approve=auto_approve, require_approval=require_approval, timeout=timeout)
 
-    async def reason_chain(self, question: str, auto_approve: bool = True, timeout: float = 600) -> SolveResult:
+    async def reason_chain(self, question: str, auto_approve: bool = True, require_approval: bool | None = None, timeout: float = 600) -> SolveResult:
         """Auditable reasoning chain execution."""
-        return await self._execute_async(question, is_followup=False, auto_approve=auto_approve, timeout=timeout)
+        return await self._execute_async(question, is_followup=False, auto_approve=auto_approve, require_approval=require_approval, timeout=timeout)
 
     # -- WebSocket infrastructure --
 
@@ -395,13 +399,22 @@ class Session:
         is_followup: bool,
         auto_approve: bool,
         timeout: float,
+        require_approval: bool | None = None,
     ) -> SolveResult:
         import websockets
 
-        async with websockets.connect(self._ws_url(), additional_headers=self._ws_headers()) as ws:
+        self._new_progress()
+
+        # Snapshot existing tables/artifacts so we only show new ones
+        pre_tables = self._table_names()
+        pre_artifact_ids = self._artifact_ids()
+
+        async with websockets.connect(self._ws_url(), additional_headers=self._ws_headers(), ping_interval=30, ping_timeout=120) as ws:
             await asyncio.wait_for(ws.recv(), timeout=10)
 
             body: dict[str, Any] = {"problem": question, "is_followup": is_followup}
+            if require_approval is not None:
+                body["require_approval"] = require_approval
             resp = self._client._http.post(
                 f"/api/sessions/{self.session_id}/query",
                 json=body,
@@ -411,10 +424,25 @@ class Session:
             result = await self._ws_event_loop(ws, auto_approve, timeout)
 
         if result.success:
-            result.tables = self._fetch_all_tables()
+            result.tables = self._fetch_new_tables(pre_tables)
+            result.artifacts = self._fetch_new_artifacts(pre_artifact_ids)
             result._session = self
 
         return result
+
+    def _fetch_all_artifacts(self) -> list[Artifact]:
+        """Fetch all artifacts with content for inline display."""
+        try:
+            listing = self.artifacts()
+            full = []
+            for a in listing:
+                try:
+                    full.append(self.artifact(a.id))
+                except Exception:
+                    full.append(a)
+            return full
+        except Exception:
+            return []
 
     async def _ws_action_async(
         self,
@@ -426,7 +454,11 @@ class Session:
         """Send a WebSocket action (replan_from, edit_objective, etc.) and stream events."""
         import websockets
 
-        async with websockets.connect(self._ws_url(), additional_headers=self._ws_headers()) as ws:
+        self._new_progress()
+        pre_tables = self._table_names()
+        pre_artifact_ids = self._artifact_ids()
+
+        async with websockets.connect(self._ws_url(), additional_headers=self._ws_headers(), ping_interval=30, ping_timeout=120) as ws:
             await asyncio.wait_for(ws.recv(), timeout=10)
 
             msg: dict[str, Any] = {"action": action}
@@ -437,10 +469,26 @@ class Session:
             result = await self._ws_event_loop(ws, auto_approve, timeout)
 
         if result.success:
-            result.tables = self._fetch_all_tables()
+            result.tables = self._fetch_new_tables(pre_tables)
+            result.artifacts = self._fetch_new_artifacts(pre_artifact_ids)
             result._session = self
 
         return result
+
+    def _table_names(self) -> set[str]:
+        try:
+            resp = self._client._http.get(f"/api/sessions/{self.session_id}/tables")
+            if resp.is_success:
+                return {t["name"] for t in resp.json().get("tables", [])}
+        except Exception:
+            pass
+        return set()
+
+    def _artifact_ids(self) -> set[int]:
+        try:
+            return {a.id for a in self.artifacts()}
+        except Exception:
+            return set()
 
     def _fetch_all_tables(self) -> dict[str, polars.DataFrame]:
         resp = self._client._http.get(f"/api/sessions/{self.session_id}/tables")
@@ -452,8 +500,39 @@ class Session:
             try:
                 tables[name] = self.table(name)
             except Exception:
-                pass  # Skip tables that can't be downloaded
+                pass
         return tables
+
+    def _fetch_new_tables(self, pre_existing: set[str]) -> dict[str, polars.DataFrame]:
+        """Fetch only tables created since the snapshot."""
+        resp = self._client._http.get(f"/api/sessions/{self.session_id}/tables")
+        if not resp.is_success:
+            return {}
+        tables = {}
+        for t in resp.json().get("tables", []):
+            name = t["name"]
+            if name not in pre_existing:
+                try:
+                    tables[name] = self.table(name)
+                except Exception:
+                    pass
+        return tables
+
+    def _fetch_new_artifacts(self, pre_existing: set[int]) -> list[Artifact]:
+        """Fetch only artifacts created since the snapshot."""
+        try:
+            listing = self.artifacts()
+            full = []
+            for a in listing:
+                if a.id in pre_existing:
+                    continue
+                try:
+                    full.append(self.artifact(a.id))
+                except Exception:
+                    full.append(a)
+            return full
+        except Exception:
+            return []
 
     # -- Table access --
 

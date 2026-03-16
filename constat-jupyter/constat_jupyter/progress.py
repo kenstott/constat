@@ -4,9 +4,11 @@ from __future__ import annotations
 class PrintProgress:
     """Print-based progress renderer (Phase 1 — no ipywidgets dependency)."""
 
-    def __init__(self) -> None:
+    def __init__(self, step_offset: int = 0) -> None:
+        self._step_offset = step_offset
         self._total_steps = 0
         self._current_step = 0
+        self._base_step = 1
 
     def handle_event(self, event_type: str, data: dict) -> None:
         match event_type:
@@ -22,15 +24,19 @@ class PrintProgress:
                     steps = data.get("steps", [])
                     problem = data.get("problem", "")
                 self._total_steps = len(steps)
-                print(f"[plan] {problem} ({self._total_steps} steps)")
-                for s in steps:
-                    print(f"  {s.get('number', '?')}. {s.get('goal', '')}")
+                self._base_step = steps[0].get("number", 1) if steps else 1
+                last = self._base_step + self._total_steps - 1
+                print(f"[plan] {problem} (steps {self._base_step}\u2013{last})")
+                for i, s in enumerate(steps):
+                    num = self._base_step + i
+                    print(f"  {num}. {s.get('goal', '')}")
 
             case "step_start":
                 n = data.get("step_number", 0)
                 goal = data.get("goal", "")
                 self._current_step = n
-                print(f"[step {n}/{self._total_steps}] {goal}...")
+                total = self._base_step + self._total_steps - 1
+                print(f"[step {n}/{total}] {goal}...")
 
             case "step_generating":
                 n = data.get("step_number", self._current_step)
