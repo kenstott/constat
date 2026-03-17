@@ -115,27 +115,18 @@ class SessionWebSocket:
         """
         return self.handle_event
 
-    async def wait_for_approval(self, timeout: float = 300.0) -> Optional[dict]:
+    async def wait_for_approval(self) -> Optional[dict]:
         """Wait for approval response from WebSocket client.
 
-        Args:
-            timeout: Maximum seconds to wait for response
-
         Returns:
-            Approval response dict or None if timed out
+            Approval response dict or None if interrupted
         """
         self.approval_event = asyncio.Event()
         self.approval_response = None
 
         try:
-            await asyncio.wait_for(
-                self.approval_event.wait(),
-                timeout=timeout,
-            )
+            await self.approval_event.wait()
             return self.approval_response
-        except asyncio.TimeoutError:
-            logger.warning(f"Approval timeout for session {self.session_id}")
-            return None
         finally:
             self.approval_event = None
 

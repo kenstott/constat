@@ -493,3 +493,26 @@ class TestCloseAndReopen:
             assert len(s2.get_scratchpad()) == 1
         finally:
             s2.close()
+
+
+class TestListTablesIsView:
+    def test_list_tables_is_view_flag(self, store):
+        """Tables should have is_view=False, views should have is_view=True."""
+        df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+        store.save_dataframe("real_table", df, step_number=1)
+        # Create a view via the internal connection
+        with store._locked_conn() as conn:
+            conn.execute("CREATE VIEW my_view AS SELECT * FROM real_table WHERE a > 1")
+        # Register the view so it shows up in list_tables
+        store._registry.register_table(
+            user_id=store._user_id,
+            session_id=store._session_id,
+            name="my_view",
+            file_path="",
+            step_number=1,
+            row_count=1,
+        )
+
+        tables = {t["name"]: t for t in store.list_tables()}
+        assert tables["real_table"]["is_view"] is False
+        assert tables["my_view"]["is_view"] is True

@@ -92,6 +92,7 @@ async def list_tables(
                     step_number=t.get("step_number", 0),
                     columns=t.get("columns", []),
                     is_starred=is_starred,
+                    is_view=t.get("is_view", False),
                     version=t.get("version", 1),
                     version_count=t.get("version_count", 1),
                 )

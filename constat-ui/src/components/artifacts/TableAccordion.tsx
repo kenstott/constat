@@ -12,6 +12,8 @@ import {
   XMarkIcon,
   StarIcon as StarOutline,
   EllipsisVerticalIcon,
+  EyeIcon,
+  TableCellsIcon,
 } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import { useSessionStore } from '@/store/sessionStore'
@@ -342,7 +344,12 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
             <span className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">
               {table.name}
             </span>
-            <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">
+            <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0 flex items-center gap-0.5" title={table.is_view ? 'Lazy view' : 'Materialized table'}>
+              {table.is_view ? (
+                <EyeIcon className="w-3.5 h-3.5" />
+              ) : (
+                <TableCellsIcon className="w-3.5 h-3.5" />
+              )}
               ({table.row_count} rows)
             </span>
             <div className="relative flex-shrink-0" ref={versionDropdownRef}>
@@ -478,7 +485,12 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
                 <span className="text-lg font-semibold text-gray-800 dark:text-gray-200">
                   {table.name}
                 </span>
-                <span className="text-sm text-gray-500 dark:text-gray-400">
+                <span className="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-1" title={table.is_view ? 'Lazy view' : 'Materialized table'}>
+                  {table.is_view ? (
+                    <EyeIcon className="w-4 h-4" />
+                  ) : (
+                    <TableCellsIcon className="w-4 h-4" />
+                  )}
                   ({table.row_count} rows)
                 </span>
               </div>

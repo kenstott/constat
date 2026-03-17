@@ -193,12 +193,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Try to restore messages, facts, and codes in parallel if reconnecting
     let restoredMessages: Message[] = []
     if (!forceNew) {
-      const [messagesRes, factsRes, _codesRes] = await Promise.allSettled([
+      const artifactStore = useArtifactStore.getState()
+      const [messagesRes, factsRes, _codesRes, _artifactsRes] = await Promise.allSettled([
         sessionsApi.getMessages(sessionId),
         sessionsApi.getProofFacts(sessionId),
         Promise.all([
-          useArtifactStore.getState().fetchStepCodes(sessionId),
-          useArtifactStore.getState().fetchInferenceCodes(sessionId),
+          artifactStore.fetchStepCodes(sessionId),
+          artifactStore.fetchInferenceCodes(sessionId),
+        ]),
+        Promise.all([
+          artifactStore.fetchTables(sessionId),
+          artifactStore.fetchArtifacts(sessionId),
         ]),
       ])
 
@@ -213,6 +218,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             timestamp: new Date(m.timestamp),
             stepNumber: m.stepNumber,
             isFinalInsight: m.isFinalInsight,
+            stepDurationMs: m.stepDurationMs,
+            role: m.role,
+            skills: m.skills,
           }))
           console.log('[createSession] Restored', restoredMessages.length, 'messages')
         }

@@ -214,10 +214,10 @@ def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEve
 
         future = asyncio.run_coroutine_threadsafe(wait_for_approval(), loop)
         try:
-            response = future.result(timeout=600)  # 10 minute timeout
+            response = future.result()
         except Exception as e:
             logger.error(f"Error waiting for approval: {type(e).__name__}: {e}")
-            return PlanApprovalResponse.approve()  # Default to approve on error
+            return PlanApprovalResponse.reject("Approval interrupted")
 
         if response is None:
             return PlanApprovalResponse.approve()
@@ -294,7 +294,7 @@ def _create_clarification_callback(managed: ManagedSession, loop: asyncio.Abstra
 
         future = asyncio.run_coroutine_threadsafe(wait_for_clarification(), loop)
         try:
-            response = future.result(timeout=600)  # 10 minute timeout for all questions
+            response = future.result()
         except Exception as e:
             logger.error(f"Error waiting for clarification: {e}")
             return ClarificationResponse(answers={}, skip=True)

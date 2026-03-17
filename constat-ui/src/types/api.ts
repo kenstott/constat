@@ -141,6 +141,7 @@ export interface TableInfo {
   step_number: number
   columns: string[]
   is_starred?: boolean
+  is_view?: boolean
   role_id?: string | null  // Role provenance - which role created this table
   version?: number
   version_count?: number

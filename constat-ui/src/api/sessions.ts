@@ -1000,6 +1000,9 @@ export interface StoredMessage {
   timestamp: string
   stepNumber?: number
   isFinalInsight?: boolean
+  stepDurationMs?: number
+  role?: string
+  skills?: string[]
 }
 
 export async function getMessages(sessionId: string): Promise<{ messages: StoredMessage[] }> {

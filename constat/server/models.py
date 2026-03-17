@@ -343,6 +343,7 @@ class TableInfo(BaseModel):
         description="Column names",
     )
     is_starred: bool = Field(default=False, description="Whether the table is starred/promoted")
+    is_view: bool = Field(default=False, description="Whether this is a lazy view rather than a materialized table")
     version: int = Field(default=1, description="Current version number")
     version_count: int = Field(default=1, description="Total number of versions")
 

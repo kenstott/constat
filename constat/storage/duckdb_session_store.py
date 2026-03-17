@@ -373,6 +373,15 @@ class DuckDBSessionStore:
             user_id=self._user_id,
             session_id=self._session_id,
         )
+        # Collect view names from information_schema
+        with self._locked_conn() as conn:
+            view_names = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'main' AND table_type = 'VIEW'"
+                ).fetchall()
+            }
         return [
             {
                 "name": t.name,
@@ -384,6 +393,7 @@ class DuckDBSessionStore:
                 "is_final_step": t.is_final_step,
                 "version": self._version_count(t.name),
                 "version_count": self._version_count(t.name),
+                "is_view": t.name in view_names,
             }
             for t in tables
         ]

@@ -307,6 +307,9 @@ function MainApp() {
       timestamp: m.timestamp.toISOString(),
       stepNumber: m.stepNumber,
       isFinalInsight: m.isFinalInsight,
+      stepDurationMs: m.stepDurationMs,
+      role: m.role,
+      skills: m.skills,
     }))
     const serialized = JSON.stringify(messagesToSave)
 
