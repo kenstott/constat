@@ -515,6 +515,12 @@ export function ArtifactPanel() {
   const [configCollapsed, setConfigCollapsed] = useState(() => localStorage.getItem('constat-config-collapsed') === 'true')
   const [improvementCollapsed, setImprovementCollapsed] = useState(() => localStorage.getItem('constat-improvement-collapsed') === 'true')
   const [codeLogCollapsed, setCodeLogCollapsed] = useState(() => localStorage.getItem('constat-codelog-collapsed') === 'true')
+  useEffect(() => {
+    if (expandedArtifactSections.includes('results') && resultsCollapsed) {
+      setResultsCollapsed(false)
+      localStorage.setItem('constat-results-collapsed', 'false')
+    }
+  }, [expandedArtifactSections, resultsCollapsed])
   // Move-to-domain state
   const [domainList, setDomainList] = useState<{ filename: string; name: string }[]>([])
   const [movingSkill, setMovingSkill] = useState<string | null>(null)
