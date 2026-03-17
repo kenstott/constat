@@ -101,8 +101,8 @@ Return a JSON array of relationships found. For each relationship:
 - evidence: brief quote or paraphrase from the excerpt supporting this relationship
 - confidence: high, medium, or low
 
-VERB SELECTION — Choose from this canonical list: {canonical_verb_list}
-If none of these accurately describes the relationship, you may use a different UPPER_SNAKE_CASE verb, but strongly prefer the canonical list.
+VERB SELECTION — You MUST choose from this canonical list: {canonical_verb_list}
+Only use a verb outside this list if NO canonical verb can reasonably describe the relationship. This should be extremely rare. When in doubt, pick the closest canonical verb — e.g. use CREATES not GENERATES, PROCESSES not FULFILLS, REFERENCES not KNOWS.
 
 NEVER use bare "HAS" — always qualify as HAS_ONE (composition), HAS_MANY (collection), or HAS_KIND (taxonomy).
 NEVER use CONTAINS (use HAS_MANY), BELONGS_TO (use HAS_ONE with swapped direction), or IS_TYPE_OF (use HAS_KIND with swapped direction).
@@ -144,8 +144,8 @@ For each group of terms below, you receive:
 
 Infer **cross-cutting** relationships between terms based on their definitions and business semantics.
 
-VERB SELECTION — Choose from this canonical list: {canonical_verb_list}
-If none of these accurately describes the relationship, you may use a different UPPER_SNAKE_CASE verb, but strongly prefer the canonical list.
+VERB SELECTION — You MUST choose from this canonical list: {canonical_verb_list}
+Only use a verb outside this list if NO canonical verb can reasonably describe the relationship. This should be extremely rare. When in doubt, pick the closest canonical verb — e.g. use CREATES not GENERATES, PROCESSES not FULFILLS, REFERENCES not KNOWS.
 
 NEVER use bare "HAS" — always qualify as HAS_ONE (composition), HAS_MANY (collection), or HAS_KIND (taxonomy).
 NEVER use CONTAINS (use HAS_MANY), BELONGS_TO (use HAS_ONE with swapped direction), or IS_TYPE_OF (use HAS_KIND with swapped direction).
@@ -178,7 +178,8 @@ Respond ONLY with a JSON array:
 
 Return [] if no cross-cutting relationships can be inferred."""
 
-# Bare "HAS" is never allowed — must be qualified
+# Bare "HAS" is never allowed — must be qualified.
+# Near-synonyms of canonical verbs are remapped to keep the graph consistent.
 _VERB_REPLACEMENTS = {
     "HAS": "HAS_ONE",
     "CONTAIN": "CONTAINS",
@@ -186,13 +187,59 @@ _VERB_REPLACEMENTS = {
     "BELONG_TO": "BELONGS_TO",
     "BELONGS_TO": "HAS_ONE",
     "IS_TYPE_OF": "HAS_KIND",
+    # Near-synonym remapping → canonical verbs
+    "GENERATES": "CREATES",
+    "PRODUCES": "CREATES",
+    "BUILDS": "CREATES",
+    "CONSTRUCTS": "CREATES",
+    "FULFILLS": "PROCESSES",
+    "COMPLETES": "PROCESSES",
+    "HANDLES": "PROCESSES",
+    "EXECUTES": "PROCESSES",
+    "PERFORMS": "PROCESSES",
+    "KNOWS": "REFERENCES",
+    "RELATES_TO": "REFERENCES",
+    "ASSOCIATED_WITH": "REFERENCES",
+    "LINKED_TO": "REFERENCES",
+    "OPERATES": "PROCESSES",
+    "RUNS": "PROCESSES",
+    "SUBMITS": "PLACES",
+    "INITIATES": "TRIGGERS",
+    "STARTS": "TRIGGERS",
+    "LAUNCHES": "TRIGGERS",
+    "CAUSES": "DRIVES",
+    "INFLUENCES": "DRIVES",
+    "IMPACTS": "DRIVES",
+    "DEPENDS_ON": "REQUIRES",
+    "NEEDS": "REQUIRES",
+    "ALLOWS": "ENABLES",
+    "PERMITS": "ENABLES",
+    "AUTHORIZES": "APPROVES",
+    "VALIDATES": "APPROVES",
+    "CONFIRMS": "APPROVES",
+    "DELIVERS": "SENDS",
+    "EMITS": "SENDS",
+    "ACCEPTS": "RECEIVES",
+    "OBTAINS": "RECEIVES",
+    "MOVES": "TRANSFERS",
+    "ASSIGNS": "TRANSFERS",
+    "SUPERVISES": "MANAGES",
+    "OVERSEES": "MANAGES",
+    "CONTROLS": "MANAGES",
+    "LEADS": "MANAGES",
+    "INCLUDES": "HAS_MANY",
 }
 # Verbs whose direction is inverted (child→parent becomes parent→child after replacement)
 _SWAP_DIRECTION_VERBS = {"BELONGS_TO", "IS_TYPE_OF"}
 
 
-def _normalize_verb(verb: str) -> tuple[str, bool]:
+def _normalize_verb(verb: str, preferred_set: set[str] | None = None) -> tuple[str, bool]:
     """Normalize verb to UPPER_SNAKE_CASE, replacing disallowed bare forms.
+
+    Args:
+        verb: Raw verb string.
+        preferred_set: If provided, skip synonym remapping for verbs already
+            in the preferred set (config may intentionally include them).
 
     Returns:
         (normalized_verb, swap_direction) — swap_direction is True when
@@ -202,6 +249,9 @@ def _normalize_verb(verb: str) -> tuple[str, bool]:
         verb = _to_third_person(verb.lower())
     verb = verb.upper()
     swap = verb in _SWAP_DIRECTION_VERBS
+    # Skip synonym remapping if verb is explicitly in the config preferred set
+    if preferred_set and verb in preferred_set:
+        return verb, swap
     verb = _VERB_REPLACEMENTS.get(verb, verb)
     return verb, swap
 
@@ -550,7 +600,7 @@ def extract_svo_relationships(
                 lemma = verb.lemma_.lower()
                 if lemma in _NON_VERBS:
                     continue
-                verb_form, swap = _normalize_verb(lemma)
+                verb_form, swap = _normalize_verb(lemma, preferred_set=_ap)
                 category = categorize_verb(verb_form)
                 confidence = 1.0 if verb_form in _ap else 0.5
 
@@ -795,7 +845,7 @@ def refine_relationships_with_llm(
                 verb = item.get("verb", "").strip()
                 if not verb:
                     continue
-                verb, swap = _normalize_verb(verb)
+                verb, swap = _normalize_verb(verb, preferred_set=_ap)
 
                 # Use LLM-provided category, fall back to our own categorization
                 verb_category = item.get("verb_category", "")
@@ -1044,7 +1094,7 @@ def infer_glossary_relationships(
                     continue
 
                 # Normalize verb to Cypher UPPER_SNAKE_CASE
-                verb, swap = _normalize_verb(verb)
+                verb, swap = _normalize_verb(verb, preferred_set=_ap)
                 if swap:
                     subj_lower, obj_lower = obj_lower, subj_lower
 
