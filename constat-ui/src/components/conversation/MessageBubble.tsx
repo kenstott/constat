@@ -279,16 +279,8 @@ export function MessageBubble({
           >
           {stepNumber !== undefined && (
             <div className={`flex items-center gap-2 ${stepMode === 'oneline' ? '' : 'mb-1'}`}>
-              <span
-                className="text-xs font-medium text-gray-500 dark:text-gray-400"
-                title={stepOutputs && stepOutputs.length > 0
-                  ? `${stepOutputs.filter(o => o.type === 'table').length} table(s), ${stepOutputs.filter(o => o.type === 'artifact').length} artifact(s)`
-                  : undefined}
-              >
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
                 Step {stepNumber}
-                {stepMode === 'oneline' && stepOutputs && stepOutputs.length > 0 && (
-                  <span className="ml-1 text-gray-400 dark:text-gray-500">({stepOutputs.length})</span>
-                )}
               </span>
               {isPending && isLive ? (
                 <LightBulbIcon className="w-3.5 h-3.5 text-amber-500 animate-pulse" />

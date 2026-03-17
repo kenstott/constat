@@ -1712,14 +1712,21 @@ ${skill.body}`
               </p>
             ) : (
               <div className="space-y-3">
-                {resultsByStep.map(({ stepNumber, items }) => {
+                {resultsByStep.map(({ stepNumber, goal, items }) => {
                   const isStepCollapsed = collapsedResultSteps.has(stepNumber)
+                  const tableCount = items.filter(i => i.type === 'table').length
+                  const artifactCount = items.filter(i => i.type === 'artifact').length
+                  const tooltipParts = [
+                    goal,
+                    `${tableCount} table(s), ${artifactCount} artifact(s)`,
+                  ].filter(Boolean).join('\n')
                   return (
                   <div key={`step-group-${stepNumber}`}>
                     {stepNumber > 0 && (
                       <button
                         onClick={() => toggleResultStep(stepNumber)}
                         className="flex items-center gap-1 text-[10px] font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-1 px-1 hover:text-gray-600 dark:hover:text-gray-300 transition-colors w-full text-left"
+                        title={tooltipParts}
                       >
                         <ChevronDownIcon className={`w-3 h-3 transition-transform ${isStepCollapsed ? '-rotate-90' : ''}`} />
                         Step {stepNumber}
