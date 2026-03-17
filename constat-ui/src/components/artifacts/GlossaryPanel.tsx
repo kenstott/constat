@@ -1,6 +1,6 @@
 // Glossary Panel — unified glossary view replacing EntityAccordion
 
-import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef, Fragment } from 'react'
 import { DomainBadge } from '../common/DomainBadge'
 import {
   ChevronRightIcon,
@@ -21,6 +21,7 @@ import {
   EyeSlashIcon,
   CheckIcon,
 } from '@heroicons/react/24/outline'
+import { Dialog, DialogPanel } from '@headlessui/react'
 import { useGlossaryStore } from '@/store/glossaryStore'
 import { useUIStore } from '@/store/uiStore'
 import { useSessionStore } from '@/store/sessionStore'
@@ -3458,6 +3459,12 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
   } = useGlossaryStore()
 
   const [showConfirm, setShowConfirm] = useState(false)
+  const [taxonomyPhases, setTaxonomyPhases] = useState<Record<string, boolean>>({
+    early_relationships: true,
+    definitions: true,
+    late_relationships: true,
+    clustering: true,
+  })
   const [showDeleteDrafts, setShowDeleteDrafts] = useState(false)
   const [deletingDrafts, setDeletingDrafts] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
@@ -3749,9 +3756,10 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
           </div>
         </div>
       )}
-      {showConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-sm w-full mx-4 p-4 space-y-3">
+      <Dialog open={showConfirm} onClose={() => setShowConfirm(false)} className="relative z-50">
+        <div className="fixed inset-0 bg-black/40" aria-hidden="true" />
+        <div className="fixed inset-0 flex items-center justify-center p-4">
+          <DialogPanel className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-sm w-full p-4 space-y-3">
             <div className="flex items-center gap-2">
               <SparklesIcon className="w-5 h-5 text-purple-500" />
               <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">
@@ -3759,16 +3767,31 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
               </h3>
             </div>
             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-              This will use AI to analyze all entities and:
+              Select which phases to run. Unchecked phases use existing data.
             </p>
-            <ul className="text-xs text-gray-600 dark:text-gray-400 space-y-1 ml-4 list-disc">
-              <li>Generate definitions for each entity</li>
-              <li>Build a parent/child hierarchy</li>
-              <li>Extract subject-verb-object relationships</li>
-            </ul>
+            <div className="space-y-2">
+              {([
+                { key: 'early_relationships', label: 'Early Relationships', desc: 'Extract text-driven relationships (spaCy + LLM)' },
+                { key: 'definitions', label: 'Definitions', desc: 'Generate definitions and parent/child hierarchy' },
+                { key: 'late_relationships', label: 'Late Relationships', desc: 'Infer glossary-based relationships and deduplicate' },
+                { key: 'clustering', label: 'Clustering', desc: 'Rebuild term clusters' },
+              ] as const).map(({ key, label, desc }) => (
+                <label key={key} className="flex items-start gap-2 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={taxonomyPhases[key]}
+                    onChange={() => setTaxonomyPhases(p => ({ ...p, [key]: !p[key] }))}
+                    className="mt-0.5 rounded border-gray-300 text-purple-500 focus:ring-purple-500"
+                  />
+                  <div>
+                    <div className="text-xs font-medium text-gray-700 dark:text-gray-300 group-hover:text-purple-600 dark:group-hover:text-purple-400">{label}</div>
+                    <div className="text-[10px] text-gray-500 dark:text-gray-500">{desc}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
             <p className="text-xs text-gray-500 dark:text-gray-500">
               Generated terms will be marked as <span className="font-medium">draft</span> (AI-authored).
-              You can review, edit, and promote them to domain config.
             </p>
             <div className="flex justify-end gap-2 pt-1">
               <button
@@ -3780,16 +3803,16 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
               <button
                 onClick={() => {
                   setShowConfirm(false)
-                  generateGlossary(sessionId)
+                  generateGlossary(sessionId, taxonomyPhases)
                 }}
                 className="text-xs px-3 py-1.5 rounded bg-purple-500 text-white hover:bg-purple-600"
               >
                 Generate
               </button>
             </div>
-          </div>
+          </DialogPanel>
         </div>
-      )}
+      </Dialog>
     </div>
   )
 

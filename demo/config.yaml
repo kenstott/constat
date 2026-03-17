@@ -123,6 +123,15 @@ databases_description: |
   - web_metrics: Daily web analytics CSV (use file_web_metrics path)
   - events: Clickstream events JSON (use file_events path)
 
+relationships:
+  preferred_verbs:
+    hierarchy: [MANAGES, REPORTS_TO]
+    action: [CREATES, PROCESSES, APPROVES, PLACES]
+    flow: [SENDS, RECEIVES, TRANSFERS]
+    causation: [DRIVES, REQUIRES, ENABLES]
+    temporal: [PRECEDES, FOLLOWS, TRIGGERS]
+    association: [REFERENCES, WORKS_IN, PARTICIPATES_IN, USES]
+
 system_prompt: |
   You are a business analyst assistant analyzing company data.
 

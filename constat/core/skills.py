@@ -20,17 +20,20 @@ SKILL.md format:
     name: skill-name
     description: What this skill does
     allowed-tools: [Read, Grep]
-    disable-model-invocation: false
-    user-invocable: true
-    context: fork
-    agent: Explore
-    model: sonnet
-    argument-hint: [filename]
-    exports:
-      - script: proof.py
-        functions: [run_proof, helper_fn]
-    dependencies:
-      - other-skill-name
+    metadata:
+      disable-model-invocation: false
+      user-invocable: true
+      context: fork
+      agent: Explore
+      model: sonnet
+      argument-hint: "[filename]"
+      exports:
+        - script: proof.py
+          functions: [run_proof, helper_fn]
+      dependencies:
+        - other-skill-name
+      required-resources:
+        - schema:chinook
     ---
 
     Markdown instructions here...
@@ -126,6 +129,9 @@ class Skill:
     # Skill dependencies — names of other skills whose exports this skill calls
     dependencies: list[str] = field(default_factory=list)
 
+    # Resource requirements (same format as grounding patterns: schema:db.table, api:endpoint, document:name)
+    required_resources: list[str] = field(default_factory=list)
+
     # Domain scoping
     domain: str = ""   # owning domain filename ("" = unscoped/global)
     source: str = ""   # "system" | "shared" | "user" | "domain"
@@ -188,14 +194,18 @@ class SkillManager:
                 prompt = body.strip()
 
                 allowed_tools = frontmatter.get("allowed-tools", [])
-                disable_model_invocation = frontmatter.get("disable-model-invocation", False)
-                user_invocable = frontmatter.get("user-invocable", True)
-                context = frontmatter.get("context", "")
-                agent = frontmatter.get("agent", "")
-                model = frontmatter.get("model", "")
-                argument_hint = frontmatter.get("argument-hint", "")
-                exports = frontmatter.get("exports", [])
-                dependencies = frontmatter.get("dependencies", [])
+
+                # Custom fields: prefer metadata, fall back to top-level (backward-compat)
+                meta = frontmatter.get("metadata", {})
+                disable_model_invocation = meta.get("disable-model-invocation", frontmatter.get("disable-model-invocation", False))
+                user_invocable = meta.get("user-invocable", frontmatter.get("user-invocable", True))
+                context = meta.get("context", frontmatter.get("context", ""))
+                agent = meta.get("agent", frontmatter.get("agent", ""))
+                model = meta.get("model", frontmatter.get("model", ""))
+                argument_hint = meta.get("argument-hint", frontmatter.get("argument-hint", ""))
+                exports = meta.get("exports", frontmatter.get("exports", []))
+                dependencies = meta.get("dependencies", frontmatter.get("dependencies", []))
+                required_resources = meta.get("required-resources", frontmatter.get("required-resources", []))
 
                 if prompt:
                     # Determine domain from directory context
@@ -217,6 +227,7 @@ class SkillManager:
                         argument_hint=argument_hint,
                         exports=exports if isinstance(exports, list) else [],
                         dependencies=dependencies if isinstance(dependencies, list) else [],
+                        required_resources=required_resources if isinstance(required_resources, list) else [],
                         domain=domain_name,
                         source=source,
                     )
@@ -528,6 +539,9 @@ allowed-tools: []
         skill.prompt = body.strip()
         skill.description = frontmatter.get("description", "").strip()
         skill.allowed_tools = frontmatter.get("allowed-tools", [])
+        meta = frontmatter.get("metadata", {})
+        rr = meta.get("required-resources", frontmatter.get("required-resources", []))
+        skill.required_resources = rr if isinstance(rr, list) else []
 
         # Handle name change
         if new_name != name:

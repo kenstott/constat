@@ -861,15 +861,19 @@ async def move_golden_question(
     sm: SessionManager = Depends(_get_session_manager),
     server_config: ServerConfig = Depends(_get_server_config),
 ) -> GoldenQuestionResponse:
-    """Move a golden question from one domain to another."""
+    """Move a golden question from one domain to another.
+
+    Pass ``validate_only: true`` to check resource compatibility without moving.
+    """
     target_domain = body.get("target_domain")
+    validate_only = body.get("validate_only", False)
     if not target_domain:
         raise HTTPException(status_code=400, detail="target_domain is required")
 
     managed = sm.get_session(session_id)
     config = managed.session.config
 
-    # Load source domain and remove the question
+    # Load source domain and read the question
     src_dc = _load_domain_or_404(config, domain)
     if not _can_modify_domain(src_dc, user_id, server_config):
         raise HTTPException(status_code=403, detail="You do not have permission to modify the source domain")
@@ -879,10 +883,29 @@ async def move_golden_question(
     if index < 0 or index >= len(src_list):
         raise HTTPException(status_code=404, detail=f"Golden question index {index} out of range")
 
-    entry = src_list.pop(index)
+    entry = src_list[index]
 
-    # Load target domain and add the question
+    # Resource compatibility validation
+    from constat.core.resource_validation import (
+        extract_resources_from_grounding,
+        validate_resource_compatibility,
+    )
     tgt_dc = _load_domain_or_404(config, target_domain)
+
+    grounding = entry.get("grounding", [])
+    required_resources = extract_resources_from_grounding(grounding)
+    warnings: list[str] = []
+    if required_resources:
+        warnings = validate_resource_compatibility(required_resources, tgt_dc, target_domain)
+
+    if validate_only:
+        resp = _gq_to_response(index, entry)
+        resp.warnings = warnings
+        return resp
+
+    # Actually remove from source
+    src_list.pop(index)
+
     if not _can_modify_domain(tgt_dc, user_id, server_config):
         raise HTTPException(status_code=403, detail="You do not have permission to modify the target domain")
 
@@ -894,4 +917,6 @@ async def move_golden_question(
     _write_domain_yaml(src_path, src_data, src_dc)
     _write_domain_yaml(tgt_path, tgt_data, tgt_dc)
 
-    return _gq_to_response(len(tgt_list) - 1, entry)
+    resp = _gq_to_response(len(tgt_list) - 1, entry)
+    resp.warnings = warnings
+    return resp

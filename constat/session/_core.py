@@ -604,24 +604,43 @@ class CoreMixin:
         return self._conversation_state.phase == Phase.EXECUTING
 
     def _compute_proof_hash(self, combined_problem: str) -> str:
-        """Hash proof inputs to detect when re-proof is needed."""
+        """Hash proof inputs to detect when re-proof is needed.
+
+        Only incorporates the question, clarifications, and follow-ups
+        (i.e. ``combined_problem``).  Scratchpad entries and table versions
+        are excluded because the proof itself creates tables that would
+        invalidate the cache on the next call.
+        """
         import hashlib
-        parts = [combined_problem]
-        if self.datastore:
-            entries = self.datastore.get_scratchpad()
-            parts.append(str(len(entries)))
-            for t in self.datastore.list_tables():
-                parts.append(f"{t['name']}:{t.get('version', 1)}")
-        return hashlib.sha256("|".join(parts).encode()).hexdigest()
+        return hashlib.sha256(combined_problem.encode()).hexdigest()
 
     def _emit_cached_proof_events(self, result: dict) -> None:
         """Emit proof events from cached result so UI updates correctly."""
+        proof_nodes = result.get("proof_nodes", [])
         self._emit_event(StepEvent(
             event_type="proof_start",
             step_number=0,
             data={"problem": result.get("problem", "")[:100], "cached": True},
         ))
-        for node in result.get("proof_nodes", []):
+        # Emit fact_start for each node so the UI builds the DAG structure
+        for node in proof_nodes:
+            self._emit_event(StepEvent(
+                event_type="fact_start",
+                step_number=0,
+                data={
+                    "fact_name": node["name"],
+                    "fact_description": node.get("description", ""),
+                    "dependencies": node.get("dependencies", []),
+                    "cached": True,
+                },
+            ))
+        # Signal DAG is complete so UI opens the panel
+        self._emit_event(StepEvent(
+            event_type="dag_execution_start",
+            step_number=0,
+            data={"cached": True},
+        ))
+        for node in proof_nodes:
             self._emit_event(StepEvent(
                 event_type="fact_resolved",
                 step_number=0,

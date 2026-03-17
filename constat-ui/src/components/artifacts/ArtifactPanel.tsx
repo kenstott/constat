@@ -681,6 +681,12 @@ export function ArtifactPanel() {
   }
 
   const handleMoveSkill = async (skillName: string, fromDomain: string, toDomain: string) => {
+    // Validate first
+    const validation = await sessionsApi.moveSkill({ skill_name: skillName, from_domain: fromDomain, to_domain: toDomain, validate_only: true })
+    if (validation.warnings && validation.warnings.length > 0) {
+      const ok = window.confirm(`Warning:\n${validation.warnings.join('\n')}\n\nMove anyway?`)
+      if (!ok) return
+    }
     await sessionsApi.moveSkill({ skill_name: skillName, from_domain: fromDomain, to_domain: toDomain })
     setMovingSkill(null)
     fetchAllSkills()

@@ -114,10 +114,11 @@ export async function moveGoldenQuestion(
   sourceDomain: string,
   index: number,
   targetDomain: string,
+  validateOnly?: boolean,
 ): Promise<GoldenQuestionResponse> {
   return post<GoldenQuestionResponse>(
     `/sessions/${sessionId}/tests/${sourceDomain}/questions/${index}/move`,
-    { target_domain: targetDomain },
+    { target_domain: targetDomain, validate_only: validateOnly ?? false },
   )
 }
 

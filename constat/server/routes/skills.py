@@ -398,17 +398,42 @@ async def create_skill_from_proof(
             if len(parts) >= 3:
                 try:
                     frontmatter = yaml.safe_load(parts[1])
+                    fm_meta = frontmatter.setdefault("metadata", {})
                     if exported_fns:
-                        frontmatter["exports"] = [
+                        fm_meta["exports"] = [
                             {"script": "proof.py", "functions": exported_fns}
                         ]
                     if dependencies:
-                        frontmatter["dependencies"] = dependencies
+                        fm_meta["dependencies"] = dependencies
                     new_fm = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
                     content = f"---\n{new_fm}---{parts[2]}"
                     session.skill_manager.update_skill_content(skill_request.name, content)
                 except (yaml.YAMLError, AttributeError):
                     logger.warning("Failed to post-process SKILL.md frontmatter")
+
+    # Extract required-resources from proof nodes and write to SKILL.md frontmatter
+    from constat.testing.grounding import build_source_patterns as _build_source_patterns
+
+    required_resources: list[str] = []
+    seen_res: set[str] = set()
+    for node in proof_nodes:
+        for pat in _build_source_patterns(node):
+            if pat not in seen_res:
+                seen_res.add(pat)
+                required_resources.append(pat)
+
+    if required_resources and content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            try:
+                frontmatter = yaml.safe_load(parts[1])
+                fm_meta = frontmatter.setdefault("metadata", {})
+                fm_meta["required-resources"] = required_resources
+                new_fm = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
+                content = f"---\n{new_fm}---{parts[2]}"
+                session.skill_manager.update_skill_content(skill_request.name, content)
+            except (yaml.YAMLError, AttributeError):
+                logger.warning("Failed to add required-resources to SKILL.md frontmatter")
 
     # Invalidate cached skill manager so list_skills sees the new skill
     server_config = get_server_config(request)

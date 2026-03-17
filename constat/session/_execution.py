@@ -629,9 +629,6 @@ class ExecutionMixin:
         loaded_modules: dict[str, object] = {}           # pkg_name -> module object
 
         for skill in all_needed.values():
-            if not skill.exports:
-                continue
-
             skill_dir = self.skill_manager.get_skill_dir(skill.name)
             if not skill_dir:
                 continue
@@ -639,10 +636,20 @@ class ExecutionMixin:
             if not scripts_dir.exists():
                 continue
 
+            # Auto-detect exports: if no exports declared but scripts/proof.py exists
+            # with a run_proof function, synthesize an exports entry
+            exports = skill.exports
+            if not exports and (scripts_dir / "proof.py").exists():
+                exports = [{"script": "proof.py", "functions": ["run_proof"]}]
+                logger.info(f"[SKILL_INJECT] Auto-detected run_proof export for '{skill.name}'")
+
+            if not exports:
+                continue
+
             pkg_name = skill.name.replace("-", "_").replace(" ", "_")
             loaded_fns[pkg_name] = {}
 
-            for export_entry in skill.exports:
+            for export_entry in exports:
                 script_name = export_entry.get("script", "")
                 fn_names = export_entry.get("functions", [])
                 if not script_name or not fn_names:

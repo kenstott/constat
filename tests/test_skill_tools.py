@@ -108,8 +108,9 @@ description: A test skill for unit testing
 allowed-tools:
   - Read
   - Grep
-model: claude-sonnet
-user-invocable: true
+metadata:
+  model: claude-sonnet
+  user-invocable: true
 ---
 
 # Test Skill
@@ -332,7 +333,8 @@ Content.
         (skill_dir / "SKILL.md").write_text("""---
 name: hidden-skill
 description: A hidden skill
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 Content.
 """)
@@ -503,7 +505,8 @@ name: dict-skill
 description: A serializable skill
 allowed-tools:
   - Read
-model: claude-sonnet
+metadata:
+  model: claude-sonnet
 ---
 Content.
 """)

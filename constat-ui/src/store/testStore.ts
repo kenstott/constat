@@ -37,7 +37,7 @@ interface TestState {
   loadGoldenQuestions: (sessionId: string, domain: string) => Promise<void>
   saveGoldenQuestion: (sessionId: string, domain: string, index: number | null, body: GoldenQuestionRequest) => Promise<void>
   deleteGoldenQuestion: (sessionId: string, domain: string, index: number) => Promise<void>
-  moveGoldenQuestion: (sessionId: string, sourceDomain: string, index: number, targetDomain: string) => Promise<void>
+  moveGoldenQuestion: (sessionId: string, sourceDomain: string, index: number, targetDomain: string, validateOnly?: boolean) => Promise<string[]>
   setEditingQuestion: (domain: string, index: number | null) => void
   clearEditing: () => void
 }
@@ -154,14 +154,18 @@ export const useTestStore = create<TestState>((set, get) => ({
     }
   },
 
-  moveGoldenQuestion: async (sessionId: string, sourceDomain: string, index: number, targetDomain: string) => {
+  moveGoldenQuestion: async (sessionId: string, sourceDomain: string, index: number, targetDomain: string, validateOnly?: boolean) => {
     try {
-      await testingApi.moveGoldenQuestion(sessionId, sourceDomain, index, targetDomain)
-      await get().loadGoldenQuestions(sessionId, sourceDomain)
-      await get().loadGoldenQuestions(sessionId, targetDomain)
-      await get().loadTestableDomains(sessionId)
+      const resp = await testingApi.moveGoldenQuestion(sessionId, sourceDomain, index, targetDomain, validateOnly)
+      if (!validateOnly) {
+        await get().loadGoldenQuestions(sessionId, sourceDomain)
+        await get().loadGoldenQuestions(sessionId, targetDomain)
+        await get().loadTestableDomains(sessionId)
+      }
+      return resp.warnings ?? []
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) })
+      return []
     }
   },
 

@@ -1541,6 +1541,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
 
       case 'glossary_rebuild_start':
+        import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
+          useGlossaryStore.getState().setGenerating(true)
+        })
         break
 
       case 'glossary_generation_progress': {

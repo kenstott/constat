@@ -36,37 +36,68 @@ def _make_skill(tmp_path, user_id, name, content, script_content=None, refs=None
 # --- clean_skill_md ---
 
 def test_clean_skill_md_strips_internal_fields():
+    """New-format: custom fields under metadata: are stripped."""
+    content = """---
+name: my-skill
+description: A test skill
+allowed-tools: [Read, Grep]
+metadata:
+  exports:
+    - script: proof.py
+      functions: [run_proof]
+  dependencies:
+    - other-skill
+  required-resources:
+    - schema:chinook
+  context: fork
+  agent: Explore
+  model: sonnet
+  disable-model-invocation: true
+  user-invocable: false
+  argument-hint: "[file]"
+---
+
+Hello world"""
+
+    cleaned = clean_skill_md(content, "my-skill")
+    fm_section = cleaned.split("---")[1]
+    assert "exports" not in fm_section
+    assert "dependencies" not in fm_section
+    assert "required-resources" not in fm_section
+    assert "context" not in fm_section
+    assert "agent" not in fm_section
+    assert "model" not in fm_section
+    assert "disable-model-invocation" not in fm_section
+    assert "user-invocable" not in fm_section
+    assert "argument-hint" not in fm_section
+    assert "metadata" not in fm_section  # empty metadata dict removed
+    assert "name: my-skill" in cleaned
+    assert "description: A test skill" in cleaned
+    assert "allowed-tools" in fm_section  # standard field kept
+    assert "Hello world" in cleaned
+
+
+def test_clean_skill_md_strips_legacy_top_level_fields():
+    """Backward-compat: top-level custom fields are also stripped."""
     content = """---
 name: my-skill
 description: A test skill
 exports:
   - script: proof.py
     functions: [run_proof]
-dependencies:
-  - other-skill
 context: fork
-agent: Explore
 model: sonnet
-disable-model-invocation: true
-user-invocable: false
-argument-hint: "[file]"
 allowed-tools: [Read, Grep]
 ---
 
 Hello world"""
 
     cleaned = clean_skill_md(content, "my-skill")
-    assert "exports" not in cleaned.split("---")[1]
-    assert "dependencies" not in cleaned.split("---")[1]
-    assert "context" not in cleaned.split("---")[1]
-    assert "agent" not in cleaned.split("---")[1]
-    assert "model" not in cleaned.split("---")[1]
-    assert "disable-model-invocation" not in cleaned.split("---")[1]
-    assert "user-invocable" not in cleaned.split("---")[1]
-    assert "argument-hint" not in cleaned.split("---")[1]
-    assert "allowed-tools" not in cleaned.split("---")[1]
-    assert "name: my-skill" in cleaned
-    assert "description: A test skill" in cleaned
+    fm_section = cleaned.split("---")[1]
+    assert "exports" not in fm_section
+    assert "context" not in fm_section
+    assert "model" not in fm_section
+    assert "allowed-tools" in fm_section  # standard field kept
     assert "Hello world" in cleaned
 
 
@@ -106,8 +137,9 @@ def test_collect_transitive_dependencies(tmp_path):
     _make_skill(tmp_path, "u1", "root-skill", """---
 name: root-skill
 description: root
-dependencies:
-  - dep-a
+metadata:
+  dependencies:
+    - dep-a
 ---
 
 Root body""")
@@ -115,11 +147,12 @@ Root body""")
     _make_skill(tmp_path, "u1", "dep-a", """---
 name: dep-a
 description: dep a
-dependencies:
-  - dep-b
-exports:
-  - script: proof.py
-    functions: [helper_a]
+metadata:
+  dependencies:
+    - dep-b
+  exports:
+    - script: proof.py
+      functions: [helper_a]
 ---
 
 Dep A body""", script_content="def helper_a(): pass")
@@ -127,9 +160,10 @@ Dep A body""", script_content="def helper_a(): pass")
     _make_skill(tmp_path, "u1", "dep-b", """---
 name: dep-b
 description: dep b
-exports:
-  - script: proof.py
-    functions: [helper_b]
+metadata:
+  exports:
+    - script: proof.py
+      functions: [helper_b]
 ---
 
 Dep B body""", script_content="def helper_b(): pass")
@@ -160,9 +194,10 @@ def test_flatten_script(tmp_path):
     _make_skill(tmp_path, "u1", "helper-lib", """---
 name: helper-lib
 description: helper
-exports:
-  - script: proof.py
-    functions: [compute]
+metadata:
+  exports:
+    - script: proof.py
+      functions: [compute]
 ---
 
 body""", script_content="""
@@ -226,11 +261,12 @@ def test_package_skill_basic(tmp_path):
     _make_skill(tmp_path, "u1", "test-pkg", """---
 name: test-pkg
 description: Package test
-exports:
-  - script: proof.py
-    functions: [run_proof]
 allowed-tools: [Read]
-context: fork
+metadata:
+  exports:
+    - script: proof.py
+      functions: [run_proof]
+  context: fork
 ---
 
 Instructions here""",
@@ -248,11 +284,13 @@ Instructions here""",
         assert "test-pkg/scripts/proof.py" in names
         assert "test-pkg/references/guide.md" in names
 
-        # SKILL.md should have internal fields stripped
+        # SKILL.md should have internal metadata fields stripped
         skill_md = zf.read("test-pkg/SKILL.md").decode()
-        assert "exports" not in skill_md.split("---")[1]
-        assert "allowed-tools" not in skill_md.split("---")[1]
-        assert "context" not in skill_md.split("---")[1]
+        fm_section = skill_md.split("---")[1]
+        assert "exports" not in fm_section
+        assert "context" not in fm_section
+        assert "metadata" not in fm_section  # empty metadata removed
+        assert "allowed-tools" in fm_section  # standard field kept
         assert "Instructions here" in skill_md
 
 
@@ -266,8 +304,9 @@ def test_package_skill_with_dependencies(tmp_path):
     _make_skill(tmp_path, "u1", "main-skill", """---
 name: main-skill
 description: Main
-dependencies:
-  - util-skill
+metadata:
+  dependencies:
+    - util-skill
 ---
 
 Main body""",
@@ -277,9 +316,10 @@ Main body""",
     _make_skill(tmp_path, "u1", "util-skill", """---
 name: util-skill
 description: Utils
-exports:
-  - script: proof.py
-    functions: [add]
+metadata:
+  exports:
+    - script: proof.py
+      functions: [add]
 ---
 
 Utils body""",

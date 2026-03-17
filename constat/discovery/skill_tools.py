@@ -324,14 +324,16 @@ class SkillManager:
             elif isinstance(tools_value, list):
                 allowed_tools = tools_value
 
+        # Custom fields: prefer metadata, fall back to top-level (backward-compat)
+        meta = metadata.get("metadata", {})
         skill_metadata = SkillMetadata(
             name=name,
             description=description,
             allowed_tools=allowed_tools,
-            model=metadata.get("model"),
-            context=metadata.get("context"),
-            agent=metadata.get("agent"),
-            user_invocable=metadata.get("user-invocable", True),
+            model=meta.get("model", metadata.get("model")),
+            context=meta.get("context", metadata.get("context")),
+            agent=meta.get("agent", metadata.get("agent")),
+            user_invocable=meta.get("user-invocable", metadata.get("user-invocable", True)),
         )
 
         # Parse links from content (lazy discovery - content not fetched yet)

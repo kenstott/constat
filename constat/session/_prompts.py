@@ -430,7 +430,14 @@ class PromptsMixin:
 
         lines = []
         for skill in active_skills:
-            if not skill.exports:
+            # Auto-detect exports: if no exports declared but scripts/proof.py exists
+            exports = skill.exports
+            if not exports:
+                skill_dir = self.skill_manager.get_skill_dir(skill.name) if hasattr(self, 'skill_manager') else None
+                if skill_dir and (skill_dir / "scripts" / "proof.py").exists():
+                    exports = [{"script": "proof.py", "functions": ["run_proof"]}]
+
+            if not exports:
                 continue
 
             # Only include if step goal references the skill or it's highly relevant
@@ -441,7 +448,7 @@ class PromptsMixin:
             pkg_name = skill.name.replace("-", "_").replace(" ", "_")
 
             fn_names = []
-            for export_entry in skill.exports:
+            for export_entry in exports:
                 for fn_name in export_entry.get("functions", []):
                     fn_names.append(f"{pkg_name}_{fn_name}")
 

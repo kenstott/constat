@@ -21,17 +21,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Frontmatter fields that are internal to constat and should be stripped
-_INTERNAL_FIELDS = frozenset({
+# Custom metadata fields internal to constat — stripped when packaging
+_INTERNAL_METADATA_FIELDS = frozenset({
     "exports",
     "dependencies",
+    "required-resources",
     "context",
     "agent",
     "model",
     "disable-model-invocation",
     "user-invocable",
     "argument-hint",
-    "allowed-tools",
 })
 
 # Packages pre-installed in Claude Desktop / Claude Code environments
@@ -139,8 +139,15 @@ def clean_skill_md(content: str, skill_name: str) -> str:
     if not frontmatter:
         return content
 
-    # Strip internal fields
-    cleaned = {k: v for k, v in frontmatter.items() if k not in _INTERNAL_FIELDS}
+    # Strip internal fields from top-level (backward-compat) and metadata
+    cleaned = {k: v for k, v in frontmatter.items() if k not in _INTERNAL_METADATA_FIELDS}
+    if "metadata" in cleaned:
+        cleaned["metadata"] = {
+            k: v for k, v in cleaned["metadata"].items()
+            if k not in _INTERNAL_METADATA_FIELDS
+        }
+        if not cleaned["metadata"]:
+            del cleaned["metadata"]
 
     # Validate / fix name
     name = cleaned.get("name", skill_name)

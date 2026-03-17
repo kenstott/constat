@@ -752,7 +752,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
         </div>
 
         {/* DAG Content */}
-        <div className="flex-1 overflow-auto p-4">
+        <div className="flex-1 overflow-hidden p-2">
           {nodes.length === 0 ? (
             <div className="text-center text-gray-500 py-8 min-w-[500px]">
               <div className="animate-pulse">
@@ -775,12 +775,14 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
               </div>
             </div>
           ) : layout ? (
-            <div className="relative">
+            <div className="relative w-full h-full">
             <svg
               ref={svgRef}
-              width={dimensions.width}
-              height={dimensions.height}
-              className="block mx-auto"
+              width="100%"
+              height="100%"
+              viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
+              preserveAspectRatio="xMidYMid meet"
+              className="block"
               style={{ cursor: isPanningDag.current ? 'grabbing' : 'grab' }}
               onWheel={(e) => {
                 e.preventDefault()
@@ -975,18 +977,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                 className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-sm font-bold hover:bg-gray-100 dark:hover:bg-gray-700"
               >−</button>
               <button
-                onClick={() => {
-                  if (!svgRef.current) return
-                  const container = svgRef.current.parentElement
-                  if (!container) return
-                  const cw = container.clientWidth
-                  const ch = container.clientHeight
-                  const fitZoom = Math.min(cw / dimensions.width, ch / dimensions.height, 1) * 0.95
-                  const offsetX = (cw - dimensions.width * fitZoom) / 2
-                  const offsetY = (ch - dimensions.height * fitZoom) / 2
-                  setZoom(fitZoom)
-                  setPan({ x: offsetX, y: offsetY })
-                }}
+                onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}
                 title="Fit to window"
                 className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center"
               >

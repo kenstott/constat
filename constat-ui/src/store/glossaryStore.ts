@@ -40,7 +40,7 @@ interface GlossaryState {
   deleteTerm: (sessionId: string, name: string) => Promise<void>
   deleteDrafts: (sessionId: string) => Promise<number>
   refineTerm: (sessionId: string, name: string) => Promise<{ before: string; after: string } | null>
-  generateGlossary: (sessionId: string) => Promise<void>
+  generateGlossary: (sessionId: string, phases?: Record<string, boolean>) => Promise<void>
   suggestTaxonomy: (sessionId: string) => Promise<void>
   acceptTaxonomySuggestion: (sessionId: string, suggestion: TaxonomySuggestion) => Promise<void>
   dismissTaxonomySuggestion: (suggestion: TaxonomySuggestion) => void
@@ -97,8 +97,7 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
 
   fetchDeprecated: async (sessionId) => {
     try {
-      const response = await fetch(`/api/sessions/${sessionId}/glossary/deprecated`)
-      const data = await response.json()
+      const data = await sessionsApi.getDeprecatedTerms(sessionId)
       set({ deprecatedTerms: data.terms || [] })
     } catch {
       // Silent — deprecated is secondary
@@ -134,6 +133,10 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
 
   deleteDrafts: async (sessionId) => {
     const result = await sessionsApi.deleteGlossaryByStatus(sessionId, 'draft')
+    // Optimistically remove draft terms so the UI updates immediately
+    set((state) => ({
+      terms: state.terms.filter((t) => t.status !== 'draft'),
+    }))
     await get().fetchTerms(sessionId)
     return result.count
   },
@@ -148,9 +151,9 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
     }
   },
 
-  generateGlossary: async (sessionId) => {
+  generateGlossary: async (sessionId, phases?) => {
     set({ generating: true })
-    await sessionsApi.generateGlossary(sessionId)
+    await sessionsApi.generateGlossary(sessionId, phases)
     // generating stays true until glossary_rebuild_complete WS event
   },
 

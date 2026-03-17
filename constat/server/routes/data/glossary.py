@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 
 from constat.server.persona_config import require_write
 
@@ -28,6 +29,10 @@ from constat.server.models import (
     GlossaryUpdateRequest,
     TaxonomySuggestion,
 )
+
+
+class GenerateGlossaryRequest(BaseModel):
+    phases: dict[str, bool] | None = None
 from constat.server.routes.data import get_session_manager
 from constat.server.session_manager import SessionManager
 
@@ -121,6 +126,10 @@ def _resolve_entity_domains(entity_id: str | None, vs, source_to_domain: dict[st
             matched = source_to_domain.get(api_name)
         if not matched:
             matched = source_to_domain.get(doc_name)
+        # Crawled sub-documents: "hr_management:crawled_8" → try "hr_management"
+        if not matched and ":" in doc_name:
+            base_name = doc_name.split(":")[0]
+            matched = source_to_domain.get(base_name)
         if matched and matched not in seen:
             seen.add(matched)
             domains.append(matched)
@@ -527,11 +536,14 @@ async def delete_relationship(
 @router.post("/{session_id}/glossary/generate", dependencies=[Depends(require_write("glossary"))])
 async def generate_glossary(
     session_id: str,
+    body: GenerateGlossaryRequest | None = None,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Re-trigger LLM glossary generation."""
     managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
+
+    phases = body.phases if body else None
 
     # Cancel any in-progress generation (additive — does not clear existing)
     managed._glossary_cancelled.set()
@@ -540,7 +552,7 @@ async def generate_glossary(
     import threading
 
     def _run():
-        session_manager._run_glossary_generation(session_id, managed)
+        session_manager._run_glossary_generation(session_id, managed, phases=phases)
 
     thread = threading.Thread(target=_run, name=f"glossary-gen-{session_id}", daemon=True)
     thread.start()

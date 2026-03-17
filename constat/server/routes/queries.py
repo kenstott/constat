@@ -928,6 +928,18 @@ async def websocket_endpoint(
         for item in kept:
             managed.event_queue.put_nowait(item)
 
+    # Replay glossary generation status if generation is in progress
+    if managed._glossary_generating:
+        await websocket.send_json({
+            "type": "event",
+            "payload": {
+                "event_type": "glossary_rebuild_start",
+                "session_id": session_id,
+                "step_number": 0,
+                "data": {"session_id": session_id},
+            },
+        })
+
     try:
         # Create tasks for sending events and receiving commands
         async def send_events():

@@ -73,6 +73,34 @@ def get_session_manager(request: Request) -> SessionManager:
     return request.app.state.session_manager
 
 
+def _ensure_user_domain_config(user_id: str, config: Config) -> None:
+    """Create or load a user-level DomainConfig so the user appears in domain lists."""
+    filename = f"{user_id}.yaml"
+    if filename in config.domains:
+        return
+
+    user_dir = Path(".constat") / user_id / "domains"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    yaml_path = user_dir / filename
+
+    if not yaml_path.exists():
+        import yaml as _yaml
+        data = {"name": "User", "description": "Personal domain", "tier": "user", "owner": user_id}
+        yaml_path.write_text(_yaml.dump(data, default_flow_style=False))
+
+    from constat.core.config import DomainConfig
+    import yaml as _yaml
+    raw = _yaml.safe_load(yaml_path.read_text()) or {}
+    raw["filename"] = filename
+    raw["source_path"] = str(yaml_path.resolve())
+    raw["tier"] = "user"
+    raw["owner"] = user_id
+    # Normalize legacy files that stored the raw user token as name
+    if raw.get("name") == user_id:
+        raw["name"] = "User"
+    config.domains[filename] = DomainConfig(**raw)
+
+
 def _check_domain_cycles(graph: dict[str, list[str]]) -> list[str]:
     """Check for cycles in a domain composition graph.
 
@@ -869,6 +897,8 @@ async def list_domains(
     Returns:
         List of available domains
     """
+    _ensure_user_domain_config(user_id, config)
+
     domain_infos = config.list_domains()
 
     # Add tier to system domains
@@ -1608,12 +1638,16 @@ async def move_domain_skill(
     request: Request,
     user_id: CurrentUserId,
 ) -> dict:
-    """Move a skill from one domain to another."""
+    """Move a skill from one domain to another.
+
+    Pass ``validate_only: true`` to check resource compatibility without moving.
+    """
     import shutil
 
     skill_name = body.get("skill_name")
     from_domain = body.get("from_domain", "")
     to_domain = body.get("to_domain", "")
+    validate_only = body.get("validate_only", False)
 
     # "root", "user", "system", "global" are synthetic — treat as user directory
     if from_domain in ("root", "user", "system", "global"):
@@ -1646,9 +1680,21 @@ async def move_domain_skill(
     if not skill:
         raise HTTPException(status_code=404, detail=f"Skill not found: {skill_name}")
 
+    # Resource compatibility validation
+    from constat.core.resource_validation import validate_resource_compatibility
+
+    to_cfg = config.load_domain(to_domain) if to_domain else None
+    warnings: list[str] = []
+    if skill.required_resources and to_cfg:
+        warnings = validate_resource_compatibility(
+            skill.required_resources, to_cfg, to_domain,
+        )
+
+    if validate_only:
+        return {"status": "validation", "warnings": warnings}
+
     # Find source and target skill directories
     from_cfg = config.load_domain(from_domain) if from_domain else None
-    to_cfg = config.load_domain(to_domain) if to_domain else None
 
     if from_domain and not from_cfg:
         raise HTTPException(status_code=404, detail=f"Source domain not found: {from_domain}")
@@ -1681,7 +1727,7 @@ async def move_domain_skill(
     # Reload
     manager.reload()
 
-    return {"status": "moved", "skill": skill_name, "to_domain": to_domain}
+    return {"status": "moved", "skill": skill_name, "to_domain": to_domain, "warnings": warnings}
 
 
 @router.post("/domains/move-agent")

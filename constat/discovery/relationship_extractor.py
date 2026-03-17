@@ -67,6 +67,117 @@ VERB_CATEGORIES = list(PREFERRED_VERBS.keys()) + ["other"]
 
 _CANONICAL_VERB_LIST = ", ".join(sorted(ALL_PREFERRED))
 
+
+def _build_verb_config(
+    config_verbs: dict[str, list[str]] | None = None,
+) -> tuple[dict[str, set[str]], set[str], str]:
+    """Build verb config from optional config dict, falling back to defaults.
+
+    Returns:
+        (preferred_verbs_dict, all_preferred_set, canonical_verb_list_str)
+    """
+    if not config_verbs:
+        return PREFERRED_VERBS, ALL_PREFERRED, _CANONICAL_VERB_LIST
+    pv = {k: set(v) for k, v in config_verbs.items()}
+    ap = set().union(*pv.values())
+    cl = ", ".join(sorted(ap))
+    return pv, ap, cl
+
+
+def _build_relationship_prompt(canonical_verb_list: str) -> str:
+    """Build RELATIONSHIP_SYSTEM_PROMPT with given verb list."""
+    return f"""You are extracting relationships between entity pairs from document excerpts.
+
+For each pair of entities, you receive:
+- The two entity names and their types
+- Up to 3 shared document excerpts where both entities appear
+- Any spaCy-suggested relationships (may be empty or inaccurate)
+
+Return a JSON array of relationships found. For each relationship:
+- subject: must be exactly one of the two entity names provided
+- object: must be the other entity name
+- verb: Cypher-standard UPPER_SNAKE_CASE (e.g., "MANAGES", "WORKS_IN", "TRIGGERS")
+- verb_category: one of: ownership, hierarchy, action, flow, causation, temporal, association, other
+- evidence: brief quote or paraphrase from the excerpt supporting this relationship
+- confidence: high, medium, or low
+
+VERB SELECTION — Choose from this canonical list: {canonical_verb_list}
+If none of these accurately describes the relationship, you may use a different UPPER_SNAKE_CASE verb, but strongly prefer the canonical list.
+
+NEVER use bare "HAS" — always qualify as HAS_ONE (composition), HAS_MANY (collection), or HAS_KIND (taxonomy).
+NEVER use CONTAINS (use HAS_MANY), BELONGS_TO (use HAS_ONE with swapped direction), or IS_TYPE_OF (use HAS_KIND with swapped direction).
+
+DIRECTION RULE — The subject performs the action on the object:
+- CORRECT: "Customer PLACES Order" (Customer is the actor)
+- WRONG: "Order RECEIVES Customer" (Order is not the actor)
+
+Examples of good relationships:
+- {{"subject": "Manager", "verb": "MANAGES", "object": "Employee", "verb_category": "hierarchy"}}
+- {{"subject": "Employee", "verb": "WORKS_IN", "object": "Department", "verb_category": "association"}}
+- {{"subject": "Employee", "verb": "REPORTS_TO", "object": "Manager", "verb_category": "hierarchy"}}
+- {{"subject": "Customer", "verb": "PLACES", "object": "Order", "verb_category": "action"}}
+- {{"subject": "Invoice", "verb": "TRIGGERS", "object": "Payment", "verb_category": "temporal"}}
+- {{"subject": "Policy", "verb": "REQUIRES", "object": "Approval", "verb_category": "causation"}}
+
+Rules:
+- Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
+- Avoid hierarchy/ownership verbs (HAS_ONE, HAS_MANY, HAS_KIND) when the pair already has a parent-child relationship — these duplicate the taxonomy
+- Prefer spaCy suggestions when the verb is accurate; override when text supports a better verb
+- You may infer implicit relationships even if no sentence states them directly
+  (e.g., "Employee" WORKS_IN "Department" can be inferred from organizational context)
+- Use Cypher-standard UPPER_SNAKE_CASE for all verbs (e.g., "MANAGES" not "manages")
+- Use underscores for compound verbs (e.g., "REPORTS_TO", "WORKS_IN")
+- subject and object must be exactly the entity names provided (no modifications)
+
+Respond ONLY with a JSON array:
+[{{"subject": "...", "verb": "...", "object": "...", "verb_category": "...", "evidence": "...", "confidence": "high|medium|low"}}]
+
+Return [] if no relationships can be determined."""
+
+
+def _build_glossary_relationship_prompt(canonical_verb_list: str) -> str:
+    """Build GLOSSARY_RELATIONSHIP_PROMPT with given verb list."""
+    return f"""You are inferring cross-cutting relationships between business glossary terms.
+
+For each group of terms below, you receive:
+- Term name, definition, semantic type, and parent (if any)
+
+Infer **cross-cutting** relationships between terms based on their definitions and business semantics.
+
+VERB SELECTION — Choose from this canonical list: {canonical_verb_list}
+If none of these accurately describes the relationship, you may use a different UPPER_SNAKE_CASE verb, but strongly prefer the canonical list.
+
+NEVER use bare "HAS" — always qualify as HAS_ONE (composition), HAS_MANY (collection), or HAS_KIND (taxonomy).
+NEVER use CONTAINS (use HAS_MANY), BELONGS_TO (use HAS_ONE with swapped direction), or IS_TYPE_OF (use HAS_KIND with swapped direction).
+
+DIRECTION RULE — The subject performs the action on the object:
+- CORRECT: "Customer PLACES Order" (Customer is the actor)
+- WRONG: "Order RECEIVES Customer" (Order is not the actor)
+
+IMPORTANT RULES:
+- Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
+- Do NOT return relationships that duplicate an existing parent-child edge between the same pair
+  (e.g., if "Order" is parent of "Line Item" with HAS_MANY, do not return "Order HAS_MANY Line Item")
+- Hierarchy/ownership verbs (HAS_ONE, HAS_MANY, HAS_KIND) are fine between terms that are NOT in a parent-child relationship
+- Focus on: action relationships, causation, temporal ordering, association between entities in different branches
+- Use Cypher-standard UPPER_SNAKE_CASE for all verbs (e.g., "MANAGES", "TRIGGERS", "APPROVES")
+- Use underscores for compound verbs (e.g., "BELONGS_TO", "WORKS_IN")
+- Only return relationships where you have reasonable confidence from the definitions
+
+Examples of good cross-cutting relationships:
+- {{"subject": "Employee", "verb": "WORKS_IN", "object": "Department", "verb_category": "association"}}
+- {{"subject": "Invoice", "verb": "TRIGGERS", "object": "Payment", "verb_category": "temporal"}}
+- {{"subject": "Customer", "verb": "PLACES", "object": "Order", "verb_category": "action"}}
+- {{"subject": "Manager", "verb": "APPROVES", "object": "Expense", "verb_category": "action"}}
+- {{"subject": "Policy", "verb": "REQUIRES", "object": "Claim", "verb_category": "causation"}}
+
+verb_category must be one of: hierarchy, action, flow, causation, temporal, association, other
+
+Respond ONLY with a JSON array:
+[{{"subject": "...", "verb": "...", "object": "...", "verb_category": "...", "evidence": "...", "confidence": "high|medium|low"}}]
+
+Return [] if no cross-cutting relationships can be inferred."""
+
 # Bare "HAS" is never allowed — must be qualified
 _VERB_REPLACEMENTS = {
     "HAS": "HAS_ONE",
@@ -119,59 +230,11 @@ def _to_third_person(verb: str) -> str:
         # Fallback: simple rules if lemminflect unavailable
         return verb + "s" if not verb.endswith("s") else verb
 
-RELATIONSHIP_SYSTEM_PROMPT = f"""You are extracting relationships between entity pairs from document excerpts.
 
-For each pair of entities, you receive:
-- The two entity names and their types
-- Up to 3 shared document excerpts where both entities appear
-- Any spaCy-suggested relationships (may be empty or inaccurate)
-
-Return a JSON array of relationships found. For each relationship:
-- subject: must be exactly one of the two entity names provided
-- object: must be the other entity name
-- verb: Cypher-standard UPPER_SNAKE_CASE (e.g., "MANAGES", "WORKS_IN", "TRIGGERS")
-- verb_category: one of: ownership, hierarchy, action, flow, causation, temporal, association, other
-- evidence: brief quote or paraphrase from the excerpt supporting this relationship
-- confidence: high, medium, or low
-
-VERB SELECTION — Choose from this canonical list: {_CANONICAL_VERB_LIST}
-If none of these accurately describes the relationship, you may use a different UPPER_SNAKE_CASE verb, but strongly prefer the canonical list.
-
-NEVER use bare "HAS" — always qualify as HAS_ONE (composition), HAS_MANY (collection), or HAS_KIND (taxonomy).
-NEVER use CONTAINS (use HAS_MANY), BELONGS_TO (use HAS_ONE with swapped direction), or IS_TYPE_OF (use HAS_KIND with swapped direction).
-
-DIRECTION RULE — The subject performs the action on the object:
-- CORRECT: "Customer PLACES Order" (Customer is the actor)
-- WRONG: "Order RECEIVES Customer" (Order is not the actor)
-
-Examples of good relationships:
-- {{"subject": "Manager", "verb": "MANAGES", "object": "Employee", "verb_category": "hierarchy"}}
-- {{"subject": "Employee", "verb": "WORKS_IN", "object": "Department", "verb_category": "association"}}
-- {{"subject": "Employee", "verb": "REPORTS_TO", "object": "Manager", "verb_category": "hierarchy"}}
-- {{"subject": "Customer", "verb": "PLACES", "object": "Order", "verb_category": "action"}}
-- {{"subject": "Invoice", "verb": "TRIGGERS", "object": "Payment", "verb_category": "temporal"}}
-- {{"subject": "Policy", "verb": "REQUIRES", "object": "Approval", "verb_category": "causation"}}
-
-Rules:
-- Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
-- Avoid hierarchy/ownership verbs (HAS_ONE, HAS_MANY, HAS_KIND) when the pair already has a parent-child relationship — these duplicate the taxonomy
-- Prefer spaCy suggestions when the verb is accurate; override when text supports a better verb
-- You may infer implicit relationships even if no sentence states them directly
-  (e.g., "Employee" WORKS_IN "Department" can be inferred from organizational context)
-- Use Cypher-standard UPPER_SNAKE_CASE for all verbs (e.g., "MANAGES" not "manages")
-- Use underscores for compound verbs (e.g., "REPORTS_TO", "WORKS_IN")
-- subject and object must be exactly the entity names provided (no modifications)
-
-Respond ONLY with a JSON array:
-[{{"subject": "...", "verb": "...", "object": "...", "verb_category": "...", "evidence": "...", "confidence": "high|medium|low"}}]
-
-Return [] if no relationships can be determined."""
-
-
-def categorize_verb(verb: str) -> str:
+def categorize_verb(verb: str, preferred_verbs: dict[str, set[str]] | None = None) -> str:
     """Return the verb category name or 'other'."""
     v = verb.upper()
-    for category, verbs in PREFERRED_VERBS.items():
+    for category, verbs in (preferred_verbs or PREFERRED_VERBS).items():
         if v in verbs:
             return category
     return "other"
@@ -418,6 +481,7 @@ def extract_svo_relationships(
     nlp,
     min_cooccurrence: int = 2,
     on_batch: Callable[[list], None] | None = None,
+    preferred_verbs: dict[str, list[str]] | None = None,
 ) -> list:
     """Extract SVO relationships from co-occurring entity pairs.
 
@@ -427,11 +491,14 @@ def extract_svo_relationships(
         nlp: spaCy Language model
         min_cooccurrence: Minimum co-occurrence count to process
         on_batch: Optional callback per entity-pair batch
+        preferred_verbs: Optional config-driven verb dict (category -> list of verbs)
 
     Returns:
         List of EntityRelationship objects
     """
     from constat.discovery.models import EntityRelationship
+
+    _pv, _ap, _cl = _build_verb_config(preferred_verbs)
 
     # Get co-occurring entity pairs
     pairs = vector_store.get_cooccurrence_pairs(
@@ -485,7 +552,7 @@ def extract_svo_relationships(
                     continue
                 verb_form, swap = _normalize_verb(lemma)
                 category = categorize_verb(verb_form)
-                confidence = 1.0 if verb_form in ALL_PREFERRED else 0.5
+                confidence = 1.0 if verb_form in _ap else 0.5
 
                 subject_name, object_name = determine_svo_direction(
                     span_a, span_b, verb, e1_name, e2_name,
@@ -613,6 +680,7 @@ def refine_relationships_with_llm(
     svo_candidates: list,
     co_occurring_pairs: list[tuple],
     on_batch: Callable[[list], None] | None = None,
+    preferred_verbs: dict[str, list[str]] | None = None,
 ) -> list:
     """Refine relationships using LLM, using spaCy SVOs as suggestions.
 
@@ -628,6 +696,9 @@ def refine_relationships_with_llm(
         List of EntityRelationship objects created by LLM
     """
     from constat.discovery.models import EntityRelationship
+
+    _pv, _ap, _cl = _build_verb_config(preferred_verbs)
+    system_prompt = _build_relationship_prompt(_cl)
 
     # Build spaCy suggestion map: (lower_name_a, lower_name_b) -> [{verb, verb_category, sentence}]
     svo_map: dict[tuple[str, str], list[dict]] = {}
@@ -690,7 +761,7 @@ def refine_relationships_with_llm(
         try:
             result = router.execute(
                 task_type=TaskType.RELATIONSHIP_EXTRACTION,
-                system=RELATIONSHIP_SYSTEM_PROMPT,
+                system=system_prompt,
                 user_message=user_message,
                 max_tokens=2048,
                 complexity="low",
@@ -846,47 +917,6 @@ def store_fk_relationships(
 # Phase 3: Glossary-informed LLM relationship inference
 # ---------------------------------------------------------------------------
 
-GLOSSARY_RELATIONSHIP_PROMPT = f"""You are inferring cross-cutting relationships between business glossary terms.
-
-For each group of terms below, you receive:
-- Term name, definition, semantic type, and parent (if any)
-
-Infer **cross-cutting** relationships between terms based on their definitions and business semantics.
-
-VERB SELECTION — Choose from this canonical list: {_CANONICAL_VERB_LIST}
-If none of these accurately describes the relationship, you may use a different UPPER_SNAKE_CASE verb, but strongly prefer the canonical list.
-
-NEVER use bare "HAS" — always qualify as HAS_ONE (composition), HAS_MANY (collection), or HAS_KIND (taxonomy).
-NEVER use CONTAINS (use HAS_MANY), BELONGS_TO (use HAS_ONE with swapped direction), or IS_TYPE_OF (use HAS_KIND with swapped direction).
-
-DIRECTION RULE — The subject performs the action on the object:
-- CORRECT: "Customer PLACES Order" (Customer is the actor)
-- WRONG: "Order RECEIVES Customer" (Order is not the actor)
-
-IMPORTANT RULES:
-- Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
-- Do NOT return relationships that duplicate an existing parent-child edge between the same pair
-  (e.g., if "Order" is parent of "Line Item" with HAS_MANY, do not return "Order HAS_MANY Line Item")
-- Hierarchy/ownership verbs (HAS_ONE, HAS_MANY, HAS_KIND) are fine between terms that are NOT in a parent-child relationship
-- Focus on: action relationships, causation, temporal ordering, association between entities in different branches
-- Use Cypher-standard UPPER_SNAKE_CASE for all verbs (e.g., "MANAGES", "TRIGGERS", "APPROVES")
-- Use underscores for compound verbs (e.g., "BELONGS_TO", "WORKS_IN")
-- Only return relationships where you have reasonable confidence from the definitions
-
-Examples of good cross-cutting relationships:
-- {{"subject": "Employee", "verb": "WORKS_IN", "object": "Department", "verb_category": "association"}}
-- {{"subject": "Invoice", "verb": "TRIGGERS", "object": "Payment", "verb_category": "temporal"}}
-- {{"subject": "Customer", "verb": "PLACES", "object": "Order", "verb_category": "action"}}
-- {{"subject": "Manager", "verb": "APPROVES", "object": "Expense", "verb_category": "action"}}
-- {{"subject": "Policy", "verb": "REQUIRES", "object": "Claim", "verb_category": "causation"}}
-
-verb_category must be one of: hierarchy, action, flow, causation, temporal, association, other
-
-Respond ONLY with a JSON array:
-[{{"subject": "...", "verb": "...", "object": "...", "verb_category": "...", "evidence": "...", "confidence": "high|medium|low"}}]
-
-Return [] if no cross-cutting relationships can be inferred."""
-
 
 def infer_glossary_relationships(
     session_id: str,
@@ -895,6 +925,7 @@ def infer_glossary_relationships(
     on_batch: Callable[[list], None] | None = None,
     *,
     user_id: str | None = None,
+    preferred_verbs: dict[str, list[str]] | None = None,
 ) -> list:
     """Infer cross-cutting relationships from glossary term definitions.
 
@@ -902,6 +933,9 @@ def infer_glossary_relationships(
     to infer relationships from definition semantics.
     """
     from constat.discovery.models import EntityRelationship
+
+    _pv, _ap, _cl = _build_verb_config(preferred_verbs)
+    glossary_prompt = _build_glossary_relationship_prompt(_cl)
 
     terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
     if not terms:
@@ -981,7 +1015,7 @@ def infer_glossary_relationships(
         try:
             result = router.execute(
                 task_type=TaskType.RELATIONSHIP_EXTRACTION,
-                system=GLOSSARY_RELATIONSHIP_PROMPT,
+                system=glossary_prompt,
                 user_message=user_message,
                 max_tokens=2048,
                 complexity="low",

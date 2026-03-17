@@ -1097,3 +1097,4 @@ class GoldenQuestionResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
     expect: GoldenQuestionExpectations = Field(default_factory=GoldenQuestionExpectations)
     objectives: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)

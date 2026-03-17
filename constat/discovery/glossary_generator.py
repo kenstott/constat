@@ -116,7 +116,7 @@ Respond as a JSON array with one entry per entity (plus any new parent terms):
 
 def _make_term_id(name: str, session_id: str, domain: str | None = None) -> str:
     """Generate a deterministic ID for a glossary term."""
-    key = f"{name}:{session_id}:{domain or ''}"
+    key = f"{name.lower()}:{session_id}:{domain or ''}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
@@ -418,6 +418,9 @@ def generate_glossary(
 
     entity_names: set[str] = {r[1].lower() for r in rows}  # entity names (for alias dedup only)
 
+    # Track abstract parent terms across batches so the LLM reuses them
+    abstract_parents: list[dict] = []  # [{"name": ..., "definition": ...}, ...]
+
     for batch_idx, batch in enumerate(batches):
         if cancelled and cancelled():
             logger.info(f"Glossary generation cancelled at batch {batch_idx}/{len(batches)}")
@@ -434,6 +437,14 @@ def generate_glossary(
             context_parts.append(ctx)
 
         user_message = "Entities:\n\n" + "\n\n---\n\n".join(context_parts)
+
+        # Hint existing abstract parent terms so the LLM reuses hierarchy
+        if abstract_parents:
+            hint_lines = [f"- {p['name']}: {p['definition']}" for p in abstract_parents]
+            user_message += (
+                "\n\n---\n\nExisting parent categories (reuse these as parents where appropriate "
+                "instead of creating new ones):\n" + "\n".join(hint_lines)
+            )
 
         try:
             result = router.execute(
@@ -563,6 +574,14 @@ def generate_glossary(
 
             generated_terms.extend(stored_terms)
 
+            # Collect abstract parent terms for hinting in subsequent batches
+            for term in stored_terms:
+                if term.name not in entity_names and term.definition:
+                    abstract_parents.append({
+                        "name": term.display_name,
+                        "definition": term.definition,
+                    })
+
             if on_batch_complete and stored_terms:
                 on_batch_complete(stored_terms)
 
@@ -580,6 +599,13 @@ def generate_glossary(
     pruned = _prune_ungrounded(session_id, vector_store, active_domains=active_domains, user_id=user_id)
     if pruned:
         generated_terms = [t for t in generated_terms if t.name not in pruned]
+
+    # Prune abstract parents with only a single child — not useful as categories
+    if on_progress:
+        on_progress("Pruning single-child parents", 78)
+    pruned_single = _prune_single_child_parents(session_id, vector_store, active_domains=active_domains, user_id=user_id)
+    if pruned_single:
+        generated_terms = [t for t in generated_terms if t.name not in pruned_single]
 
     logger.info(f"Glossary generation complete: {len(generated_terms)} terms for session {session_id}")
     return generated_terms
@@ -649,6 +675,75 @@ def _prune_ungrounded(
 
     if pruned:
         logger.info(f"Pruned {len(pruned)} ungrounded glossary terms")
+    return pruned
+
+
+def _prune_single_child_parents(
+    session_id: str,
+    vector_store,
+    *,
+    active_domains: list[str] | None = None,
+    user_id: str | None = None,
+) -> set[str]:
+    """Remove LLM-generated abstract parents that have exactly one child.
+
+    A single-child category adds no useful grouping — the child can stand
+    on its own. The child's parent_id is cleared and the parent is deleted.
+
+    Returns:
+        Set of pruned term names
+    """
+    terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
+    if not terms:
+        return set()
+
+    by_id: dict[str, GlossaryTerm] = {t.id: t for t in terms}
+
+    # Count children per parent
+    children_of: dict[str, list[str]] = {}  # parent_id -> [child term ids]
+    for t in terms:
+        if t.parent_id:
+            children_of.setdefault(t.parent_id, []).append(t.id)
+
+    # Find abstract parents (LLM-generated, no matching entity) with exactly 1 child
+    pruned: set[str] = set()
+    for term in terms:
+        if term.provenance != "llm":
+            continue
+        child_ids = children_of.get(term.id, [])
+        if len(child_ids) != 1:
+            continue
+        # Check if term is abstract (no matching entity with physical chunks)
+        entity = vector_store.find_entity_by_name(
+            term.name, domain_ids=active_domains, session_id=session_id,
+        )
+        if entity and _entity_has_physical_chunks(entity, vector_store, domain_ids=active_domains):
+            continue  # Grounded term — keep it
+
+        # Unlink the single child
+        child = by_id.get(child_ids[0])
+        if child:
+            try:
+                # Promote child: adopt grandparent (or None)
+                _retry_on_conflict(lambda: vector_store.update_glossary_term(
+                    child.name, session_id,
+                    {"parent_id": term.parent_id, "parent_verb": child.parent_verb},
+                    user_id=user_id,
+                ))
+            except Exception as e:
+                logger.warning(f"Failed to unlink child '{child.name}' from single-child parent '{term.name}': {e}")
+                continue
+
+        # Delete the single-child parent
+        try:
+            _retry_on_conflict(lambda n=term.name: vector_store.delete_glossary_term(n, session_id, user_id=user_id))
+            pruned.add(term.name)
+            logger.debug(f"Pruned single-child parent: {term.name}")
+        except Exception as e:
+            logger.warning(f"Failed to prune single-child parent '{term.name}': {e}")
+
+    if pruned:
+        logger.info(f"Pruned {len(pruned)} single-child abstract parents")
     return pruned
 
 

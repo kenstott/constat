@@ -563,6 +563,11 @@ export default function RegressionPanel({ sessionId }: Props) {
                                     key={td.filename}
                                     onClick={async e => {
                                       e.stopPropagation()
+                                      const warnings = await moveGoldenQuestion(sessionId, d.filename, q.index, td.filename, true)
+                                      if (warnings.length > 0) {
+                                        const ok = window.confirm(`Warning:\n${warnings.join('\n')}\n\nMove anyway?`)
+                                        if (!ok) { setMovingQuestion(null); return }
+                                      }
                                       await moveGoldenQuestion(sessionId, d.filename, q.index, td.filename)
                                       setMovingQuestion(null)
                                     }}

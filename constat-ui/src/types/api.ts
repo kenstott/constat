@@ -620,4 +620,5 @@ export interface GoldenQuestionResponse {
   tags: string[]
   expect: GoldenQuestionExpectations
   objectives?: string[]
+  warnings?: string[]
 }

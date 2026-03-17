@@ -74,6 +74,9 @@ class ManagedSession:
     # Cancellation flag for background glossary generation
     _glossary_cancelled: threading.Event = field(default_factory=threading.Event)
 
+    # Whether glossary generation is currently in progress (for WS reconnect replay)
+    _glossary_generating: bool = False
+
     # Approval event for blocking on plan approval
     approval_event: Optional[asyncio.Event] = None
     approval_response: Optional[dict] = None
@@ -738,13 +741,21 @@ class SessionManager:
         thread = threading.Thread(target=_run, name=f"entity-rebuild-{session_id}", daemon=True)
         thread.start()
 
-    def _run_glossary_generation(self, session_id: str, managed: "ManagedSession") -> None:
+    def _run_glossary_generation(
+        self, session_id: str, managed: "ManagedSession",
+        phases: dict[str, bool] | None = None,
+    ) -> None:
         """Run LLM glossary generation after entity extraction.
 
         Args:
             session_id: Server session ID
             managed: ManagedSession instance
+            phases: Optional dict controlling which phases to run.
+                Keys: early_relationships, definitions, late_relationships, clustering.
+                Missing keys default to True.
         """
+        if phases is None:
+            phases = {}
         import time
 
         session = managed.session
@@ -763,6 +774,7 @@ class SessionManager:
         try:
             t0 = time.time()
             managed._glossary_cancelled.clear()
+            managed._glossary_generating = True
             self._push_event(managed, EventType.GLOSSARY_REBUILD_START, {
                 "session_id": session_id,
             })
@@ -808,56 +820,63 @@ class SessionManager:
                     "stage": stage, "percent": pct,
                 })
 
+            terms = []
+
             # Early relationships: SVO + LLM before glossary (text-driven discovery)
-            self._run_early_relationships(session_id, managed, vector_store, on_progress=on_progress)
+            if phases.get("early_relationships", True):
+                self._run_early_relationships(session_id, managed, vector_store, on_progress=on_progress)
 
-            # Build doc_configs and domain descriptions for definition gating
-            doc_configs: dict = {}
-            doc_configs.update(session.config.documents)
-            doc_configs.update(session.config.databases)
-            doc_configs.update(session.config.apis)
-            domain_descriptions: list[str] = []
-            for _dname, dcfg in session.config.domains.items():
-                if dcfg.description:
-                    domain_descriptions.append(dcfg.description)
-                doc_configs.update(dcfg.documents)
-                doc_configs.update(dcfg.databases)
-                doc_configs.update(dcfg.apis)
+            if phases.get("definitions", True):
+                # Build doc_configs and domain descriptions for definition gating
+                doc_configs: dict = {}
+                doc_configs.update(session.config.documents)
+                doc_configs.update(session.config.databases)
+                doc_configs.update(session.config.apis)
+                domain_descriptions: list[str] = []
+                for _dname, dcfg in session.config.domains.items():
+                    if dcfg.description:
+                        domain_descriptions.append(dcfg.description)
+                    doc_configs.update(dcfg.documents)
+                    doc_configs.update(dcfg.databases)
+                    doc_configs.update(dcfg.apis)
 
-            terms = generate_glossary(
-                session_id=session_id,
-                vector_store=vector_store,
-                router=session.router,
-                active_domains=active_domains,
-                on_batch_complete=on_batch,
-                on_progress=on_progress,
-                user_id=managed.user_id,
-                cancelled=managed._glossary_cancelled.is_set,
-                doc_configs=doc_configs,
-                domain_descriptions=domain_descriptions,
-            )
+                terms = generate_glossary(
+                    session_id=session_id,
+                    vector_store=vector_store,
+                    router=session.router,
+                    active_domains=active_domains,
+                    on_batch_complete=on_batch,
+                    on_progress=on_progress,
+                    user_id=managed.user_id,
+                    cancelled=managed._glossary_cancelled.is_set,
+                    doc_configs=doc_configs,
+                    domain_descriptions=domain_descriptions,
+                )
 
-            # Reconcile alias entities (rename "platinum" → "platinum tier")
-            from constat.discovery.glossary_generator import reconcile_alias_entities
-            reconcile_alias_entities(session_id, vector_store, active_domains=active_domains, user_id=managed.user_id)
+                # Reconcile alias entities (rename "platinum" → "platinum tier")
+                from constat.discovery.glossary_generator import reconcile_alias_entities
+                reconcile_alias_entities(session_id, vector_store, active_domains=active_domains, user_id=managed.user_id)
 
-            # Embed generated terms as glossary chunks
-            if terms:
-                on_progress("Embedding terms", 78)
-                active_domains = getattr(managed, "active_domains", []) or []
-                self._embed_glossary_terms(terms, session_id, vector_store, session, active_domains)
+                # Embed generated terms as glossary chunks
+                if terms:
+                    on_progress("Embedding terms", 78)
+                    active_domains = getattr(managed, "active_domains", []) or []
+                    self._embed_glossary_terms(terms, session_id, vector_store, session, active_domains)
 
             # Late relationships: FK + glossary inference (needs glossary)
-            self._run_late_relationships(session_id, managed, vector_store, on_progress=on_progress)
+            if phases.get("late_relationships", True):
+                self._run_late_relationships(session_id, managed, vector_store, on_progress=on_progress)
 
             # Rebuild clusters with new glossary terms
-            if hasattr(vector_store, '_rebuild_clusters'):
-                vector_store._clusters_dirty = True
-                vector_store._rebuild_clusters(session_id)
-                logger.info(f"Session {session_id}: rebuilt clusters after glossary generation")
+            if phases.get("clustering", True):
+                if hasattr(vector_store, '_rebuild_clusters'):
+                    vector_store._clusters_dirty = True
+                    vector_store._rebuild_clusters(session_id)
+                    logger.info(f"Session {session_id}: rebuilt clusters after glossary generation")
 
             on_progress("Complete", 100)
             duration_ms = int((time.time() - t0) * 1000)
+            managed._glossary_generating = False
             self._push_event(managed, EventType.GLOSSARY_REBUILD_COMPLETE, {
                 "session_id": session_id,
                 "terms_count": len(terms),
@@ -867,6 +886,7 @@ class SessionManager:
         except Exception as e:
             logger.exception(f"Glossary generation for {session_id} failed: {e}")
             duration_ms = int((time.time() - t0) * 1000)
+            managed._glossary_generating = False
             self._push_event(managed, EventType.GLOSSARY_REBUILD_COMPLETE, {
                 "session_id": session_id,
                 "terms_count": 0,
@@ -942,6 +962,8 @@ class SessionManager:
         Early dedup pass (no taxonomy pairs yet)
         """
         session = managed.session
+        rel_config = managed.resolved_config.relationships if managed.resolved_config else {}
+        preferred_verbs = rel_config.get("preferred_verbs") if rel_config else None
 
         # Clear non-user-edited relationships before regeneration
         cleared = vector_store.clear_non_user_relationships(session_id)
@@ -983,6 +1005,7 @@ class SessionManager:
                     vector_store=vector_store,
                     nlp=nlp,
                     on_batch=on_batch,
+                    preferred_verbs=preferred_verbs,
                 )
                 logger.info(f"Phase 1 SVO extraction for {session_id}: {len(svo_rels)} relationships")
         except Exception as e:
@@ -1006,6 +1029,7 @@ class SessionManager:
                         svo_candidates=svo_rels,
                         co_occurring_pairs=co_pairs,
                         on_batch=on_batch,
+                        preferred_verbs=preferred_verbs,
                     )
                     logger.info(f"Phase 2 LLM refinement for {session_id}: {len(llm_rels)} relationships")
             except Exception as e:
@@ -1040,6 +1064,8 @@ class SessionManager:
         Promote HAS_* to taxonomy
         """
         session = managed.session
+        rel_config = managed.resolved_config.relationships if managed.resolved_config else {}
+        preferred_verbs = rel_config.get("preferred_verbs") if rel_config else None
         on_batch = self._make_relationship_batch_callback(managed)
 
         # Phase 0: FK relationships
@@ -1072,6 +1098,7 @@ class SessionManager:
                     router=session.router,
                     on_batch=on_batch,
                     user_id=managed.user_id,
+                    preferred_verbs=preferred_verbs,
                 )
                 logger.info(f"Phase 3 glossary inference for {session_id}: {len(glossary_rels)} relationships")
             except Exception as e:

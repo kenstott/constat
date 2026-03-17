@@ -308,7 +308,9 @@ class SolveMixin:
             return self._answer_general_question(problem)
 
         # Check for clarification (clarification_request already computed in parallel above)
-        if clarification_request:
+        # Skip clarification when a skill matched — the skill already encodes the approach
+        active_skill_match = bool(self.skill_manager.active_skills)
+        if clarification_request and not active_skill_match:
             enhanced_problem = self._request_clarification(clarification_request)
             if enhanced_problem:
                 problem = enhanced_problem

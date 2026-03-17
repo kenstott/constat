@@ -448,6 +448,12 @@ export async function updateGlossaryTerm(
   return put(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}`, updates)
 }
 
+export async function getDeprecatedTerms(
+  sessionId: string,
+): Promise<{ terms: Array<{ name: string; display_name: string; definition: string; domain?: string; status: string; provenance: string }>; count: number }> {
+  return get(`/sessions/${sessionId}/glossary/deprecated`)
+}
+
 export async function deleteGlossaryByStatus(
   sessionId: string,
   status: string = 'draft'
@@ -542,9 +548,10 @@ export async function refineGlossaryTerm(
 }
 
 export async function generateGlossary(
-  sessionId: string
+  sessionId: string,
+  phases?: Record<string, boolean>,
 ): Promise<{ status: string }> {
-  return post(`/sessions/${sessionId}/glossary/generate`)
+  return post(`/sessions/${sessionId}/glossary/generate`, phases ? { phases } : undefined)
 }
 
 export async function suggestTaxonomy(
@@ -1127,7 +1134,8 @@ export async function moveSkill(body: {
   skill_name: string
   from_domain: string
   to_domain: string
-}): Promise<{ status: string }> {
+  validate_only?: boolean
+}): Promise<{ status: string; warnings?: string[] }> {
   return post('/domains/move-skill', body)
 }
 
