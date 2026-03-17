@@ -42,9 +42,34 @@ Or use the terminal REPL instead:
 constat repl -c demo/config.yaml
 ```
 
-## Execution and Provenance
+## Core Concepts
 
-Constat operates in exploratory mode for data exploration, visualization, and iterative analysis. The LLM generates multi-step plans and executes code to answer questions.
+### Agentic Domains
+
+Domains are the primary organizational unit. Everything — data sources, glossary terms, skills, agents, rules — is scoped to a domain. Domains form a strict DAG and are organized in three tiers:
+
+| Tier | Location | Editable | Purpose |
+|------|----------|----------|---------|
+| **system** | `config.yaml` domains | No | Curated by admin, read-only |
+| **shared** | `.constat/shared/domains/` | Owner only | Promoted from user, visible to all |
+| **user** | `.constat/{user_id}/domains/` | Yes | Personal sandbox, persists across sessions |
+
+Content flows upward: user → shared → system (read-only). User domains are persistent staging areas — experiments, draft skills, and what-if rules survive across sessions until promoted or deleted.
+
+**Domain resources:** databases, APIs, documents, glossary terms, skills, agents, rules, permissions, golden questions, system prompts, NER stop lists.
+
+**Move resources** between domains via drag-and-drop in the domain panel or the `/domains/move-*` endpoints. **Promote** user domains to shared via the UI or `POST /domains/{filename}/promote`.
+
+### Recursive Structures
+
+A session is a conversation with memory. Each user question triggers:
+
+1. **Intent classification** — determines execution mode
+2. **Planning** — generates a multi-step DAG with user approval
+3. **Execution** — each step produces code, output, and narrative
+4. **Synthesis** — combines step results into a coherent answer
+
+Follow-up questions extend the session, building on previous results. Steps are organized as a DAG and parallelized where dependencies allow. Clarification questions with interactive widgets (choice, curation, ranking, table, mapping, tree, annotation) fire before planning when queries are ambiguous.
 
 ```python
 from constat import Session
@@ -53,22 +78,23 @@ session = Session(config)
 result = session.solve("What are the top 10 customers by revenue this quarter?")
 ```
 
-- Generates multi-step execution plans with user approval
-- Each step produces code, output, and narrative
-- Results include charts, tables, and insights
-- Clarification questions with interactive widgets (choice, curation, ranking, table, mapping, tree, annotation) before planning when queries are ambiguous
+### Execution Modes
 
-### On-Demand Reasoning Chain
+| Mode | Trigger | Behavior |
+|------|---------|----------|
+| **Exploratory** | Default | Multi-step plans, code generation, charts, tables |
+| **Auditable** | `/reason` | Formal reasoning chain with full derivation traces |
+| **Knowledge** | `/reason` on knowledge queries | Retrieves from documents via semantic search |
 
-At any point, use `/reason` to generate a formal reasoning chain for your results with full derivation traces. This is useful for compliance, financial reporting, and any scenario requiring provable conclusions.
+### Facts and Provenance
 
-The system automatically:
-1. Analyzes the question to identify required facts
-2. Determines how to derive each fact from your data sources
-3. Executes queries and combines results
-4. Returns the answer with full provenance
+Every piece of information is a `Fact` with:
+- **Value**: The actual data
+- **Source**: Where it came from (DATABASE, CONFIG, DERIVED, LLM_INFERENCE, LEARNED)
+- **Confidence**: How certain we are (1.0 for database queries, lower for inferences)
+- **Because**: The facts this was derived from
 
-The derivation trace shows exactly how the conclusion was reached:
+**Derivation traces** show exactly how conclusions were reached:
 
 ```
 is_vip(customer_id=C001) = True
@@ -89,7 +115,139 @@ Every fact in the derivation chain is traceable to either:
 - A configuration value
 - A derived calculation (with the facts it depends on)
 
-## Data Store Integration
+**Lazy resolution** ensures efficient execution — facts are resolved only when needed:
+1. Check cache
+2. Check config
+3. Apply rules
+4. Query database
+5. Fall back to LLM knowledge
+6. Create sub-plan if complex
+
+### LLM Primitives
+
+Generated code has access to LLM wrapper functions for in-step operations:
+
+```python
+# Map values to an allowed set
+mapped = llm_map(df['category'], ['Electronics', 'Clothing', 'Food'])
+
+# Classify text into categories
+labels = llm_classify(df['comment'], ['positive', 'negative', 'neutral'])
+
+# Score text on a numeric scale
+scores = llm_score(df['review'], min_val=0, max_val=1, instruction="sentiment score")
+
+# Extract structured fields from text
+facts = llm_extract(text, fields=["company", "revenue", "date"])
+
+# Summarize text
+summary = llm_summarize(df['description'].tolist())
+```
+
+These auto-detect the provider from environment variables and handle deduplication for efficiency.
+
+## Features
+
+### Reasoning Chain
+
+At any point, use `/reason` to generate a formal reasoning chain for your results with full derivation traces. This is useful for compliance, financial reporting, and any scenario requiring provable conclusions.
+
+The system automatically:
+1. Analyzes the question to identify required facts
+2. Determines how to derive each fact from your data sources
+3. Executes queries and combines results
+4. Returns the answer with full provenance
+
+### Agents and Skills
+
+**Agents** are specialist personas that customize the LLM's behavior for specific analysis contexts. Each agent provides a custom system prompt that shapes how the LLM approaches queries. The planner can delegate steps to agents for isolated, expertise-specific execution. Agents are stored per-user at `.constat/{user_id}/agents.yaml`.
+
+**Skills** are domain-specific knowledge modules (SKILL.md files) that provide specialized context and guidance. They follow the standard skill/prompt pattern used by Anthropic (Claude Code), OpenAI, and other AI providers. Skills are portable programs — they can run under other LLMs, not just the one that created them. A completed reasoning chain can be converted to a skill via "Save as Skill" in the DAG panel.
+
+Skills are discovered from: project `.constat/skills/`, global `~/.constat/skills/`, and config-specified paths. They support link following for lazy-loaded references, and YAML frontmatter for metadata and allowed tools.
+
+### Glossary Generator
+
+The glossary is a unified view of auto-generated entities (from NER extraction) married with curated business definitions. Every extracted entity is a self-describing glossary term. Features include:
+
+- **Definitions** — business meaning for terms, with AI-assisted generation and refinement
+- **Taxonomy** — parent/child hierarchy (e.g., "retail customer" is a kind of "customer")
+- **Aliases** — alternate names for the same concept, with AI suggestions
+- **Tags** — key-value metadata for categorization, with AI generators
+- **Relationships** — SVO triples between terms (e.g., customer PLACES order) with UPPER_SNAKE_CASE verb normalization
+- **Status workflow** — draft → reviewed → approved
+- **Domain scoping** — terms are owned by domains
+
+### Regression Testing
+
+Golden questions let you define expected outcomes for a domain and verify them automatically. Questions are defined in domain YAML alongside the resources they test.
+
+**Five assertion layers:**
+
+| Layer | What | Cost |
+|-------|------|------|
+| Entity extraction | Expected entities appear in NER output | Free |
+| Grounding | Entities resolve to expected sources | Free |
+| Glossary | Terms have definitions, correct domain, parent hierarchy | Free |
+| Relationships | Expected SVO triples exist | Free |
+| End-to-end | LLM generates plan, executes, answer matches reference | LLM call |
+
+The first four layers are pure database lookups. End-to-end is opt-in (`--e2e`).
+
+```bash
+constat test -c config.yaml                    # All domains
+constat test -c config.yaml -d sales-analytics # Specific domain
+constat test -c config.yaml --tags smoke       # Filter by tag
+constat test -c config.yaml --e2e              # Include end-to-end (LLM)
+```
+
+The UI provides a Regression panel for golden question CRUD and test execution with SSE streaming for real-time progress.
+
+### Learning System
+
+Constat learns from corrections and errors to improve over time. Learnings are stored per-user and persist across sessions.
+
+- **Explicit corrections:** `/correct "revenue" means gross sales minus returns`
+- **Automatic learning:** When code generation fails and retries succeed, the error-to-fix pattern is captured automatically
+- **Natural language detection:** Corrections in conversation are detected automatically (e.g., "That's wrong, active users means 30-day logins")
+- **Compaction:** Similar learnings are automatically promoted to rules when patterns emerge
+
+### Session Replay
+
+Any exploratory session can be replayed — stored scratchpad code is re-executed without LLM codegen. This is useful for demos, testing with updated data, or resuming work after a break. Each query's steps are tracked by `objective_index`, so individual objectives can be replayed independently.
+
+In Jupyter notebooks, session replay is automatic. When you restart the kernel and Run All, each `%%constat` cell replays only its own query's stored code rather than re-generating via LLM.
+
+### Interactive Visualizations
+
+Constat generates interactive visualizations saved as HTML files:
+
+| Type | Library | Example |
+|------|---------|---------|
+| Interactive maps | Folium | Geographic data, markers, choropleth maps |
+| Interactive charts | Plotly | Bar, line, scatter, pie, treemap, etc. |
+| Statistical charts | Altair | Declarative statistical visualizations |
+| Static plots | Matplotlib/Seaborn | Traditional Python plotting |
+
+Request a "dashboard" to generate multi-panel visualizations with adaptive layouts (time series 1x2, categories 2x2, KPI-focused 3x2).
+
+### Discovery Tools
+
+All supported LLM providers use tool-based discovery:
+- Minimal system prompt (~500 tokens)
+- LLM uses tools to discover relevant schema, APIs, and documents on-demand
+- On-demand loading reduces token usage by 80-95%
+
+| Category | Tools |
+|----------|-------|
+| **Schema** | `list_databases`, `list_tables`, `get_table_schema`, `search_tables`, `get_table_relationships`, `get_sample_values` |
+| **API** | `list_apis`, `list_api_operations`, `get_operation_details`, `search_operations` |
+| **Documents** | `list_documents`, `get_document`, `search_documents`, `get_document_section` |
+| **Facts** | `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts` |
+
+Documents are indexed into a persistent vector store using DuckDB VSS (lazy, on first access). The index persists at `~/.constat/vectors.duckdb` by default, eliminating re-indexing on restart.
+
+## Data Integration
 
 ### SQL Databases (via SQLAlchemy)
 
@@ -294,303 +452,6 @@ SQL   MongoDB Cassandra DynamoDB Files  APIs
 
 For detailed architecture, see [docs/architecture.md](docs/architecture.md).
 
-### Discovery Mode
-
-All supported LLM providers use tool-based discovery:
-- Minimal system prompt (~500 tokens)
-- LLM uses tools to discover relevant schema, APIs, and documents on-demand
-- On-demand loading reduces token usage by 80-95%
-
-Discovery tools include:
-- **Schema**: `list_tables`, `get_table_schema`, `search_tables`, `get_sample_values`
-- **APIs**: `list_api_operations`, `get_operation_details`, `search_operations`
-- **Documents**: `list_documents`, `search_documents`, `get_document`, `get_document_section`
-
-Document discovery supports:
-- **Unstructured docs**: Markdown, text, PDF, DOCX, PPTX files with semantic search (sentence-transformers)
-- **Structured files**: CSV, JSON, JSONL, Parquet with automatic schema inference
-- **Section extraction**: Retrieve specific sections from large documents
-
-Documents are indexed into a persistent vector store using DuckDB VSS (lazy, on first access).
-The index persists at `~/.constat/vectors.duckdb` by default, eliminating re-indexing on restart.
-During fact resolution and knowledge synthesis, relevant document excerpts are automatically
-retrieved via semantic search - no explicit discovery step required.
-
-## CLI Usage
-
-```bash
-# Solve a single problem
-constat solve "What are the top 5 customers by revenue?" -c config.yaml
-
-# Start interactive REPL
-constat repl -c config.yaml
-
-# Start API server (for web UI)
-constat serve -c config.yaml
-
-# View session history
-constat history
-
-# Resume a previous session
-constat resume abc123 -c config.yaml
-
-# Validate config file
-constat validate -c config.yaml
-
-# Show database schema
-constat schema -c config.yaml
-
-# Generate sample config
-constat init
-```
-
-### CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `solve <problem>` | Solve a single problem with multi-step planning |
-| `repl` | Start interactive REPL session (Textual TUI) |
-| `serve` | Start the REST API server for web UI access |
-| `history` | List recent sessions |
-| `resume <id>` | Resume a previous session |
-| `validate` | Validate a config file |
-| `schema` | Show database schema overview |
-| `init` | Generate a sample config.yaml |
-| `test` | Run golden question regression tests for domain quality |
-
-**`serve` options:**
-```bash
-constat serve -c config.yaml                  # Start on localhost:8000
-constat serve -c config.yaml --port 8080      # Custom port
-constat serve -c config.yaml --host 0.0.0.0   # Bind to all interfaces
-constat serve -c config.yaml --reload         # Auto-reload for development
-constat serve -c config.yaml --debug          # Enable debug logging
-```
-
-**`test` options:**
-```bash
-constat test -c config.yaml                    # Run all domain tests
-constat test -c config.yaml -d sales-analytics # Specific domain
-constat test -c config.yaml --tags smoke       # Filter by tag
-constat test -c config.yaml --e2e              # Include end-to-end (LLM)
-```
-
-### REPL Commands
-
-Once in the interactive REPL, these commands are available:
-
-**Session & Navigation:**
-
-| Command | Description |
-|---------|-------------|
-| `/help`, `/h` | Show all commands |
-| `/quit`, `/q` | Exit |
-| `/reset` | Clear session state and start fresh |
-| `/redo [instruction]` | Retry last query (optionally with modifications) |
-| `/user [name]` | Show or set current user |
-
-**Data Inspection:**
-
-| Command | Description |
-|---------|-------------|
-| `/tables` | List tables in session datastore |
-| `/show <table>` | Show table contents |
-| `/query <sql>` | Run SQL query on datastore |
-| `/export <table> [file]` | Export table to CSV or XLSX |
-| `/code [step]` | Show generated code (all or specific step) |
-| `/state` | Show session state |
-| `/artifacts [all]` | Show artifacts (use 'all' to include intermediate) |
-
-**Data Sources:**
-
-| Command | Description |
-|---------|-------------|
-| `/databases`, `/db` | List configured databases |
-| `/apis`, `/api` | List configured APIs |
-| `/documents`, `/docs` | List configured documents |
-| `/files` | List all data files |
-| `/doc <path> [name]` | Add a document to this session |
-| `/discover [scope] <query>` | Search data sources (scope: database\|api\|document) |
-| `/update`, `/refresh` | Refresh metadata and rebuild cache |
-
-**Facts & Memory:**
-
-| Command | Description |
-|---------|-------------|
-| `/facts` | Show cached facts from this session |
-| `/remember <fact>` | Persist a session fact across sessions |
-| `/forget <name>` | Forget a remembered fact |
-| `/correct <text>` | Record a correction for future reference |
-| `/learnings` | Show learnings and rules |
-| `/compact-learnings` | Promote similar learnings into rules |
-
-**Plans & History:**
-
-| Command | Description |
-|---------|-------------|
-| `/save <name>` | Save current plan for replay |
-| `/share <name>` | Save plan as shared (all users) |
-| `/plans` | List saved plans |
-| `/replay <name>` | Replay a saved plan |
-| `/history`, `/sessions` | List recent sessions |
-| `/resume <id>` | Resume a previous session |
-| `/summarize <target>` | Summarize plan\|session\|facts\|<table> |
-
-**Verification:**
-
-| Command | Description |
-|---------|-------------|
-| `/reason`, `/audit` | Verify conversation claims with auditable reasoning chain |
-
-**Settings:**
-
-| Command | Description |
-|---------|-------------|
-| `/verbose [on\|off]` | Toggle verbose mode |
-| `/raw [on\|off]` | Toggle raw output display |
-| `/insights [on\|off]` | Toggle insight synthesis |
-| `/preferences` | Show current preferences |
-| `/context` | Show context size and token usage |
-| `/compact` | Compact context to reduce token usage |
-
-**Saved Plans & Replay:**
-- `/save` stores the executed code (not just the plan) for deterministic replay
-- `/replay` executes the stored code without regenerating it via LLM
-- Relative terms ("today", "last month", "within policy") are evaluated dynamically on each replay
-- Explicit values ("January 2006", "above 100 units") are hardcoded as specified
-
-**Session Replay:**
-
-Any exploratory session can be replayed — the stored scratchpad code is re-executed without LLM codegen. This is useful for demos, testing with updated data, or resuming work after a break. Each query's steps are tracked by `objective_index`, so individual objectives can be replayed independently.
-
-In Jupyter notebooks, session replay is automatic. When you restart the kernel and Run All, each `%%constat` cell replays only its own query's stored code rather than re-generating via LLM. The notebook magic tracks which cell corresponds to which objective and replays them in order. New cells added after the stored objectives fall through to normal `follow_up()` execution.
-
-**Brief mode:** Use keywords like "briefly", "tl;dr", "just show" in your query to skip the synthesis step and get raw results faster.
-
-### Interactive Visualizations
-
-Constat can generate interactive visualizations that are saved as HTML files you can open in your browser:
-
-```
-> Show me an interactive map of countries using the Euro
-
-Interactive map: /Users/you/.constat/outputs/euro_countries.html
-```
-
-**Supported visualization types:**
-
-| Type | Library | Example |
-|------|---------|---------|
-| Interactive maps | Folium | Geographic data, markers, choropleth maps |
-| Interactive charts | Plotly | Bar, line, scatter, pie, treemap, etc. |
-| Statistical charts | Altair | Declarative statistical visualizations |
-| Static plots | Matplotlib/Seaborn | Traditional Python plotting |
-
-Generated visualizations are:
-- Saved to `~/.constat/outputs/` as self-contained HTML files
-- Stored as artifacts in the session datastore (for UI display)
-- Fully interactive in your browser (zoom, hover, pan)
-
-**Example queries:**
-- "Create an interactive map showing customer locations"
-- "Show me a bar chart of revenue by region"
-- "Visualize the correlation between price and quantity"
-
-### Dashboards
-
-Request a "dashboard" to generate multi-panel visualizations automatically:
-
-```
-> Create a dashboard of sales performance
-
-[Generates 2x2 grid with: revenue trend, breakdown by category, top products, KPI summary]
-```
-
-Dashboard layouts adapt to data:
-- **Time series**: Trend + summary stats (1x2)
-- **Categories**: Overview, breakdown, comparison, detail (2x2)
-- **KPI-focused**: KPI cards on top, supporting charts below (3x2)
-
-### Learning System
-
-Constat learns from corrections and errors to improve over time. Learnings are stored per-user and persist across sessions.
-
-**Explicit corrections:**
-```
-/correct "revenue" means gross sales minus returns
-```
-
-**Automatic learning:** When code generation fails and retries succeed, the error-to-fix pattern is captured automatically. These learnings are injected into future code generation prompts.
-
-**Natural language detection:** Corrections in conversation are detected automatically:
-- "That's wrong, active users means 30-day logins"
-- "Actually, in our context, churn means 60 days inactive"
-
-**Compaction:** Similar learnings are automatically promoted to rules when patterns emerge:
-```
-/learnings          # Show rules and pending learnings
-/compact-learnings  # Manually trigger compaction
-```
-
-## Web UI
-
-Constat includes a React web application for browser-based access. Start the API server and UI together:
-
-```bash
-# Start the API server
-constat serve -c config.yaml
-
-# In another terminal, start the UI dev server
-cd constat-ui
-npm install
-npm run dev
-```
-
-**Features:**
-- Real-time streaming via WebSocket
-- Plan approval dialog before execution
-- Clarification dialog with interactive widgets (choice, ranking, curation, mapping, tree, table, annotation)
-- Artifact panel with tables, charts, code, scratchpad (execution narrative), and glossary
-- Reasoning Chain DAG visualization (D3-based directed acyclic graph) with skill extraction
-- Domain management with tier promotion (user → shared → system)
-- Golden question regression testing UI with streaming progress
-- Deep linking for artifact panel navigation
-- Firebase authentication with role-based visibility/write permissions
-- Responsive layout with collapsible panels
-
-**Tech stack:** React 18, TypeScript, Vite, Tailwind CSS, Zustand, React Query, D3 + d3-dag, Plotly.js, Headless UI + Heroicons
-
-## Jupyter Notebook
-
-A separate pip-installable package (`constat-jupyter`) provides a synchronous Python client for interactive notebook use.
-
-```bash
-pip install -e constat-jupyter/
-```
-
-```python
-from constat_jupyter import ConstatClient
-
-client = ConstatClient("http://localhost:8000")
-session = client.create_session()
-
-result = session.solve("Top 10 items by value")       # live progress + plan approval
-result2 = session.follow_up("Break down by region")   # follow-up in same session
-result3 = session.reason_chain("Verify VIP status")   # auditable reasoning chain
-
-df = result.tables["top_items"]                        # Polars DataFrame via Parquet
-result.artifacts[0].display()                          # render chart/HTML inline
-```
-
-**Features:**
-- Live WebSocket progress streaming (plan approval, step execution, synthesis)
-- `SolveResult` auto-renders as markdown/HTML in notebook cells
-- Inline artifact rendering (Plotly charts, HTML, Markdown, images)
-- Tables downloaded as Parquet for zero-copy Polars/Pandas DataFrames
-- Schema browsing, glossary, facts, and session management
-- Configurable via `CONSTAT_SERVER_URL` / `CONSTAT_AUTH_TOKEN` env vars or constructor args
-- **Automatic session replay:** Kernel restart + Run All replays each cell's stored code without LLM regeneration. A per-notebook sidecar file persists the session ID across restarts, and each cell replays only its own objective's scratchpad entries.
-
 ## REST API
 
 Constat provides a REST API via FastAPI with WebSocket support for real-time streaming.
@@ -629,7 +490,6 @@ constat serve -c config.yaml --port 8000
 | `/api/sessions/{id}/proof-facts` | Proof fact persistence for session restore |
 | `/api/schema` | Schema introspection |
 | `/api/users` | User management, permissions |
-| `/api/sessions/agents` | Agent management |
 | `/api/sessions/agents` | Agent management |
 | `/api/skills` | Skill CRUD, activation |
 | `/api/learnings` | Learnings, rules, exemplar generation |
@@ -736,261 +596,6 @@ llm:
 | Ollama (local) | `ollama` | Yes (llama3.2+) |
 | Together AI | `together` | Yes |
 | Groq | `groq` | Yes |
-
-## Domains
-
-Domains are the primary organizational unit. Everything — data sources, glossary terms, skills, agents, rules — is scoped to a domain. Domains form a strict DAG and are organized in three tiers:
-
-| Tier | Location | Editable | Purpose |
-|------|----------|----------|---------|
-| **system** | `config.yaml` domains | No | Curated by admin, read-only |
-| **shared** | `.constat/shared/domains/` | Owner only | Promoted from user, visible to all |
-| **user** | `.constat/{user_id}/domains/` | Yes | Personal sandbox, persists across sessions |
-
-Content flows upward: user → shared → system (read-only). User domains are persistent staging areas — experiments, draft skills, and what-if rules survive across sessions until promoted or deleted.
-
-**Domain resources:** databases, APIs, documents, glossary terms, skills, agents, rules, permissions, system prompts, NER stop lists.
-
-**Move resources** between domains via drag-and-drop in the domain panel or the `/domains/move-*` endpoints. **Promote** user domains to shared via the UI or `POST /domains/{filename}/promote`.
-
-## Glossary
-
-The glossary is a unified view of auto-generated entities (from NER extraction) married with curated business definitions. Every extracted entity is a self-describing glossary term from a user's perspective. Definitions are added when the term is not adequately self-describing.
-
-**Glossary features:**
-- **Definitions** — business meaning for terms, with AI-assisted generation and refinement
-- **Taxonomy** — parent/child hierarchy (e.g., "retail customer" is a kind of "customer")
-- **Aliases** — alternate names for the same concept, with AI suggestions
-- **Tags** — key-value metadata for categorization, with AI generators
-- **Relationships** — SVO triples between terms (e.g., customer PLACES order) with UPPER_SNAKE_CASE verb normalization, with AI suggestions
-- **Status workflow** — draft → reviewed → approved
-- **Domain scoping** — terms are owned by domains
-
-Relationships use UPPER_SNAKE_CASE verbs (e.g., `PLACES`, `BELONGS_TO`, `HAS_KIND`). Verbs are normalized on extraction: lemmatized, uppercased, spaces replaced with underscores.
-
-## Regression Testing
-
-Golden questions let you define expected outcomes for a domain and verify them automatically. Questions are defined in domain YAML alongside the resources they test.
-
-**Five assertion layers:**
-
-| Layer | What | Cost |
-|-------|------|------|
-| Entity extraction | Expected entities appear in NER output | Free |
-| Grounding | Entities resolve to expected sources | Free |
-| Glossary | Terms have definitions, correct domain, parent hierarchy | Free |
-| Relationships | Expected SVO triples exist | Free |
-| End-to-end | LLM generates plan, executes, answer matches reference | LLM call |
-
-The first four layers are pure database lookups. End-to-end is opt-in (`--e2e`).
-
-```bash
-constat test -c config.yaml                    # All domains
-constat test -c config.yaml -d sales-analytics # Specific domain
-constat test -c config.yaml --tags smoke       # Filter by tag
-```
-
-The UI provides a Regression panel for golden question CRUD and test execution with SSE streaming for real-time progress.
-
-## Agents
-
-Agents are specialist personas that customize the LLM's behavior for specific analysis contexts. Each agent provides a custom system prompt that shapes how the LLM approaches queries. The planner can delegate steps to agents for isolated, expertise-specific execution.
-
-Agents are stored per-user at `.constat/{user_id}/agents.yaml` and can be managed via the API or UI.
-
-## Skills
-
-Skills are domain-specific knowledge modules that provide specialized context and guidance for analysis tasks. They are loaded dynamically based on the query context and scoped to domains.
-
-This follows the standard skill/prompt pattern used by Anthropic (Claude Code), OpenAI, and other AI providers for extending chatbot capabilities with domain-specific knowledge.
-
-Skills are portable programs — they can run under other LLMs, not just the one that created them. A completed reasoning chain can be converted to a skill via "Save as Skill" in the DAG panel, capturing verified derivation patterns as reusable domain knowledge.
-
-### Skill Structure
-
-Skills are stored in directories following the pattern `skills/<skill-name>/SKILL.md`:
-
-```
-.constat/skills/
-└── financial-analysis/
-    └── SKILL.md
-```
-
-### SKILL.md Format
-
-Each skill is defined as a Markdown file with YAML frontmatter:
-
-```markdown
----
-name: financial-analysis
-description: Specialized instructions for financial data analysis
-allowed-tools:
-  - Read
-  - Grep
-  - list_tables
-  - get_table_schema
----
-
-# Financial Analysis Skill
-
-## Key Concepts
-- Revenue recognition principles
-- Common financial metrics (Gross Margin, EBITDA, etc.)
-- Time period handling (MTD, QTD, YTD)
-
-## Analysis Guidelines
-1. Start with data quality checks
-2. Use appropriate aggregations
-3. Present results clearly
-```
-
-### Skill Discovery Paths
-
-Skills are discovered from multiple locations (in order of precedence):
-
-1. **Project skills**: `.constat/skills/` in the project directory
-2. **Global skills**: `~/.constat/skills/` in the user's home directory
-3. **Config-specified paths**: Additional paths defined in `config.yaml`
-
-### Configuring Additional Skill Paths
-
-Add custom skill directories in your config file:
-
-```yaml
-# config.yaml
-skills:
-  paths:
-    - /shared/team-skills/           # Team shared skills
-    - /opt/constat/standard-skills/  # Standard library
-    - ~/my-custom-skills/            # Personal skills (~ expanded)
-```
-
-Skills in config paths are searched after the default paths, so project and global skills take precedence.
-
-### Link Following
-
-Skills can reference additional files via markdown links. Links are parsed when the skill loads but content is fetched lazily (on-demand):
-
-```markdown
-# My Skill
-
-See the [indicator definitions](references/indicators.md) for details.
-For API docs, check [the official guide](https://example.com/docs.md).
-```
-
-**Supported link types:**
-- **Relative paths**: `[text](references/file.md)` - resolved relative to the skill folder
-- **URLs**: `[text](https://example.com/doc.md)` - fetched via HTTP
-
-**How it works:**
-1. When a skill loads, links are discovered and returned in the response
-2. Content is NOT fetched until explicitly requested via `resolve_skill_link`
-3. Fetched content is cached for subsequent calls
-
-### Creating a Skill
-
-1. Create a directory: `.constat/skills/my-skill/`
-2. Add a `SKILL.md` file with YAML frontmatter
-3. Define the skill's context, guidelines, and examples
-4. Optionally add referenced files in subdirectories (e.g., `references/`)
-
-Skills are automatically discovered and can be loaded when relevant to a query.
-
-## Domains
-
-Domains are the primary organizational unit. Everything — data sources, glossary terms, skills, agents, rules — is scoped to a domain. Domains form a strict DAG and are organized in three tiers:
-
-| Tier | Location | Editable | Purpose |
-|------|----------|----------|---------|
-| **system** | `config.yaml` domains | No | Curated by admin, read-only |
-| **shared** | `.constat/shared/domains/` | Owner only | Promoted from user, visible to all |
-| **user** | `.constat/{user_id}/domains/` | Yes | Personal sandbox, persists across sessions |
-
-Content flows upward: user → shared → system. User domains are persistent staging areas — experiments, draft skills, and what-if rules survive across sessions until promoted or deleted.
-
-**Domain resources:** databases, APIs, documents, glossary terms, skills, agents, rules, golden questions, system prompts.
-
-Move resources between domains via drag-and-drop in the domain panel or the `/domains/move-*` endpoints. Promote user domains to shared via the UI or `POST /domains/{filename}/promote`.
-
-## Glossary
-
-The glossary unifies auto-generated entities (from NER extraction) with curated business definitions. Features include definitions, parent/child taxonomy, aliases, tags, SVO relationships, status workflow (draft → reviewed → approved), and domain scoping — all with AI-assisted generation.
-
-## Regression Testing
-
-Golden questions let you define expected outcomes for a domain and verify them automatically:
-
-```bash
-constat test -c config.yaml                    # All domains
-constat test -c config.yaml -d sales-analytics # Specific domain
-constat test -c config.yaml --tags smoke       # Filter by tag
-constat test -c config.yaml --e2e              # Include end-to-end (LLM)
-```
-
-**Five assertion layers:**
-
-| Layer | What | Cost |
-|-------|------|------|
-| Entity extraction | Expected entities appear in NER output | Free |
-| Grounding | Entities resolve to expected sources | Free |
-| Glossary | Terms have definitions, correct domain | Free |
-| Relationships | Expected SVO triples exist | Free |
-| End-to-end | LLM plan + execution + answer validation | LLM call |
-
-The first four layers are pure database lookups. End-to-end is opt-in (`--e2e`). The UI provides a Regression panel for golden question CRUD and test execution with SSE streaming.
-
-## LLM Primitives
-
-Generated code has access to LLM wrapper functions for in-step operations:
-
-```python
-# Map values to an allowed set
-mapped = llm_map(df['category'], ['Electronics', 'Clothing', 'Food'])
-
-# Classify text into categories
-labels = llm_classify(df['comment'], ['positive', 'negative', 'neutral'])
-
-# Score text on a numeric scale
-scores = llm_score(df['review'], min_val=0, max_val=1, instruction="sentiment score")
-
-# Extract structured fields from text
-facts = llm_extract(text, fields=["company", "revenue", "date"])
-
-# Summarize text
-summary = llm_summarize(df['description'].tolist())
-```
-
-These auto-detect the provider from environment variables and handle deduplication for efficiency.
-
-## Key Concepts
-
-### Facts and Provenance
-
-Every piece of information is a `Fact` with:
-- **Value**: The actual data
-- **Source**: Where it came from (DATABASE, CONFIG, DERIVED, LLM_INFERENCE, LEARNED)
-- **Confidence**: How certain we are (1.0 for database queries, lower for inferences)
-- **Because**: The facts this was derived from
-
-### Derivation Traces
-
-When using `/reason`, every conclusion includes a full reasoning chain showing:
-- The logical chain of reasoning
-- All data sources consulted
-- The exact queries executed
-- Confidence at each step
-
-### Lazy Resolution
-
-Facts are resolved only when needed:
-1. Check cache
-2. Check config
-3. Apply rules
-4. Query database
-5. Fall back to LLM knowledge
-6. Create sub-plan if complex
-
-This ensures efficient execution while maintaining full traceability.
 
 ## Configuration
 
@@ -1661,34 +1266,15 @@ The configs are deep-merged by database name:
 - Users can add entirely new databases
 - User values override engine values where both exist
 
-## Discovery Tools
+## Interfaces
 
-The discovery module provides on-demand access to schema, API, and document information.
+Constat provides three interfaces, each suited to different workflows:
 
-### Available Tools
-
-| Category | Tools |
-|----------|-------|
-| **Schema** | `list_databases`, `list_tables`, `get_table_schema`, `search_tables`, `get_table_relationships`, `get_sample_values` |
-| **API** | `list_apis`, `list_api_operations`, `get_operation_details`, `search_operations` |
-| **Documents** | `list_documents`, `get_document`, `search_documents`, `get_document_section` |
-| **Facts** | `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts` |
-
-### Artifact Store Configuration
-
-The artifact store holds session state, execution history, and generated artifacts:
-
-```yaml
-storage:
-  # SQLite (default, zero-config)
-  artifact_store_uri: sqlite:///~/.constat/artifacts.db
-
-  # PostgreSQL (production, multi-user)
-  artifact_store_uri: postgresql://${DB_USER}:${DB_PASS}@localhost/constat
-
-  # DuckDB (requires duckdb-engine package)
-  artifact_store_uri: duckdb:///~/.constat/artifacts.duckdb
-```
+| Interface | Best For | Guide |
+|-----------|----------|-------|
+| **Terminal REPL** | Keyboard-driven iteration, full command set, scriptable | [docs/repl.md](docs/repl.md) |
+| **Web UI** | Visual exploration, DAG visualization, domain management, team collaboration | [docs/web.md](docs/web.md) |
+| **Jupyter Notebook** | Reproducible analysis, per-cell replay, DataFrame ecosystem, zero-code magics | [docs/jupyter.md](docs/jupyter.md) |
 
 ## Installation
 
