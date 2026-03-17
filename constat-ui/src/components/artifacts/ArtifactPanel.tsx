@@ -519,6 +519,8 @@ export function ArtifactPanel() {
     if (expandedArtifactSections.includes('results') && resultsCollapsed) {
       setResultsCollapsed(false)
       localStorage.setItem('constat-results-collapsed', 'false')
+      // Consume the signal so collapsing works again
+      useUIStore.getState().toggleArtifactSection('results')
     }
   }, [expandedArtifactSections, resultsCollapsed])
   // Move-to-domain state
