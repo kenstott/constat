@@ -382,6 +382,15 @@ class EntityExtractor:
         # This captures the entity source: ORG, PERSON, SCHEMA, API, TERM
         ner_type = spacy_label
 
+        # Set entity_class based on source type
+        from constat.discovery.models import EntityClass
+        if spacy_label in self._entity_resolution_labels:
+            entity_class = EntityClass.DATA_ENTITY
+        elif spacy_label in {'SCHEMA', 'API', 'TERM'}:
+            entity_class = EntityClass.METADATA_ENTITY
+        else:
+            entity_class = EntityClass.MIXED
+
         entity = Entity(
             id=self._generate_entity_id(name),
             name=normalized,  # Normalized for NER matching
@@ -390,6 +399,7 @@ class EntityExtractor:
             ner_type=ner_type,
             session_id=self.session_id,
             domain_id=self.domain_id,
+            entity_class=entity_class,
         )
         self._entity_cache[normalized] = entity
         return entity

@@ -602,11 +602,21 @@ class SessionManager:
             session.doc_tools._stop_list = stop_words
 
         # Collect entity resolution configs from top-level config + active domains
+        # Apply alias mappings to source references (manual + auto aliases from domain loading)
+        domain_alias_map = getattr(self._sessions.get(session_id), '_domain_alias_map', {}) if hasattr(self, '_sessions') and session_id in self._sessions else {}
         entity_configs = list(session.config.entity_resolution or [])
         for domain_name in domain_ids:
             domain_cfg = session.config.load_domain(domain_name)
             if domain_cfg and domain_cfg.entity_resolution:
-                entity_configs.extend(domain_cfg.entity_resolution)
+                aliases = domain_alias_map.get(domain_name, {})
+                db_aliases = aliases.get("databases", {})
+                api_aliases = aliases.get("apis", {})
+                for er_config in domain_cfg.entity_resolution:
+                    if er_config.source in db_aliases:
+                        er_config = er_config.model_copy(update={"source": db_aliases[er_config.source]})
+                    elif er_config.source in api_aliases:
+                        er_config = er_config.model_copy(update={"source": api_aliases[er_config.source]})
+                    entity_configs.append(er_config)
 
         # Extract entity values from configured sources
         entity_terms: dict[str, list[str]] = {}
@@ -671,6 +681,20 @@ class SessionManager:
             else:
                 logger.warning(f"Session {session_id}: no vector_store to clear entities from")
 
+            # Embed entity resolution values BEFORE NER so they become
+            # visible chunks that NER can extract entities from.
+            if entity_terms and entity_configs:
+                try:
+                    er_domain = domain_ids[0] if domain_ids else None
+                    session.doc_tools.embed_entity_values(
+                        entity_terms=entity_terms,
+                        entity_configs=entity_configs,
+                        session_id=session_id,
+                        domain_id=er_domain,
+                    )
+                except Exception as e:
+                    logger.warning(f"Session {session_id}: entity value embedding failed: {e}")
+
             logger.info(f"Session {session_id}: running extract_entities_for_session with domain_ids={domain_ids}, {len(schema_entities)} schema entities")
             if schema_entities:
                 logger.debug(f"Session {session_id}: sample schema_entities: {schema_entities[:10]}")
@@ -683,19 +707,6 @@ class SessionManager:
                 entity_terms=entity_terms or None,
             )
 
-            # Embed entity resolution values into vector store
-            if entity_terms and entity_configs:
-                try:
-                    # Use first domain as domain_id for entity embeddings
-                    er_domain = domain_ids[0] if domain_ids else None
-                    session.doc_tools.embed_entity_values(
-                        entity_terms=entity_terms,
-                        entity_configs=entity_configs,
-                        session_id=session_id,
-                        domain_id=er_domain,
-                    )
-                except Exception as e:
-                    logger.warning(f"Session {session_id}: entity value embedding failed: {e}")
             if link_count and link_count > 0:
                 logger.info(f"Session {session_id}: created {link_count} entity links")
             else:

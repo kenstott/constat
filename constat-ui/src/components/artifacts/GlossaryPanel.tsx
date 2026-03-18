@@ -179,13 +179,14 @@ function SourceLink({ source, documentName, section, url }: { source: string; do
 
   // Strip source-type prefix for schema/api (e.g., "schema:chinook.Track" → "chinook.Track")
   // Document names keep their full form (e.g., "hr_management:crawled_8" is the actual name)
+  // Entity resolution names have no prefix — they're just the source reference (e.g., "sales.customers")
   const stripped = (source === 'schema' || source === 'api') && documentName.includes(':')
     ? documentName.split(':').slice(1).join(':')
     : documentName
 
   const handleClick = () => {
     console.log('[deep-link] SourceLink clicked:', { source, documentName, stripped })
-    if (source === 'schema') {
+    if (source === 'schema' || source === 'entity_resolution') {
       const parts = stripped.split('.')
       if (parts.length >= 2) {
         navigateTo({ type: 'table', dbName: parts[0], tableName: parts[1] })

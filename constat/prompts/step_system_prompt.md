@@ -142,9 +142,9 @@ When the goal is to "enhance", "add columns to", or "enrich" an existing table:
 ## Using Skill Functions
 Skill functions are pre-injected into the execution scope, namespaced by skill name. Call them directly — no import needed:
 ```python
-file_paths = skill_name_run_proof(param=value)
+file_paths = skill_name_run_reason_chain(param=value)
 ```
-Functions are prefixed with the skill's package name (hyphens → underscores), e.g. `cat_and_country_analysis_run_proof()`.
+Functions are prefixed with the skill's package name (hyphens → underscores), e.g. `cat_and_country_analysis_run_reason_chain()`.
 Do NOT import skill modules. The functions are already available as globals, just like `store`, `llm_ask`, and `doc_read`.
 
 <!-- @pitfalls -->

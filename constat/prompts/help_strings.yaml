@@ -55,7 +55,7 @@ help_commands:
   - ["/discover <query>", "Search all data sources (returns structured JSON)", "Analysis"]
   - ["/summarize <target>", "Summarize plan|session|facts|<table>", "Analysis"]
   - ["/reason", "Verify conversation claims with auditable reasoning chain", "Analysis"]
-  - ["/replay-reason", "Re-execute stored proof code without LLM codegen", "Analysis"]
+  - ["/replay-reason", "Re-execute stored reason-chain code without LLM codegen", "Analysis"]
   - ["/correct <text>", "Record a correction for future reference", "Analysis"]
   - ["/learnings", "Show learnings and rules", "Analysis"]
   - ["/compact-learnings", "Promote similar learnings into rules", "Analysis"]
@@ -155,7 +155,7 @@ command_descriptions:
   step-delete: "Delete a step and replan"
   step-edit: "Edit a step goal and replan"
   reason: "Verify conversation with auditable reasoning chain"
-  replay-reason: "Re-execute stored proof code without LLM codegen"
+  replay-reason: "Re-execute stored reason-chain code without LLM codegen"
   glossary: "Show glossary terms"
   define: "Add a glossary definition"
   undefine: "Remove a glossary definition"

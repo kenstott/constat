@@ -15,11 +15,11 @@ When you ask a question, Constat:
 
 Steps form a **directed acyclic graph (DAG)** — independent steps run in parallel automatically. Each step can gather facts from databases, APIs, documents, user input, LLM knowledge, or derivation from prior steps.
 
-## Proof Mode (Auditable Reasoning)
+## Reason-Chain Mode (Auditable Reasoning)
 
 For formal verification of claims:
 - Activated with the `/reason` command or by asking questions with "verify", "prove", "validate"
-- Your question becomes a **hypothesis** to prove or disprove
+- Your question becomes a **hypothesis** to verify or disprove
 - Works backwards: **recursively decomposes claims** until grounded in verifiable facts
 - Each inference must produce evidence supporting or refuting the claim
 - Results include **confidence levels** and caveats
@@ -52,7 +52,7 @@ Constat discovers and tracks relationships between entities:
 When a question is ambiguous, Constat asks **clarifying questions** before proceeding:
 - Detects missing parameters (time period, geographic scope, thresholds, categories)
 - Presents focused questions with suggested answers
-- In proof mode, personal value questions are deferred to lazy fact resolution
+- In reason-chain mode, personal value questions are deferred to lazy fact resolution
 - Users can skip clarification to proceed with defaults
 - Clarification can be disabled in session configuration
 
@@ -70,7 +70,7 @@ Constat tracks facts and assumptions explicitly:
 
 Reusable domain knowledge modules:
 - Encapsulate analytical patterns (e.g., "attrition risk analysis", "revenue forecasting")
-- Can be **created from proof results** — a proven analysis becomes a reusable skill
+- Can be **created from reason-chain results** — a verified analysis becomes a reusable skill
 - Skills plug into the planning and execution pipeline
 - Can be shared, downloaded, activated, or deactivated
 - Managed with `/skill`, `/skills`, `/skill-create`, `/skill-draft`, `/skill-download`
@@ -93,14 +93,23 @@ Constat learns from user corrections:
 - Learnings are applied during ambiguity detection, planning, and execution
 - Managed with `/learnings`, `/correct`, `/rule`, `/rule-edit`, `/rule-delete`
 
+## Entity Management
+
+Entities come from three sources, each classified by `entity_class`:
+- **Schema/API entities** (`metadata_entity`) — table names, column names, API endpoints. Discovered automatically from configured databases and APIs.
+- **Document entities** (`mixed`) — organizations, people, locations extracted by spaCy NER from document text. Discovered automatically.
+- **Data entities** (`data_entity`) — actual record values (customer names, country names) from entity resolution. Configured explicitly via `entity_resolution` in domain config.
+
 ## Entity Resolution
 
 Constat bridges metadata (schemas, APIs) and data values (actual records):
-- **Data-source-backed NER** — Pulls distinct values from databases, APIs, or static lists (e.g., country names from a countries table) and registers them as custom NER patterns
-- **Semantic embedding** — Entity values are embedded in the vector store, so searching for "French" finds the "France" entity value AND documents mentioning France
-- **Source traceability** — Each resolved entity points back to its data source for record-level lookup
+- **Data-source-backed** — Pulls distinct values from databases (SQL, NoSQL), APIs (REST, GraphQL), or static lists
+- **Embedded as chunks** — Values are embedded in the vector store as searchable chunks before NER runs
+- **NER extraction** — NER processes entity value chunks alongside documents, creating glossary entries for every configured value
+- **Semantic search** — Searching for "French" finds the "France" entity value AND documents mentioning France
+- **Source traceability** — Each resolved entity points back to its data source (e.g., `entity:sales.customers`) for record-level lookup
 - **Transparent to search** — `search_all()`, `find_entity()`, and `explore_entity()` automatically include entity resolution matches alongside schema and document results
-- Configured per domain via `entity_resolution` in domain config (supports SQL, NoSQL, GraphQL, REST, and static lists)
+- Supports SQL shorthand, custom queries (SQL/Cypher/CQL), GraphQL, REST, and static lists
 
 ## Data Sources
 

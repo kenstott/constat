@@ -143,42 +143,85 @@ def _load_domains_into_session(
     if not loaded_domains:
         return [], []
 
-    # Check for conflicts: collect all names from config and domains
+    # Collect manual aliases from all loaded domains (keyed by target domain filename)
+    manual_aliases: dict[str, dict[str, dict[str, str]]] = {}
+    for _, domain in loaded_domains:
+        for target_domain, type_aliases in domain.aliases.items():
+            dest = manual_aliases.setdefault(target_domain, {})
+            for resource_type, key_map in type_aliases.items():
+                dest.setdefault(resource_type, {}).update(key_map)
+
+    # Apply manual aliases to create working resource dicts per domain
+    def _apply_manual(resources: dict, rename_map: dict[str, str]) -> dict:
+        if not rename_map:
+            return dict(resources)
+        return {rename_map.get(k, k): v for k, v in resources.items()}
+
+    aliased_domains: list[tuple[str, object, dict, dict, dict]] = []
+    for filename, domain in loaded_domains:
+        ma = manual_aliases.get(filename, {})
+        aliased_domains.append((
+            filename, domain,
+            _apply_manual(domain.databases, ma.get("databases", {})),
+            _apply_manual(domain.apis, ma.get("apis", {})),
+            _apply_manual(domain.documents, ma.get("documents", {})),
+        ))
+
+    # Resolve conflicts: auto-alias any remaining key collisions
     all_databases = {name: "config" for name in config.databases.keys()}
     all_apis = {name: "config" for name in config.apis.keys()}
     all_documents = {name: "config" for name in config.documents.keys()}
 
-    valid_domains = []
-    for filename, domain in loaded_domains:
-        has_conflict = False
-        # Check database conflicts
-        for name in domain.databases.keys():
-            if name in all_databases:
-                conflicts.append(f"Database '{name}' conflicts: defined in {all_databases[name]} and {filename}")
-                has_conflict = True
+    def _auto_alias(key: str, domain_stem: str, taken: dict[str, str]) -> str:
+        candidate = f"{domain_stem}--{key}"
+        if candidate not in taken:
+            return candidate
+        i = 2
+        while f"{candidate}--{i}" in taken:
+            i += 1
+        return f"{candidate}--{i}"
+
+    # Track original->final key mappings per domain (for entity resolution source remapping)
+    domain_alias_map: dict[str, dict[str, dict[str, str]]] = {}
+
+    def _resolve_resources(
+        original: dict, manually_aliased: dict, taken: dict[str, str],
+        stem: str, resource_type: str, filename: str, alias_map: dict,
+    ) -> dict:
+        """Resolve a resource dict: auto-alias any remaining conflicts, track mappings."""
+        resolved = {}
+        for name, cfg in manually_aliased.items():
+            if name in taken:
+                new_name = _auto_alias(name, stem, taken)
+                logger.info(f"Auto-aliased {resource_type[:-1]} '{name}' -> '{new_name}' (conflict with {taken[name]})")
+                resolved[new_name] = cfg
+                taken[new_name] = filename
+                # Find original key for this config value
+                orig = next((k for k, v in original.items() if v is cfg), name)
+                alias_map.setdefault(resource_type, {})[orig] = new_name
             else:
-                all_databases[name] = filename
+                resolved[name] = cfg
+                taken[name] = filename
+                # Track manual alias if key changed
+                orig = next((k for k, v in original.items() if v is cfg), name)
+                if orig != name:
+                    alias_map.setdefault(resource_type, {})[orig] = name
+        return resolved
 
-        # Check API conflicts
-        for name in domain.apis.keys():
-            if name in all_apis:
-                conflicts.append(f"API '{name}' conflicts: defined in {all_apis[name]} and {filename}")
-                has_conflict = True
-            else:
-                all_apis[name] = filename
+    valid_domains: list[tuple[str, object, dict, dict, dict]] = []
+    for filename, domain, dbs, apis, docs in aliased_domains:
+        stem = Path(filename).stem
+        alias_map: dict[str, dict[str, str]] = {}
 
-        # Check document conflicts
-        for name in domain.documents.keys():
-            if name in all_documents:
-                conflicts.append(f"Document '{name}' conflicts: defined in {all_documents[name]} and {filename}")
-                has_conflict = True
-            else:
-                all_documents[name] = filename
+        resolved_dbs = _resolve_resources(domain.databases, dbs, all_databases, stem, "databases", filename, alias_map)
+        resolved_apis = _resolve_resources(domain.apis, apis, all_apis, stem, "apis", filename, alias_map)
+        resolved_docs = _resolve_resources(domain.documents, docs, all_documents, stem, "documents", filename, alias_map)
 
-        if not has_conflict:
-            valid_domains.append((filename, domain))
+        if alias_map:
+            domain_alias_map[filename] = alias_map
+        valid_domains.append((filename, domain, resolved_dbs, resolved_apis, resolved_docs))
 
-    # Load valid domain databases into the session
+    # Load domain databases into the session
     previously_loaded = getattr(managed, "_domain_databases", set())
     newly_loaded = set()
 
@@ -186,8 +229,8 @@ def _load_domains_into_session(
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     to_load: list[tuple[str, str, object]] = []  # (name, filename, db_config)
-    for filename, domain in valid_domains:
-        for name, db_config in domain.databases.items():
+    for filename, domain, dbs, apis, docs in valid_domains:
+        for name, db_config in dbs.items():
             if name not in previously_loaded:
                 to_load.append((name, filename, db_config))
             else:
@@ -213,9 +256,9 @@ def _load_domains_into_session(
 
     # Phase 2: Documents are already indexed during server warmup with domain_id
     # No need to re-index here - just log what's available
-    for filename, domain in valid_domains:
-        if domain.documents:
-            logger.info(f"Domain {filename}: {len(domain.documents)} documents available (pre-indexed during warmup)")
+    for filename, domain, dbs, apis, docs in valid_domains:
+        if docs:
+            logger.info(f"Domain {filename}: {len(docs)} documents available (pre-indexed during warmup)")
 
     # Phase 3: Update schema entities and process metadata through NER (once, with all entities)
     if managed.session.schema_manager and newly_loaded:
@@ -231,24 +274,24 @@ def _load_domains_into_session(
 
         logger.info(f"Updated doc_tools schema entities: {len(schema_entities)} entities")
 
-    # Register domain APIs
-    for filename, domain in valid_domains:
-        for api_name, api_config in domain.apis.items():
+    # Register domain APIs (using aliased names)
+    for filename, domain, dbs, apis, docs in valid_domains:
+        for api_name, api_config in apis.items():
             managed.session.add_domain_api(api_name, api_config)
             logger.info(f"Registered domain API: {api_name} from {filename}")
 
-    # Register resources in consolidated SessionResources
-    for filename, domain in valid_domains:
+    # Register resources in consolidated SessionResources (using aliased names)
+    for filename, domain, dbs, apis, docs in valid_domains:
         managed.session.add_domain_resources(
             domain_filename=filename,
-            databases=domain.databases,
-            apis=domain.apis,
-            documents=domain.documents,
+            databases=dbs,
+            apis=apis,
+            documents=docs,
         )
         logger.info(f"Registered domain resources from {filename}")
 
     # Register domain skills directories
-    for filename, domain in valid_domains:
+    for filename, domain, dbs, apis, docs in valid_domains:
         if domain.source_path:
             domain_dir = Path(domain.source_path).parent
             domain_skills_dir = domain_dir / "skills"
@@ -262,7 +305,8 @@ def _load_domains_into_session(
 
     # Store state
     managed._domain_databases = newly_loaded
-    managed.active_domains = [fn for fn, _ in valid_domains]
+    managed._domain_alias_map = domain_alias_map
+    managed.active_domains = [fn for fn, _, _, _, _ in valid_domains]
 
     # Update doc_tools with active domain IDs for automatic search filtering
     if managed.session.doc_tools:

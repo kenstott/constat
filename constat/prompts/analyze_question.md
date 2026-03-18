@@ -41,7 +41,7 @@ Perform these analyses:
    - CHALLENGE: Verify ("are you sure?", "double check", "confirm")
    - EXPORT: Save ("export to CSV", "download", "save")
    - EXTEND: Continue ("what about X?", "also check...")
-   - PROVENANCE: Show proof ("where did that come from?", "audit trail")
+   - PROVENANCE: Show provenance ("where did that come from?", "audit trail")
    - CREATE_ARTIFACT: Create output ("create dashboard", "make chart", "generate report")
    - TRIGGER_ACTION: Execute action ("send email", "notify team")
    - COMPARE: Compare ("vs", "difference between", "compare to")
@@ -58,11 +58,11 @@ Perform these analyses:
 5. EXECUTION MODE: Select the best mode for this request:
    - EXPLORATORY: Data analysis and creation - user wants to CREATE, ANALYZE, BUILD, or COMPUTE
      Examples: "Create an analysis...", "Show sales by region", "Build a dashboard"
-   - PROOF: Verification with provenance - user needs PROOF, DEFENSIBLE conclusions, or AUDIT TRAIL
-     Examples: "Prove that X", "Verify compliance", "Run in audit mode", "With full provenance"
+   - REASON_CHAIN: Verification with provenance - user needs DEFENSIBLE conclusions, or AUDIT TRAIL
+     Examples: "Verify that X", "Verify compliance", "Run in audit mode", "With full provenance"
 
    CRITICAL PRIORITY:
-   1. EXPLICIT MODE REQUEST: If user says "audit mode", "auditable", "proof", "with provenance" -> PROOF
+   1. EXPLICIT MODE REQUEST: If user says "audit mode", "auditable", "reason-chain", "with provenance" -> REASON_CHAIN
    2. EXPLICIT MODE REQUEST: If user says "exploratory mode" -> EXPLORATORY
    3. Otherwise, infer from task type
 
@@ -86,7 +86,7 @@ WANTS_BRIEF: YES or NO
 (YES if user wants brief/concise output: "just show me", "quick answer", "bottom line", "tl;dr",
 "no explanation needed", "keep it short", "high-level view", etc. NO otherwise)
 ---
-EXECUTION_MODE: EXPLORATORY | PROOF
+EXECUTION_MODE: EXPLORATORY | REASON_CHAIN
 MODE_REASON: <brief explanation why this mode, max 20 words>
 ---
 CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>

@@ -410,6 +410,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS parent_verb VARCHAR DEFAULT 'HAS_KIND'",
             "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'mixed'",
             "ALTER TABLE entities ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'metadata'",
+            "ALTER TABLE ner_cached_entities ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'metadata'",
         ]
         schema_changed = False
         for stmt in _alter_stmts:
@@ -569,6 +570,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 ner_type VARCHAR,
                 domain_id VARCHAR,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                entity_class VARCHAR DEFAULT 'metadata',
                 PRIMARY KEY (fingerprint, id)
             )
         """)
@@ -676,6 +678,9 @@ class DuckDBVectorStore(VectorStoreBackend):
 
     def clear_domain_embeddings(self, *a, **kw):
         return self._vector.clear_domain_embeddings(*a, **kw)
+
+    def delete_by_source(self, *a, **kw):
+        return self._vector.delete_by_source(*a, **kw)
 
     def count(self, *a, **kw):
         return self._vector.count(*a, **kw)

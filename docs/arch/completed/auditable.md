@@ -69,7 +69,7 @@ The DAG appears in a **floating panel** over the conversation. This allows users
 | `fact_executing` | Node shows executing indicator |
 | `fact_resolved` | Node shows checkmark + value |
 | `fact_failed` | Node shows error state |
-| `proof_complete` | DAG finalizes, proof artifact created |
+| `proof_complete` | DAG finalizes, reason-chain artifact created |
 
 ## Artifacts
 

@@ -59,11 +59,11 @@ patterns:
   - "tell me about yourself"
   - "introduce yourself"
 
-  # Feature-specific: proof mode
-  - "what does proof"
-  - "what is proof"
-  - "how does proof"
-  - "prove mode"
+  # Feature-specific: reason-chain mode
+  - "what does reason-chain"
+  - "what is reason-chain"
+  - "how does reason-chain"
+  - "reason-chain mode"
   - "audit trail"
   - "auditable"
 

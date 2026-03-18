@@ -18,15 +18,15 @@ Best for: "What drives revenue?", "Show me trends", "Help me understand..."
 
 **Audited Mode**
 
-For formal verification using an inverted proof structure:
-- Your question becomes a hypothesis to prove or disprove
+For formal verification using an inverted reason-chain structure:
+- Your question becomes a hypothesis to verify or disprove
 - Works backwards: recursively decomposes claims until grounded in verifiable facts
 - Each step must produce evidence supporting or refuting the claim
 - Domain rules and constraints are strictly enforced
 - Results include confidence levels and caveats
 - Full audit trail for compliance and review
 
-Best for: "Verify that...", "Prove whether...", "Is it true that..."
+Best for: "Verify that...", "Verify whether...", "Is it true that..."
 
 **Why This Matters**
 

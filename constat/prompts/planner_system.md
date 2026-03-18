@@ -43,7 +43,7 @@ When **Active Skills** are listed below, they are pre-built knowledge that match
 ### Skills WITH scripts (marked "scripts: ...")
 These have executable files under their `scripts/` directory. The skill's documentation explains each script's purpose, parameters, and how to invoke it.
 - **You MUST use the skill's scripts rather than building from primitives.**
-- Create a single step that calls the script's `run_proof()` function
+- Create a single step that calls the script's `run_reason_chain()` function
 - If the user's request requires different parameters than the script defaults (e.g. "20 breeds" vs default 10), specify those overrides in the step goal
 - Only add extra steps for work **beyond** what the skill's scripts provide
 

@@ -1174,7 +1174,7 @@ This eliminates the cold-start problem that plagues every enterprise catalog dep
 
 **Curated scope, not crawl-everything.** Enterprise catalogs crawl the entire data estate and then try to surface what matters — resulting in thousands of assets, most irrelevant to any given user. Here, only sources explicitly connected to a domain are indexed. The glossary naturally contains only the terms that matter to the domain's business context. Combined with admin exclusion rules for technical fields, this keeps the glossary focused without requiring post-hoc filtering or relevance scoring.
 
-**Agent integration.** In enterprise catalogs, the glossary is a passive reference — humans look things up. Here, the glossary feeds directly into a transparent multi-step reasoning agent with built-in validation gates, a prove mode, and the ability to extend itself by adding a proven agent as a skill. The glossary isn't a separate tool the user consults — it's part of how the agent reasons, validates, and acts. The agent retrieves glossary definitions alongside physical metadata, uses both for grounded reasoning, and can validate its conclusions against the glossary's grounding constraints. This is a fundamentally different category from a data catalog. The comparison above is scoped to the glossary feature specifically — the overall system has no direct analog in the catalog/governance tool space.
+**Agent integration.** In enterprise catalogs, the glossary is a passive reference — humans look things up. Here, the glossary feeds directly into a transparent multi-step reasoning agent with built-in validation gates, a reason-chain mode, and the ability to extend itself by adding a verified agent as a skill. The glossary isn't a separate tool the user consults — it's part of how the agent reasons, validates, and acts. The agent retrieves glossary definitions alongside physical metadata, uses both for grounded reasoning, and can validate its conclusions against the glossary's grounding constraints. This is a fundamentally different category from a data catalog. The comparison above is scoped to the glossary feature specifically — the overall system has no direct analog in the catalog/governance tool space.
 
 ### Limitations
 
@@ -1214,7 +1214,7 @@ Enterprise Catalog          This System
 │ Configure    │            │ Domains, tags,   │ ← Governance features
 │ stewardship  │            │ owners accumulate│   accumulate naturally
 ├──────────────┤            ├─────────────────┤
-│ Finally:     │            │ Prove mode       │ ← Auditable reasoning
+│ Finally:     │            │ Reason-chain     │ ← Auditable reasoning
 │ users can    │            │ validates        │   no catalog can match
 │ look things  │            │ conclusions      │
 │ up           │            │                  │
@@ -1230,11 +1230,11 @@ Enterprise Catalog          This System
 
 3. **The catalog is a byproduct, not the product.** Nobody wants a data catalog. They want to understand their data and act on it. The agent does that. The glossary, tags, domain scoping, validation gates — governance features that accumulate as a side effect of the agent doing useful work.
 
-4. **Prove mode is the killer governance feature.** Enterprise catalogs can tell you what a term means. They cannot prove that a conclusion derived from that term is correct. Prove mode with validation gates gives auditability that catalogs cannot match — built into the reasoning, not bolted on as a compliance report.
+4. **Reason-chain mode is the killer governance feature.** Enterprise catalogs can tell you what a term means. They cannot verify that a conclusion derived from that term is correct. Reason-chain mode with validation gates gives auditability that catalogs cannot match — built into the reasoning, not bolted on as a compliance report.
 
 5. **Unified source types from day one.** RDBs, NoSQL, APIs, and documents in one metadata layer. Enterprise catalogs were built for structured data and are retrofitting the rest. This handles all source types natively because the agent needs to reason over all of them.
 
-6. **Skill extensibility.** A proven agent becomes a reusable skill. Governance knowledge compounds — a validated reasoning pattern for one domain can be applied to another. Catalogs have no equivalent to this.
+6. **Skill extensibility.** A verified agent becomes a reusable skill. Governance knowledge compounds — a validated reasoning pattern for one domain can be applied to another. Catalogs have no equivalent to this.
 
 ### The Regulatory Moat
 
@@ -1244,19 +1244,19 @@ This means:
 
 - **The incumbent's moat is regulatory mandate, not product quality.** Customers are captive buyers. They'd switch if something delivered compliance AND utility, but switching costs are high and the compliance checkbox is non-negotiable.
 - **The compliance buyer is a different buyer than the productivity buyer.** The CISO/DPO buys Collibra. The data team wants to actually use their data. These are often different budget lines, different stakeholders, different evaluation criteria.
-- **Compliance artifacts are a subset of governance artifacts.** Everything a regulator needs — term definitions, data ownership, lineage, access documentation — is a byproduct of the glossary + domain model + prove mode. The compliance report is a view over the governance state the agent builds naturally.
+- **Compliance artifacts are a subset of governance artifacts.** Everything a regulator needs — term definitions, data ownership, lineage, access documentation — is a byproduct of the glossary + domain model + reason-chain mode. The compliance report is a view over the governance state the agent builds naturally.
 
 ### Attack Vector
 
 Don't compete head-on for the compliance budget. That's the incumbent's stronghold and the buyer is risk-averse.
 
-Instead: land as a reasoning agent for a specific domain. Fast time-to-value, no catalog setup required. Connect sources, the agent reasons over them immediately. The data team gets utility on day one. As usage grows, governance features accumulate naturally — glossary definitions where needed, domain scoping, tags, owners, validation gates. Prove mode produces auditable reasoning trails.
+Instead: land as a reasoning agent for a specific domain. Fast time-to-value, no catalog setup required. Connect sources, the agent reasons over them immediately. The data team gets utility on day one. As usage grows, governance features accumulate naturally — glossary definitions where needed, domain scoping, tags, owners, validation gates. Reason-chain mode produces auditable reasoning trails.
 
 Eventually two things happen:
 1. The organization realizes the catalog they were budgeting for is already built — as a side effect of actually using their data.
-2. The compliance team discovers that prove mode + glossary + domain ownership produces better audit artifacts than the catalog they're paying $1M/year for — because the artifacts are generated from actual usage, not manual stewardship.
+2. The compliance team discovers that reason-chain mode + glossary + domain ownership produces better audit artifacts than the catalog they're paying $1M/year for — because the artifacts are generated from actual usage, not manual stewardship.
 
-The compliance budget follows the utility budget once the artifacts prove equivalent or superior.
+The compliance budget follows the utility budget once the artifacts demonstrate equivalent or superior value.
 
 ### Why Incumbents Can't Respond Easily
 
@@ -1278,11 +1278,11 @@ Sources (peers):
 
 **Phase 1: Integrate.** "Keep your Collibra. We sit on top." Zero switching cost. The organization keeps its compliance tool, the data team gets agent-powered reasoning over the same metadata. The catalog connector ingests glossary terms as entities with `ner_type=TERM`, asset metadata as schema entities, ownership as domain config. Everything flows through the same pipeline.
 
-**Phase 2: Add value.** The agent reasons across the catalog's metadata AND physical sources simultaneously — something the catalog itself cannot do. Prove mode validates conclusions against both the catalog's definitions and the actual data. Users start doing discovery and analysis through the agent because it's faster and produces auditable reasoning, not just lookup results.
+**Phase 2: Add value.** The agent reasons across the catalog's metadata AND physical sources simultaneously — something the catalog itself cannot do. Reason-chain mode validates conclusions against both the catalog's definitions and the actual data. Users start doing discovery and analysis through the agent because it's faster and produces auditable reasoning, not just lookup results.
 
 **Phase 3: Duplicate features.** As the agent's glossary, domain scoping, tags, ownership, and governance features mature, users start doing governance work in the agent. Definitions get refined here. New terms get created here. The catalog becomes read-only reference — still ingested, but no longer the place where governance happens.
 
-**Phase 4: Subsume.** The agent's governance artifacts become the source of truth. The catalog is an expensive pass-through that adds latency but no value. The compliance team discovers prove mode produces better audit trails than the catalog's stewardship reports. The renewal conversation changes from "we need Collibra for compliance" to "what does Collibra give us that we don't already have?"
+**Phase 4: Subsume.** The agent's governance artifacts become the source of truth. The catalog is an expensive pass-through that adds latency but no value. The compliance team discovers reason-chain mode produces better audit trails than the catalog's stewardship reports. The renewal conversation changes from "we need Collibra for compliance" to "what does Collibra give us that we don't already have?"
 
 **The triangle.** Ingesting a catalog creates a three-way relationship: the agent's glossary, the catalog's glossary, and the physical sources they both map to.
 

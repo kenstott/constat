@@ -103,7 +103,7 @@ Steps produce **artifacts** that persist across the session:
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
 │  │                    Session (constat/session/)                            ││
 │  │  Mixin-based architecture:                                              ││
-│  │    _core.py       — State management, proof result persistence          ││
+│  │    _core.py       — State management, reason-chain result persistence    ││
 │  │    _solve.py      — Intent routing, planning complexity                 ││
 │  │    _dag.py        — DAG execution, user validation extraction           ││
 │  │    _execution.py  — Step execution with parallel waves                  ││
@@ -135,7 +135,7 @@ Steps produce **artifacts** that persist across the session:
 │                      │ │ │  Reasoning  │ │ │ └───────────────────────────┘ │
 │                      │ │ │  Chain      │ │ │ ┌───────────────────────────┐ │
 │                      │ │ │ FactResolver│ │ │ │    DuckDBSessionStore     │ │
-│                      │ │ │ Proof Tree  │ │ │ │ (duckdb_session_store.py) │ │
+│                      │ │ │ Reason-Chain Tree │ │ │ │ (duckdb_session_store.py) │ │
 │                      │ │ └──────────────┘ │ │ └───────────────────────────┘ │
 └──────────────────────┘ └──────────────────┘ │ ┌───────────────────────────┐ │
                                               │ │    DiscoveryTools         │ │
@@ -322,7 +322,7 @@ Golden question regression testing framework.
 | File | Responsibility |
 |------|----------------|
 | `runner.py` | Phase 1 (metadata DB lookups) + Phase 2 (e2e LLM judge) |
-| `grounding.py` | Deterministic source pattern extraction from proof DAGs |
+| `grounding.py` | Deterministic source pattern extraction from reason-chain DAGs |
 | `models.py` | Data structures for test cases and results |
 
 **Five assertion layers:**
@@ -484,7 +484,7 @@ User Question: "Is customer C001 a VIP?"
      5. LLM KNOWLEDGE → 6. SUB-PLAN → 7. UNRESOLVED
 
 4. REASONING CHAIN + DERIVATION TRACE
-   ProofNode tree showing each fact, value, source, confidence
+   ReasonChainNode tree showing each fact, value, source, confidence
    Rendered as interactive DAG in Web UI
 
 5. PROOF PERSISTENCE
@@ -655,15 +655,27 @@ The glossary is a unified view of auto-generated entities (from NER extraction) 
 - **Status workflow** — draft → reviewed → approved
 - **Domain scoping** — terms are owned by domains
 
+## Entity Management
+
+Entities come from three distinct sources, each managed differently:
+
+| Source | entity_class | NER labels | Config |
+|--------|-------------|------------|--------|
+| **Schema/API metadata** | `metadata_entity` | SCHEMA, API | `databases`, `apis` |
+| **Document text** (spaCy NER) | `mixed` | ORG, PERSON, GPE, etc. | `documents` |
+| **Data values** (entity resolution) | `data_entity` | Custom (CUSTOMER, COUNTRY, etc.) | `entity_resolution` |
+
+Schema and document entities are discovered automatically. Data entities require explicit `entity_resolution` config.
+
 ## Entity Resolution
 
-Entity resolution bridges the gap between structural metadata ("the orders table") and specific data values ("France"). It pulls distinct values from configured data sources and makes them searchable alongside schema metadata and documents.
+Entity resolution bridges the gap between structural metadata ("the orders table") and specific data values ("France"). It pulls distinct values from configured data sources, embeds them as vector store chunks, then NER extracts entities from those chunks so every value appears in the glossary.
 
 **How it works:**
 1. Domain configs declare `entity_resolution` entries mapping entity types to sources
 2. At session startup, values are extracted from databases (SQL/NoSQL), APIs (REST/GraphQL), or static lists
-3. Values become custom NER patterns (recognized in documents with 0.95 confidence)
-4. Values are embedded in the vector store as `entity_resolution` source chunks
+3. Values are embedded as `entity_resolution` chunks in the vector store — **before** NER runs
+4. NER extracts entities from those chunks (and from documents), creating glossary entries for every value
 5. Existing search tools (`search_all`, `find_entity`, `explore_entity`) return entity resolution matches transparently
 
 **Source types:**
@@ -675,11 +687,6 @@ Entity resolution bridges the gap between structural metadata ("the orders table
 
 Multiple sources for the same entity type merge. Each source gets its own summary chunk and individual value embeddings in the vector store.
 
-**Vector store classification:**
-- `entity_class: metadata_entity` — schema/API chunks
-- `entity_class: data_entity` — entity resolution value chunks
-- `entity_class: mixed` — document chunks (can reference either)
-
 ## UX Architecture
 
 ### Web UI
@@ -690,7 +697,7 @@ constat-ui/
 │   ├── components/
 │   │   ├── conversation/    # Message display, input, autocomplete
 │   │   ├── artifacts/       # Tables, code, charts, glossary, regression
-│   │   ├── proof/           # DAG visualization (D3 + d3-dag)
+│   │   ├── proof/           # Reason-chain DAG visualization (D3 + d3-dag)
 │   │   ├── layout/          # Main layout, toolbar, hamburger menu
 │   │   └── common/          # Domain badges, scope badges
 │   ├── store/
@@ -723,7 +730,7 @@ constat-ui/
 │     Approval dialogs      │  SOURCES                    │
 │   - Input box             │    - Databases, APIs, Docs  │
 │                           │    - Facts                  │
-│   Proof DAG Panel         │  REASONING                  │
+│   Reason-Chain DAG Panel  │  REASONING                  │
 │   (floating overlay)      │    - Config (prompt, agents) │
 │                           │    - Code Log (scratchpad,  │
 │                           │      exploratory, inference) │
@@ -767,7 +774,7 @@ WebSocket connection delivers live events:
 | `steps_truncated` | Remove superseded steps from UI |
 | `error` | Show error with recovery options |
 
-### Proof DAG Visualization
+### Reason-Chain DAG Visualization
 
 Unlike exploratory mode's linear step list, auditable mode shows a **directed acyclic graph**:
 
@@ -790,7 +797,7 @@ Unlike exploratory mode's linear step list, auditable mode shows a **directed ac
 
 **Node states:** pending, planning, executing, resolved, failed, blocked
 
-**Interactions:** Click to expand details, animated edges for data flow, critical path highlight, collapse/expand subtrees. Completed proofs can be saved as reusable skills.
+**Interactions:** Click to expand details, animated edges for data flow, critical path highlight, collapse/expand subtrees. Completed reason-chains can be saved as reusable skills.
 
 ### Deep Linking
 

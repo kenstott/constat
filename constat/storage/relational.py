@@ -92,15 +92,16 @@ class RelationalStore:
                     session_id,
                     entity.domain_id,
                     entity.created_at,
+                    entity.entity_class or "metadata",
                 ))
 
         conn = self._conn
         try:
             conn.executemany(
                 """
-                INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id
+                INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at, entity_class)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id, entity_class = excluded.entity_class
                 """,
                 records,
             )
@@ -109,9 +110,9 @@ class RelationalStore:
                 try:
                     conn.execute(
                         """
-                        INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id
+                        INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at, entity_class)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id, entity_class = excluded.entity_class
                         """,
                         record,
                     )
@@ -1554,10 +1555,10 @@ class RelationalStore:
 
         self._conn.execute(
             """
-            INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at)
-            SELECT DISTINCT id, name, display_name, semantic_type, ner_type, ?, domain_id, created_at
+            INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at, entity_class)
+            SELECT DISTINCT id, name, display_name, semantic_type, ner_type, ?, domain_id, created_at, entity_class
             FROM ner_cached_entities WHERE fingerprint = ?
-            ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id
+            ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id, entity_class = excluded.entity_class
             """,
             [session_id, fingerprint],
         )
@@ -1609,8 +1610,8 @@ class RelationalStore:
 
         self._conn.execute(
             """
-            INSERT INTO ner_cached_entities (fingerprint, id, name, display_name, semantic_type, ner_type, domain_id, created_at)
-            SELECT ?, id, name, display_name, semantic_type, ner_type, domain_id, created_at
+            INSERT INTO ner_cached_entities (fingerprint, id, name, display_name, semantic_type, ner_type, domain_id, created_at, entity_class)
+            SELECT ?, id, name, display_name, semantic_type, ner_type, domain_id, created_at, entity_class
             FROM entities WHERE session_id = ?
             ON CONFLICT DO NOTHING
             """,

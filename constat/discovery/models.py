@@ -438,6 +438,7 @@ class Entity:
     ner_type: Optional[str] = None  # NerType value or None
     domain_id: Optional[str] = None
     created_at: Optional[datetime] = None
+    entity_class: Optional[str] = None  # EntityClass value (metadata_entity, data_entity, mixed)
 
     # Backwards compatibility: expose 'type' as alias for semantic_type
     @property

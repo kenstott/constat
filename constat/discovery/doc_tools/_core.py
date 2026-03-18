@@ -341,7 +341,7 @@ class _CoreMixin:
                 source_groups["static"] = values
 
             for source_key, source_values in source_groups.items():
-                doc_name = f"entity:{source_key}"
+                doc_name = source_key
 
                 # Summary chunk (index 0)
                 preview = ", ".join(source_values[:10])

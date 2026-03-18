@@ -986,6 +986,10 @@ class DomainConfig(BaseModel):
     # Entity resolution — map entity types to data source values for NER + vector search
     entity_resolution: list[EntityResolutionConfig] = Field(default_factory=list)
 
+    # Resource key aliases per child domain — rename keys to avoid conflicts
+    # Structure: {child_domain_filename: {resource_type: {old_key: new_key}}}
+    aliases: dict[str, dict[str, dict[str, str]]] = Field(default_factory=dict)
+
     # Optional domain-specific settings
     databases_description: str = ""
     system_prompt: str = ""

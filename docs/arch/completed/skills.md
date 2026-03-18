@@ -81,7 +81,7 @@ ProofDAGPanel (reasoning chain completed)
        ├─ Click → inline form (name input, optional description override)
        │          Pre-populated description from reasoning chain summary first line
        │
-       └─ Confirm → POST /api/skills/from-proof
+       └─ Confirm → POST /api/skills/from-reason-chain
                      │
                      ├─ LLM distills reasoning chain nodes into skill content
                      ├─ Creates SKILL.md with verified patterns
@@ -92,7 +92,7 @@ The button only appears when `hasCompletedProof` is true. It sits alongside the 
 
 ### What Gets Captured
 
-The skill gets two artifacts: a **SKILL.md** (LLM-distilled patterns) and a **scripts/proof.py** (executable inference code).
+The skill gets two artifacts: a **SKILL.md** (LLM-distilled patterns) and a **scripts/reason_chain.py** (executable inference code).
 
 #### SKILL.md — Reusable Patterns
 
@@ -105,7 +105,7 @@ The skill gets two artifacts: a **SKILL.md** (LLM-distilled patterns) and a **sc
 | Confidence scores | Reliability annotations |
 | Reasoning chain summary | Skill description + overview |
 
-#### scripts/proof.py — Executable Inference Code
+#### scripts/reason_chain.py — Executable Inference Code
 
 The existing `GET /{session_id}/download-inference-code` endpoint (`constat/server/routes/data.py:2487`) already generates a self-contained Python script containing:
 
@@ -114,7 +114,7 @@ The existing `GET /{session_id}/download-inference-code` endpoint (`constat/serv
 - Database helpers (SQLAlchemy engines)
 - `llm_map()` stub for fuzzy mapping
 - Each inference as a named function with its resolved code
-- `run_proof(**premises)` entry point with constant premises as kwargs
+- `run_reason_chain(**premises)` entry point with constant premises as kwargs
 - `__main__` block for standalone execution
 
 This generation logic is reused for the skill's `scripts/` directory. The script is **not regenerated** — it's the same code the user would get from the download button, but persisted inside the skill.
@@ -123,7 +123,7 @@ This generation logic is reused for the skill's `scripts/` directory. The script
 .constat/{user_id}/skills/quarterly-retention/
 ├── SKILL.md              # LLM-distilled patterns (new)
 └── scripts/
-    └── proof.py          # Inference code (reused from download-inference-code)
+    └── reason_chain.py   # Inference code (reused from download-inference-code)
 ```
 
 The SKILL.md body references the script:
@@ -131,10 +131,10 @@ The SKILL.md body references the script:
 ```markdown
 ## Executable Reasoning Chain
 
-A verified reasoning chain script is available at `scripts/proof.py`.
-Run standalone: `python scripts/proof.py`
+A verified reasoning chain script is available at `scripts/reason_chain.py`.
+Run standalone: `python scripts/reason_chain.py`
 
-Premise parameters (configurable via kwargs to `run_proof()`):
+Premise parameters (configurable via kwargs to `run_reason_chain()`):
 - `fiscal_year_start="April 1"`
 - `churn_threshold=0.05`
 ```
@@ -157,7 +157,7 @@ def generate_inference_script(
 
     Returns the script content as a string. Used by both:
     - GET /download-inference-code (returns as HTTP response)
-    - POST /skills/from-proof (writes to skill scripts/ dir)
+    - POST /skills/from-reason-chain (writes to skill scripts/ dir)
     """
 ```
 
@@ -176,7 +176,7 @@ async def download_inference_code(...):
 #### New Endpoint
 
 ```
-POST /api/skills/from-proof?session_id={id}
+POST /api/skills/from-reason-chain?session_id={id}
 
 Request:
 {
@@ -196,15 +196,15 @@ Response:
 #### Implementation
 
 ```python
-def skill_from_proof(
+def skill_from_reason_chain(
     name: str,
-    proof_nodes: list[dict],
-    proof_summary: str | None,
+    reason_chain_nodes: list[dict],
+    reason_chain_summary: str | None,
     original_problem: str,
     llm,
     description: str | None = None,
 ) -> tuple[str, str]:
-    """Distill a completed proof into a SKILL.md.
+    """Distill a completed reason-chain into a SKILL.md.
 
     Returns (content, description).
     """
@@ -212,10 +212,10 @@ def skill_from_proof(
 
 The endpoint:
 
-1. Pulls proof state from session (`last_proof_result`)
-2. Calls `skill_from_proof()` to generate SKILL.md via LLM
-3. Calls `generate_inference_script()` to get the proof script
-4. Creates the skill directory, writes SKILL.md, writes `scripts/proof.py`
+1. Pulls reason-chain state from session (`last_proof_result`)
+2. Calls `skill_from_reason_chain()` to generate SKILL.md via LLM
+3. Calls `generate_inference_script()` to get the reason-chain script
+4. Creates the skill directory, writes SKILL.md, writes `scripts/reason_chain.py`
 
 #### Prompt Strategy
 
@@ -227,7 +227,7 @@ You are converting a verified reasoning chain into a reusable skill.
 The reasoning chain verified specific claims. Your job is to extract the
 REUSABLE PATTERNS — not the specific values.
 
-The exact inference code is saved separately as scripts/proof.py.
+The exact inference code is saved separately as scripts/reason_chain.py.
 Your SKILL.md should focus on the domain knowledge:
 
 Focus on:
@@ -236,13 +236,13 @@ Focus on:
 - Join paths and aggregation strategies
 - Source-specific field mappings and enum values
 - Derivation order when facts depend on other facts
-- Reference scripts/proof.py for the executable derivation
+- Reference scripts/reason_chain.py for the executable derivation
 
 Do NOT include:
 - Specific numeric results from this reasoning chain run
 - Date ranges or filters specific to the original query
 - One-time observations that won't generalize
-- Raw code (that's in scripts/proof.py)
+- Raw code (that's in scripts/reason_chain.py)
 ```
 
 ### Frontend
@@ -252,9 +252,9 @@ Do NOT include:
 Add to the panel footer (next to existing close/summary controls):
 
 ```tsx
-// Only when proof is complete
+// Only when reason-chain is complete
 {hasCompletedProof && (
-  <button onClick={openSkillFromProofForm}>
+  <button onClick={openSkillFromReasonChainForm}>
     Save as Skill
   </button>
 )}
@@ -262,33 +262,33 @@ Add to the panel footer (next to existing close/summary controls):
 
 Clicking opens a minimal inline form (skill name + confirm). On confirm:
 
-1. `POST /api/skills/from-proof` (backend handles both SKILL.md and scripts/)
+1. `POST /api/skills/from-reason-chain` (backend handles both SKILL.md and scripts/)
 2. On success, refresh skills list in `useArtifactStore`
 3. Show toast confirmation
 
 #### No Changes to ArtifactPanel
 
-The existing Skills accordion is unaffected. The new skill appears in the list like any other skill — it's just created from a different entry point. The `scripts/proof.py` is visible when expanding the skill directory.
+The existing Skills accordion is unaffected. The new skill appears in the list like any other skill — it's just created from a different entry point. The `scripts/reason_chain.py` is visible when expanding the skill directory.
 
 ### API Route
 
 ```python
 # In constat/server/routes/skills.py
 
-@router.post("/from-proof")
-async def create_skill_from_proof(
-    request: SkillFromProofRequest,
+@router.post("/from-reason-chain")
+async def create_skill_from_reason_chain(
+    request: SkillFromReasonChainRequest,
     session_id: str = Query(...),
 ):
-    """Create a skill from a completed proof's derivation trace."""
+    """Create a skill from a completed reason-chain's derivation trace."""
     session = session_manager.get_session(session_id)
     proof_result = session.last_proof_result
 
     # 1. LLM-distilled SKILL.md
-    content, description = skill_from_proof(
+    content, description = skill_from_reason_chain(
         name=request.name,
-        proof_nodes=proof_result["proof_nodes"],
-        proof_summary=proof_result.get("summary"),
+        reason_chain_nodes=proof_result["proof_nodes"],
+        reason_chain_summary=proof_result.get("summary"),
         original_problem=proof_result.get("problem", ""),
         llm=session.router,
         description=request.description,
@@ -305,7 +305,7 @@ async def create_skill_from_proof(
     skill_manager.update_skill_content(request.name, content)
     scripts_dir = skill_manager.get_skill_dir(request.name) / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    (scripts_dir / "proof.py").write_text(script)
+    (scripts_dir / "reason_chain.py").write_text(script)
 
     return {
         "name": request.name,
@@ -327,9 +327,9 @@ async def create_skill_from_proof(
 ### Phase 2: Backend Skill-from-Reasoning-Chain
 
 1. Cache `prove_conversation()` result on session as `last_proof_result`
-2. Add `skill_from_proof()` to `constat/core/skills.py`
-3. Add `POST /api/skills/from-proof` route
-4. Route writes both SKILL.md and `scripts/proof.py`
+2. Add `skill_from_reason_chain()` to `constat/core/skills.py`
+3. Add `POST /api/skills/from-reason-chain` route
+4. Route writes both SKILL.md and `scripts/reason_chain.py`
 
 ### Phase 3: Frontend
 
@@ -344,7 +344,7 @@ async def create_skill_from_proof(
 |------|---------|
 | `constat/server/routes/data.py` | Extract `generate_inference_script()` from `download_inference_code` |
 | `constat/session.py` | Cache `last_proof_result` after `prove_conversation()` |
-| `constat/core/skills.py` | Add `skill_from_proof()`, add `get_skill_dir()` |
-| `constat/server/routes/skills.py` | Add `/from-proof` endpoint |
+| `constat/core/skills.py` | Add `skill_from_reason_chain()`, add `get_skill_dir()` |
+| `constat/server/routes/skills.py` | Add `/from-reason-chain` endpoint |
 | `constat-ui/src/components/proof/ProofDAGPanel.tsx` | "Save as Skill" button + form |
-| `constat-ui/src/api/skills.ts` | Add `createSkillFromProof()` client method |
+| `constat-ui/src/api/skills.ts` | Add `createSkillFromReasonChain()` client method |

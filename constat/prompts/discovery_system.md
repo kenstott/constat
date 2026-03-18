@@ -8,7 +8,7 @@ IMPORTANT: You do NOT have schema information loaded upfront. Use discovery tool
 - search_all(query) - **PRIMARY TOOL**: Semantic search across ALL sources (tables, APIs, documents, and data-level entity values) at once
 - find_entity(name) - Find all occurrences of an entity across schema, documents, and resolved data values
 
-Results may include **entity resolution matches** — specific data values (e.g., country names, customer names) pulled from configured sources. These appear with `source: "entity_resolution"` and `document_name` like `"entity:sales.customers"`, telling you which data source contains that record. Use this to locate where specific values live across your data estate.
+Results may include **entity resolution matches** — specific data values (e.g., country names, customer names) pulled from configured sources. These appear with `source: "entity_resolution"` and `document_name` referencing the data source (e.g., `"sales.customers"`). Use this to locate where specific values live across your data estate.
 
 ### Schema Discovery (Databases)
 - list_databases() - See available databases
