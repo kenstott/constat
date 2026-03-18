@@ -290,6 +290,99 @@ class _CoreMixin:
         # Extract and store entities
         self._extract_and_store_entities(chunks, schema_entities)
 
+    def embed_entity_values(
+        self,
+        entity_terms: dict[str, list[str]],
+        entity_configs: list,
+        session_id: str,
+        domain_id: str | None = None,
+    ) -> None:
+        """Embed entity resolution values into the vector store.
+
+        Creates one summary chunk per entity_type+source and individual
+        value chunks for semantic matching.
+
+        Args:
+            entity_terms: {entity_type: [values]}
+            entity_configs: List of EntityResolutionConfig objects
+            session_id: Session ID
+            domain_id: Domain ID for the entity values
+        """
+        from constat.discovery.models import ChunkType
+
+        if not entity_terms:
+            return
+
+        # Delete previous entity_resolution chunks for this domain
+        self._vector_store.delete_by_source("entity_resolution", domain_id=domain_id)
+
+        # Build a map of entity_type → list of configs (for document_name)
+        type_configs: dict[str, list] = {}
+        for cfg in entity_configs:
+            type_configs.setdefault(cfg.entity_type.upper(), []).append(cfg)
+
+        all_chunks: list[DocumentChunk] = []
+        for entity_type, values in entity_terms.items():
+            configs = type_configs.get(entity_type.upper(), [])
+
+            # Group values by source for summary chunks
+            source_groups: dict[str, list[str]] = {}
+            for cfg in configs:
+                key = f"{cfg.source}.{cfg.table}" if cfg.table else cfg.source
+                if not key:
+                    key = "static"
+                if cfg.values:
+                    source_groups.setdefault(key, []).extend(cfg.values)
+                else:
+                    source_groups.setdefault(key, []).extend(values)
+
+            # If no configs matched, use a generic key
+            if not source_groups:
+                source_groups["static"] = values
+
+            for source_key, source_values in source_groups.items():
+                doc_name = f"entity:{source_key}"
+
+                # Summary chunk (index 0)
+                preview = ", ".join(source_values[:10])
+                if len(source_values) > 10:
+                    preview += f", ... ({len(source_values)} values)"
+                summary_content = f"{entity_type} entity values from {source_key}: {preview}"
+                all_chunks.append(DocumentChunk(
+                    document_name=doc_name,
+                    content=summary_content,
+                    chunk_index=0,
+                    source="entity_resolution",
+                    chunk_type=ChunkType.ENTITY_VALUE,
+                    domain_id=domain_id,
+                ))
+
+                # Individual value chunks
+                for idx, value in enumerate(source_values, start=1):
+                    all_chunks.append(DocumentChunk(
+                        document_name=doc_name,
+                        content=value,
+                        chunk_index=idx,
+                        source="entity_resolution",
+                        chunk_type=ChunkType.ENTITY_VALUE,
+                        domain_id=domain_id,
+                    ))
+
+        if not all_chunks:
+            return
+
+        texts = [c.content for c in all_chunks]
+        with self._model_lock:
+            embeddings = self._model.encode(texts, convert_to_numpy=True)
+
+        self._vector_store.add_chunks(
+            all_chunks, embeddings,
+            source="entity_resolution",
+            session_id=session_id,
+            domain_id=domain_id,
+        )
+        logger.info(f"Embedded {len(all_chunks)} entity resolution chunks")
+
     def _create_vector_store(self) -> VectorStoreBackend:
         """Create vector store based on config."""
         storage_config = self.config.storage

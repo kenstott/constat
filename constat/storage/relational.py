@@ -811,10 +811,23 @@ class RelationalStore:
 
         by_id = {t.id: t for t in all_terms}
 
+        # parent_id can reference glossary_id OR entity_id.
+        # Build a mapping from any ref ID → glossary term ID so lookups work.
+        ref_to_term: dict[str, GlossaryTerm] = dict(by_id)
+        for t in all_terms:
+            row = self._conn.execute(
+                "SELECT id FROM entities WHERE LOWER(name) = LOWER(?) LIMIT 1",
+                [t.name],
+            ).fetchone()
+            if row and row[0] not in ref_to_term:
+                ref_to_term[row[0]] = t
+
         children_of: dict[str, list[str]] = {}
         for t in all_terms:
-            if t.parent_id and t.parent_id in by_id:
-                children_of.setdefault(t.parent_id, []).append(t.id)
+            if t.parent_id:
+                parent = ref_to_term.get(t.parent_id)
+                if parent:
+                    children_of.setdefault(parent.id, []).append(t.id)
 
         grounded: set[str] = set()
         for t in all_terms:
@@ -829,7 +842,7 @@ class RelationalStore:
         for tid in grounded:
             current = by_id.get(tid)
             while current and current.parent_id:
-                parent = by_id.get(current.parent_id)
+                parent = ref_to_term.get(current.parent_id)
                 if not parent or parent.id in valid:
                     break
                 valid.add(parent.id)

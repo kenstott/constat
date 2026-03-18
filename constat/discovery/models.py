@@ -41,6 +41,9 @@ class ChunkType(str, Enum):
     # Documents
     DOCUMENT = "document"
 
+    # Entity resolution
+    ENTITY_VALUE = "entity_value"
+
     # Glossary & Relationships
     GLOSSARY_TERM = "glossary_term"
     RELATIONSHIP = "relationship"
@@ -283,6 +286,13 @@ def extract_resource_from_path(path: str) -> str:
 
     # Return the last meaningful segment (the primary resource)
     return meaningful_segments[-1]
+
+
+class EntityClass:
+    """Classifies vector records for resolution routing."""
+    METADATA_ENTITY = "metadata_entity"  # Structured data metadata: tables, columns, API endpoints
+    DATA_ENTITY = "data_entity"          # Data-level values: France, IBM, customer names
+    MIXED = "mixed"                       # Unstructured docs — can reference either
 
 
 class SemanticType:

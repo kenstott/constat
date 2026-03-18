@@ -655,6 +655,31 @@ The glossary is a unified view of auto-generated entities (from NER extraction) 
 - **Status workflow** — draft → reviewed → approved
 - **Domain scoping** — terms are owned by domains
 
+## Entity Resolution
+
+Entity resolution bridges the gap between structural metadata ("the orders table") and specific data values ("France"). It pulls distinct values from configured data sources and makes them searchable alongside schema metadata and documents.
+
+**How it works:**
+1. Domain configs declare `entity_resolution` entries mapping entity types to sources
+2. At session startup, values are extracted from databases (SQL/NoSQL), APIs (REST/GraphQL), or static lists
+3. Values become custom NER patterns (recognized in documents with 0.95 confidence)
+4. Values are embedded in the vector store as `entity_resolution` source chunks
+5. Existing search tools (`search_all`, `find_entity`, `explore_entity`) return entity resolution matches transparently
+
+**Source types:**
+- **SQL shorthand** — `table` + `name_column` → `SELECT DISTINCT name_column FROM table`
+- **Custom query** — `query` string for complex SQL, Cypher (Neo4j), CQL (Cassandra), etc.
+- **GraphQL** — `query` + `source` referencing a GraphQL API
+- **REST** — `endpoint` + `items_path` + `name_field`
+- **Static list** — `values: [USD, EUR, GBP]`
+
+Multiple sources for the same entity type merge. Each source gets its own summary chunk and individual value embeddings in the vector store.
+
+**Vector store classification:**
+- `entity_class: metadata_entity` — schema/API chunks
+- `entity_class: data_entity` — entity resolution value chunks
+- `entity_class: mixed` — document chunks (can reference either)
+
 ## UX Architecture
 
 ### Web UI

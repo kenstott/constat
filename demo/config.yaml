@@ -123,6 +123,13 @@ databases_description: |
   - web_metrics: Daily web analytics CSV (use file_web_metrics path)
   - events: Clickstream events JSON (use file_events path)
 
+entity_resolution:
+  - entity_type: COUNTRY
+    source: countries
+    query: "{ countries { name } }"
+    items_path: countries
+    name_field: name
+
 relationships:
   preferred_verbs:
     hierarchy: [MANAGES, REPORTS_TO]

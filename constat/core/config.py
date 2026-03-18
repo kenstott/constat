@@ -898,6 +898,25 @@ class ContextPreloadConfig(BaseModel):
     max_columns_per_table: int = 30
 
 
+class EntityResolutionConfig(BaseModel):
+    """Maps an entity type to a data source for NER + vector resolution."""
+    entity_type: str                        # Custom NER label (e.g., "COUNTRY")
+    source: str = ""                        # Database or API name (from config)
+    # DB sources (shorthand)
+    table: str | None = None                # Table to query
+    name_column: str | None = None          # Column with entity names
+    # DB sources (custom query — for graph DBs, complex joins, etc.)
+    query: str | None = None                # Custom query returning a 'name' column
+    # API sources
+    endpoint: str | None = None             # GET endpoint path
+    items_path: str | None = None           # JSON path to items array (default: root)
+    name_field: str = "name"                # Field in each item
+    # Static list
+    values: list[str] | None = None         # Inline values (no query needed)
+    # Common
+    max_values: int = 10000                 # Cap on distinct values
+
+
 class DomainConfig(BaseModel):
     """Domain configuration - a reusable collection of data sources.
 
@@ -963,6 +982,9 @@ class DomainConfig(BaseModel):
     # Optional domain-specific task routing (fine-tuned models, local models)
     # Same structure as llm.task_routing — maps task_type to model chain
     task_routing: dict[str, Any] = Field(default_factory=dict)
+
+    # Entity resolution — map entity types to data source values for NER + vector search
+    entity_resolution: list[EntityResolutionConfig] = Field(default_factory=list)
 
     # Optional domain-specific settings
     databases_description: str = ""
@@ -1126,6 +1148,9 @@ class Config(BaseModel):
     rights: dict[str, Any] = Field(default_factory=dict)
     glossary: dict[str, Any] = Field(default_factory=dict)
     relationships: dict[str, Any] = Field(default_factory=dict)
+
+    # Entity resolution — system-level entity type mappings
+    entity_resolution: list[EntityResolutionConfig] = Field(default_factory=list)
 
     # NER stop list — system-level terms to filter out during entity extraction
     ner_stop_list: list[str] = Field(default_factory=list)

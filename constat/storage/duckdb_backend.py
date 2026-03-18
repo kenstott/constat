@@ -84,8 +84,8 @@ class DuckDBVectorBackend(VectorBackend):
         session_id: str | None = None,
         domain_id: str | None = None,
     ) -> None:
-        if source not in ("schema", "api", "document"):
-            raise ValueError(f"source must be 'schema', 'api', or 'document', got: {source}")
+        if source not in ("schema", "api", "document", "entity_resolution"):
+            raise ValueError(f"source must be 'schema', 'api', 'document', or 'entity_resolution', got: {source}")
         if len(chunks) == 0:
             return
 
@@ -108,6 +108,15 @@ class DuckDBVectorBackend(VectorBackend):
             logger.debug("add_chunks: all documents already indexed, nothing to add")
             return
 
+        # Determine entity_class from source
+        from constat.discovery.models import EntityClass
+        if source in ("schema", "api"):
+            entity_class = EntityClass.METADATA_ENTITY
+        elif source == "entity_resolution":
+            entity_class = EntityClass.DATA_ENTITY
+        else:
+            entity_class = EntityClass.MIXED
+
         records = []
         for i, chunk in enumerate(new_chunks):
             chunk_id = self._generate_chunk_id(chunk)
@@ -125,13 +134,14 @@ class DuckDBVectorBackend(VectorBackend):
                 embedding,
                 session_id,
                 domain_id,
+                entity_class,
             ))
 
         self._conn.executemany(
             """
             INSERT INTO embeddings
-            (chunk_id, document_name, source, chunk_type, section, chunk_index, content, embedding, session_id, domain_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (chunk_id, document_name, source, chunk_type, section, chunk_index, content, embedding, session_id, domain_id, entity_class)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             records,
         )
@@ -620,8 +630,8 @@ class DuckDBVectorBackend(VectorBackend):
         self._fts_dirty = True
 
     def clear_chunks(self, source: str) -> None:
-        if source not in ("schema", "api", "document"):
-            raise ValueError(f"source must be 'schema', 'api', or 'document', got: {source}")
+        if source not in ("schema", "api", "document", "entity_resolution"):
+            raise ValueError(f"source must be 'schema', 'api', 'document', or 'entity_resolution', got: {source}")
         self._conn.execute("DELETE FROM embeddings WHERE source = ?", [source])
         self._fts_dirty = True
 

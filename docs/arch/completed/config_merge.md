@@ -26,6 +26,7 @@ Every tier includes the **core config** shape:
 | learnings  | `$ref`                        | Deep merge by key                   |
 | glossary   | `$ref`                        | Deep merge by key                   |
 | relationships | `$ref`                     | Deep merge by key                   |
+| entity_resolution | List of EntityResolutionConfig | Concatenated across tiers  |
 
 **Additional sections by tier:**
 

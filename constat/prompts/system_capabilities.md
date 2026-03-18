@@ -93,13 +93,22 @@ Constat learns from user corrections:
 - Learnings are applied during ambiguity detection, planning, and execution
 - Managed with `/learnings`, `/correct`, `/rule`, `/rule-edit`, `/rule-delete`
 
+## Entity Resolution
+
+Constat bridges metadata (schemas, APIs) and data values (actual records):
+- **Data-source-backed NER** — Pulls distinct values from databases, APIs, or static lists (e.g., country names from a countries table) and registers them as custom NER patterns
+- **Semantic embedding** — Entity values are embedded in the vector store, so searching for "French" finds the "France" entity value AND documents mentioning France
+- **Source traceability** — Each resolved entity points back to its data source for record-level lookup
+- **Transparent to search** — `search_all()`, `find_entity()`, and `explore_entity()` automatically include entity resolution matches alongside schema and document results
+- Configured per domain via `entity_resolution` in domain config (supports SQL, NoSQL, GraphQL, REST, and static lists)
+
 ## Data Sources
 
 Constat connects to multiple data source types:
 - **Databases** — PostgreSQL, MySQL, SQLite, DuckDB, and more
 - **Structured files** — CSV, Excel, Parquet, JSON (loaded as queryable tables)
 - **Documents** — PDF, Word, PowerPoint for reference and context
-- **APIs** — REST endpoints for live data
+- **APIs** — REST and GraphQL endpoints for live data
 - **Progressive discovery** — metadata is fetched on-demand, not preloaded, allowing connection to large data estates
 
 ## Artifacts

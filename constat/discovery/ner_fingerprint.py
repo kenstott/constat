@@ -28,6 +28,7 @@ def compute_ner_fingerprint(
     schema_terms: list[str],
     api_terms: list[str],
     business_terms: Optional[list[str]] = None,
+    entity_terms: Optional[dict[str, list[str]]] = None,
 ) -> str:
     """Compute a fingerprint for the NER extraction scope.
 
@@ -36,6 +37,7 @@ def compute_ner_fingerprint(
         schema_terms: Schema entity names
         api_terms: API entity names
         business_terms: Glossary/relationship terms
+        entity_terms: {entity_type: [values]} from entity resolution
 
     Returns:
         Hex digest fingerprint
@@ -46,6 +48,10 @@ def compute_ner_fingerprint(
         "|".join(sorted(api_terms)),
         "|".join(sorted(business_terms or [])),
     ]
+    # Include entity resolution terms in fingerprint
+    if entity_terms:
+        for key in sorted(entity_terms.keys()):
+            parts.append(f"{key}:" + "|".join(sorted(entity_terms[key])))
     combined = "\n".join(parts)
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
 

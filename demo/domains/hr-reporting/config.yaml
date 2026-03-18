@@ -8,6 +8,19 @@ databases:
       Ratings: 1-5 scale (5=exceptional, 1=unsatisfactory).
 
       '
+entity_resolution:
+  - entity_type: DEPARTMENT
+    source: hr
+    table: departments
+    name_column: name
+  - entity_type: JOB_TITLE
+    source: hr
+    table: employees
+    name_column: job_title
+  - entity_type: EMPLOYEE
+    source: hr
+    query: "SELECT DISTINCT first_name || ' ' || last_name AS name FROM employees"
+
 documents:
   compensation_policy:
     path: docs/compensation_policy.pdf

@@ -601,6 +601,32 @@ class SessionManager:
         if stop_words:
             session.doc_tools._stop_list = stop_words
 
+        # Collect entity resolution configs from top-level config + active domains
+        entity_configs = list(session.config.entity_resolution or [])
+        for domain_name in domain_ids:
+            domain_cfg = session.config.load_domain(domain_name)
+            if domain_cfg and domain_cfg.entity_resolution:
+                entity_configs.extend(domain_cfg.entity_resolution)
+
+        # Extract entity values from configured sources
+        entity_terms: dict[str, list[str]] = {}
+        if entity_configs:
+            try:
+                api_configs = {}
+                for dn in domain_ids:
+                    dc = session.config.load_domain(dn)
+                    if dc and dc.apis:
+                        api_configs.update(dc.apis)
+                if session.config.apis:
+                    api_configs.update(session.config.apis)
+                entity_terms = session.schema_manager.extract_entity_values(
+                    entity_configs, api_configs=api_configs,
+                )
+                if entity_terms:
+                    logger.info(f"Session {session_id}: extracted entity values: {', '.join(f'{k}={len(v)}' for k, v in entity_terms.items())}")
+            except Exception as e:
+                logger.warning(f"Session {session_id}: entity resolution failed: {e}")
+
         logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business entities, {len(stop_words)} stop words")
 
         # Fingerprint caching — skip NER if scope unchanged
@@ -611,7 +637,7 @@ class SessionManager:
                 chunk_ids = session.doc_tools._vector_store.get_all_chunk_ids(session_id=session_id)
             except Exception:
                 pass
-        fingerprint = compute_ner_fingerprint(chunk_ids, schema_entities, api_entities, business_terms)
+        fingerprint = compute_ner_fingerprint(chunk_ids, schema_entities, api_entities, business_terms, entity_terms=entity_terms)
         logger.info(f"Session {session_id}: NER fingerprint={fingerprint} ({len(chunk_ids)} chunks, {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business)")
 
         # Try scope-level cache (cross-session, persisted in DuckDB)
@@ -654,7 +680,22 @@ class SessionManager:
                 schema_entities=schema_entities,
                 api_entities=api_entities,
                 business_terms=business_terms or None,
+                entity_terms=entity_terms or None,
             )
+
+            # Embed entity resolution values into vector store
+            if entity_terms and entity_configs:
+                try:
+                    # Use first domain as domain_id for entity embeddings
+                    er_domain = domain_ids[0] if domain_ids else None
+                    session.doc_tools.embed_entity_values(
+                        entity_terms=entity_terms,
+                        entity_configs=entity_configs,
+                        session_id=session_id,
+                        domain_id=er_domain,
+                    )
+                except Exception as e:
+                    logger.warning(f"Session {session_id}: entity value embedding failed: {e}")
             if link_count and link_count > 0:
                 logger.info(f"Session {session_id}: created {link_count} entity links")
             else:
@@ -873,6 +914,18 @@ class SessionManager:
                     vector_store._clusters_dirty = True
                     vector_store._rebuild_clusters(session_id)
                     logger.info(f"Session {session_id}: rebuilt clusters after glossary generation")
+
+            # Final prune: delete any draft LLM terms that are now deprecated
+            deprecated = vector_store.get_deprecated_glossary(
+                session_id, active_domains=active_domains, user_id=managed.user_id,
+            )
+            post_pruned = 0
+            for term in deprecated:
+                if term.provenance == "llm" and term.status == "draft":
+                    vector_store.delete_glossary_term(term.name, session_id, user_id=managed.user_id)
+                    post_pruned += 1
+            if post_pruned:
+                logger.info(f"Post-generation prune for {session_id}: removed {post_pruned} deprecated draft terms")
 
             on_progress("Complete", 100)
             duration_ms = int((time.time() - t0) * 1000)

@@ -1491,6 +1491,183 @@ class SchemaManager:
 
         return list(entities)
 
+    def extract_entity_values(
+        self,
+        entity_configs: list,
+        api_configs: dict | None = None,
+    ) -> dict[str, list[str]]:
+        """Query data sources for entity resolution values.
+
+        Args:
+            entity_configs: List of EntityResolutionConfig objects
+            api_configs: {name: APIConfig} for API sources
+
+        Returns:
+            {entity_type: [value1, value2, ...]}  merged across sources
+        """
+        result: dict[str, list[str]] = {}
+
+        for cfg in entity_configs:
+            entity_type = cfg.entity_type.upper()
+            values: list[str] = []
+
+            try:
+                if cfg.values:
+                    # Static list
+                    values = list(cfg.values[:cfg.max_values])
+
+                elif cfg.endpoint:
+                    # API source
+                    values = self._extract_entity_values_api(cfg, api_configs)
+
+                elif cfg.query and cfg.source:
+                    # Custom query — route to API handler if source is an API
+                    if api_configs and cfg.source in api_configs:
+                        values = self._extract_entity_values_api(cfg, api_configs)
+                    else:
+                        values = self._extract_entity_values_query(cfg)
+
+                elif cfg.table and cfg.name_column and cfg.source:
+                    # SQL shorthand
+                    values = self._extract_entity_values_sql(cfg)
+
+            except Exception as e:
+                logger.warning(f"Entity resolution failed for {entity_type} from {cfg.source}: {e}")
+                continue
+
+            if values:
+                result.setdefault(entity_type, []).extend(values)
+
+        return result
+
+    def _extract_entity_values_sql(self, cfg) -> list[str]:
+        """Extract values via SQL shorthand (table + name_column)."""
+        source = cfg.source
+        if source in self.connections:
+            engine = self.connections[source]
+            conn_obj = engine.connect() if hasattr(engine, 'connect') else engine
+            try:
+                result = conn_obj.execute(
+                    text(f'SELECT DISTINCT "{cfg.name_column}" FROM "{cfg.table}" LIMIT {cfg.max_values}')
+                )
+                return [str(row[0]) for row in result if row[0] is not None]
+            finally:
+                if hasattr(conn_obj, 'close'):
+                    conn_obj.close()
+        elif source in self.file_connections:
+            # File sources use DuckDB via their connector
+            fc = self.file_connections[source]
+            if hasattr(fc, 'duckdb_conn'):
+                rows = fc.duckdb_conn.execute(
+                    f'SELECT DISTINCT "{cfg.name_column}" FROM "{cfg.table}" LIMIT {cfg.max_values}'
+                ).fetchall()
+                return [str(row[0]) for row in rows if row[0] is not None]
+        return []
+
+    def _extract_entity_values_query(self, cfg) -> list[str]:
+        """Extract values via custom query."""
+        source = cfg.source
+        if source in self.nosql_connections:
+            connector = self.nosql_connections[source]
+            # Dispatch by connector type
+            connector_type = type(connector).__name__.lower()
+            if 'neo4j' in connector_type:
+                rows = connector.cypher(cfg.query)
+                return [str(list(r.values())[0]) for r in rows[:cfg.max_values] if r]
+            elif 'cassandra' in connector_type:
+                rows = connector.execute_cql(cfg.query)
+                return [str(list(r.values())[0]) for r in rows[:cfg.max_values] if r]
+            elif 'cosmos' in connector_type:
+                rows = connector.query_sql("", cfg.query)
+                return [str(list(r.values())[0]) for r in rows[:cfg.max_values] if r]
+            else:
+                # Generic NoSQL query
+                rows = connector.query("", {}, limit=cfg.max_values)
+                return [str(r.get(cfg.name_field, "")) for r in rows if r.get(cfg.name_field)]
+        elif source in self.connections:
+            engine = self.connections[source]
+            conn_obj = engine.connect() if hasattr(engine, 'connect') else engine
+            try:
+                result = conn_obj.execute(text(cfg.query))
+                return [str(row[0]) for row in result.fetchmany(cfg.max_values) if row[0] is not None]
+            finally:
+                if hasattr(conn_obj, 'close'):
+                    conn_obj.close()
+        return []
+
+    def _extract_entity_values_api(self, cfg, api_configs: dict | None) -> list[str]:
+        """Extract values from a REST or GraphQL API."""
+        import requests
+
+        if not api_configs or cfg.source not in api_configs:
+            logger.warning(f"API source '{cfg.source}' not found in config")
+            return []
+
+        api_cfg = api_configs[cfg.source]
+
+        headers = {}
+        if hasattr(api_cfg, 'headers') and api_cfg.headers:
+            headers.update(api_cfg.headers)
+
+        # GraphQL: use cfg.query as the GraphQL query
+        if getattr(api_cfg, 'type', '') == 'graphql' and cfg.query:
+            url = api_cfg.url
+            resp = requests.post(
+                url,
+                json={"query": cfg.query},
+                headers={**headers, "Content-Type": "application/json"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+
+            # Navigate items_path to the array
+            if cfg.items_path:
+                for key in cfg.items_path.split('.'):
+                    data = data[key]
+            else:
+                # Auto-navigate: take the first key's value
+                if isinstance(data, dict):
+                    data = next(iter(data.values()), [])
+
+            if not isinstance(data, list):
+                return []
+
+            values = []
+            for item in data[:cfg.max_values]:
+                if isinstance(item, dict):
+                    val = item.get(cfg.name_field)
+                else:
+                    val = item
+                if val is not None:
+                    values.append(str(val))
+            return values
+
+        # REST: GET endpoint
+        url = f"{api_cfg.url.rstrip('/')}{cfg.endpoint}"
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Navigate items_path
+        if cfg.items_path:
+            for key in cfg.items_path.split('.'):
+                data = data[key]
+
+        if not isinstance(data, list):
+            return []
+
+        values = []
+        for item in data[:cfg.max_values]:
+            if isinstance(item, dict):
+                val = item.get(cfg.name_field)
+            else:
+                val = item
+            if val is not None:
+                values.append(str(val))
+
+        return values
+
     def get_table_metadata(self, database: str, table_name: str) -> Optional[TableMetadata]:
         """Get metadata for a specific table.
 

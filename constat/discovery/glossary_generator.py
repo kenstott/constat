@@ -634,6 +634,13 @@ def _prune_ungrounded(
 
     by_id: dict[str, GlossaryTerm] = {t.id: t for t in terms}
 
+    # parent_id can reference glossary_id OR entity_id — build unified lookup
+    ref_to_term: dict[str, GlossaryTerm] = dict(by_id)
+    for t in terms:
+        entity = vector_store.find_entity_by_name(t.name, domain_ids=active_domains, session_id=session_id)
+        if entity and entity.id not in ref_to_term:
+            ref_to_term[entity.id] = t
+
     # Find terms directly grounded to a visible entity with physical chunks
     grounded: set[str] = set()
     for t in terms:
@@ -652,7 +659,7 @@ def _prune_ungrounded(
     for tid in grounded:
         current = by_id.get(tid)
         while current and current.parent_id:
-            parent = by_id.get(current.parent_id)
+            parent = ref_to_term.get(current.parent_id)
             if not parent or parent.id in valid:
                 break
             valid.add(parent.id)
@@ -705,42 +712,71 @@ def _prune_single_child_parents(
         if t.parent_id:
             children_of.setdefault(t.parent_id, []).append(t.id)
 
-    # Find abstract parents (LLM-generated, no matching entity) with exactly 1 child
+    # Iterate until stable — pruning one parent can create new single-child parents
     pruned: set[str] = set()
-    for term in terms:
-        if term.provenance != "llm":
-            continue
-        child_ids = children_of.get(term.id, [])
-        if len(child_ids) != 1:
-            continue
-        # Check if term is abstract (no matching entity with physical chunks)
-        entity = vector_store.find_entity_by_name(
-            term.name, domain_ids=active_domains, session_id=session_id,
-        )
-        if entity and _entity_has_physical_chunks(entity, vector_store, domain_ids=active_domains):
-            continue  # Grounded term — keep it
+    changed = True
+    while changed:
+        changed = False
+        terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
+        if not terms:
+            break
+        by_id = {t.id: t for t in terms}
+        # parent_id can reference glossary_id OR entity_id — build lookup for both
+        children_of: dict[str, set[str]] = {}  # any parent ref -> {child term ids}
+        for t in terms:
+            if t.parent_id:
+                children_of.setdefault(t.parent_id, set()).add(t.id)
 
-        # Unlink the single child
-        child = by_id.get(child_ids[0])
-        if child:
-            try:
-                # Promote child: adopt grandparent (or None)
-                _retry_on_conflict(lambda: vector_store.update_glossary_term(
-                    child.name, session_id,
-                    {"parent_id": term.parent_id, "parent_verb": child.parent_verb},
-                    user_id=user_id,
-                ))
-            except Exception as e:
-                logger.warning(f"Failed to unlink child '{child.name}' from single-child parent '{term.name}': {e}")
+        # Map each term to ALL its possible IDs (glossary_id + entity_id)
+        term_all_ids: dict[str, list[str]] = {}
+        term_entity: dict[str, object] = {}  # cache entity lookups
+        for t in terms:
+            ids = [t.id]
+            entity = vector_store.find_entity_by_name(
+                t.name, domain_ids=active_domains, session_id=session_id,
+            )
+            if entity:
+                term_entity[t.id] = entity
+                if entity.id != t.id:
+                    ids.append(entity.id)
+            term_all_ids[t.id] = ids
+
+        for term in terms:
+            if term.provenance != "llm":
                 continue
+            # Collect children via all possible IDs for this term
+            child_ids: set[str] = set()
+            for tid in term_all_ids.get(term.id, [term.id]):
+                child_ids.update(children_of.get(tid, set()))
+            if len(child_ids) != 1:
+                continue
+            # Check if term is grounded (entity already looked up for term_all_ids)
+            entity = term_entity.get(term.id)
+            if entity and _entity_has_physical_chunks(entity, vector_store, domain_ids=active_domains):
+                continue  # Grounded term — keep it
 
-        # Delete the single-child parent
-        try:
-            _retry_on_conflict(lambda n=term.name: vector_store.delete_glossary_term(n, session_id, user_id=user_id))
-            pruned.add(term.name)
-            logger.debug(f"Pruned single-child parent: {term.name}")
-        except Exception as e:
-            logger.warning(f"Failed to prune single-child parent '{term.name}': {e}")
+            # Unlink the single child
+            child = by_id.get(next(iter(child_ids)))
+            if child:
+                try:
+                    # Promote child: adopt grandparent (or None)
+                    _retry_on_conflict(lambda: vector_store.update_glossary_term(
+                        child.name, session_id,
+                        {"parent_id": term.parent_id, "parent_verb": child.parent_verb},
+                        user_id=user_id,
+                    ))
+                except Exception as e:
+                    logger.warning(f"Failed to unlink child '{child.name}' from single-child parent '{term.name}': {e}")
+                    continue
+
+            # Delete the single-child parent
+            try:
+                _retry_on_conflict(lambda n=term.name: vector_store.delete_glossary_term(n, session_id, user_id=user_id))
+                pruned.add(term.name)
+                changed = True
+                logger.debug(f"Pruned single-child parent: {term.name}")
+            except Exception as e:
+                logger.warning(f"Failed to prune single-child parent '{term.name}': {e}")
 
     if pruned:
         logger.info(f"Pruned {len(pruned)} single-child abstract parents")

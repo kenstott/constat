@@ -92,6 +92,7 @@ class _EntityMixin:
         schema_entities: list[str],
         api_entities: list[str] | None = None,
         business_terms: list[str] | None = None,
+        entity_terms: dict[str, list[str]] | None = None,
     ) -> int:
         """Run entity extraction for a session's visible documents.
 
@@ -104,6 +105,7 @@ class _EntityMixin:
             schema_entities: Schema entity names (tables, columns)
             api_entities: API entity names (endpoints, schemas)
             business_terms: Glossary/relationship terms for NER
+            entity_terms: {entity_type: [values]} from entity resolution
 
         Returns:
             Number of chunk-entity links created
@@ -154,6 +156,7 @@ class _EntityMixin:
                 api_terms=self._collect_api_terms(),
                 business_terms=business_terms,
                 stop_list=self._stop_list,
+                entity_terms=entity_terms,
             )
             links = _extract_links_from_chunks(extractor, domain_chunks)
             all_links.extend(links)

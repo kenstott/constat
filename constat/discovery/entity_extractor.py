@@ -104,6 +104,7 @@ class EntityExtractor:
         api_terms: Optional[list[str]] = None,
         business_terms: Optional[list[str]] = None,
         stop_list: Optional[set[str]] = None,
+        entity_terms: Optional[dict[str, list[str]]] = None,
     ):
         """Initialize the entity extractor.
 
@@ -114,6 +115,7 @@ class EntityExtractor:
             api_terms: API endpoint names to recognize
             business_terms: Business glossary terms to recognize
             stop_list: Additional terms to filter out during extraction
+            entity_terms: {entity_type: [values]} from entity resolution configs
         """
         self.session_id = session_id
         self.domain_id = domain_id
@@ -194,6 +196,17 @@ class EntityExtractor:
                 token_pattern = make_token_pattern(term)
                 if token_pattern:
                     patterns.append({"label": "TERM", "pattern": token_pattern})
+
+        # Add entity resolution patterns (exact data values from sources)
+        self._entity_resolution_labels: set[str] = set()
+        for entity_type, values in (entity_terms or {}).items():
+            label = entity_type.upper()
+            self._entity_resolution_labels.add(label)
+            for value in values:
+                if value and len(value) > 1:
+                    token_pattern = make_token_pattern(value, use_lemma=False)
+                    if token_pattern:
+                        patterns.append({"label": label, "pattern": token_pattern})
 
         if patterns:
             # noinspection PyUnresolvedReferences
@@ -443,7 +456,7 @@ class EntityExtractor:
                 continue
 
             # Only keep relevant entity types
-            if ent.label_ not in self.KEEP_SPACY_TYPES and ent.label_ not in {'SCHEMA', 'API', 'TERM'}:
+            if ent.label_ not in self.KEEP_SPACY_TYPES and ent.label_ not in {'SCHEMA', 'API', 'TERM'} and ent.label_ not in self._entity_resolution_labels:
                 continue
 
             # Single-word PERSON entities are almost always noise (first name only)
@@ -470,10 +483,16 @@ class EntityExtractor:
 
                 entity = self._get_or_create_entity(t, ent.label_)
 
+                if ent.label_ in self._entity_resolution_labels:
+                    confidence = 0.95
+                elif ent.label_ in {'SCHEMA', 'API', 'TERM'}:
+                    confidence = 0.9
+                else:
+                    confidence = 0.75
                 link = ChunkEntity(
                     chunk_id=chunk_id,
                     entity_id=entity.id,
-                    confidence=0.9 if ent.label_ in {'SCHEMA', 'API', 'TERM'} else 0.75,
+                    confidence=confidence,
                 )
 
                 results.append((entity, link))

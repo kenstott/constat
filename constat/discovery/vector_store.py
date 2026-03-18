@@ -320,7 +320,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 content TEXT NOT NULL,
                 embedding FLOAT[{self.EMBEDDING_DIM}] NOT NULL,
                 session_id VARCHAR,
-                domain_id VARCHAR
+                domain_id VARCHAR,
+                entity_class VARCHAR DEFAULT 'mixed'
             )
         """)
 
@@ -333,7 +334,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 ner_type VARCHAR,
                 session_id VARCHAR NOT NULL,
                 domain_id VARCHAR,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                entity_class VARCHAR DEFAULT 'metadata'
             )
         """)
 
@@ -406,6 +408,8 @@ class DuckDBVectorStore(VectorStoreBackend):
             "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS ignored BOOLEAN DEFAULT FALSE",
             "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS canonical_source VARCHAR",
             "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS parent_verb VARCHAR DEFAULT 'HAS_KIND'",
+            "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'mixed'",
+            "ALTER TABLE entities ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'metadata'",
         ]
         schema_changed = False
         for stmt in _alter_stmts:

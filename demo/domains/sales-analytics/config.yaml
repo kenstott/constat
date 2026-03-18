@@ -8,6 +8,12 @@ databases:
       Customer tiers: bronze/silver/gold/platinum with different discounts.
 
       '
+entity_resolution:
+  - entity_type: CUSTOMER
+    source: sales
+    table: customers
+    name_column: name
+
 documents:
   business_rules:
     path: docs/business_rules.md

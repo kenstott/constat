@@ -1,6 +1,6 @@
 // Glossary Panel — unified glossary view replacing EntityAccordion
 
-import { useEffect, useMemo, useState, useCallback, useRef, Fragment } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { DomainBadge } from '../common/DomainBadge'
 import {
   ChevronRightIcon,
@@ -229,17 +229,24 @@ function RelationshipRow({
   }
   const [editing, setEditing] = useState(false)
   const [editVerb, setEditVerb] = useState(rel.verb)
+  const editVerbRef = useRef(editVerb)
+  editVerbRef.current = editVerb
   const [hover, setHover] = useState(false)
 
   const handleSave = async () => {
-    const normalized = editVerb.trim().toUpperCase().replace(/[\s-]+/g, '_')
+    const normalized = editVerbRef.current.trim().toUpperCase().replace(/[\s-]+/g, '_')
     if (!normalized || normalized === rel.verb) {
       setEditing(false)
       return
     }
-    await updateRelationshipVerb(sessionId, rel.id, normalized)
-    onUpdated(rel.id, normalized)
-    setEditing(false)
+    try {
+      await updateRelationshipVerb(sessionId, rel.id, normalized)
+      onUpdated(rel.id, normalized)
+    } catch (e) {
+      console.error('[RelationshipRow] verb update failed:', e)
+    } finally {
+      setEditing(false)
+    }
   }
 
   const handleDelete = async () => {
@@ -260,17 +267,26 @@ function RelationshipRow({
     >
       <TermLink name={rel.subject} displayName={displayFor(rel.subject)} />
       {editing ? (
-        <input
-          value={editVerb}
-          onChange={(e) => setEditVerb(e.target.value.toUpperCase().replace(/[\s-]+/g, '_'))}
+        <div
+          className="mx-1"
           onKeyDown={(e) => {
-            if (e.key === 'Enter') handleSave()
+            if (e.key === 'Enter') { e.preventDefault(); handleSave() }
             if (e.key === 'Escape') { setEditing(false); setEditVerb(rel.verb) }
           }}
-          onBlur={handleSave}
-          className="mx-1 px-1 py-0 text-xs border border-blue-300 dark:border-blue-600 rounded bg-white dark:bg-gray-800 text-blue-500 w-24"
-          autoFocus
-        />
+          onBlur={(e) => {
+            // Only save when focus leaves the entire container (not moving between input and dropdown)
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+              handleSave()
+            }
+          }}
+        >
+          <VerbAutocomplete
+            value={editVerb}
+            onChange={setEditVerb}
+            existingVerbs={[]}
+            className="px-1 py-0 text-xs border border-blue-300 dark:border-blue-600 rounded bg-white dark:bg-gray-800 text-blue-500 w-28"
+          />
+        </div>
       ) : (
         <button
           onClick={() => { setEditVerb(rel.verb); setEditing(true) }}
@@ -3572,16 +3588,25 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
           }
         </button>
         <div className="flex-1" />
-        {!generating && (
-          <button
-            onClick={() => setShowDeleteDrafts(true)}
-            disabled={deletingDrafts}
-            className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded text-red-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
-            title="Delete all draft terms"
-          >
-            <TrashIcon className="w-3.5 h-3.5" />
-            Drafts
-          </button>
+        {!generating && terms.some(t => t.status === 'draft') && (
+          deletingDrafts ? (
+            <div className="flex items-center gap-1.5 text-xs text-red-400">
+              <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <span>Deleting drafts...</span>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowDeleteDrafts(true)}
+              className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded text-red-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+              title="Delete all draft terms"
+            >
+              <TrashIcon className="w-3.5 h-3.5" />
+              Drafts
+            </button>
+          )
         )}
         {generating ? (
           <div className="flex items-center gap-1.5 text-xs text-purple-500">
