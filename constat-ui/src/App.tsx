@@ -257,7 +257,6 @@ function MainApp() {
   const { session, wsConnected, createSession, messages } = useSessionStore()
   const { userId } = useAuthStore()
   const { fetchAllSkills } = useArtifactStore()
-  const queryInputRef = useRef<HTMLTextAreaElement>(null)
   const initializingRef = useRef(false)
   const [initPhase, setInitPhase] = useState<InitPhase>('creating_session')
 
@@ -364,40 +363,12 @@ function MainApp() {
       })
   }, [session, createSession, userId])
 
-  const handleNewQuery = async () => {
-    setIsCreatingNewSession(true)
-    try {
-      // Create a brand new session (preserves old session in history)
-      useProofStore.getState().clearFacts()
-      lastSavedRef.current = ''
-
-      // Create new session - this preserves the old session in history
-      await createSession(userId, true) // forceNew = true
-
-      queryInputRef.current?.focus()
-    } finally {
-      setIsCreatingNewSession(false)
-    }
-  }
-
   // Proof panel state
-  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, isPlanningComplete, proofSummary, isSummaryGenerating, openPanel: openProofPanel, closePanel: closeProofPanel, clearFacts } = useProofStore()
+  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, isPlanningComplete, proofSummary, isSummaryGenerating, closePanel: closeProofPanel, clearFacts } = useProofStore()
   const { submitQuery } = useSessionStore()
-
-  const handleShowProof = () => {
-    // Clear previous proof state and open panel
-    clearFacts()
-    openProofPanel()
-    // Submit /reason command to trigger reasoning chain
-    submitQuery('/reason', true)
-  }
 
   // Help modal state
   const [isHelpOpen, setIsHelpOpen] = useState(false)
-  const handleShowHelp = () => setIsHelpOpen(true)
-
-  // New query loading state
-  const [isCreatingNewSession, setIsCreatingNewSession] = useState(false)
 
   // Show connecting overlay until session exists and WebSocket is connected
   if (!session || !wsConnected) {
@@ -410,10 +381,6 @@ function MainApp() {
       <MainLayout
         conversationPanel={<ConversationPanel />}
         artifactPanel={<ArtifactPanel />}
-        onNewQuery={handleNewQuery}
-        onShowProof={handleShowProof}
-        onShowHelp={handleShowHelp}
-        isCreatingNewSession={isCreatingNewSession}
       />
       <ClarificationDialog />
       <PlanApprovalDialog />

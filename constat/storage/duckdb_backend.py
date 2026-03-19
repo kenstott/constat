@@ -90,18 +90,16 @@ class DuckDBVectorBackend(VectorBackend):
             return
 
         doc_names = set(c.document_name for c in chunks)
-        print(f"[ADD_CHUNKS] docs={doc_names}, session_id={session_id}, domain_id={domain_id}")
 
         existing_docs = set()
         for doc_name in doc_names:
             count = self._conn.execute(
-                "SELECT COUNT(*) FROM embeddings WHERE document_name = ?",
-                [doc_name],
+                "SELECT COUNT(*) FROM embeddings WHERE document_name = ? AND source = ?",
+                [doc_name, source],
             ).fetchone()[0]
-            print(f"[ADD_CHUNKS] {doc_name}: existing chunks = {count}")
             if count > 0:
                 existing_docs.add(doc_name)
-                print(f"[ADD_CHUNKS] SKIPPING {doc_name}")
+                logger.debug(f"add_chunks: skipping {doc_name} ({source}), {count} chunks exist")
 
         new_chunks = [c for c in chunks if c.document_name not in existing_docs]
         if not new_chunks:

@@ -1,8 +1,11 @@
 // Autocomplete-enabled query input wrapper
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react'
-import { PaperAirplaneIcon, QueueListIcon } from '@heroicons/react/24/solid'
-import { XMarkIcon } from '@heroicons/react/24/outline'
+import { QueueListIcon, ArrowUpIcon } from '@heroicons/react/24/solid'
+import { XMarkIcon, AtSymbolIcon, PaperClipIcon, CheckBadgeIcon, BoltIcon, StopIcon, PlusIcon } from '@heroicons/react/24/outline'
+import { useArtifactStore } from '@/store/artifactStore'
+import { useUIStore } from '@/store/uiStore'
+import { useProofStore } from '@/store/proofStore'
 import { AutocompleteDropdown, AutocompleteItem } from './AutocompleteDropdown'
 import { wsManager } from '@/api/websocket'
 import { useSessionStore } from '@/store/sessionStore'
@@ -12,6 +15,7 @@ import {
   DISCOVER_SCOPES,
   SUMMARIZE_TARGETS,
 } from '@/data/commands'
+import { listAllPermissions, type UserPermissions } from '@/api/users'
 
 interface AutocompleteInputProps {
   onSubmit: (query: string) => void
@@ -19,7 +23,7 @@ interface AutocompleteInputProps {
   editValue?: string | null  // When set, populates input and focuses it
 }
 
-type CompletionContext = 'command' | 'table' | 'entity' | 'scope' | 'none'
+type CompletionContext = 'command' | 'table' | 'entity' | 'scope' | 'mention' | 'none'
 
 interface ParsedInput {
   context: CompletionContext
@@ -28,7 +32,16 @@ interface ParsedInput {
   parent?: string
 }
 
-function parseInput(value: string): ParsedInput {
+function parseInput(value: string, cursorPosition?: number): ParsedInput {
+  const cursor = cursorPosition ?? value.length
+
+  // Check for @mention before cursor
+  const beforeCursor = value.slice(0, cursor)
+  const atMatch = beforeCursor.match(/(^|\s)@(\S*)$/)
+  if (atMatch) {
+    return { context: 'mention', prefix: '@' + atMatch[2] }
+  }
+
   const trimmed = value.trimStart()
 
   // Check if starts with /
@@ -66,7 +79,25 @@ function parseInput(value: string): ParsedInput {
   }
 }
 
-function getClientCompletions(parsed: ParsedInput): AutocompleteItem[] {
+function getMentionCompletions(prefix: string, users: { user_id: string; email: string | null }[]): AutocompleteItem[] {
+  const lowerPrefix = prefix.toLowerCase()
+  const mentions: AutocompleteItem[] = [
+    { label: '@vera', value: '@vera', description: 'Teach Vera a rule or correction', category: 'Learning' },
+    ...users.map((u) => ({
+      label: `@${u.user_id}`,
+      value: `@${u.user_id}`,
+      description: u.email ?? u.user_id,
+      category: 'Share',
+    })),
+  ]
+  return mentions.filter((m) => m.value.toLowerCase().startsWith(lowerPrefix))
+}
+
+function getClientCompletions(parsed: ParsedInput, users: { user_id: string; email: string | null }[] = []): AutocompleteItem[] {
+  if (parsed.context === 'mention') {
+    return getMentionCompletions(parsed.prefix, users)
+  }
+
   if (parsed.context === 'command') {
     return filterCommands(parsed.prefix).map((cmd) => ({
       label: cmd.command,
@@ -126,12 +157,184 @@ function saveHistory(history: string[]): void {
   }
 }
 
+function InputToolbar({
+  query,
+  setQuery,
+  textareaRef,
+  isBusy,
+  isDisabled,
+  onSubmit,
+  onInsertAt,
+}: {
+  query: string
+  setQuery: (v: string) => void
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>
+  isBusy: boolean
+  isDisabled?: boolean
+  onSubmit: () => void
+  onInsertAt: () => void
+}) {
+  const { status, cancelExecution, createSession, submitQuery } = useSessionStore()
+  const { stepCodes, tables } = useArtifactStore()
+  const { briefMode, toggleBriefMode } = useUIStore()
+  const { openPanel: openProofPanel, clearFacts } = useProofStore()
+  const [isCreating, setIsCreating] = useState(false)
+
+  const isExecuting = status === 'planning' || status === 'executing'
+  const hasExecutedPlan = stepCodes.length > 0 || tables.length > 0
+
+  const handleShowProof = () => {
+    clearFacts()
+    openProofPanel()
+    submitQuery('/reason', true)
+  }
+
+  const handleNewQuery = async () => {
+    if (isCreating || isExecuting) return
+    setIsCreating(true)
+    try {
+      const { useProofStore: getProofStore } = await import('@/store/proofStore')
+      getProofStore.getState().clearFacts()
+      const { useAuthStore } = await import('@/store/authStore')
+      const userId = useAuthStore.getState().userId
+      await createSession(userId, true)
+    } finally {
+      setIsCreating(false)
+    }
+  }
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleAttachClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    const { session } = useSessionStore.getState()
+    if (!session) return
+    try {
+      const { uploadDocuments } = await import('@/api/sessions')
+      await uploadDocuments(session.session_id, Array.from(files))
+    } catch (err) {
+      console.error('File upload failed:', err)
+    }
+    // Reset so the same file can be re-selected
+    e.target.value = ''
+  }
+
+  return (
+    <div className="flex items-center justify-between px-3 pb-2.5">
+      <div className="flex items-center gap-1">
+        <button
+          onClick={handleNewQuery}
+          disabled={isCreating || isExecuting}
+          className="px-2 py-1 rounded-md text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition-colors"
+          title="New query"
+        >
+          <PlusIcon className={`w-4 h-4${isCreating ? ' animate-spin' : ''}`} />
+        </button>
+        <button
+          onClick={onInsertAt}
+          className="px-2 py-1 rounded-md text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          title="Insert @mention"
+        >
+          <AtSymbolIcon className="w-4 h-4" />
+        </button>
+        <button
+          onClick={handleAttachClick}
+          className="flex items-center gap-1 px-2 py-1 rounded-md text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          title="Attach file as data source"
+        >
+          <PaperClipIcon className="w-4 h-4" />
+          <span className="text-xs">Attach</span>
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleFileSelected}
+        />
+        <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1" />
+        {isExecuting && (
+          <button
+            onClick={cancelExecution}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 animate-pulse transition-colors"
+          >
+            <StopIcon className="w-3.5 h-3.5" />
+            Cancel
+          </button>
+        )}
+        <button
+          onClick={handleShowProof}
+          disabled={isExecuting || !hasExecutedPlan}
+          className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-30 transition-colors"
+          title={hasExecutedPlan ? 'Show reasoning chain' : 'Execute a query first'}
+        >
+          <CheckBadgeIcon className="w-3.5 h-3.5" />
+          Reason-Chain
+        </button>
+        <button
+          onClick={toggleBriefMode}
+          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors ${
+            briefMode ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+          }`}
+          title={briefMode ? 'Brief mode ON' : 'Brief mode OFF'}
+        >
+          <BoltIcon className="w-3.5 h-3.5" />
+          Brief
+        </button>
+      </div>
+      <div className="flex items-center gap-1">
+        {query && (
+          <button
+            onClick={() => {
+              setQuery('')
+              textareaRef.current?.focus()
+            }}
+            className="p-1 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            title="Clear"
+          >
+            <XMarkIcon className="w-4 h-4" />
+          </button>
+        )}
+        <button
+          onClick={onSubmit}
+          disabled={isDisabled || !query.trim()}
+          className={`w-8 h-8 flex items-center justify-center rounded-full text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+            isBusy && query.trim()
+              ? 'bg-amber-500 hover:bg-amber-600'
+              : 'bg-green-600 hover:bg-green-700'
+          }`}
+          title={isBusy && query.trim() ? 'Queue message' : 'Send message'}
+        >
+          {isBusy && query.trim() ? (
+            <QueueListIcon className="w-4 h-4" />
+          ) : (
+            <ArrowUpIcon className="w-4 h-4" />
+          )}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function AutocompleteInput({ onSubmit, disabled, editValue }: AutocompleteInputProps) {
   const [query, setQuery] = useState('')
   const [isOpen, setIsOpen] = useState(false)
   const [items, setItems] = useState<AutocompleteItem[]>([])
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [loading, setLoading] = useState(false)
+
+  // Cached user list for @mention autocomplete
+  const [mentionUsers, setMentionUsers] = useState<Pick<UserPermissions, 'user_id' | 'email'>[]>([])
+  useEffect(() => {
+    listAllPermissions()
+      .then((perms) => setMentionUsers(perms.map((p) => ({ user_id: p.user_id, email: p.email }))))
+      .catch(() => {}) // non-admin users may not have access
+  }, [])
 
   // Command history state - initialized from localStorage
   const [history, setHistory] = useState<string[]>(() => loadHistory())
@@ -167,7 +370,7 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
 
   // Handle input changes with debounced server requests
   const handleChange = useCallback(
-    (value: string) => {
+    (value: string, cursorPos?: number) => {
       setQuery(value)
 
       // Reset history navigation when user types manually
@@ -182,7 +385,8 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
         debounceRef.current = null
       }
 
-      const parsed = parseInput(value)
+      const cursor = cursorPos ?? textareaRef.current?.selectionStart ?? value.length
+      const parsed = parseInput(value, cursor)
 
       // No completion context
       if (parsed.context === 'none') {
@@ -192,10 +396,10 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
       }
 
       // Get client-side completions immediately
-      const clientItems = getClientCompletions(parsed)
+      const clientItems = getClientCompletions(parsed, mentionUsers)
 
-      // For command and scope contexts, use only client-side
-      if (parsed.context === 'command' || parsed.context === 'scope') {
+      // For command, scope, and mention contexts, use only client-side
+      if (parsed.context === 'command' || parsed.context === 'scope' || parsed.context === 'mention') {
         setItems(clientItems)
         setSelectedIndex(0)
         setIsOpen(clientItems.length > 0)
@@ -230,7 +434,7 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
         }, 150)
       }
     },
-    [historyIndex]
+    [historyIndex, mentionUsers]
   )
 
   const handleSubmit = () => {
@@ -253,10 +457,17 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
   }
 
   const acceptCompletion = (item: AutocompleteItem) => {
-    const parsed = parseInput(query)
+    const cursor = textareaRef.current?.selectionStart ?? query.length
+    const parsed = parseInput(query, cursor)
 
     let newValue: string
-    if (parsed.context === 'command') {
+    if (parsed.context === 'mention') {
+      // Replace @prefix at cursor with selected value
+      const beforeCursor = query.slice(0, cursor)
+      const atIdx = beforeCursor.lastIndexOf('@')
+      const after = query.slice(cursor)
+      newValue = query.slice(0, atIdx) + item.value + ' ' + after
+    } else if (parsed.context === 'command') {
       // Replace the entire command
       newValue = item.value + ' '
     } else {
@@ -340,6 +551,22 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
     }
   }
 
+  const insertAt = useCallback(() => {
+    const ta = textareaRef.current
+    if (ta) {
+      const start = ta.selectionStart
+      const before = query.slice(0, start)
+      const after = query.slice(ta.selectionEnd)
+      const newValue = before + '@' + after
+      const newCursor = start + 1
+      handleChange(newValue, newCursor)
+      setTimeout(() => {
+        ta.focus()
+        ta.setSelectionRange(newCursor, newCursor)
+      }, 0)
+    }
+  }, [query, handleChange])
+
   const handleBlur = () => {
     // Small delay to allow click on dropdown item
     setTimeout(() => setIsOpen(false), 150)
@@ -355,7 +582,8 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
   }, [])
 
   return (
-    <div className="border-t border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-800">
+    <div className="px-4 pb-4 pt-2">
+      <div className="max-w-3xl mx-auto">
       {/* Queue indicator when busy */}
       {isBusy && query.trim() && (
         <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400 mb-2">
@@ -363,8 +591,9 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
           <span>Message will be queued and sent when current task completes</span>
         </div>
       )}
-      <div className="flex gap-3">
-        <div className="flex-1 relative">
+      <div className="rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+        {/* Autocomplete dropdown (positioned above) */}
+        <div className="relative">
           <AutocompleteDropdown
             items={items}
             selectedIndex={selectedIndex}
@@ -372,56 +601,36 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
             loading={loading}
             visible={isOpen}
           />
-          <textarea
-            ref={textareaRef}
-            value={query}
-            onChange={(e) => handleChange(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onBlur={handleBlur}
-            onFocus={() => {
-              // Re-trigger autocomplete on focus if we have a valid context
-              const parsed = parseInput(query)
-              if (parsed.context !== 'none') {
-                handleChange(query)
-              }
-            }}
-            placeholder="Ask a question about your data..."
-            disabled={isDisabled}
-            rows={1}
-            className="w-full resize-none rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-4 py-3 pr-20 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed scrollbar-hide"
-          />
-          {/* Clear button - only show when there's text */}
-          {query && (
-            <button
-              onClick={() => {
-                setQuery('')
-                setIsOpen(false)
-                textareaRef.current?.focus()
-              }}
-              className="absolute right-12 top-1/2 -translate-y-1/2 p-1 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-              title="Clear"
-            >
-              <XMarkIcon className="w-4 h-4" />
-            </button>
-          )}
-          <button
-            onClick={handleSubmit}
-            disabled={isDisabled || !query.trim()}
-            className={`absolute p-2 rounded-md text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-              isBusy && query.trim()
-                ? 'bg-amber-500 hover:bg-amber-600'
-                : 'bg-primary-600 hover:bg-primary-700'
-            }`}
-            style={{ right: '7px', top: '50%', transform: 'translateY(calc(-50% - 3px))' }}
-            title={isBusy && query.trim() ? 'Queue message' : 'Send message'}
-          >
-            {isBusy && query.trim() ? (
-              <QueueListIcon className="w-4 h-4" />
-            ) : (
-              <PaperAirplaneIcon className="w-4 h-4" />
-            )}
-          </button>
         </div>
+        {/* Textarea */}
+        <textarea
+          ref={textareaRef}
+          value={query}
+          onChange={(e) => handleChange(e.target.value, e.target.selectionStart ?? undefined)}
+          onKeyDown={handleKeyDown}
+          onBlur={handleBlur}
+          onFocus={() => {
+            const parsed = parseInput(query)
+            if (parsed.context !== 'none') {
+              handleChange(query)
+            }
+          }}
+          placeholder="Ask a question about your data..."
+          disabled={isDisabled}
+          rows={1}
+          className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed scrollbar-hide border-0 focus:ring-0"
+        />
+        {/* Toolbar row: all actions on one line */}
+        <InputToolbar
+          query={query}
+          setQuery={(v) => { setQuery(v); setIsOpen(false) }}
+          textareaRef={textareaRef}
+          isBusy={isBusy}
+          isDisabled={isDisabled}
+          onSubmit={handleSubmit}
+          onInsertAt={insertAt}
+        />
+      </div>
       </div>
     </div>
   )

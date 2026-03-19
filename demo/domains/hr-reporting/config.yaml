@@ -11,15 +11,13 @@ databases:
 entity_resolution:
   - entity_type: DEPARTMENT
     source: hr
-    table: departments
-    name_column: name
+    query: "SELECT d.name, GROUP_CONCAT(DISTINCT e.job_title) AS job_titles FROM departments d LEFT JOIN employees e ON d.department_id = e.department_id GROUP BY d.name"
   - entity_type: JOB_TITLE
     source: hr
-    table: employees
-    name_column: job_title
+    query: "SELECT DISTINCT e.job_title AS name, d.name AS department FROM employees e LEFT JOIN departments d ON e.department_id = d.department_id"
   - entity_type: EMPLOYEE
     source: hr
-    query: "SELECT DISTINCT first_name || ' ' || last_name AS name FROM employees"
+    query: "SELECT first_name || ' ' || last_name AS name, job_title, d.name AS department FROM employees e LEFT JOIN departments d ON e.department_id = d.department_id"
 
 documents:
   compensation_policy:

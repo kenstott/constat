@@ -670,6 +670,14 @@ class ExecutionMixin:
                     logger.warning(f"[SKILL_INJECT] Failed to load {script_path}: {e}")
                     continue
 
+                # Patch module's store with session datastore for federation
+                if hasattr(module, 'store') and 'store' in globals_dict:
+                    module.store = globals_dict['store']
+                # Inject session helpers into module namespace
+                for helper_name in ('doc_read', 'llm_extract_table', 'llm_extract_facts'):
+                    if helper_name in globals_dict:
+                        setattr(module, helper_name, globals_dict[helper_name])
+
                 for fn_name in fn_names:
                     obj = getattr(module, fn_name, None)
                     if obj is None or not callable(obj):

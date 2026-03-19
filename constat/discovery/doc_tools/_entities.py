@@ -44,9 +44,14 @@ def _extract_links_from_chunks(
     """Extract entity links from chunks using the given extractor."""
     all_links: list[ChunkEntity] = []
     for chunk in chunks:
-        extractions = extractor.extract(chunk)
-        for entity, link in extractions:
-            all_links.append(link)
+        if not chunk.content:
+            continue
+        try:
+            extractions = extractor.extract(chunk)
+            for entity, link in extractions:
+                all_links.append(link)
+        except Exception as e:
+            logger.warning(f"NER extract failed for chunk {chunk.document_name}#{chunk.chunk_index}: {e}")
     return all_links
 
 
@@ -163,7 +168,7 @@ class _EntityMixin:
             # Filter enumerated data values (e.g., "User0025", "Order12345")
             extractor.filter_pattern_noise()
             all_entities.extend(extractor.get_all_entities())
-            logger.debug(f"extract_entities_for_session({session_id}): domain={domain_id} -> {len(domain_chunks)} chunks, {len(links)} links")
+            logger.info(f"extract_entities_for_session({session_id}): domain={domain_id} -> {len(domain_chunks)} chunks, {len(links)} links, {len(extractor.get_all_entities())} unique entities")
 
         if all_entities:
             self._vector_store.add_entities(all_entities, session_id=session_id)
@@ -201,8 +206,12 @@ class _EntityMixin:
         result = self._vector_store.get_visible_chunks_with_metadata(chunk_filter, params)
 
         chunks = []
+        skipped = 0
         for row in result:
             chunk_id, doc_name, content, section, chunk_idx, domain_id = row
+            if not content:
+                skipped += 1
+                continue
             chunk = DocumentChunk(
                 document_name=doc_name,
                 content=content,
@@ -214,6 +223,8 @@ class _EntityMixin:
             chunk._chunk_id = chunk_id
             chunks.append(chunk)
 
+        if skipped:
+            logger.warning(f"_get_session_visible_chunks: skipped {skipped} chunks with NULL/empty content")
         return chunks
 
     def process_metadata_through_ner(

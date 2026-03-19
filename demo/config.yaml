@@ -126,7 +126,7 @@ databases_description: |
 entity_resolution:
   - entity_type: COUNTRY
     source: countries
-    query: "{ countries { name } }"
+    query: "{ countries { name code capital continent { name } languages { name } currency } }"
     items_path: countries
     name_field: name
 

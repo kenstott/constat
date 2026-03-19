@@ -11,8 +11,9 @@ databases:
 entity_resolution:
   - entity_type: CUSTOMER
     source: sales
-    table: customers
-    name_column: name
+    query: "SELECT name, tier FROM customers"
+  - entity_type: CUSTOMER_TIER
+    values: [bronze, silver, gold, platinum]
 
 documents:
   business_rules:

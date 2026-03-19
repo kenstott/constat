@@ -402,6 +402,15 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         """)
 
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS entity_resolution_names (
+                source_id VARCHAR NOT NULL,
+                entity_type VARCHAR NOT NULL,
+                names TEXT NOT NULL,
+                PRIMARY KEY (source_id, entity_type)
+            )
+        """)
+
         # Schema evolution — add columns missing from older databases
         _alter_stmts = [
             "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT 'default'",
@@ -411,6 +420,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'mixed'",
             "ALTER TABLE entities ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'metadata'",
             "ALTER TABLE ner_cached_entities ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'metadata'",
+            "ALTER TABLE source_hashes ADD COLUMN IF NOT EXISTS er_hash VARCHAR",
         ]
         schema_changed = False
         for stmt in _alter_stmts:
@@ -633,9 +643,21 @@ class DuckDBVectorStore(VectorStoreBackend):
                 PRIMARY KEY (entity_name, source_pattern)
             )
         """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS entity_resolution_names (
+                source_id VARCHAR NOT NULL,
+                entity_type VARCHAR NOT NULL,
+                names TEXT NOT NULL,
+                PRIMARY KEY (source_id, entity_type)
+            )
+        """)
         self._create_ner_scope_cache_tables()
         try:
             self._conn.execute("ALTER TABLE entity_relationships ADD COLUMN user_edited BOOLEAN DEFAULT FALSE")
+        except Exception:
+            pass
+        try:
+            self._conn.execute("ALTER TABLE source_hashes ADD COLUMN IF NOT EXISTS er_hash VARCHAR")
         except Exception:
             pass
 
@@ -828,6 +850,12 @@ class DuckDBVectorStore(VectorStoreBackend):
 
     def update_entity_relationship_verb(self, *a, **kw):
         return self._relational.update_entity_relationship_verb(*a, **kw)
+
+    def store_entity_resolution_names(self, *a, **kw):
+        return self._relational.store_entity_resolution_names(*a, **kw)
+
+    def get_entity_resolution_names(self, *a, **kw):
+        return self._relational.get_entity_resolution_names(*a, **kw)
 
     def get_source_hash(self, *a, **kw):
         return self._relational.get_source_hash(*a, **kw)

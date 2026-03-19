@@ -88,6 +88,7 @@ export const COMMANDS: CommandDef[] = [
   { command: '/rule', description: 'Add a new rule directly', category: 'Analysis', argType: 'text' },
   { command: '/rule-edit', description: 'Edit an existing rule', category: 'Analysis', argType: 'text' },
   { command: '/rule-delete', description: 'Delete a rule', category: 'Analysis', argType: 'text' },
+  { command: '/move-rule', description: 'Move a rule to a domain', category: 'Analysis', argType: 'text' },
 
   // Agents & Skills
   { command: '/agent', description: 'Show or set current agent', category: 'Agents & Skills', argType: 'text' },

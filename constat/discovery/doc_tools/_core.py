@@ -188,10 +188,8 @@ class _CoreMixin:
 
         # Index documents that aren't already indexed (incremental)
         # Skip if caller will handle indexing (e.g., warmup with hash-based invalidation)
-        print(f"[DOC_INIT] skip_auto_index={self._skip_auto_index}, documents={list(self.config.documents.keys()) if self.config.documents else []}")
         if not self._skip_auto_index and self.config.documents:
             unindexed_docs = self._get_unindexed_documents()
-            print(f"[DOC_INIT] unindexed_docs={unindexed_docs}")
             if unindexed_docs:
                 logger.info(f"[DOC_INIT] Indexing {len(unindexed_docs)} documents...")
                 for name in unindexed_docs:
@@ -294,27 +292,41 @@ class _CoreMixin:
         self,
         entity_terms: dict[str, list[str]],
         entity_configs: list,
-        session_id: str,
+        session_id: str | None,
         domain_id: str | None = None,
+        entity_details: dict[str, list[str]] | None = None,
+        api_configs: dict | None = None,
     ) -> None:
         """Embed entity resolution values into the vector store.
 
         Creates one summary chunk per entity_type+source and individual
-        value chunks for semantic matching.
+        value chunks for semantic matching.  When ``entity_details`` is
+        provided, the detail text (which includes all source fields) is
+        used as chunk content so that related terms are collocated in
+        vector space.
 
         Args:
-            entity_terms: {entity_type: [values]}
+            entity_terms: {entity_type: [name, ...]} — names for NER
             entity_configs: List of EntityResolutionConfig objects
-            session_id: Session ID
+            session_id: Session ID (None for warmup)
             domain_id: Domain ID for the entity values
+            entity_details: {entity_type: [structured_text, ...]} — rich text for embedding
+            api_configs: {name: APIConfig} to detect API sources for naming
         """
         from constat.discovery.models import ChunkType
 
         if not entity_terms:
             return
 
-        # Delete previous entity_resolution chunks for this domain
-        self._vector_store.delete_by_source("entity_resolution", domain_id=domain_id)
+        # Delete previous entity_resolution chunks for this scope
+        if domain_id:
+            self._vector_store.delete_by_source("entity_resolution", domain_id=domain_id)
+        else:
+            # Base config — delete only base entity_resolution chunks (domain_id IS NULL)
+            # Use the backend directly to avoid delete_by_source's "delete all" behavior
+            self._vector_store._vector._conn.execute(
+                "DELETE FROM embeddings WHERE source = 'entity_resolution' AND domain_id IS NULL"
+            )
 
         # Build a map of entity_type → list of configs (for document_name)
         type_configs: dict[str, list] = {}
@@ -324,30 +336,66 @@ class _CoreMixin:
         all_chunks: list[DocumentChunk] = []
         for entity_type, values in entity_terms.items():
             configs = type_configs.get(entity_type.upper(), [])
+            detail_texts = (entity_details or {}).get(entity_type, [])
 
-            # Group values by source for summary chunks
-            source_groups: dict[str, list[str]] = {}
+            # Determine which sources are APIs
+            api_source_names = set(api_configs.keys()) if api_configs else set()
+
+            # Group values (and details) by source for summary chunks
+            source_groups: dict[str, list[tuple[str, str]]] = {}
+            source_meta: dict[str, dict] = {}
             for cfg in configs:
-                key = f"{cfg.source}.{cfg.table}" if cfg.table else cfg.source
-                if not key:
-                    key = "static"
-                if cfg.values:
-                    source_groups.setdefault(key, []).extend(cfg.values)
+                is_api = cfg.source in api_source_names or bool(cfg.endpoint) or bool(cfg.items_path)
+                # Derive table name from explicit field or SQL query
+                table = getattr(cfg, 'table', None)
+                if not table and cfg.query and cfg.source and not is_api:
+                    # Parse table from SQL: "SELECT ... FROM tablename ..."
+                    import re
+                    m = re.search(r'\bFROM\s+(\w+)', cfg.query, re.IGNORECASE)
+                    if m:
+                        table = m.group(1)
+
+                if is_api:
+                    query_name = getattr(cfg, 'items_path', None) or getattr(cfg, 'endpoint', None) or ''
+                    key = f"api:{cfg.source}.{query_name}" if query_name else f"api:{cfg.source}"
+                elif cfg.source and table:
+                    key = f"schema:{cfg.source}.{table}"
+                elif cfg.source:
+                    key = f"schema:{cfg.source}"
+                elif cfg.values:
+                    key = f"entity_resolution:{entity_type.lower()}"
                 else:
-                    source_groups.setdefault(key, []).extend(values)
+                    key = f"entity_resolution:{entity_type.lower()}"
 
-            # If no configs matched, use a generic key
+                source_meta[key] = {
+                    "is_api": is_api, "query": cfg.query,
+                    "items_path": getattr(cfg, 'items_path', None),
+                    "endpoint": getattr(cfg, 'endpoint', None),
+                    "table": table,
+                    "source": cfg.source,
+                }
+                if cfg.values:
+                    pairs = [(v, v) for v in cfg.values]
+                else:
+                    pairs = list(zip(values, detail_texts)) if detail_texts else [(v, v) for v in values]
+                source_groups.setdefault(key, []).extend(pairs)
+
             if not source_groups:
-                source_groups["static"] = values
+                pairs = list(zip(values, detail_texts)) if detail_texts else [(v, v) for v in values]
+                source_groups[f"entity_resolution:{entity_type.lower()}"] = pairs
 
-            for source_key, source_values in source_groups.items():
+            for source_key, pairs in source_groups.items():
                 doc_name = source_key
 
-                # Summary chunk (index 0)
-                preview = ", ".join(source_values[:10])
-                if len(source_values) > 10:
-                    preview += f", ... ({len(source_values)} values)"
-                summary_content = f"{entity_type} entity values from {source_key}: {preview}"
+                # Summary chunk (index 0) — include query for API/DB sources
+                meta = source_meta.get(source_key, {})
+                preview = ", ".join(name for name, _ in pairs[:10])
+                if len(pairs) > 10:
+                    preview += f", ... ({len(pairs)} values)"
+                query_info = ""
+                if meta.get("query"):
+                    query_info = f"\nQuery: {meta['query']}"
+                summary_content = f"{entity_type} entity values from {source_key}: {preview}{query_info}"
                 all_chunks.append(DocumentChunk(
                     document_name=doc_name,
                     content=summary_content,
@@ -357,11 +405,11 @@ class _CoreMixin:
                     domain_id=domain_id,
                 ))
 
-                # Individual value chunks
-                for idx, value in enumerate(source_values, start=1):
+                # Individual value chunks — use detail text when available
+                for idx, (name, detail) in enumerate(pairs, start=1):
                     all_chunks.append(DocumentChunk(
                         document_name=doc_name,
-                        content=value,
+                        content=detail,
                         chunk_index=idx,
                         source="entity_resolution",
                         chunk_type=ChunkType.ENTITY_VALUE,

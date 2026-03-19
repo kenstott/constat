@@ -601,41 +601,16 @@ class SessionManager:
         if stop_words:
             session.doc_tools._stop_list = stop_words
 
-        # Collect entity resolution configs from top-level config + active domains
-        # Apply alias mappings to source references (manual + auto aliases from domain loading)
-        domain_alias_map = getattr(self._sessions.get(session_id), '_domain_alias_map', {}) if hasattr(self, '_sessions') and session_id in self._sessions else {}
-        entity_configs = list(session.config.entity_resolution or [])
-        for domain_name in domain_ids:
-            domain_cfg = session.config.load_domain(domain_name)
-            if domain_cfg and domain_cfg.entity_resolution:
-                aliases = domain_alias_map.get(domain_name, {})
-                db_aliases = aliases.get("databases", {})
-                api_aliases = aliases.get("apis", {})
-                for er_config in domain_cfg.entity_resolution:
-                    if er_config.source in db_aliases:
-                        er_config = er_config.model_copy(update={"source": db_aliases[er_config.source]})
-                    elif er_config.source in api_aliases:
-                        er_config = er_config.model_copy(update={"source": api_aliases[er_config.source]})
-                    entity_configs.append(er_config)
-
-        # Extract entity values from configured sources
+        # Read cached entity resolution names (populated during warmup)
         entity_terms: dict[str, list[str]] = {}
-        if entity_configs:
-            try:
-                api_configs = {}
-                for dn in domain_ids:
-                    dc = session.config.load_domain(dn)
-                    if dc and dc.apis:
-                        api_configs.update(dc.apis)
-                if session.config.apis:
-                    api_configs.update(session.config.apis)
-                entity_terms = session.schema_manager.extract_entity_values(
-                    entity_configs, api_configs=api_configs,
-                )
-                if entity_terms:
-                    logger.info(f"Session {session_id}: extracted entity values: {', '.join(f'{k}={len(v)}' for k, v in entity_terms.items())}")
-            except Exception as e:
-                logger.warning(f"Session {session_id}: entity resolution failed: {e}")
+        entity_details: dict[str, list[str]] = {}
+        vector_store = session.doc_tools._vector_store if hasattr(session.doc_tools, '_vector_store') else None
+        if vector_store and hasattr(vector_store, 'get_entity_resolution_names'):
+            er_source_ids = ["__base__"] + domain_ids
+            entity_terms = vector_store.get_entity_resolution_names(er_source_ids)
+            if entity_terms:
+                logger.info(f"Session {session_id}: loaded cached entity resolution: "
+                            f"{', '.join(f'{k}={len(v)}' for k, v in entity_terms.items())}")
 
         logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business entities, {len(stop_words)} stop words")
 
@@ -681,19 +656,7 @@ class SessionManager:
             else:
                 logger.warning(f"Session {session_id}: no vector_store to clear entities from")
 
-            # Embed entity resolution values BEFORE NER so they become
-            # visible chunks that NER can extract entities from.
-            if entity_terms and entity_configs:
-                try:
-                    er_domain = domain_ids[0] if domain_ids else None
-                    session.doc_tools.embed_entity_values(
-                        entity_terms=entity_terms,
-                        entity_configs=entity_configs,
-                        session_id=session_id,
-                        domain_id=er_domain,
-                    )
-                except Exception as e:
-                    logger.warning(f"Session {session_id}: entity value embedding failed: {e}")
+            # Entity resolution chunks are embedded during warmup (no per-session embedding needed)
 
             logger.info(f"Session {session_id}: running extract_entities_for_session with domain_ids={domain_ids}, {len(schema_entities)} schema entities")
             if schema_entities:
@@ -723,7 +686,7 @@ class SessionManager:
                     logger.info(f"Session {session_id}: rebuilt clusters after entity extraction")
 
                 # Store into scope cache for future sessions
-                if hasattr(vs, 'store_ner_scope_cache'):
+                if hasattr(vs, 'store_ner_scope_cache') and link_count and link_count > 0:
                     try:
                         vs.store_ner_scope_cache(fingerprint, session_id)
                         vs.evict_ner_scope_cache()

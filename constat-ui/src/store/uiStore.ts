@@ -190,7 +190,7 @@ export const useUIStore = create<UIState>()(
       briefMode: false,
       menuOpen: false,
       conversationPanelHidden: false,
-      artifactPanelHidden: false,
+      artifactPanelHidden: true,
       artifactPanelWidth: 400,
       expandedArtifactSections: ['charts', 'tables'],
       fullscreenArtifact: null,

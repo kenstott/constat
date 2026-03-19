@@ -688,6 +688,9 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
         description: str | None = None,
         script_params: list[dict] | None = None,
         result_schemas: dict[str, list[dict]] | None = None,
+        documents: list[dict] | None = None,
+        apis: list[dict] | None = None,
+        databases: list[dict] | None = None,
     ) -> tuple[str, str]:
         """Distill a completed proof into SKILL.md content.
 
@@ -703,6 +706,10 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
             result_schemas: Dict mapping dataset name to list of column dicts
                            (each with 'name', 'type', 'nullable' keys).
                            These are the ACTUAL output columns from the script.
+            documents: List of dicts with 'name' and 'path' keys for reference
+                       documents exposed as module-level constants.
+            apis: List of dicts with 'name', 'type', 'url' for API sources.
+            databases: List of dicts with 'name', 'uri' for database sources.
 
         Returns (content, description).
         """
@@ -779,6 +786,11 @@ Generate a SKILL.md focused on capabilities, parameters, and return values. Do N
 The executable script is `scripts/proof.py` with a `run_proof()` function that returns `dict[str, DataFrame]` (all datasets plus `_result` key for the final output).
 
 {f"run_proof() parameters:{chr(10)}" + chr(10).join(f"- {p['name']}: default={p['default']}" for p in script_params) if script_params else "run_proof() takes no parameters."}
+
+run_proof() also accepts these keyword arguments to override data source configuration. Each defaults to the module-level constant. The Parameters and Usage sections MUST document ALL of these as named keyword arguments:
+{(chr(10).join(f"- doc_{d['name'].lower().replace('-', '_').replace(' ', '_')} (str): path to {d['name']} document, default=DOC_{d['name'].upper().replace('-', '_').replace(' ', '_')} ({d['path']!r})" for d in documents)) if documents else ""}
+{(chr(10).join(f"- db_{d['name']} (SQLAlchemy Engine): connection to {d['name']} database, default=create_engine({d['uri']!r})" for d in databases)) if databases else ""}
+{(chr(10).join(f"- api_{a['name'].lower()}_url (str): {'GraphQL' if a.get('type') == 'graphql' else 'REST'} endpoint URL, default=API_{a['name'].upper()}_URL ({a['url']!r})" for a in apis)) if apis else ""}
 {schema_docs}
 CRITICAL: The "Returns" section MUST document the EXACT column names and types shown above. Do NOT invent, rename, or omit any columns. Copy them verbatim from the ACTUAL OUTPUT SCHEMAS."""
 

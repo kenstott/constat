@@ -296,6 +296,10 @@ async def create_skill_from_proof(
                     default = repr(value)
                 script_params.append({"name": pname, "default": default})
 
+    # Gather source configs early so we can reuse below
+    from constat.server.routes.data import _gather_source_configs
+    _apis, _databases, _documents = _gather_source_configs(managed)
+
     # Gather actual output schemas from datastore tables
     result_schemas = {}
     if session.datastore:
@@ -306,6 +310,15 @@ async def create_skill_from_proof(
                 schema = session.datastore.get_table_schema(local_table_name)
                 if schema:
                     result_schemas[local_table_name] = schema
+
+    # Filter source configs to only those referenced in inference code
+    _all_code = ""
+    if session.history and session.session_id:
+        _inferences = session.history.list_inference_codes(session.session_id)
+        _all_code = '\n'.join(inf.get("code", "") for inf in _inferences)
+    _used_docs = [d for d in _documents if d['name'] in _all_code] or None
+    _used_dbs = [d for d in _databases if f"{d['name']}." in _all_code] or None
+    _used_apis = [a for a in _apis if f"api_{a['name']}" in _all_code] or None
 
     # Generate SKILL.md content via LLM
     try:
@@ -318,6 +331,9 @@ async def create_skill_from_proof(
             description=skill_request.description or None,
             script_params=script_params or None,
             result_schemas=result_schemas or None,
+            documents=_used_docs,
+            apis=_used_apis,
+            databases=_used_dbs,
         )
     except Exception as e:
         logger.error(f"Failed to generate skill from proof: {e}")
@@ -339,11 +355,11 @@ async def create_skill_from_proof(
     script_content = None
     if session.history and session.session_id:
         try:
-            from constat.server.routes.data import generate_inference_script, _gather_source_configs
+            from constat.server.routes.data import generate_inference_script
 
             inferences = session.history.list_inference_codes(session.session_id)
             if inferences:
-                apis, databases = _gather_source_configs(managed)
+                apis, databases, documents = _apis, _databases, _documents
                 premises = session.history.list_inference_premises(session.session_id)
                 script_content = generate_inference_script(
                     inferences=inferences,
@@ -351,6 +367,7 @@ async def create_skill_from_proof(
                     apis=apis,
                     databases=databases,
                     session_label=session.session_id[:8],
+                    documents=documents,
                 )
 
                 safe_name = "".join(

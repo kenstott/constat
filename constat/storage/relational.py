@@ -1174,7 +1174,7 @@ class RelationalStore:
     # ------------------------------------------------------------------
 
     def get_source_hash(self, source_id: str, hash_type: str) -> str | None:
-        if hash_type not in ('db', 'api', 'doc'):
+        if hash_type not in ('db', 'api', 'doc', 'er'):
             raise ValueError(f"Invalid hash_type: {hash_type}")
         column = f"{hash_type}_hash"
         result = self._conn.execute(
@@ -1186,7 +1186,7 @@ class RelationalStore:
         return hash_val
 
     def set_source_hash(self, source_id: str, hash_type: str, config_hash: str) -> None:
-        if hash_type not in ('db', 'api', 'doc'):
+        if hash_type not in ('db', 'api', 'doc', 'er'):
             raise ValueError(f"Invalid hash_type: {hash_type}")
         column = f"{hash_type}_hash"
         self._conn.execute("""
@@ -1204,6 +1204,36 @@ class RelationalStore:
 
     def set_domain_config_hash(self, domain_id: str, config_hash: str) -> None:
         self.set_source_hash(domain_id, 'doc', config_hash)
+
+    # ------------------------------------------------------------------
+    # Entity Resolution Name Cache
+    # ------------------------------------------------------------------
+
+    def store_entity_resolution_names(self, source_id: str, entity_terms: dict[str, list[str]]) -> None:
+        """Replace cached entity names for a source."""
+        import json
+        self._conn.execute("DELETE FROM entity_resolution_names WHERE source_id = ?", [source_id])
+        for entity_type, names in entity_terms.items():
+            self._conn.execute(
+                "INSERT INTO entity_resolution_names VALUES (?, ?, ?)",
+                [source_id, entity_type, json.dumps(names)],
+            )
+
+    def get_entity_resolution_names(self, source_ids: list[str] | None = None) -> dict[str, list[str]]:
+        """Read cached entity names, merged across source_ids."""
+        import json
+        if source_ids:
+            placeholders = ",".join(["?" for _ in source_ids])
+            rows = self._conn.execute(
+                f"SELECT entity_type, names FROM entity_resolution_names WHERE source_id IN ({placeholders})",
+                source_ids,
+            ).fetchall()
+        else:
+            rows = self._conn.execute("SELECT entity_type, names FROM entity_resolution_names").fetchall()
+        result: dict[str, list[str]] = {}
+        for entity_type, names_json in rows:
+            result.setdefault(entity_type, []).extend(json.loads(names_json))
+        return result
 
     @staticmethod
     def _make_resource_id(source_id: str, resource_type: str, resource_name: str) -> str:

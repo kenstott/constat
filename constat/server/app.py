@@ -132,6 +132,23 @@ def _compute_api_resource_hash(api_name: str, api_config) -> str:
     return _compute_config_hash(data)
 
 
+def _compute_er_config_hash(entity_resolution: list, apis: dict | None = None) -> str:
+    """Compute a combined hash for entity resolution configuration."""
+    data = {}
+    for i, cfg in enumerate(entity_resolution):
+        data[f"er_{i}"] = {
+            "entity_type": cfg.entity_type, "source": cfg.source,
+            "table": cfg.table, "query": cfg.query, "endpoint": cfg.endpoint,
+            "items_path": cfg.items_path, "name_field": cfg.name_field,
+            "values": sorted(cfg.values) if cfg.values else None,
+            "max_values": cfg.max_values,
+        }
+    if apis:
+        for name, api_cfg in sorted(apis.items()):
+            data[f"api_{name}"] = {"type": getattr(api_cfg, 'type', ''), "url": getattr(api_cfg, 'url', '')}
+    return _compute_config_hash(data)
+
+
 def _compute_doc_resource_hash(doc_name: str, doc_config, config_dir: str | None) -> str:
     """Compute a content hash for a single document resource.
 
@@ -402,6 +419,64 @@ def _warmup_vector_store(config: Config) -> None:
 
         vector_store.set_source_hash(filename, 'doc', doc_hash)
         logger.info(f"  Domain {filename} documents: {indexed_count} indexed, {skipped_count} unchanged")
+
+    # === ENTITY RESOLUTION ===
+    # Base entity resolution
+    if config.entity_resolution:
+        er_hash = _compute_er_config_hash(config.entity_resolution, config.apis)
+        cached_hash = vector_store.get_source_hash("__base__", 'er')
+        if cached_hash != er_hash:
+            logger.info("  Base entity resolution: extracting...")
+            base_er_mgr = SchemaManager(config)
+            try:
+                base_er_mgr._connect_all()
+            except Exception as e:
+                logger.warning(f"  Base entity resolution: some DB connections failed (OK for API sources): {e}")
+            entity_terms, entity_details = base_er_mgr.extract_entity_values(
+                config.entity_resolution, api_configs=config.apis,
+            )
+            if entity_terms:
+                doc_tools.embed_entity_values(
+                    entity_terms, config.entity_resolution,
+                    session_id=None, domain_id=None,
+                    entity_details=entity_details,
+                    api_configs=config.apis,
+                )
+                vector_store.store_entity_resolution_names("__base__", entity_terms)
+                logger.info(f"  Base entity resolution: {sum(len(v) for v in entity_terms.values())} values cached")
+            vector_store.set_source_hash("__base__", 'er', er_hash)
+        else:
+            logger.info("  Base entity resolution: unchanged, skipping")
+
+    # Domain entity resolution
+    for domain_name, domain in config.projects.items():
+        if not domain.entity_resolution:
+            continue
+        er_hash = _compute_er_config_hash(domain.entity_resolution, domain.apis)
+        cached_hash = vector_store.get_source_hash(domain_name, 'er')
+        if cached_hash != er_hash:
+            logger.info(f"  Domain {domain_name} entity resolution: extracting...")
+            dm_config = Config(config_dir=config.config_dir, databases=domain.databases)
+            dm_mgr = SchemaManager(dm_config)
+            try:
+                dm_mgr._connect_all()
+            except Exception as e:
+                logger.warning(f"  Domain {domain_name} entity resolution: some DB connections failed: {e}")
+            entity_terms, entity_details = dm_mgr.extract_entity_values(
+                domain.entity_resolution, api_configs=domain.apis,
+            )
+            if entity_terms:
+                doc_tools.embed_entity_values(
+                    entity_terms, domain.entity_resolution,
+                    session_id=None, domain_id=domain_name,
+                    entity_details=entity_details,
+                    api_configs=domain.apis,
+                )
+                vector_store.store_entity_resolution_names(domain_name, entity_terms)
+                logger.info(f"  Domain {domain_name} entity resolution: {sum(len(v) for v in entity_terms.values())} values cached")
+            vector_store.set_source_hash(domain_name, 'er', er_hash)
+        else:
+            logger.info(f"  Domain {domain_name} entity resolution: unchanged, skipping")
 
     logger.info("  Pre-indexing complete")
 

@@ -5,6 +5,7 @@ import { useSessionStore } from '@/store/sessionStore'
 import { useProofStore } from '@/store/proofStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import { MessageBubble, StepDisplayMode } from './MessageBubble'
+import { BotMessageGroup } from './BotMessageGroup'
 import { AutocompleteInput } from './AutocompleteInput'
 import {
   ClipboardDocumentIcon,
@@ -17,7 +18,44 @@ import {
   LinkIcon,
 } from '@heroicons/react/24/outline'
 import { useUIStore } from '@/store/uiStore'
+import { useAuthStore } from '@/store/authStore'
 import * as sessionsApi from '@/api/sessions'
+
+// Use the actual messages type from the store
+type StoreMessage = ReturnType<typeof useSessionStore.getState>['messages'][number]
+
+type MessageGroupTyped =
+  | { kind: 'user'; message: StoreMessage }
+  | { kind: 'bot'; messages: StoreMessage[] }
+  | { kind: 'single'; message: StoreMessage }
+
+function groupMessages(messages: StoreMessage[]): MessageGroupTyped[] {
+  const groups: MessageGroupTyped[] = []
+  let currentBotMessages: StoreMessage[] = []
+
+  const flushBot = () => {
+    if (currentBotMessages.length > 0) {
+      groups.push({ kind: 'bot', messages: [...currentBotMessages] })
+      currentBotMessages = []
+    }
+  }
+
+  for (const msg of messages) {
+    if (msg.type === 'user') {
+      flushBot()
+      groups.push({ kind: 'user', message: msg })
+    } else if (msg.type === 'error') {
+      flushBot()
+      groups.push({ kind: 'single', message: msg })
+    } else {
+      // thinking, plan, step, output, system — group together
+      currentBotMessages.push(msg)
+    }
+  }
+  flushBot()
+
+  return groups
+}
 
 export function ConversationPanel() {
   const { session, messages, submitQuery, queuedMessages, removeQueuedMessage, isCreatingSession, shareSession, replanFromStep } = useSessionStore()
@@ -88,6 +126,9 @@ export function ConversationPanel() {
   const [editValue, setEditValue] = useState<string | null>(null)
 
   const hasSteps = messages.some((m) => m.type === 'step')
+
+  // Compute grouped messages
+  const groups = useMemo(() => groupMessages(messages), [messages])
 
   // Auto-scroll to bottom on new messages or queued messages
   useEffect(() => {
@@ -294,98 +335,135 @@ export function ConversationPanel() {
       )}
 
       {/* Messages area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-3xl mx-auto px-6 py-4 space-y-6">
         {messages.length === 0 ? (
-          <div className="h-full flex items-center justify-center">
-            <div className="text-center text-gray-500 dark:text-gray-400 max-w-md">
-              <p className="text-lg font-medium mb-2">Ready to analyze your data</p>
-              <p className="text-sm">
-                Ask questions in natural language. For example:
+          <div className="h-full flex items-center justify-center min-h-[60vh]">
+            <div className="text-center max-w-lg">
+              <h1 className="text-3xl font-semibold text-gray-900 dark:text-gray-100 mb-2">
+                {(() => {
+                  const user = useAuthStore.getState().user
+                  const firstName = user?.displayName?.split(' ')[0]
+                  return firstName ? `${firstName}, what can I help you with?` : 'What would you like to explore?'
+                })()}
+              </h1>
+              <p className="text-base text-gray-500 dark:text-gray-400 mb-6">
+                Ask questions in natural language about your data.
               </p>
-              <ul className="mt-3 text-sm text-left space-y-1">
-                <li>"What are the top 10 customers by revenue?"</li>
-                <li>"Show me monthly sales trends for 2024"</li>
-                <li>"Which products have declining sales?"</li>
-              </ul>
+              <div className="text-sm space-y-1.5 text-gray-400 dark:text-gray-500">
+                <p>"What are the top 10 customers by revenue?"</p>
+                <p>"Show me monthly sales trends for 2024"</p>
+                <p>"Which products have declining sales?"</p>
+              </div>
             </div>
           </div>
         ) : (
           <>
-            {messages.map((message, idx) => {
-              // Find most recent user query above this message (for flagging)
-              let queryText: string | undefined
-              if (message.type !== 'user') {
-                for (let i = idx - 1; i >= 0; i--) {
+            {groups.map((group) => {
+              if (group.kind === 'user') {
+                const message = group.message
+                return (
+                  <MessageBubble
+                    key={message.id}
+                    type={message.type}
+                    content={message.content}
+                    timestamp={message.timestamp}
+                    stepNumber={message.stepNumber}
+                    isLive={message.isLive}
+                    isPending={message.isPending}
+                    defaultExpanded={message.defaultExpanded}
+                    isFinalInsight={message.isFinalInsight}
+                    onViewResult={message.isFinalInsight && message.content?.toLowerCase().includes('proof')
+                      ? openProofPanel : undefined}
+                    role={message.role}
+                    skills={message.skills}
+                    stepStartedAt={message.stepStartedAt}
+                    stepDurationMs={message.stepDurationMs}
+                    stepAttempts={message.stepAttempts}
+                    stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
+                    stepDisplayModeVersion={stepOverride?.version}
+                    isSuperseded={message.isSuperseded}
+                    onStepEdit={(stepNumber, newGoal) => replanFromStep(stepNumber, 'edit', newGoal)}
+                    onStepDelete={(stepNumber) => replanFromStep(stepNumber, 'delete')}
+                    stepOutputs={message.stepNumber ? stepOutputsMap.get(message.stepNumber) : undefined}
+                    onOutputClick={(output) => handleOutputClick(message.stepNumber, output)}
+                    onRoleClick={handleRoleClick}
+                    onEditMessage={(text) => setEditValue(text)}
+                  />
+                )
+              }
+
+              if (group.kind === 'single') {
+                const message = group.message
+                // Find most recent user query above this message (for flagging)
+                let queryText: string | undefined
+                for (let i = messages.indexOf(message) - 1; i >= 0; i--) {
                   if (messages[i].type === 'user') {
                     queryText = messages[i].content
                     break
                   }
                 }
+                return (
+                  <MessageBubble
+                    key={message.id}
+                    type={message.type}
+                    content={message.content}
+                    timestamp={message.timestamp}
+                    stepNumber={message.stepNumber}
+                    isLive={message.isLive}
+                    isPending={message.isPending}
+                    defaultExpanded={message.defaultExpanded}
+                    isFinalInsight={message.isFinalInsight}
+                    queryText={queryText}
+                    isSuperseded={message.isSuperseded}
+                  />
+                )
               }
+
+              // Bot group
               return (
-              <MessageBubble
-                key={message.id}
-                type={message.type}
-                content={message.content}
-                timestamp={message.timestamp}
-                stepNumber={message.stepNumber}
-                isLive={message.isLive}
-                isPending={message.isPending}
-                defaultExpanded={message.defaultExpanded}
-                isFinalInsight={message.isFinalInsight}
-                onViewResult={message.isFinalInsight && message.content?.toLowerCase().includes('proof')
-                  ? openProofPanel : undefined}
-                role={message.role}
-                skills={message.skills}
-                stepStartedAt={message.stepStartedAt}
-                stepDurationMs={message.stepDurationMs}
-                stepAttempts={message.stepAttempts}
-                stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
-                stepDisplayModeVersion={stepOverride?.version}
-                queryText={queryText}
-                isSuperseded={message.isSuperseded}
-                onStepEdit={(stepNumber, newGoal) => replanFromStep(stepNumber, 'edit', newGoal)}
-                onStepDelete={(stepNumber) => replanFromStep(stepNumber, 'delete')}
-                stepOutputs={message.stepNumber ? stepOutputsMap.get(message.stepNumber) : undefined}
-                onOutputClick={(output) => handleOutputClick(message.stepNumber, output)}
-                onRoleClick={handleRoleClick}
-                onEditMessage={message.type === 'user' ? (text) => setEditValue(text) : undefined}
-              />
+                <BotMessageGroup
+                  key={group.messages[0].id}
+                  messages={group.messages}
+                  stepOverride={stepOverride}
+                  stepOutputsMap={stepOutputsMap}
+                  onOutputClick={handleOutputClick}
+                  onRoleClick={handleRoleClick}
+                  onStepEdit={(stepNumber, newGoal) => replanFromStep(stepNumber, 'edit', newGoal)}
+                  onStepDelete={(stepNumber) => replanFromStep(stepNumber, 'delete')}
+                  openProofPanel={openProofPanel}
+                  allMessages={messages}
+                />
               )
             })}
             {/* Queued messages */}
             {queuedMessages.map((queued, index) => (
-              <div key={queued.id} className="group flex gap-3 flex-row-reverse">
-                {/* Avatar placeholder for alignment */}
-                <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-primary-100 dark:bg-primary-900 opacity-50">
-                  <ClockIcon className="w-4 h-4 text-primary-600 dark:text-primary-400" />
-                </div>
-                {/* Queued message content */}
-                <div className="flex-1 max-w-[80%] text-right">
-                  <div className="relative inline-block rounded-lg rounded-tr-none px-4 py-3 bg-primary-100/50 dark:bg-primary-900/30 border border-dashed border-primary-300 dark:border-primary-700">
-                    {/* Cancel button */}
-                    <button
-                      onClick={() => removeQueuedMessage(queued.id)}
-                      className="absolute top-2 right-2 p-1 rounded text-gray-400 hover:text-red-500 dark:text-gray-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                      title="Cancel queued message"
-                    >
-                      <XMarkIcon className="w-4 h-4" />
-                    </button>
-                    {/* Queued badge */}
-                    <div className="flex items-center gap-1.5 text-xs text-primary-600 dark:text-primary-400 mb-1">
-                      <ClockIcon className="w-3 h-3" />
-                      <span>Queued {index > 0 ? `#${index + 1}` : ''}</span>
-                    </div>
-                    <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
-                      {queued.content}
-                    </p>
+              <div key={queued.id} className="group">
+                <div className="flex items-center gap-3 mb-1">
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center bg-primary-100 dark:bg-primary-900 opacity-50">
+                    <ClockIcon className="w-4 h-4 text-primary-600 dark:text-primary-400" />
                   </div>
+                  <span className="font-semibold text-sm text-gray-900 dark:text-gray-100">You</span>
+                  <span className="text-xs text-primary-600 dark:text-primary-400">Queued {index > 0 ? `#${index + 1}` : ''}</span>
+                </div>
+                <div className="ml-11 relative">
+                  <button
+                    onClick={() => removeQueuedMessage(queued.id)}
+                    className="absolute top-0 right-0 p-1 rounded text-gray-400 hover:text-red-500 dark:text-gray-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Cancel queued message"
+                  >
+                    <XMarkIcon className="w-4 h-4" />
+                  </button>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap opacity-60">
+                    {queued.content}
+                  </p>
                 </div>
               </div>
             ))}
             <div ref={messagesEndRef} />
           </>
         )}
+        </div>
       </div>
 
       {/* Query input */}

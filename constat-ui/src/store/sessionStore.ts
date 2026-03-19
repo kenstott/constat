@@ -327,6 +327,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     }
 
+    // Detect @vera learning
+    const veraMatch = expandedProblem.match(/^@vera\s+(.+)/is)
+    if (veraMatch) {
+      expandedProblem = `/rule ${veraMatch[1].trim()}`
+    }
+
+    // Detect @username share (any @mention that isn't @vera)
+    const shareMatch = !veraMatch && expandedProblem.match(/^@(\S+)\s*(.*)/s)
+    if (shareMatch) {
+      const targetUser = shareMatch[1]
+      addMessage({ type: 'user', content: problem, defaultExpanded: true })
+      try {
+        const result = await get().shareSession(targetUser)
+        addMessage({
+          type: 'output',
+          content: `**Shared** with \`${targetUser}\`\n\n[Share link](${result.share_url})`,
+          isFinalInsight: true,
+        })
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Share failed'
+        addMessage({ type: 'error', content: msg })
+      }
+      return
+    }
+
     // Apply brief mode prefix if enabled (server detects "briefly" keyword)
     const { briefMode } = useUIStore.getState()
     if (briefMode && !expandedProblem.startsWith('/') && !/^briefly\b/i.test(expandedProblem)) {
@@ -350,8 +375,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return
     }
 
-    // Add user message (show expanded form)
-    addMessage({ type: 'user', content: expandedProblem })
+    // Add user message (show original @vera text, not expanded /rule)
+    addMessage({ type: 'user', content: veraMatch ? problem : expandedProblem, defaultExpanded: true })
 
     // Add thinking indicator (will become live message on first event)
     const thinkingId = crypto.randomUUID()
@@ -390,9 +415,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           liveMessageId: null,
         }))
       }
+
+      // Format @vera response with rule details
+      let content = response.message
+      if (veraMatch && response.status === 'completed') {
+        const ruleIdMatch = response.message.match(/`(rule_[a-f0-9]+)`/)
+        const ruleId = ruleIdMatch?.[1] ?? 'unknown'
+        const { useAuthStore } = await import('@/store/authStore')
+        const userId = useAuthStore.getState().userId
+        content = `**Rule:** \`${ruleId}\`\n**Domain:** ${userId}\n**Summary:** ${veraMatch[1].trim()}\n\n*Tip: You can move this rule into a domain with* \`/move-rule ${ruleId} <domain-name>\``
+      }
+
       addMessage({
         type: response.status === 'error' ? 'error' : 'output',
-        content: response.message,
+        content,
         isFinalInsight: response.status === 'completed',
       })
       set({ status: response.status === 'error' ? 'error' : 'completed', currentStepNumber: 0, stepAttempt: 1, executionPhase: 'idle' })

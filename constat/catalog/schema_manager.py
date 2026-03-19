@@ -1495,7 +1495,7 @@ class SchemaManager:
         self,
         entity_configs: list,
         api_configs: dict | None = None,
-    ) -> dict[str, list[str]]:
+    ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
         """Query data sources for entity resolution values.
 
         Args:
@@ -1503,113 +1503,168 @@ class SchemaManager:
             api_configs: {name: APIConfig} for API sources
 
         Returns:
-            {entity_type: [value1, value2, ...]}  merged across sources
+            Tuple of (names, details):
+            - names: {entity_type: [name1, name2, ...]} for NER patterns
+            - details: {entity_type: [structured_text, ...]} for embedding
         """
-        result: dict[str, list[str]] = {}
+        names: dict[str, list[str]] = {}
+        details: dict[str, list[str]] = {}
 
         for cfg in entity_configs:
             entity_type = cfg.entity_type.upper()
             values: list[str] = []
+            descriptions: list[str] = []
 
             try:
                 if cfg.values:
-                    # Static list
+                    # Static list — no extra details
                     values = list(cfg.values[:cfg.max_values])
 
                 elif cfg.endpoint:
                     # API source
-                    values = self._extract_entity_values_api(cfg, api_configs)
+                    values, descriptions = self._extract_entity_values_api(cfg, api_configs)
 
                 elif cfg.query and cfg.source:
                     # Custom query — route to API handler if source is an API
                     if api_configs and cfg.source in api_configs:
-                        values = self._extract_entity_values_api(cfg, api_configs)
+                        values, descriptions = self._extract_entity_values_api(cfg, api_configs)
                     else:
-                        values = self._extract_entity_values_query(cfg)
+                        values, descriptions = self._extract_entity_values_query(cfg)
 
                 elif cfg.table and cfg.name_column and cfg.source:
                     # SQL shorthand
-                    values = self._extract_entity_values_sql(cfg)
+                    values, descriptions = self._extract_entity_values_sql(cfg)
 
             except Exception as e:
                 logger.warning(f"Entity resolution failed for {entity_type} from {cfg.source}: {e}")
                 continue
 
             if values:
-                result.setdefault(entity_type, []).extend(values)
+                names.setdefault(entity_type, []).extend(values)
+                details.setdefault(entity_type, []).extend(
+                    descriptions if descriptions else values
+                )
 
-        return result
+        return names, details
 
-    def _extract_entity_values_sql(self, cfg) -> list[str]:
+    @staticmethod
+    def _rows_to_structured(rows: list, columns: list[str], entity_type: str) -> tuple[list[str], list[str]]:
+        """Convert result rows to (names, structured_text) lists.
+
+        The first column is always the entity name (used for NER).
+        Remaining columns become structured text for embedding.
+        """
+        name_col = columns[0] if columns else "name"
+        names = []
+        details = []
+        for row in rows:
+            row_dict = dict(zip(columns, row)) if not isinstance(row, dict) else row
+            name = row_dict.get(name_col)
+            if name is None:
+                continue
+            name = str(name)
+            names.append(name)
+            other_fields = {k: v for k, v in row_dict.items() if k != name_col and v is not None}
+            if other_fields:
+                fields_str = ", ".join(f"{k}: {v}" for k, v in other_fields.items())
+                details.append(f"{entity_type} {name} — {fields_str}")
+            else:
+                details.append(f"{entity_type} {name}")
+        return names, details
+
+    def _extract_entity_values_sql(self, cfg) -> tuple[list[str], list[str]]:
         """Extract values via SQL shorthand (table + name_column)."""
         source = cfg.source
+        entity_type = cfg.entity_type.upper()
         if source in self.connections:
             engine = self.connections[source]
             conn_obj = engine.connect() if hasattr(engine, 'connect') else engine
             try:
                 result = conn_obj.execute(
-                    text(f'SELECT DISTINCT "{cfg.name_column}" FROM "{cfg.table}" LIMIT {cfg.max_values}')
+                    text(f'SELECT * FROM "{cfg.table}" LIMIT {cfg.max_values}')
                 )
-                return [str(row[0]) for row in result if row[0] is not None]
+                columns = list(result.keys())
+                rows = result.fetchall()
+                return self._rows_to_structured(rows, columns, entity_type)
             finally:
                 if hasattr(conn_obj, 'close'):
                     conn_obj.close()
         elif source in self.file_connections:
-            # File sources use DuckDB via their connector
             fc = self.file_connections[source]
             if hasattr(fc, 'duckdb_conn'):
-                rows = fc.duckdb_conn.execute(
-                    f'SELECT DISTINCT "{cfg.name_column}" FROM "{cfg.table}" LIMIT {cfg.max_values}'
-                ).fetchall()
-                return [str(row[0]) for row in rows if row[0] is not None]
-        return []
+                result = fc.duckdb_conn.execute(
+                    f'SELECT * FROM "{cfg.table}" LIMIT {cfg.max_values}'
+                )
+                columns = [desc[0] for desc in result.description]
+                rows = result.fetchall()
+                return self._rows_to_structured(rows, columns, entity_type)
+        return [], []
 
-    def _extract_entity_values_query(self, cfg) -> list[str]:
+    def _extract_entity_values_query(self, cfg) -> tuple[list[str], list[str]]:
         """Extract values via custom query."""
         source = cfg.source
+        entity_type = cfg.entity_type.upper()
+        def _nosql_rows_to_structured(rows: list[dict]) -> tuple[list[str], list[str]]:
+            """First key in each row dict is the entity name."""
+            names, details = [], []
+            for r in rows[:cfg.max_values]:
+                if not r:
+                    continue
+                first_key = next(iter(r))
+                name = str(r[first_key])
+                names.append(name)
+                other = {k: v for k, v in r.items() if k != first_key and v is not None}
+                if other:
+                    fields_str = ", ".join(f"{k}: {v}" for k, v in other.items())
+                    details.append(f"{entity_type} {name} — {fields_str}")
+                else:
+                    details.append(f"{entity_type} {name}")
+            return names, details
+
         if source in self.nosql_connections:
             connector = self.nosql_connections[source]
-            # Dispatch by connector type
             connector_type = type(connector).__name__.lower()
             if 'neo4j' in connector_type:
                 rows = connector.cypher(cfg.query)
-                return [str(list(r.values())[0]) for r in rows[:cfg.max_values] if r]
+                return _nosql_rows_to_structured(rows)
             elif 'cassandra' in connector_type:
                 rows = connector.execute_cql(cfg.query)
-                return [str(list(r.values())[0]) for r in rows[:cfg.max_values] if r]
+                return _nosql_rows_to_structured(rows)
             elif 'cosmos' in connector_type:
                 rows = connector.query_sql("", cfg.query)
-                return [str(list(r.values())[0]) for r in rows[:cfg.max_values] if r]
+                return _nosql_rows_to_structured(rows)
             else:
-                # Generic NoSQL query
                 rows = connector.query("", {}, limit=cfg.max_values)
-                return [str(r.get(cfg.name_field, "")) for r in rows if r.get(cfg.name_field)]
+                return _nosql_rows_to_structured(rows)
         elif source in self.connections:
             engine = self.connections[source]
             conn_obj = engine.connect() if hasattr(engine, 'connect') else engine
             try:
                 result = conn_obj.execute(text(cfg.query))
-                return [str(row[0]) for row in result.fetchmany(cfg.max_values) if row[0] is not None]
+                columns = list(result.keys())
+                rows = result.fetchmany(cfg.max_values)
+                return self._rows_to_structured(rows, columns, entity_type)
             finally:
                 if hasattr(conn_obj, 'close'):
                     conn_obj.close()
-        return []
+        return [], []
 
-    def _extract_entity_values_api(self, cfg, api_configs: dict | None) -> list[str]:
+    def _extract_entity_values_api(self, cfg, api_configs: dict | None) -> tuple[list[str], list[str]]:
         """Extract values from a REST or GraphQL API."""
         import requests
 
         if not api_configs or cfg.source not in api_configs:
             logger.warning(f"API source '{cfg.source}' not found in config")
-            return []
+            return [], []
 
         api_cfg = api_configs[cfg.source]
+        entity_type = cfg.entity_type.upper()
 
         headers = {}
         if hasattr(api_cfg, 'headers') and api_cfg.headers:
             headers.update(api_cfg.headers)
 
-        # GraphQL: use cfg.query as the GraphQL query
+        # Fetch data from API
         if getattr(api_cfg, 'type', '') == 'graphql' and cfg.query:
             url = api_cfg.url
             resp = requests.post(
@@ -1621,52 +1676,57 @@ class SchemaManager:
             resp.raise_for_status()
             data = resp.json().get("data", {})
 
-            # Navigate items_path to the array
             if cfg.items_path:
                 for key in cfg.items_path.split('.'):
                     data = data[key]
             else:
-                # Auto-navigate: take the first key's value
                 if isinstance(data, dict):
                     data = next(iter(data.values()), [])
+        elif cfg.endpoint:
+            url = f"{api_cfg.url.rstrip('/')}{cfg.endpoint}"
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
 
-            if not isinstance(data, list):
-                return []
-
-            values = []
-            for item in data[:cfg.max_values]:
-                if isinstance(item, dict):
-                    val = item.get(cfg.name_field)
-                else:
-                    val = item
-                if val is not None:
-                    values.append(str(val))
-            return values
-
-        # REST: GET endpoint
-        url = f"{api_cfg.url.rstrip('/')}{cfg.endpoint}"
-        resp = requests.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-
-        # Navigate items_path
-        if cfg.items_path:
-            for key in cfg.items_path.split('.'):
-                data = data[key]
+            if cfg.items_path:
+                for key in cfg.items_path.split('.'):
+                    data = data[key]
+        else:
+            return [], []
 
         if not isinstance(data, list):
-            return []
+            return [], []
 
-        values = []
+        # For APIs, use name_field since JSON key order is not guaranteed
+        name_key = cfg.name_field or "name"
+        names = []
+        details = []
         for item in data[:cfg.max_values]:
             if isinstance(item, dict):
-                val = item.get(cfg.name_field)
+                name = item.get(name_key)
+                if name is None:
+                    continue
+                name = str(name)
+                names.append(name)
+                other = {k: v for k, v in item.items() if k != name_key and v is not None}
+                if other:
+                    # Flatten nested dicts/lists for readable structured text
+                    parts = []
+                    for k, v in other.items():
+                        if isinstance(v, list):
+                            v = ", ".join(str(x) for x in v)
+                        elif isinstance(v, dict):
+                            v = ", ".join(f"{sk}: {sv}" for sk, sv in v.items())
+                        parts.append(f"{k}: {v}")
+                    details.append(f"{entity_type} {name} — {', '.join(parts)}")
+                else:
+                    details.append(f"{entity_type} {name}")
             else:
-                val = item
-            if val is not None:
-                values.append(str(val))
+                if item is not None:
+                    names.append(str(item))
+                    details.append(f"{entity_type} {item}")
 
-        return values
+        return names, details
 
     def get_table_metadata(self, database: str, table_name: str) -> Optional[TableMetadata]:
         """Get metadata for a specific table.

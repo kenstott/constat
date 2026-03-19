@@ -177,26 +177,49 @@ function SourceLink({ source, documentName, section, url }: { source: string; do
     )
   }
 
-  // Strip source-type prefix for schema/api (e.g., "schema:chinook.Track" → "chinook.Track")
+  // Strip source-type prefix (e.g., "schema:sales.customers" → "sales.customers")
+  // Entity resolution chunks use api:/schema:/entity_resolution: prefixes
   // Document names keep their full form (e.g., "hr_management:crawled_8" is the actual name)
-  // Entity resolution names have no prefix — they're just the source reference (e.g., "sales.customers")
-  const stripped = (source === 'schema' || source === 'api') && documentName.includes(':')
+  const hasKnownPrefix = documentName.startsWith('api:') || documentName.startsWith('schema:') || documentName.startsWith('entity_resolution:')
+  const stripped = hasKnownPrefix
     ? documentName.split(':').slice(1).join(':')
-    : documentName
+    : (source === 'schema' || source === 'api') && documentName.includes(':')
+      ? documentName.split(':').slice(1).join(':')
+      : documentName
+
+  // For entity_resolution, determine navigation type from document_name prefix
+  const effectiveSource = source === 'entity_resolution'
+    ? (documentName.startsWith('api:') ? 'api' : documentName.startsWith('schema:') ? 'schema' : source)
+    : source
+
+  // entity_resolution: prefix means static/inline values — no navigation target
+  const canNavigate = effectiveSource !== 'entity_resolution'
 
   const handleClick = () => {
-    console.log('[deep-link] SourceLink clicked:', { source, documentName, stripped })
-    if (source === 'schema' || source === 'entity_resolution') {
+    if (!canNavigate) return
+    console.log('[deep-link] SourceLink clicked:', { source, effectiveSource, documentName, stripped })
+    if (effectiveSource === 'schema') {
       const parts = stripped.split('.')
       if (parts.length >= 2) {
         navigateTo({ type: 'table', dbName: parts[0], tableName: parts[1] })
       }
-    } else if (source === 'document') {
+    } else if (effectiveSource === 'document') {
       navigateTo({ type: 'document', documentName })
-    } else if (source === 'api') {
+    } else if (effectiveSource === 'api') {
       const parts = stripped.split('.')
       navigateTo({ type: 'api', apiName: parts[0] })
     }
+  }
+
+  // Show display label without prefix for entity_resolution chunks
+  const displayLabel = hasKnownPrefix ? `${stripped}${section ? ` > ${section}` : ''}` : label
+
+  if (!canNavigate) {
+    return (
+      <span className="text-gray-500 dark:text-gray-400">
+        {displayLabel}
+      </span>
+    )
   }
 
   return (
@@ -204,7 +227,7 @@ function SourceLink({ source, documentName, section, url }: { source: string; do
       onClick={handleClick}
       className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
     >
-      {label}
+      {displayLabel}
     </button>
   )
 }

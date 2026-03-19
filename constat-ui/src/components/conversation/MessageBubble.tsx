@@ -6,10 +6,6 @@ import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import {
-  UserIcon,
-  CpuChipIcon,
-  ExclamationTriangleIcon,
-  CheckCircleIcon,
   ChevronDownIcon,
   ChevronUpIcon,
   ClipboardDocumentIcon,
@@ -24,6 +20,8 @@ import {
   StarIcon,
 } from '@heroicons/react/24/outline'
 import { FlagButton } from './FlagButton'
+import { VeraIcon } from './VeraIcon'
+import { useAuthStore } from '@/store/authStore'
 
 // Animated dots component for loading states
 function AnimatedDots() {
@@ -105,6 +103,7 @@ interface MessageBubbleProps {
   onOutputClick?: (output: { type: 'table' | 'artifact'; name: string; id: string }) => void
   onRoleClick?: (role: string) => void
   onEditMessage?: (content: string) => void
+  hideHeader?: boolean // Suppress avatar+name header (used inside BotMessageGroup)
 }
 
 function formatMs(ms: number): string {
@@ -116,49 +115,15 @@ function formatMs(ms: number): string {
   return `${minutes}m ${remainSec}s`
 }
 
-const typeStyles: Record<MessageType, { bg: string; text: string; icon: typeof UserIcon; iconColor: string }> = {
-  user: {
-    bg: 'bg-primary-100 dark:bg-primary-900/50',
-    text: 'text-gray-900 dark:text-gray-100',
-    icon: UserIcon,
-    iconColor: 'text-primary-600 dark:text-primary-400',
-  },
-  system: {
-    bg: 'bg-white dark:bg-gray-800',
-    text: 'text-gray-900 dark:text-gray-100',
-    icon: CpuChipIcon,
-    iconColor: 'text-gray-500 dark:text-gray-400',
-  },
-  thinking: {
-    bg: 'bg-purple-50 dark:bg-purple-900/30',
-    text: 'text-gray-700 dark:text-gray-300',
-    icon: CpuChipIcon,
-    iconColor: 'text-purple-500 dark:text-purple-400',
-  },
-  plan: {
-    bg: 'bg-blue-50 dark:bg-blue-900/30',
-    text: 'text-gray-900 dark:text-gray-100',
-    icon: CpuChipIcon,
-    iconColor: 'text-blue-600 dark:text-blue-400',
-  },
-  step: {
-    bg: 'bg-slate-100 dark:bg-gray-800',
-    text: 'text-gray-900 dark:text-gray-100',
-    icon: CpuChipIcon,
-    iconColor: 'text-gray-500 dark:text-gray-400',
-  },
-  output: {
-    bg: 'bg-green-50 dark:bg-gray-800 border border-green-200 dark:border-green-700',
-    text: 'text-gray-900 dark:text-gray-100',
-    icon: CheckCircleIcon,
-    iconColor: 'text-green-600 dark:text-green-400',
-  },
-  error: {
-    bg: 'bg-red-50 dark:bg-red-900/30',
-    text: 'text-gray-900 dark:text-red-100',
-    icon: ExclamationTriangleIcon,
-    iconColor: 'text-red-600 dark:text-red-400',
-  },
+function getUserInitials(): string {
+  const user = useAuthStore.getState().user
+  if (user?.displayName) {
+    return user.displayName.split(' ').map(p => p[0]).join('').toUpperCase().slice(0, 2)
+  }
+  if (user?.email) {
+    return user.email[0].toUpperCase()
+  }
+  return 'U'
 }
 
 // Max height for collapsed content (approximately 5 lines at 1.25rem line height + padding)
@@ -190,9 +155,8 @@ export function MessageBubble({
   onOutputClick,
   onRoleClick,
   onEditMessage,
+  hideHeader,
 }: MessageBubbleProps) {
-  const styles = typeStyles[type]
-  const Icon = styles.icon
   const isUser = type === 'user'
 
   // Elapsed timer for running steps
@@ -259,23 +223,37 @@ export function MessageBubble({
   const displayContent = showAnimatedDots ? cleanedContent.slice(0, -3) : cleanedContent
 
   return (
-    <div className={`group flex gap-3 ${isUser ? 'flex-row-reverse' : ''} ${isSuperseded ? 'opacity-40' : ''}`}>
-      {/* Avatar */}
-      <div
-        className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
-          isUser ? 'bg-primary-100 dark:bg-primary-900' : 'bg-gray-100 dark:bg-gray-700'
-        } ${isLive ? 'animate-pulse' : ''} ${isPending ? 'opacity-50' : ''}`}
-      >
-        <Icon className={`w-4 h-4 ${styles.iconColor}`} />
-      </div>
+    <div className={`group ${isSuperseded ? 'opacity-40' : ''}`}>
+      {/* Message header — avatar + name + timestamp */}
+      {!hideHeader && (
+        <div className="flex items-center gap-3 mb-1">
+          {isUser ? (
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center bg-primary-600 text-white text-xs font-semibold ${isPending ? 'opacity-50' : ''}`}>
+              {getUserInitials()}
+            </div>
+          ) : (
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800 ${isLive ? 'animate-pulse' : ''} ${isPending ? 'opacity-50' : ''}`}>
+              <VeraIcon className="w-5 h-5" />
+            </div>
+          )}
+          <span className="font-semibold text-sm text-gray-900 dark:text-gray-100">
+            {isUser ? (useAuthStore.getState().user?.displayName || 'You') : 'Vera'}
+          </span>
+          {timestamp && !isLive && (
+            <span className="text-xs text-gray-400 dark:text-gray-500">
+              {timestamp.toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+      )}
 
-      {/* Content + Action margin */}
-      <div className={`flex-1 max-w-[80%] ${isUser ? 'text-right' : ''}`}>
-        <div className={`flex items-start gap-1 ${isUser ? 'flex-row-reverse' : ''}`}>
+      {/* Content area — indented under the avatar */}
+      <div className={hideHeader ? '' : 'ml-11'}>
+        <div className="flex items-start gap-1">
           <div
-            className={`relative inline-block rounded-lg px-4 py-3 ${styles.bg} ${
-              isUser ? 'rounded-tr-none' : 'rounded-tl-none'
-            } ${isLive ? 'border-l-2 border-blue-500' : ''} ${isPending ? 'border-l-2 border-gray-300 dark:border-gray-600 opacity-60' : ''} flex-1 min-w-0`}
+            className={`relative flex-1 min-w-0 ${
+              isLive ? 'border-l-2 border-blue-500 pl-3' : ''
+            } ${isPending ? 'border-l-2 border-gray-300 dark:border-gray-600 pl-3 opacity-60' : ''}`}
           >
           {stepNumber !== undefined && (
             <div className={`flex items-center gap-2 ${stepMode === 'oneline' ? '' : 'mb-1'}`}>
@@ -342,7 +320,7 @@ export function MessageBubble({
           {!(isStep && stepMode === 'oneline') && (
           <div
             ref={contentRef}
-            className={`text-sm ${styles.text} ${
+            className={`text-sm text-gray-900 dark:text-gray-100 ${
               isStep
                 ? stepMode === 'condensed' ? 'overflow-y-auto' : ''
                 : !isExpanded && needsExpansion ? 'overflow-y-auto pr-[5px]' : ''
@@ -542,11 +520,6 @@ export function MessageBubble({
             </div>
           )}
         </div>
-        {timestamp && !isLive && (
-          <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-            {timestamp.toLocaleTimeString()}
-          </p>
-        )}
       </div>
     </div>
   )

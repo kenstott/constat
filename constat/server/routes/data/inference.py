@@ -128,8 +128,8 @@ async def list_inference_codes(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _gather_source_configs(managed) -> tuple[list[dict], list[dict]]:
-    """Extract api and database configs from a session for script generation."""
+def _gather_source_configs(managed) -> tuple[list[dict], list[dict], list[dict]]:
+    """Extract api, database, and document configs from a session for script generation."""
     apis = []
     if managed and managed.session.config and managed.session.config.apis:
         for name, api_config in managed.session.config.apis.items():
@@ -159,7 +159,16 @@ def _gather_source_configs(managed) -> tuple[list[dict], list[dict]]:
                 databases.append({"name": name, "uri": uri})
                 seen_db_names.add(name)
 
-    return apis, databases
+    documents = []
+    if managed and hasattr(managed.session, 'doc_tools') and managed.session.doc_tools:
+        for name, doc in managed.session.doc_tools._loaded_documents.items():
+            if doc.config and doc.config.path:
+                from pathlib import Path as _Path
+                resolved = _Path(doc.config.path).resolve()
+                if resolved.exists():
+                    documents.append({"name": name, "path": str(resolved)})
+
+    return apis, databases, documents
 
 
 def generate_inference_script(
@@ -168,12 +177,25 @@ def generate_inference_script(
     apis: list[dict],
     databases: list[dict],
     session_label: str,
+    documents: list[dict] | None = None,
 ) -> str:
     """Generate a standalone Python script from inference codes.
 
     Returns the script content as a string.
     """
     import ast as _ast
+
+    # Build ATTACH statements for source databases
+    attach_lines = []
+    for db in databases:
+        uri = db.get("uri", "")
+        name = db.get("name", "")
+        if uri.startswith("sqlite"):
+            # Extract file path from sqlite:///path or sqlite:///file:path?mode=ro
+            db_path = uri.replace("sqlite:///", "").split("?")[0].replace("file:", "")
+            attach_lines.append(
+                f"        self._conn.execute(\"ATTACH '{db_path}' AS {name} (TYPE SQLITE, READ_ONLY)\")"
+            )
 
     lines = [
         '#!/usr/bin/env python3',
@@ -201,11 +223,22 @@ def generate_inference_script(
         '        self._conn = duckdb.connect()',
         '        self._output_dir: Path | None = None',
         '        self._files: dict[str, str] = {}',
+    ]
+
+    # Attach source databases
+    if attach_lines:
+        lines.append('        # Attach source databases')
+        lines.extend(attach_lines)
+
+    lines.extend([
         '',
         '    def _ensure_output_dir(self) -> Path:',
         '        if self._output_dir is None:',
         '            self._output_dir = Path(tempfile.mkdtemp(prefix="constat_skill_"))',
         '        return self._output_dir',
+        '',
+        '    def create_view(self, name: str, sql: str, **kwargs) -> None:',
+        '        self._conn.execute(f"CREATE OR REPLACE VIEW {name} AS {sql}")',
         '',
         '    def save_dataframe(self, name: str, df: pd.DataFrame, **kwargs) -> None:',
         '        self._conn.register(name, df)',
@@ -225,7 +258,48 @@ def generate_inference_script(
         '',
         'store = _DataStore()',
         '',
-    ]
+    ])
+
+    # Generate document constants and helpers
+    if documents:
+        lines.extend([
+            '',
+            '# ============================================================================',
+            '# Document Sources',
+            '# ============================================================================',
+            '',
+        ])
+        for doc in documents:
+            const_name = f"DOC_{doc['name'].upper().replace('-', '_').replace(' ', '_')}"
+            lines.append(f"{const_name} = {doc['path']!r}")
+        lines.extend([
+            '',
+            '',
+            'def doc_read(name: str) -> str:',
+            '    """Read a reference document by name. Returns the document text content."""',
+            '    _doc_paths = {',
+        ])
+        for doc in documents:
+            const_name = f"DOC_{doc['name'].upper().replace('-', '_').replace(' ', '_')}"
+            lines.append(f"        {doc['name']!r}: {const_name},")
+        lines.extend([
+            '    }',
+            '    path = _doc_paths.get(name)',
+            '    if not path:',
+            '        raise ValueError(f"Document \'{name}\' not found. Available: {list(_doc_paths.keys())}")',
+            '    return Path(path).read_text()',
+            '',
+            '',
+            'from constat.llm import llm_extract_table as _llm_extract_table',
+            '',
+            '',
+            'def llm_extract_table(description: str, document: str, columns: list[str] | None = None) -> pd.DataFrame:',
+            '    """Extract structured data from a document using LLM."""',
+            '    text = doc_read(document)',
+            '    return _llm_extract_table(text, description, columns=columns)',
+            '',
+            '',
+        ])
 
     # Add module-level defaults for constant premises (overridable via run_proof kwargs)
     constant_premises_early = [p for p in premises if p.get("source") in ("embedded", "llm_knowledge")]
@@ -326,8 +400,15 @@ def generate_inference_script(
         '',
     ])
 
-    # Build run_proof signature with constant premises as kwargs
+    # Build run_proof signature — only constants actually used in inference code
     param_parts = []
+    # (global_name, param_name) pairs for setting globals inside run_proof
+    global_overrides = []
+
+    # Collect all inference code to check which constants are referenced
+    all_inference_code = '\n'.join(inf.get("code", "") for inf in inferences)
+
+    # 1. Premise constants (always included — they parameterize the analysis)
     param_names = []
     for p in constant_premises:
         pname = p["name"].lower().replace(" ", "_").replace("-", "_")
@@ -338,6 +419,31 @@ def generate_inference_script(
             param_parts.append(f'{pname}={repr(literal)}')
         except (ValueError, SyntaxError):
             param_parts.append(f'{pname}={repr(value)}')
+        global_overrides.append((f'_{pname}', pname))
+
+    # 2. Document paths — only if doc_read or llm_extract_table references the document
+    if documents:
+        for doc in documents:
+            if doc['name'] in all_inference_code:
+                const_name = f"DOC_{doc['name'].upper().replace('-', '_').replace(' ', '_')}"
+                param_parts.append(f"{const_name.lower()}={const_name}")
+                global_overrides.append((const_name, const_name.lower()))
+
+    # 3. Database connections — only if schema-qualified queries reference the database
+    if databases:
+        for db in databases:
+            if f"{db['name']}." in all_inference_code:
+                db_var = f"db_{db['name']}"
+                param_parts.append(f"{db_var}={db_var}")
+                global_overrides.append((db_var, db_var))
+
+    # 4. API URLs — only if api_<name> is called in inference code
+    if apis:
+        for api in apis:
+            if f"api_{api['name']}" in all_inference_code:
+                url_var = f"API_{api['name'].upper()}_URL"
+                param_parts.append(f"{url_var.lower()}={url_var}")
+                global_overrides.append((url_var, url_var.lower()))
 
     sig = ', '.join(param_parts)
     lines.append(f'def run_proof({sig}):')
@@ -348,13 +454,16 @@ def generate_inference_script(
     lines.append('        The final result is also available under the "_result" key.')
     lines.append('    """')
 
-    # Set module-level defaults from params so inference functions can read them
-    if constant_premises:
-        global_names = [f'_{pname}' for pname, _ in param_names]
+    # Set globals from kwargs
+    if global_overrides:
+        global_names = [g for g, _ in global_overrides]
         lines.append(f'    global {", ".join(global_names)}')
-        for pname, original_name in param_names:
-            lines.append(f'    _{pname} = {pname}')
+        for global_name, param_name in global_overrides:
+            lines.append(f'    {global_name} = {param_name}')
         lines.append('')
+
+    # Store premise constants
+    if constant_premises:
         lines.append('    # Store premise constants')
         lines.append('    _premises = {}')
         for pname, original_name in param_names:
@@ -419,7 +528,7 @@ async def download_inference_code(
         if not inferences:
             raise HTTPException(status_code=404, detail="No inference code available. Run an auditable query first.")
 
-        apis, databases = _gather_source_configs(managed)
+        apis, databases, documents = _gather_source_configs(managed)
         premises = history.list_inference_premises(history_session_id)
 
         script_content = generate_inference_script(
@@ -428,6 +537,7 @@ async def download_inference_code(
             apis=apis,
             databases=databases,
             session_label=session_id[:8],
+            documents=documents,
         )
         return Response(
             content=script_content,
