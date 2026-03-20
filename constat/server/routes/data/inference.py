@@ -221,8 +221,7 @@ def generate_inference_script(
         'class _DataStore:',
         '    def __init__(self):',
         '        self._conn = duckdb.connect()',
-        '        self._output_dir: Path | None = None',
-        '        self._files: dict[str, str] = {}',
+        '        self._files: dict[str, any] = {}',
     ]
 
     # Attach source databases
@@ -232,28 +231,27 @@ def generate_inference_script(
 
     lines.extend([
         '',
-        '    def _ensure_output_dir(self) -> Path:',
-        '        if self._output_dir is None:',
-        '            self._output_dir = Path(tempfile.mkdtemp(prefix="constat_skill_"))',
-        '        return self._output_dir',
-        '',
         '    def create_view(self, name: str, sql: str, **kwargs) -> None:',
         '        self._conn.execute(f"CREATE OR REPLACE VIEW {name} AS {sql}")',
         '',
         '    def save_dataframe(self, name: str, df: pd.DataFrame, **kwargs) -> None:',
         '        self._conn.register(name, df)',
-        '        out = self._ensure_output_dir() / f"{name}.parquet"',
-        '        df.to_parquet(out, index=False)',
-        '        self._files[name] = str(out)',
+        '        self._files[name] = df',
         '        print(f"Saved: {name} ({len(df)} rows)")',
         '',
         '    def query(self, sql: str) -> pd.DataFrame:',
         '        return self._conn.execute(sql).fetchdf()',
         '',
+        '    def save_artifact(self, name: str, content, artifact_type: str = None, **kwargs) -> None:',
+        '        """Save a non-tabular artifact (markdown, JSON, image bytes, etc.)."""',
+        '        self._files[name] = content',
+        '        kind = artifact_type or type(content).__name__',
+        '        print(f"Saved artifact: {name} ({kind})")',
+        '',
         '    def load_dataframe(self, name: str) -> pd.DataFrame:',
         '        if name not in self._files:',
-        '            raise ValueError(f"Table not found: {name}")',
-        '        return pd.read_parquet(self._files[name])',
+        '            return self._conn.execute(f"SELECT * FROM {name}").fetchdf()',
+        '        return self._files[name]',
         '',
         '',
         'store = _DataStore()',
@@ -356,7 +354,9 @@ def generate_inference_script(
         lines.append('from sqlalchemy import create_engine')
         lines.append('')
         for db in databases:
-            lines.append(f"db_{db['name']} = create_engine('{db['uri']}')")
+            db_const = f"DB_{db['name'].upper().replace('-', '_').replace(' ', '_')}"
+            lines.append(f"{db_const} = create_engine('{db['uri']}')")
+            lines.append(f"db_{db['name']} = {db_const}")
         lines.extend(['', ''])
 
     # LLM primitives — auto-detects provider from env vars (ANTHROPIC_API_KEY, etc.)
@@ -430,12 +430,14 @@ def generate_inference_script(
                 global_overrides.append((const_name, const_name.lower()))
 
     # 3. Database connections — only if schema-qualified queries reference the database
+    #    Use uppercase DB_X constant as default, lowercase db_x as param (matches doc pattern)
     if databases:
         for db in databases:
             if f"{db['name']}." in all_inference_code:
                 db_var = f"db_{db['name']}"
-                param_parts.append(f"{db_var}={db_var}")
-                global_overrides.append((db_var, db_var))
+                db_const = f"DB_{db['name'].upper().replace('-', '_').replace(' ', '_')}"
+                param_parts.append(f"{db_var}={db_const}")
+                global_overrides.append((db_const, db_var))
 
     # 4. API URLs — only if api_<name> is called in inference code
     if apis:
@@ -447,10 +449,11 @@ def generate_inference_script(
 
     sig = ', '.join(param_parts)
     lines.append(f'def run_proof({sig}):')
-    lines.append('    """Execute all inferences and return collected datasets.')
+    lines.append('    """Execute all inferences and return collected artifacts.')
     lines.append('')
     lines.append('    Returns:')
-    lines.append('        dict[str, str]: Map of dataset name to Parquet file path.')
+    lines.append('        dict[str, DataFrame | str | dict | bytes]: Artifact map.')
+    lines.append('        Values: DataFrame (table), str (markdown/text), dict (JSON), bytes (image).')
     lines.append('        The final result is also available under the "_result" key.')
     lines.append('    """')
 
@@ -480,17 +483,47 @@ def generate_inference_script(
         lines.append(f'    _last = {func_name}()')
     lines.extend([
         '',
-        '    # Save final result and return file paths',
-        '    if _last is not None and hasattr(_last, "to_parquet"):',
-        '        store.save_dataframe("_result", _last)',
+        '    # Record views as artifacts (kept lazy — not materialized)',
+        '    for row in store._conn.execute(',
+        '        "SELECT table_name FROM information_schema.tables '
+            "WHERE table_schema = 'main' AND table_type = 'VIEW'\""
+        ').fetchall():',
+        '        vname = row[0]',
+        '        if vname not in store._files:',
+        '            sql = store._conn.execute(',
+        '                f"SELECT sql FROM duckdb_views() WHERE view_name = \'{vname}\'"',
+        '            ).fetchone()',
+        '            store._files[vname] = ("__view__", sql[0] if sql else vname)',
+        '',
+        '    # Save final result and return artifacts',
+        '    if _last is not None:',
+        '        if hasattr(_last, "to_parquet"):',
+        '            store.save_dataframe("_result", _last)',
+        '        else:',
+        '            store.save_artifact("_result", _last)',
         '    return dict(store._files)',
         '',
         '',
         'if __name__ == "__main__":',
-        '    paths = run_proof()',
-        '    print("\\n=== Output Files ===")',
-        '    for name, path in paths.items():',
-        '        print(f"  {name}: {path}")',
+        '    results = run_proof()',
+        '    print("\\n=== Results ===")',
+        '    for name, val in results.items():',
+        '        if isinstance(val, tuple) and len(val) == 2 and val[0] == "__view__":',
+        '            # Materialize view for standalone display',
+        '            df = store._conn.execute(f"SELECT * FROM {name}").fetchdf()',
+        '            print(f"\\n--- {name} (view, {len(df)} rows) ---")',
+        '            print(df.to_string(max_rows=10))',
+        '        elif hasattr(val, "to_string"):',
+        '            print(f"\\n--- {name} ({len(val)} rows) ---")',
+        '            print(val.to_string(max_rows=10))',
+        '        elif isinstance(val, bytes):',
+        '            print(f"\\n--- {name} ({len(val)} bytes) ---")',
+        '        elif isinstance(val, dict):',
+        '            print(f"\\n--- {name} (JSON) ---")',
+        '            print(json.dumps(val, indent=2, default=str)[:500])',
+        '        else:',
+        '            print(f"\\n--- {name} ---")',
+        '            print(str(val)[:500])',
         '',
     ])
 

@@ -121,7 +121,7 @@ function buildTree(terms: GlossaryTerm[]): { roots: TreeNode[]; orphans: Glossar
     return { roots: domainRoots.get(domains[0] || '(user)') || [], orphans }
   }
 
-  const bucketLabel = (d: string) => d === '(system)' ? 'System' : d === '(user)' ? 'User' : d === 'cross-domain' ? 'Cross-domain' : d
+  const bucketLabel = (d: string) => d === 'system' || d === '(system)' ? 'System' : d === '(user)' ? 'User' : d === 'cross-domain' ? 'Cross-domain' : d
 
   // Multiple domains: create domain folder nodes
   const roots: TreeNode[] = domains.sort().map(domain => ({

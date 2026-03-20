@@ -23,6 +23,53 @@ import { FlagButton } from './FlagButton'
 import { VeraIcon } from './VeraIcon'
 import { useAuthStore } from '@/store/authStore'
 
+// Shared markdown renderer used by MessageBubble content sections
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => <p className="whitespace-pre-wrap mb-2 last:mb-0">{children}</p>,
+        strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+        ul: ({ children }) => <ul className="list-disc list-inside mb-2">{children}</ul>,
+        ol: ({ children }) => <ol className="list-decimal list-inside mb-2">{children}</ol>,
+        li: ({ children }) => <li className="mb-1">{children}</li>,
+        code: ({ className, children }) => {
+          const match = /language-(\w+)/.exec(className || '')
+          const isInline = !match
+          return isInline ? (
+            <code className="bg-gray-200 dark:bg-gray-700 px-1 py-0.5 rounded text-xs">{children}</code>
+          ) : (
+            <CodeBlockWithCopy language={match[1]}>
+              {String(children).replace(/\n$/, '')}
+            </CodeBlockWithCopy>
+          )
+        },
+        table: ({ children }) => (
+          <div className="overflow-x-auto my-2">
+            <table className="min-w-full text-xs border-collapse">{children}</table>
+          </div>
+        ),
+        thead: ({ children }) => (
+          <thead className="bg-gray-100 dark:bg-gray-700">{children}</thead>
+        ),
+        tbody: ({ children }) => <tbody>{children}</tbody>,
+        tr: ({ children }) => (
+          <tr className="border-b border-gray-200 dark:border-gray-600">{children}</tr>
+        ),
+        th: ({ children }) => (
+          <th className="px-2 py-1 text-left font-medium text-gray-700 dark:text-gray-300">{children}</th>
+        ),
+        td: ({ children }) => (
+          <td className="px-2 py-1 text-gray-600 dark:text-gray-400">{children}</td>
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  )
+}
+
 // Animated dots component for loading states
 function AnimatedDots() {
   return (
@@ -182,7 +229,7 @@ export function MessageBubble({
   const [stepMode, setStepMode] = useState<StepDisplayMode>(getInitialStepMode)
 
   // Non-step expand/collapse state (unchanged)
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false)
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? isFinalInsight ?? false)
   const [needsExpansion, setNeedsExpansion] = useState(false)
   const [copied, setCopied] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -228,11 +275,11 @@ export function MessageBubble({
       {!hideHeader && (
         <div className="flex items-center gap-3 mb-1">
           {isUser ? (
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center bg-primary-600 text-white text-xs font-semibold ${isPending ? 'opacity-50' : ''}`}>
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center bg-primary-600 text-white text-xs font-semibold ${isPending ? 'opacity-50' : ''}`}>
               {getUserInitials()}
             </div>
           ) : (
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800 ${isLive ? 'animate-pulse' : ''} ${isPending ? 'opacity-50' : ''}`}>
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800 ${isLive ? 'animate-pulse' : ''} ${isPending ? 'opacity-50' : ''}`}>
               <VeraIcon className="w-5 h-5" />
             </div>
           )}
@@ -335,48 +382,32 @@ export function MessageBubble({
               <span>{cleanedContent.replace(/\.+$/, '') || 'Thinking'}<AnimatedDots /></span>
             ) : showAnimatedDots ? (
               <span>{displayContent}<AnimatedDots /></span>
+            ) : isFinalInsight && children ? (
+              // Split content at Key Insight to insert published artifacts between Answer and Key Insight
+              (() => {
+                const splitMatch = displayContent.match(/\n\s*\*{0,2}Key Insight/)
+                const splitIdx = splitMatch?.index ?? -1
+                if (splitIdx > 0) {
+                  const before = displayContent.slice(0, splitIdx)
+                  const after = displayContent.slice(splitIdx)
+                  return (
+                    <>
+                      <MarkdownContent content={before} />
+                      {children}
+                      <hr className="border-gray-200 dark:border-gray-700 my-3" />
+                      <MarkdownContent content={after} />
+                    </>
+                  )
+                }
+                return (
+                  <>
+                    <MarkdownContent content={displayContent} />
+                    {children}
+                  </>
+                )
+              })()
             ) : (
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  p: ({ children }) => <p className="whitespace-pre-wrap mb-2 last:mb-0">{children}</p>,
-                  strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-                  ul: ({ children }) => <ul className="list-disc list-inside mb-2">{children}</ul>,
-                  ol: ({ children }) => <ol className="list-decimal list-inside mb-2">{children}</ol>,
-                  li: ({ children }) => <li className="mb-1">{children}</li>,
-                  code: ({ className, children }) => {
-                    const match = /language-(\w+)/.exec(className || '')
-                    const isInline = !match
-                    return isInline ? (
-                      <code className="bg-gray-200 dark:bg-gray-700 px-1 py-0.5 rounded text-xs">{children}</code>
-                    ) : (
-                      <CodeBlockWithCopy language={match[1]}>
-                        {String(children).replace(/\n$/, '')}
-                      </CodeBlockWithCopy>
-                    )
-                  },
-                  table: ({ children }) => (
-                    <div className="overflow-x-auto my-2">
-                      <table className="min-w-full text-xs border-collapse">{children}</table>
-                    </div>
-                  ),
-                  thead: ({ children }) => (
-                    <thead className="bg-gray-100 dark:bg-gray-700">{children}</thead>
-                  ),
-                  tbody: ({ children }) => <tbody>{children}</tbody>,
-                  tr: ({ children }) => (
-                    <tr className="border-b border-gray-200 dark:border-gray-600">{children}</tr>
-                  ),
-                  th: ({ children }) => (
-                    <th className="px-2 py-1 text-left font-medium text-gray-700 dark:text-gray-300">{children}</th>
-                  ),
-                  td: ({ children }) => (
-                    <td className="px-2 py-1 text-gray-600 dark:text-gray-400">{children}</td>
-                  ),
-                }}
-              >
-                {displayContent}
-              </ReactMarkdown>
+              <MarkdownContent content={displayContent} />
             )}
           </div>
           )}
@@ -428,7 +459,8 @@ export function MessageBubble({
               ))}
             </div>
           )}
-          {children}
+          {/* Render children at bottom only when not already inlined above */}
+          {!(isFinalInsight && children) && children}
           {isEditing && stepNumber !== undefined && onStepEdit && (
             <div className="mt-2 flex gap-2">
               <input

@@ -95,7 +95,8 @@ interface SessionState {
   // Clarification
   clarification: ClarificationState | null
 
-  // Suggestions (for number shortcuts)
+  // Welcome / suggestions
+  welcomeTagline: string
   suggestions: string[]
 
   // Queued messages (submitted while busy)
@@ -163,6 +164,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   stepAttempt: 1,
   plan: null,
   clarification: null,
+  welcomeTagline: '',
   suggestions: [],
   queuedMessages: [],
   lastQueryStartStep: 0,
@@ -746,30 +748,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     switch (event.event_type) {
       case 'welcome': {
-        // Welcome message from server (unified with REPL)
-        // Only add if no messages exist yet (prevents duplicate on reconnect)
-        const { messages } = get()
-        if (messages.length > 0) {
-          // Already have messages, just update suggestions
-          const data = event.data as { suggestions: string[] }
-          set({ suggestions: data.suggestions || [] })
-          break
-        }
-        const data = event.data as {
-          message_markdown: string
-          suggestions: string[]
-        }
-        const welcomeMessage: Message = {
-          id: crypto.randomUUID(),
-          type: 'system',
-          content: data.message_markdown,
-          timestamp: new Date(),
-          defaultExpanded: true,
-        }
-        set((state) => ({
-          messages: [...state.messages, welcomeMessage],
-          suggestions: data.suggestions || [],
-        }))
+        // Centered greeting is rendered by ConversationPanel when messages is empty.
+        const data = event.data as { suggestions: string[]; tagline?: string; reliable_adjective?: string; honest_adjective?: string }
+        const tagline = data.reliable_adjective && data.honest_adjective
+          ? `I'm **Vera**, your ${data.reliable_adjective} and ${data.honest_adjective} data analyst. _${data.tagline || ''}_`
+          : ''
+        set({ suggestions: data.suggestions || [], welcomeTagline: tagline })
         break
       }
 

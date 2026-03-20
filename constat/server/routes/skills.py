@@ -300,11 +300,14 @@ async def create_skill_from_proof(
     from constat.server.routes.data import _gather_source_configs
     _apis, _databases, _documents = _gather_source_configs(managed)
 
-    # Gather actual output schemas from datastore tables
+    # Gather actual output schemas from datastore tables (exclude views — they are
+    # intermediate lazy artifacts, not final outputs documented in SKILL.md)
     result_schemas = {}
     if session.datastore:
         table_list = proof_result.get("datastore_tables") or session.datastore.list_tables()
         for table_info in table_list:
+            if isinstance(table_info, dict) and table_info.get("is_view"):
+                continue
             local_table_name = table_info if isinstance(table_info, str) else table_info.get("name", "")
             if local_table_name:
                 schema = session.datastore.get_table_schema(local_table_name)

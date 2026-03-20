@@ -9,6 +9,7 @@
 """DAG mixin: _execute_dag_node and related helpers."""
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -1270,20 +1271,49 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 logger.warning(f"[SKILL_EXEC] Entry point returned {type(results)}, expected dict")
                 return None
 
-            # Save result tables to datastore
-            # run_proof() returns {name: parquet_path} or {name: DataFrame}
+            # Save result artifacts to datastore
+            # run_proof() returns {name: DataFrame | str | dict | bytes | ("__view__", sql)}
             import pandas as pd
+            import base64
             saved_tables = []
+            saved_artifacts = []
             for name, val in results.items():
                 if name == '_result':
                     continue
-                if isinstance(val, pd.DataFrame):
+                if isinstance(val, tuple) and len(val) == 2 and val[0] == "__view__":
+                    # Lazy view — recreate in session DuckDB
+                    view_sql = val[1]
+                    # Strip CREATE VIEW prefix if present (duckdb_views() returns full DDL)
+                    m = re.match(r"CREATE\s+VIEW\s+\S+\s+AS\s+", view_sql, re.IGNORECASE)
+                    if m:
+                        view_sql = view_sql[m.end():]
+                    self.datastore.create_view(name, view_sql, step_number=1)
+                    saved_tables.append(name)
+                elif isinstance(val, pd.DataFrame):
                     self.datastore.save_dataframe(name, val, step_number=1)
                     saved_tables.append(name)
                 elif isinstance(val, str) and val.endswith('.parquet'):
                     df = pd.read_parquet(val)
                     self.datastore.save_dataframe(name, df, step_number=1)
                     saved_tables.append(name)
+                elif isinstance(val, bytes):
+                    self.datastore.add_artifact(
+                        step_number=1, attempt=1, artifact_type="png",
+                        content=base64.b64encode(val).decode(), name=name,
+                    )
+                    saved_artifacts.append(name)
+                elif isinstance(val, dict):
+                    self.datastore.add_artifact(
+                        step_number=1, attempt=1, artifact_type="json",
+                        content=json.dumps(val), name=name,
+                    )
+                    saved_artifacts.append(name)
+                elif isinstance(val, str):
+                    self.datastore.add_artifact(
+                        step_number=1, attempt=1, artifact_type="markdown",
+                        content=val, name=name,
+                    )
+                    saved_artifacts.append(name)
 
             # Save _result as the primary output
             primary_result = results.get('_result')
@@ -1295,20 +1325,22 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
 
             duration_ms = int((time.time() - start_time) * 1000)
 
+            total_saved = len(saved_tables) + len(saved_artifacts)
             self._emit_event(StepEvent(
                 event_type="step_complete",
                 step_number=1,
                 data={
-                    "goal": f"Skill execution complete ({len(saved_tables)} tables)",
+                    "goal": f"Skill execution complete ({total_saved} artifacts)",
                     "duration_ms": duration_ms,
                 }
             ))
 
-            logger.info(f"[SKILL_EXEC] Success: {len(saved_tables)} tables saved in {duration_ms}ms")
+            logger.info(f"[SKILL_EXEC] Success: {len(saved_tables)} tables, {len(saved_artifacts)} artifacts in {duration_ms}ms")
 
             return {
                 "steps": [{"step_number": 1, "goal": f"Skill: {skill_name}", "status": "success"}],
                 "tables": saved_tables,
+                "artifacts": saved_artifacts,
                 "mode": "skill",
                 "duration_ms": duration_ms,
             }

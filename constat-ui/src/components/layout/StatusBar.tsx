@@ -1,9 +1,11 @@
 // Status Bar component
 
+import { useState } from 'react'
 import { useSessionStore } from '@/store/sessionStore'
 import { useUIStore } from '@/store/uiStore'
 import {
   Bars3Icon,
+  PencilSquareIcon,
   SignalIcon,
   SignalSlashIcon,
   SunIcon,
@@ -21,8 +23,23 @@ const statusColors: Record<string, string> = {
 }
 
 export function StatusBar() {
-  const { session, status, wsConnected } = useSessionStore()
+  const { session, status, wsConnected, createSession } = useSessionStore()
   const { theme, setTheme, toggleMenu } = useUIStore()
+  const [isCreating, setIsCreating] = useState(false)
+
+  const handleNewConversation = async () => {
+    if (isCreating) return
+    setIsCreating(true)
+    try {
+      const { useProofStore } = await import('@/store/proofStore')
+      useProofStore.getState().clearFacts()
+      const { useAuthStore } = await import('@/store/authStore')
+      const userId = useAuthStore.getState().userId
+      await createSession(userId, true)
+    } finally {
+      setIsCreating(false)
+    }
+  }
 
   const toggleTheme = () => {
     const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light'
@@ -38,6 +55,16 @@ export function StatusBar() {
         aria-label="Toggle menu"
       >
         <Bars3Icon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+      </button>
+
+      {/* New conversation */}
+      <button
+        onClick={handleNewConversation}
+        disabled={isCreating}
+        className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+        title="New conversation"
+      >
+        <PencilSquareIcon className={`w-5 h-5 text-gray-600 dark:text-gray-400${isCreating ? ' animate-spin' : ''}`} />
       </button>
 
       {/* Logo/Title */}

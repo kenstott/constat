@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react'
 import { QueueListIcon, ArrowUpIcon } from '@heroicons/react/24/solid'
-import { XMarkIcon, AtSymbolIcon, PaperClipIcon, CheckBadgeIcon, BoltIcon, StopIcon, PlusIcon } from '@heroicons/react/24/outline'
+import { XMarkIcon, AtSymbolIcon, PaperClipIcon, CheckBadgeIcon, BoltIcon, StopIcon } from '@heroicons/react/24/outline'
 import { useArtifactStore } from '@/store/artifactStore'
 import { useUIStore } from '@/store/uiStore'
 import { useProofStore } from '@/store/proofStore'
@@ -174,11 +174,10 @@ function InputToolbar({
   onSubmit: () => void
   onInsertAt: () => void
 }) {
-  const { status, cancelExecution, createSession, submitQuery } = useSessionStore()
+  const { status, cancelExecution, submitQuery } = useSessionStore()
   const { stepCodes, tables } = useArtifactStore()
   const { briefMode, toggleBriefMode } = useUIStore()
   const { openPanel: openProofPanel, clearFacts } = useProofStore()
-  const [isCreating, setIsCreating] = useState(false)
 
   const isExecuting = status === 'planning' || status === 'executing'
   const hasExecutedPlan = stepCodes.length > 0 || tables.length > 0
@@ -187,20 +186,6 @@ function InputToolbar({
     clearFacts()
     openProofPanel()
     submitQuery('/reason', true)
-  }
-
-  const handleNewQuery = async () => {
-    if (isCreating || isExecuting) return
-    setIsCreating(true)
-    try {
-      const { useProofStore: getProofStore } = await import('@/store/proofStore')
-      getProofStore.getState().clearFacts()
-      const { useAuthStore } = await import('@/store/authStore')
-      const userId = useAuthStore.getState().userId
-      await createSession(userId, true)
-    } finally {
-      setIsCreating(false)
-    }
   }
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -228,12 +213,11 @@ function InputToolbar({
     <div className="flex items-center justify-between px-3 pb-2.5">
       <div className="flex items-center gap-1">
         <button
-          onClick={handleNewQuery}
-          disabled={isCreating || isExecuting}
-          className="px-2 py-1 rounded-md text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition-colors"
-          title="New query"
+          onClick={handleAttachClick}
+          className="px-2 py-1 rounded-md text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          title="Attach file as data source"
         >
-          <PlusIcon className={`w-4 h-4${isCreating ? ' animate-spin' : ''}`} />
+          <PaperClipIcon className="w-4 h-4" />
         </button>
         <button
           onClick={onInsertAt}
@@ -241,14 +225,6 @@ function InputToolbar({
           title="Insert @mention"
         >
           <AtSymbolIcon className="w-4 h-4" />
-        </button>
-        <button
-          onClick={handleAttachClick}
-          className="flex items-center gap-1 px-2 py-1 rounded-md text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-          title="Attach file as data source"
-        >
-          <PaperClipIcon className="w-4 h-4" />
-          <span className="text-xs">Attach</span>
         </button>
         <input
           ref={fileInputRef}
@@ -262,6 +238,7 @@ function InputToolbar({
           <button
             onClick={cancelExecution}
             className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 animate-pulse transition-colors"
+            title="Cancel execution"
           >
             <StopIcon className="w-3.5 h-3.5" />
             Cancel

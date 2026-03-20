@@ -84,6 +84,16 @@ def _build_domain_maps(config, session=None) -> tuple[dict[str, str], dict[str, 
         for doc_name in dcfg.documents:
             source_to_domain[doc_name] = fname
 
+    # Root config resources belong to __base__ (system domain)
+    for db_name in config.databases:
+        source_to_domain[db_name] = "__base__"
+    if config.apis:
+        for api_name in config.apis:
+            source_to_domain[api_name] = "__base__"
+    if config.documents:
+        for doc_name in config.documents:
+            source_to_domain[doc_name] = "__base__"
+
     # Authoritative mapping from SessionResources (tracks source for each resource)
     resources = getattr(session, "resources", None) if session else None
     if resources:
@@ -169,7 +179,7 @@ async def list_glossary(
     domain_path_map, source_to_domain = _build_domain_maps(config, managed.session)
 
     def _resolve_domain(row: dict) -> str | None:
-        d = row.get("domain") or row.get("entity_domain_id")
+        d = row.get("domain")
         if d:
             return d
         return _resolve_entity_domain(row.get("entity_id"), vs, source_to_domain)
@@ -198,7 +208,7 @@ async def list_glossary(
             eff = r.get("_effective_domain")
             if eff == "cross-domain":
                 return include_cross
-            if include_system and not eff:
+            if include_system and eff == "__base__":
                 return True
             if eff in explicit_domains:
                 return True
@@ -208,6 +218,8 @@ async def list_glossary(
     terms = []
     for row in sorted(rows, key=lambda r: r["name"]):
         effective_domain = row["_effective_domain"]
+        if effective_domain == "__base__":
+            effective_domain = "system"
         terms.append(GlossaryTermResponse(
             name=row["name"],
             display_name=row["display_name"],

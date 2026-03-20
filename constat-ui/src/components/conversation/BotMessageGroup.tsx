@@ -1,6 +1,8 @@
 // Bot message group — collapses thinking/plan/steps into a summary with expandable detail
 
 import { useState, useMemo, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { MessageBubble, StepDisplayMode } from './MessageBubble'
 import {
   CheckCircleIcon,
@@ -86,7 +88,7 @@ export function BotMessageGroup({
     <div>
       {/* Avatar header */}
       <div className="flex items-center gap-3 mb-2">
-        <div className={`w-8 h-8 rounded-full flex items-center justify-center bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800 ${isInProgress ? 'animate-pulse' : ''}`}>
+        <div className={`w-8 h-8 rounded-lg flex items-center justify-center bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800 ${isInProgress ? 'animate-pulse' : ''}`}>
           <VeraIcon className="w-5 h-5" />
         </div>
         <span className="font-semibold text-sm text-gray-900 dark:text-gray-100">Vera</span>
@@ -211,8 +213,9 @@ export function BotMessageGroup({
             stepOutputs={message.stepNumber ? stepOutputsMap.get(message.stepNumber) : undefined}
             onOutputClick={(output) => onOutputClick(message.stepNumber, output)}
             onRoleClick={onRoleClick}
-          />
-          {message.isFinalInsight && <InlineArtifacts />}
+          >
+            {message.isFinalInsight && <InlineArtifacts />}
+          </MessageBubble>
         </div>
       ))}
     </div>
@@ -222,44 +225,25 @@ export function BotMessageGroup({
 // Inline display of published artifacts (tables + non-table artifacts) within the response
 function InlineArtifacts() {
   const { tables, artifacts } = useArtifactStore()
-  const { showArtifactPanel, expandArtifactSection, expandResultStep } = useUIStore()
+  const { openFullscreenArtifact } = useUIStore()
   const { session } = useSessionStore()
 
   // Filter to "published" artifacts — key results and starred tables
   const publishedTables = tables.filter((t) => t.is_starred)
   const internalTypes = new Set(['code', 'output', 'error', 'stdout', 'stderr', 'table'])
+  const mdTypes = new Set(['markdown', 'md'])
   const publishedArtifacts = artifacts.filter(
     (a) => a.step_number > 0 && !internalTypes.has(a.artifact_type) && (a.is_key_result || a.is_starred)
   )
 
   if (publishedTables.length === 0 && publishedArtifacts.length === 0) return null
 
-  const handleTableClick = (tableName: string, stepNumber: number) => {
-    showArtifactPanel()
-    expandArtifactSection('results')
-    if (stepNumber) expandResultStep(stepNumber)
-    setTimeout(() => {
-      const el = document.getElementById(`table-${tableName}`)
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        el.classList.add('ring-2', 'ring-primary-400')
-        setTimeout(() => el.classList.remove('ring-2', 'ring-primary-400'), 2000)
-      }
-    }, 150)
+  const handleTableClick = (tableName: string) => {
+    openFullscreenArtifact({ type: 'table', name: tableName })
   }
 
-  const handleArtifactClick = (id: number, stepNumber: number) => {
-    showArtifactPanel()
-    expandArtifactSection('results')
-    if (stepNumber) expandResultStep(stepNumber)
-    setTimeout(() => {
-      const el = document.getElementById(`artifact-${id}`)
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        el.classList.add('ring-2', 'ring-primary-400')
-        setTimeout(() => el.classList.remove('ring-2', 'ring-primary-400'), 2000)
-      }
-    }, 150)
+  const handleArtifactClick = (id: number) => {
+    openFullscreenArtifact({ type: 'artifact', id })
   }
 
   return (
@@ -270,23 +254,74 @@ function InlineArtifacts() {
           key={table.name}
           table={table}
           sessionId={session?.session_id}
-          onClick={() => handleTableClick(table.name, table.step_number)}
+          onClick={() => handleTableClick(table.name)}
         />
       ))}
-      {/* Non-table artifacts as banners */}
-      {publishedArtifacts.map((artifact) => (
-        <button
-          key={artifact.id}
-          onClick={() => handleArtifactClick(artifact.id, artifact.step_number)}
-          className="flex items-center gap-2 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors text-left"
-        >
-          <DocumentTextIcon className="w-4 h-4 text-primary-500 flex-shrink-0" />
-          <span className="text-sm font-medium text-gray-900 dark:text-gray-100 flex-1 truncate">
+      {/* Markdown artifacts rendered inline; others as banners */}
+      {publishedArtifacts.map((artifact) =>
+        mdTypes.has(artifact.artifact_type?.toLowerCase()) ? (
+          <InlineMarkdownArtifact
+            key={artifact.id}
+            artifact={artifact}
+            sessionId={session?.session_id}
+            onClick={() => handleArtifactClick(artifact.id)}
+          />
+        ) : (
+          <button
+            key={artifact.id}
+            onClick={() => handleArtifactClick(artifact.id)}
+            className="flex items-center gap-2 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors text-left"
+          >
+            <DocumentTextIcon className="w-4 h-4 text-primary-500 flex-shrink-0" />
+            <span className="text-sm font-medium text-gray-900 dark:text-gray-100 flex-1 truncate">
+              {artifact.title || artifact.name}
+            </span>
+            <span className="text-xs text-primary-600 dark:text-primary-400">View</span>
+          </button>
+        )
+      )}
+    </div>
+  )
+}
+
+// Inline rendered markdown artifact content
+function InlineMarkdownArtifact({
+  artifact,
+  sessionId,
+  onClick,
+}: {
+  artifact: { id: number; name: string; title?: string }
+  sessionId?: string
+  onClick: () => void
+}) {
+  const [content, setContent] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!sessionId) return
+    api.get<{ content: string }>(`/sessions/${sessionId}/artifacts/${artifact.id}`)
+      .then((data) => setContent(data.content))
+      .catch(() => {})
+  }, [sessionId, artifact.id])
+
+  return (
+    <div
+      className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden cursor-pointer hover:border-primary-300 dark:hover:border-primary-700 transition-colors"
+      onClick={onClick}
+    >
+      <div className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800/50">
+        <div className="flex items-center gap-2">
+          <DocumentTextIcon className="w-4 h-4 text-primary-500" />
+          <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
             {artifact.title || artifact.name}
           </span>
-          <span className="text-xs text-primary-600 dark:text-primary-400">View</span>
-        </button>
-      ))}
+        </div>
+        <span className="text-xs text-primary-600 dark:text-primary-400">Expand</span>
+      </div>
+      {content && (
+        <div className="px-3 py-2 text-sm text-gray-900 dark:text-gray-100 prose prose-sm dark:prose-invert max-w-none max-h-[300px] overflow-y-auto">
+          <MarkdownContent content={content} />
+        </div>
+      )}
     </div>
   )
 }
@@ -302,13 +337,20 @@ function InlineTablePreview({
   onClick: () => void
 }) {
   const [rows, setRows] = useState<Record<string, unknown>[] | null>(null)
+  const [cols, setCols] = useState<string[]>(table.columns)
 
   useEffect(() => {
     if (!sessionId) return
-    api.get<{ rows: Record<string, unknown>[] }>(`/sessions/${sessionId}/tables/${encodeURIComponent(table.name)}/preview?limit=5`)
-      .then((data) => setRows(data.rows))
+    api.get<{ data: Record<string, unknown>[]; columns: string[] }>(`/sessions/${sessionId}/tables/${encodeURIComponent(table.name)}?page=1&page_size=5`)
+      .then((resp) => {
+        setRows(resp.data)
+        if (resp.columns?.length) setCols(resp.columns)
+      })
       .catch(() => {})
   }, [sessionId, table.name])
+
+  // Use API columns, fall back to prop columns, fall back to keys from first row
+  const displayCols = cols.length > 0 ? cols : (rows?.[0] ? Object.keys(rows[0]) : [])
 
   return (
     <div
@@ -328,12 +370,12 @@ function InlineTablePreview({
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-700">
-                {table.columns.slice(0, 6).map((col) => (
+                {displayCols.slice(0, 6).map((col) => (
                   <th key={col} className="px-2 py-1 text-left font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
                     {col}
                   </th>
                 ))}
-                {table.columns.length > 6 && (
+                {displayCols.length > 6 && (
                   <th className="px-2 py-1 text-left font-medium text-gray-400">...</th>
                 )}
               </tr>
@@ -341,12 +383,12 @@ function InlineTablePreview({
             <tbody>
               {rows.map((row, i) => (
                 <tr key={i} className="border-b border-gray-100 dark:border-gray-800 last:border-0">
-                  {table.columns.slice(0, 6).map((col) => (
+                  {displayCols.slice(0, 6).map((col) => (
                     <td key={col} className="px-2 py-1 text-gray-600 dark:text-gray-400 whitespace-nowrap max-w-[150px] truncate">
                       {String(row[col] ?? '')}
                     </td>
                   ))}
-                  {table.columns.length > 6 && (
+                  {displayCols.length > 6 && (
                     <td className="px-2 py-1 text-gray-400">...</td>
                   )}
                 </tr>
@@ -356,5 +398,50 @@ function InlineTablePreview({
         </div>
       )}
     </div>
+  )
+}
+
+// Simple markdown renderer for inline artifact content
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+        strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+        ul: ({ children }) => <ul className="list-disc list-inside mb-2">{children}</ul>,
+        ol: ({ children }) => <ol className="list-decimal list-inside mb-2">{children}</ol>,
+        li: ({ children }) => <li className="mb-1">{children}</li>,
+        table: ({ children }) => (
+          <div className="overflow-x-auto my-2">
+            <table className="min-w-full text-xs border-collapse">{children}</table>
+          </div>
+        ),
+        thead: ({ children }) => (
+          <thead className="bg-gray-100 dark:bg-gray-700">{children}</thead>
+        ),
+        tr: ({ children }) => (
+          <tr className="border-b border-gray-200 dark:border-gray-600">{children}</tr>
+        ),
+        th: ({ children }) => (
+          <th className="px-2 py-1 text-left font-medium text-gray-700 dark:text-gray-300">{children}</th>
+        ),
+        td: ({ children }) => (
+          <td className="px-2 py-1 text-gray-600 dark:text-gray-400">{children}</td>
+        ),
+        code: ({ className, children }) => {
+          const isInline = !className
+          return isInline ? (
+            <code className="bg-gray-200 dark:bg-gray-700 px-1 py-0.5 rounded text-xs">{children}</code>
+          ) : (
+            <pre className="bg-gray-100 dark:bg-gray-800 p-2 rounded text-xs overflow-x-auto my-2">
+              <code>{children}</code>
+            </pre>
+          )
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
   )
 }

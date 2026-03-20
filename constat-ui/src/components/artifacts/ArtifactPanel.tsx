@@ -496,11 +496,7 @@ export function ArtifactPanel() {
   // Results filter - persisted in localStorage
   const [showInferencePrompt, setShowInferencePrompt] = useState<Set<string>>(new Set())
   const [collapsedInferences, setCollapsedInferences] = useState<Set<string>>(new Set<string>())
-  const [showPublishedOnly, setShowPublishedOnly] = useState(() => {
-    const stored = localStorage.getItem('constat-results-filter')
-    return stored !== 'all' // Default to published only
-  })
-  const { collapsedResultSteps, toggleResultStep } = useUIStore()
+  const { collapsedResultSteps, toggleResultStep, resultsShowPublishedOnly: showPublishedOnly, setResultsShowPublishedOnly: setShowPublishedOnly } = useUIStore()
   // Collapsible section states - persisted in localStorage
   const [resultsCollapsed, setResultsCollapsed] = useState(() => {
     return localStorage.getItem('constat-results-collapsed') === 'true'
@@ -530,11 +526,8 @@ export function ArtifactPanel() {
   const [movingFact, setMovingFact] = useState<string | null>(null)
   const [movingRule, setMovingRule] = useState<string | null>(null)
 
-  // Persist filter preference
   const toggleResultsFilter = () => {
-    const newValue = !showPublishedOnly
-    setShowPublishedOnly(newValue)
-    localStorage.setItem('constat-results-filter', newValue ? 'published' : 'all')
+    setShowPublishedOnly(!showPublishedOnly)
   }
 
   // Default inference codes to collapsed when they load

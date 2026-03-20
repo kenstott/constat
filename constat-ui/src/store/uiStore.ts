@@ -166,6 +166,10 @@ interface UIState {
   publicSessionId: string | null
   clearPublicSession: () => void
 
+  // Results filter
+  resultsShowPublishedOnly: boolean
+  setResultsShowPublishedOnly: (v: boolean) => void
+
   // Result step collapsing
   collapsedResultSteps: Set<number>
   toggleResultStep: (stepNumber: number) => void
@@ -196,6 +200,11 @@ export const useUIStore = create<UIState>()(
       fullscreenArtifact: null,
       pendingDeepLink: null,
       publicSessionId: null,
+      resultsShowPublishedOnly: localStorage.getItem('constat-results-filter') !== 'all',
+      setResultsShowPublishedOnly: (v) => {
+        set({ resultsShowPublishedOnly: v })
+        localStorage.setItem('constat-results-filter', v ? 'published' : 'all')
+      },
       collapsedResultSteps: new Set<number>(),
 
       toggleResultStep: (stepNumber) =>

@@ -109,13 +109,30 @@ The skill gets two artifacts: a **SKILL.md** (LLM-distilled patterns) and a **sc
 
 The existing `GET /{session_id}/download-inference-code` endpoint (`constat/server/routes/data.py:2487`) already generates a self-contained Python script containing:
 
-- `_DataStore` class (in-memory DuckDB + DataFrame registry)
+- `_DataStore` class (in-memory DuckDB + artifact registry)
 - API helpers (GraphQL/REST) with configured URLs
 - Database helpers (SQLAlchemy engines)
 - `llm_map()` stub for fuzzy mapping
 - Each inference as a named function with its resolved code
-- `run_reason_chain(**premises)` entry point with constant premises as kwargs
+- `run_proof(**premises)` entry point with constant premises as kwargs
 - `__main__` block for standalone execution
+
+### Artifact Return Contract
+
+`run_proof()` returns `dict[str, DataFrame | str | dict | bytes]`:
+
+| Python Type | Artifact Type | Storage | Example |
+|-------------|---------------|---------|---------|
+| `pd.DataFrame` | `table` | DuckDB table via `save_dataframe()` | Tabular results |
+| `str` | `markdown` | `_constat_artifacts` via `add_artifact()` | Reports, summaries |
+| `dict` | `json` | `_constat_artifacts` (JSON-serialized) | Config, specs, charts |
+| `bytes` | `png` | `_constat_artifacts` (base64-encoded) | Images, plots |
+
+Store methods available to skill scripts:
+- `store.save_dataframe(name, df)` — tabular data
+- `store.save_artifact(name, content, artifact_type=None)` — markdown, JSON, images
+- `store.create_view(name, sql)` — lazy SQL views (materialized at return)
+- `store.query(sql)` — ephemeral DataFrame for intermediate ops
 
 This generation logic is reused for the skill's `scripts/` directory. The script is **not regenerated** — it's the same code the user would get from the download button, but persisted inside the skill.
 

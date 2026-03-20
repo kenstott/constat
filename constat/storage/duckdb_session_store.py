@@ -347,6 +347,34 @@ class DuckDBSessionStore:
                 version = excluded.version
         """, [name, step_number, row_count, description, role_id, version])
 
+    def save_artifact(self, name: str, content, artifact_type: str = None, **kwargs) -> None:
+        """Save a non-tabular artifact (markdown, JSON, image bytes, etc.).
+
+        Mirrors _DataStore.save_artifact for skill script compatibility.
+        Delegates to add_artifact with type detection.
+        """
+        import base64
+        if artifact_type is None:
+            if isinstance(content, bytes):
+                artifact_type = "png"
+            elif isinstance(content, dict):
+                artifact_type = "json"
+            else:
+                artifact_type = "markdown"
+        if isinstance(content, dict):
+            content = json.dumps(content)
+        elif isinstance(content, bytes):
+            content = base64.b64encode(content).decode()
+        self.add_artifact(
+            step_number=kwargs.get("step_number", 0),
+            attempt=kwargs.get("attempt", 1),
+            artifact_type=artifact_type,
+            content=content,
+            name=name,
+            title=kwargs.get("title"),
+            description=kwargs.get("description"),
+        )
+
     def load_dataframe(self, name: str) -> Optional[pd.DataFrame]:
         with self._locked_conn() as conn:
             try:
@@ -367,6 +395,43 @@ class DuckDBSessionStore:
         df.attrs["_source_columns"] = list(df.columns)
         df.attrs["_source_len"] = len(df)
         return df
+
+    @property
+    def _artifacts(self) -> dict[str, any]:
+        """Return all saved artifacts: tables as DataFrames, others as native types."""
+        result = {}
+        # Tables → DataFrame
+        for t in self.list_tables():
+            df = self.load_dataframe(t["name"])
+            if df is not None:
+                result[t["name"]] = df
+        # Non-table artifacts → str | dict | bytes
+        for a in self.list_artifacts(include_content=True):
+            name = a.get("name", "")
+            atype = a.get("artifact_type", a.get("type", ""))
+            content = a.get("content", "")
+            if atype in ("code", "error", "output"):
+                continue  # internal execution artifacts
+            if atype == "json":
+                try:
+                    result[name] = json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    result[name] = content
+            elif atype in ("png", "jpeg", "svg"):
+                import base64
+                try:
+                    result[name] = base64.b64decode(content)
+                except Exception:
+                    result[name] = content
+            else:
+                # markdown, text, html, chart, mermaid, etc.
+                result[name] = content
+        return result
+
+    @property
+    def _files(self) -> dict[str, any]:
+        """Alias for _artifacts. Skill script compat."""
+        return self._artifacts
 
     def list_tables(self) -> list[dict]:
         tables = self._registry.list_tables(
@@ -536,41 +601,49 @@ class DuckDBSessionStore:
     # Federation: views, attach, file registration
     # ------------------------------------------------------------------
 
-    def create_view(self, name: str, pg_sql: str, step_number: int = 0, description: str = "") -> None:
-        """Create a lazy SQL view. PG SQL is transpiled to DuckDB."""
-        from constat.catalog.sql_transpiler import transpile_sql
-        validated = _validate_table_name(name)
-        duckdb_sql = transpile_sql(pg_sql, target_dialect="duckdb", source_dialect="postgres")
+    def create_view_raw(self, name: str, duckdb_sql: str, step_number: int = 0, description: str = "") -> None:
+        """Create a lazy SQL view from DuckDB-dialect SQL (no transpilation)."""
+        self._create_view_impl(_validate_table_name(name), duckdb_sql, step_number, description)
+
+    def _create_view_impl(self, validated_name: str, duckdb_sql: str, step_number: int = 0, description: str = "") -> None:
+        """Shared impl: create view from DuckDB-dialect SQL."""
         with self._locked_conn() as conn:
             # Drop existing TABLE if present — DuckDB can't replace a TABLE with a VIEW
             try:
-                conn.execute(f"DROP TABLE IF EXISTS {validated}")
+                conn.execute(f"DROP TABLE IF EXISTS {validated_name}")
             except duckdb.CatalogException:
                 pass
-            conn.execute(f"CREATE OR REPLACE VIEW {validated} AS {duckdb_sql}")
+            conn.execute(f"CREATE OR REPLACE VIEW {validated_name} AS {duckdb_sql}")
 
             # Probe row count and columns from the view
             try:
-                row_count = conn.execute(f"SELECT COUNT(*) FROM {validated}").fetchone()[0]
-                col_info = conn.execute(f"DESCRIBE {validated}").fetchall()
+                row_count = conn.execute(f"SELECT COUNT(*) FROM {validated_name}").fetchone()[0]
+                col_info = conn.execute(f"DESCRIBE {validated_name}").fetchall()
                 columns = [{"name": row[0], "type": row[1]} for row in col_info]
             except Exception:
                 row_count = 0
                 columns = []
 
-            self._upsert_registry(conn, validated, step_number, row_count, description, None, 1)
+            self._upsert_registry(conn, validated_name, step_number, row_count, description, None, 1)
 
         # Register in central registry
         self._registry.register_table(
             user_id=self._user_id,
             session_id=self._session_id,
-            name=name,
+            name=validated_name,
             file_path=str(self._db_path),
             row_count=row_count,
             columns=columns,
             description=description or None,
             step_number=step_number,
         )
+
+    def create_view(self, name: str, pg_sql: str, step_number: int = 0, description: str = "") -> None:
+        """Create a lazy SQL view. PG SQL is transpiled to DuckDB."""
+        from constat.catalog.sql_transpiler import transpile_sql
+        validated = _validate_table_name(name)
+        duckdb_sql = transpile_sql(pg_sql, target_dialect="duckdb", source_dialect="postgres")
+        self._create_view_impl(validated, duckdb_sql, step_number, description)
 
     def attach(self, name: str, path: str, db_type: str = "sqlite", read_only: bool = True) -> None:
         """ATTACH a source SQLite/DuckDB file. Tables queryable as schema.table.

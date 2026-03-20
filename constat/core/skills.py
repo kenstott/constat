@@ -783,7 +783,7 @@ Analysis steps (verified facts with derivation strategies):
 
 Generate a SKILL.md focused on capabilities, parameters, and return values. Do NOT describe internal implementation.
 
-The executable script is `scripts/proof.py` with a `run_proof()` function that returns `dict[str, DataFrame]` (all datasets plus `_result` key for the final output).
+The executable script is `scripts/proof.py` with a `run_proof()` function that returns `dict[str, DataFrame | str | dict | bytes]` mapping artifact names to values. Value types: DataFrame (tabular data), str (markdown/text), dict (JSON), bytes (images). The `_result` key holds the final/primary output.
 
 {f"run_proof() parameters:{chr(10)}" + chr(10).join(f"- {p['name']}: default={p['default']}" for p in script_params) if script_params else "run_proof() takes no parameters."}
 
