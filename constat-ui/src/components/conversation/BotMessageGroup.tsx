@@ -175,7 +175,7 @@ export function BotMessageGroup({
                 <CheckCircleIcon className="w-4 h-4 text-green-500 flex-shrink-0" />
                 <span className="text-left">
                   {clarificationMsg
-                    ? clarificationMsg.content
+                    ? 'Please clarify...'
                     : totalSteps > 0
                     ? `Completed ${completedSteps} step${completedSteps !== 1 ? 's' : ''}`
                     : 'Analyzed data and generated results'}

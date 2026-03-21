@@ -1382,9 +1382,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ambiguity_reason: string
           questions: Array<{ text: string; suggestions: string[]; widget?: { type: string; config: Record<string, unknown> } }>
         }
-        // Replace live/thinking with a short summary (detail is in the ClarificationDialog)
+        // Replace live/thinking with the question text (shown in expanded detail)
         clearLiveMessage()
-        const questionText = 'Please clarify...'
+        const allQuestions = (data.questions || []).map(q => q.text).filter(Boolean)
+        const questionText = allQuestions.length > 1
+          ? 'Please clarify:\n' + allQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n')
+          : allQuestions.length === 1
+            ? (allQuestions[0].match(/^please clarify/i) ? allQuestions[0] : `Please clarify: ${allQuestions[0]}`)
+            : 'Please clarify your question.'
         // Insert the question as a system message at the current position (near the active step)
         const { currentStepNumber } = get()
         const stepMsgId = currentStepNumber ? stepMessageIds[currentStepNumber] : null
