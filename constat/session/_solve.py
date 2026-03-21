@@ -608,6 +608,14 @@ class SolveMixin:
                 )
                 break
 
+        # Backfill step.domain from active domains when LLM didn't set it
+        if self.plan and hasattr(self, 'doc_tools') and self.doc_tools:
+            active = getattr(self.doc_tools, '_active_domain_ids', None)
+            if active and len(active) == 1:
+                for step in self.plan.steps:
+                    if not step.domain:
+                        step.domain = active[0]
+
         # Save plan to datastore (for UI restoration)
         logger.info("[SOLVE_TRACE] saving plan to datastore")
         self.datastore.set_session_meta("status", "executing")

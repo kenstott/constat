@@ -845,11 +845,18 @@ class ExecutionMixin:
         previous_role_id = self._current_agent_id
         self._current_agent_id = step.role_id
 
+        # Resolve domain: explicit > inferred from active domains
+        step_domain = step.domain
+        if not step_domain and hasattr(self, 'doc_tools') and self.doc_tools:
+            active = getattr(self.doc_tools, '_active_domain_ids', None)
+            if active and len(active) == 1:
+                step_domain = active[0]
+
         step_start_data: dict = {"goal": step.goal}
         if step.role_id:
             step_start_data["agent"] = step.role_id
-        if step.domain:
-            step_start_data["domain"] = step.domain
+        if step_domain:
+            step_start_data["domain"] = step_domain
         if step.skill_ids:
             step_start_data["skills"] = step.skill_ids
         self._emit_event(StepEvent(
