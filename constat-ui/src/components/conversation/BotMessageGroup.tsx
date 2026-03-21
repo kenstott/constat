@@ -63,7 +63,7 @@ export function BotMessageGroup({
   allMessages,
 }: BotMessageGroupProps) {
   const [expanded, setExpanded] = useState(false)
-  const { session, suggestions, submitQuery } = useSessionStore()
+  const { session, submitQuery } = useSessionStore()
   const { tables } = useArtifactStore()
   // Show all domains except synthetic root/user nodes (constants, not useful)
   const activeDomains = (session?.active_domains || []).filter(d => d !== 'root' && d !== 'user')
@@ -234,10 +234,19 @@ export function BotMessageGroup({
 
       {/* Output messages render as regular content below the step summary */}
       {outputMessages.map((message) => {
-        // Strip "Next Steps" section from final insight — rendered as pills below instead
-        const displayContent = message.isFinalInsight && suggestions.length > 0
-          ? message.content.replace(/\n+\*{0,2}Next Steps\*{0,2}[:\s]*\n(?:\d+\.\s+.+\n?)+/i, '').trimEnd()
+        // Extract "Next Steps" items from final insight to render as pills
+        const nextStepsMatch = message.isFinalInsight
+          ? message.content.match(/\n+\*{0,2}Next Steps\*{0,2}[:\s]*\n([\s\S]*)$/i)
+          : null
+        const extractedFollowUps = nextStepsMatch
+          ? nextStepsMatch[1].split(/\n\d+\.\s+/).filter(Boolean).map(s => s.trim())
+          : []
+        const displayContent = extractedFollowUps.length > 0
+          ? message.content.replace(/\n+\*{0,2}Next Steps\*{0,2}[:\s]*\n[\s\S]*$/i, '').trimEnd()
           : message.content
+        // Only show pills on the very last final insight
+        const isLastInsight = message.isFinalInsight &&
+          message.id === [...allMessages].reverse().find(m => m.isFinalInsight)?.id
 
         return (
           <div key={message.id} className="ml-11">
@@ -269,13 +278,13 @@ export function BotMessageGroup({
               {message.isFinalInsight && <InlineArtifacts />}
             </MessageBubble>
             {/* Follow-up suggestions as clickable pills below the final insight */}
-            {message.isFinalInsight && suggestions.length > 0 && (
+            {isLastInsight && extractedFollowUps.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-3">
-                {suggestions.map((s, i) => (
+                {extractedFollowUps.map((s, i) => (
                   <button
                     key={i}
                     onClick={() => submitQuery(s)}
-                    className="px-3 py-1.5 text-sm rounded-full border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-200 transition-colors"
+                    className="px-3 py-1.5 text-sm rounded-full border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-200 transition-colors text-left"
                   >
                     {s}
                   </button>

@@ -953,6 +953,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (startMsgId) {
           const agent = event.data.agent as string | undefined
           const stepDomain = event.data.domain as string | undefined
+          console.log(`[step_start] step=${event.step_number} agent=${agent} domain=${stepDomain} data_keys=${Object.keys(event.data).join(',')}`)
           const qualifiedRole = agent ? (stepDomain ? `${stepDomain}/${agent}` : agent) : undefined
           set((state) => ({
             messages: state.messages.map((m) =>
@@ -1381,14 +1382,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ambiguity_reason: string
           questions: Array<{ text: string; suggestions: string[]; widget?: { type: string; config: Record<string, unknown> } }>
         }
-        // Replace live/thinking with the actual question text
+        // Replace live/thinking with a short summary (detail is in the ClarificationDialog)
         clearLiveMessage()
-        const allQuestions = (data.questions || []).map(q => q.text).filter(Boolean)
-        const questionText = allQuestions.length > 1
-          ? 'Please clarify:\n' + allQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n')
-          : allQuestions.length === 1
-            ? (allQuestions[0].match(/^please clarify/i) ? allQuestions[0] : `Please clarify: ${allQuestions[0]}`)
-            : 'Please clarify your question.'
+        const questionText = 'Please clarify...'
         // Insert the question as a system message at the current position (near the active step)
         const { currentStepNumber } = get()
         const stepMsgId = currentStepNumber ? stepMessageIds[currentStepNumber] : null
