@@ -571,20 +571,35 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Merge any structured answers from clarification state
     const finalStructured = structuredAnswers || clarification?.structuredAnswers || {}
 
+    // Remap numeric keys → question text for backend (plan shows "Q: A" not "0: A")
+    const questionTexts = clarification?.questions || []
+    const textKeyedAnswers: Record<string, string> = {}
+    const textKeyedStructured: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(answers)) {
+      const idx = parseInt(String(key))
+      const qText = questionTexts[idx]?.text || String(key)
+      textKeyedAnswers[qText] = value as string
+      if (finalStructured[key] !== undefined) {
+        textKeyedStructured[qText] = finalStructured[key]
+      }
+    }
+
     // Dismiss dialog and send response FIRST — ensures modal closes immediately
-    const payload: Record<string, unknown> = { answers }
-    if (Object.keys(finalStructured).length > 0) {
-      payload.structured_answers = finalStructured
+    const payload: Record<string, unknown> = { answers: textKeyedAnswers }
+    if (Object.keys(textKeyedStructured).length > 0) {
+      payload.structured_answers = textKeyedStructured
     }
     wsManager.send('clarify', payload)
     const isInputRequest = clarification?.ambiguityReason === 'input_request'
     set({ clarification: null, status: isInputRequest ? 'executing' : 'planning' })
 
-    // Add user response bubble (right side) — answer only, question is already on the left
+    // Add user response bubble (right side) — Q&A pairs for context
     if (clarification) {
-      const answerSummary = clarification.questions
-        .map((_, i) => answers[i] || 'Skipped')
-        .join('\n\n')
+      const answerSummary = clarification.questions.length > 1
+        ? clarification.questions
+            .map((q, i) => `**${q.text}**\n${answers[i] || 'Skipped'}`)
+            .join('\n\n')
+        : answers[0] || 'Skipped'
 
       const userMsg: Message = {
         id: crypto.randomUUID(),
@@ -1368,10 +1383,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         // Replace live/thinking with the actual question text
         clearLiveMessage()
-        const rawText = data.questions?.[0]?.text || data.original_question || ''
-        const questionText = rawText
-          ? (rawText.match(/^please clarify/i) ? rawText : `Please clarify: ${rawText}`)
-          : 'Please clarify your question.'
+        const allQuestions = (data.questions || []).map(q => q.text).filter(Boolean)
+        const questionText = allQuestions.length > 1
+          ? 'Please clarify:\n' + allQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n')
+          : allQuestions.length === 1
+            ? (allQuestions[0].match(/^please clarify/i) ? allQuestions[0] : `Please clarify: ${allQuestions[0]}`)
+            : 'Please clarify your question.'
         // Insert the question as a system message at the current position (near the active step)
         const { currentStepNumber } = get()
         const stepMsgId = currentStepNumber ? stepMessageIds[currentStepNumber] : null
