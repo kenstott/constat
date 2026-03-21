@@ -28,6 +28,8 @@ interface Message {
   stepDurationMs?: number // Final duration from backend
   stepAttempts?: number // Number of attempts (retries)
   isSuperseded?: boolean // Step from a previous run (dimmed in UI)
+  stepSourcesRead?: string[]    // SQL source tables parsed from code (e.g., "hr.employees")
+  stepTablesCreated?: string[]  // tables created by this step (from step_complete event)
 }
 
 // Execution phases for live status updates
@@ -55,6 +57,20 @@ interface ClarificationState {
   currentStep: number
   answers: Record<number, string>
   structuredAnswers: Record<number, unknown>
+}
+
+// Parse SQL source table references (schema.table) from code
+function parseSourceTables(code: string): string[] {
+  const sources = new Set<string>()
+  const patterns = [
+    /\bFROM\s+([a-zA-Z_]\w*\.[a-zA-Z_]\w*)/gi,
+    /\bJOIN\s+([a-zA-Z_]\w*\.[a-zA-Z_]\w*)/gi,
+  ]
+  for (const re of patterns) {
+    let m: RegExpExecArray | null
+    while ((m = re.exec(code)) !== null) sources.add(m[1])
+  }
+  return [...sources]
 }
 
 interface QueuedMessage {
@@ -988,6 +1004,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           useArtifactStore.getState().addStepCode(event.step_number, goal, code, model)
         }
         updateStepMessage(event.step_number, `Step ${event.step_number}: Executing${goal ? ` - ${goal}` : ''}...`)
+        // Parse SQL sources from code and store on message
+        const sources = parseSourceTables(code)
+        const execMsgId = stepMessageIds[event.step_number]
+        if (sources.length > 0 && execMsgId) {
+          set((state) => ({
+            messages: state.messages.map((m) =>
+              m.id === execMsgId ? { ...m, stepSourcesRead: sources } : m
+            ),
+          }))
+        }
         set({ executionPhase: 'executing' })
         break
       }
@@ -1035,8 +1061,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           `Step ${event.step_number}: ✓ ${summary}${outputSummary}`,
           true
         )
-        // Set final duration and attempts on the message
+        // Set final duration, attempts, tables created, and sources on the message
         const completeMsgId = stepMessageIds[event.step_number]
+        const tablesCreated = result.tables_created || []
+        const completeSources = parseSourceTables(result.code || '')
         if (completeMsgId) {
           set((state) => ({
             messages: state.messages.map((m) => {
@@ -1046,6 +1074,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 ...m,
                 stepDurationMs: duration,
                 stepAttempts: result.attempts != null ? Math.max(0, result.attempts - 1) : (m.stepAttempts || 0),
+                stepTablesCreated: tablesCreated,
+                stepSourcesRead: m.stepSourcesRead?.length ? m.stepSourcesRead : completeSources,
               }
             }),
           }))
@@ -1494,17 +1524,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'proof_complete': {
         const proofStore = useProofStore.getState()
         proofStore.handleFactEvent(event.event_type, event.data as Record<string, unknown>)
-
-        // Save proof facts for session restoration
-        const { session } = get()
-        if (session) {
-          const facts = proofStore.exportFacts()
-          const summary = proofStore.proofSummary
-          if (facts.length > 0) {
-            sessionsApi.saveProofFacts(session.session_id, facts, summary).catch(err => {
-              console.error('Failed to save proof facts:', err)
-            })
-          }
+        // Facts are saved on proof_summary_ready (includes summary).
+        // If summary generation fails, proofStore.isSummaryGenerating will remain true
+        // and we save as fallback after a timeout.
+        const { session: pcSession } = get()
+        if (pcSession) {
+          setTimeout(() => {
+            const ps = useProofStore.getState()
+            if (ps.isSummaryGenerating) {
+              // Summary didn't arrive — save facts without it
+              const facts = ps.exportFacts()
+              if (facts.length > 0) {
+                sessionsApi.saveProofFacts(pcSession.session_id, facts, null).catch(err => {
+                  console.error('Failed to save proof facts (fallback):', err)
+                })
+              }
+              ps.handleFactEvent('proof_summary_ready', { summary: null })
+            }
+          }, 30000)
         }
         break
       }

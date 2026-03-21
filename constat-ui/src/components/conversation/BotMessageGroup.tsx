@@ -33,11 +33,14 @@ type StoreMessage = {
   stepDurationMs?: number
   stepAttempts?: number
   isSuperseded?: boolean
+  stepSourcesRead?: string[]
+  stepTablesCreated?: string[]
 }
 
 interface BotMessageGroupProps {
   messages: StoreMessage[]
   stepOverride?: { mode: StepDisplayMode; version: number }
+  insightOverride?: { collapsed: boolean; version: number }
   stepOutputsMap: Map<number, Array<{ type: 'table' | 'artifact'; name: string; id: string }>>
   onOutputClick: (stepNumber: number | undefined, output: { type: 'table' | 'artifact'; name: string; id: string }) => void
   onRoleClick: (role: string) => void
@@ -50,6 +53,7 @@ interface BotMessageGroupProps {
 export function BotMessageGroup({
   messages,
   stepOverride,
+  insightOverride,
   stepOutputsMap,
   onOutputClick,
   onRoleClick,
@@ -59,6 +63,14 @@ export function BotMessageGroup({
   allMessages,
 }: BotMessageGroupProps) {
   const [expanded, setExpanded] = useState(false)
+  const { session } = useSessionStore()
+  const { tables } = useArtifactStore()
+  // Show all domains except synthetic root/user nodes (constants, not useful)
+  const activeDomains = (session?.active_domains || []).filter(d => d !== 'root' && d !== 'user')
+
+  // Format filename → display name (e.g., "sales-analytics" → "Sales Analytics")
+  const domainDisplayName = (filename: string): string =>
+    filename.replace(/\.ya?ml$/, '').split(/[-_]/).map(w => w[0].toUpperCase() + w.slice(1)).join(' ')
 
   // Separate steps/thinking from output messages
   const stepMessages = messages.filter((m) => m.type === 'step' || m.type === 'thinking' || m.type === 'plan' || m.type === 'system')
@@ -95,6 +107,15 @@ export function BotMessageGroup({
         {timestamp && !isInProgress && (
           <span className="text-xs text-gray-400 dark:text-gray-500">{timestamp.toLocaleTimeString()}</span>
         )}
+        {activeDomains.length > 0 && (
+          <div className="flex flex-wrap gap-1 ml-2">
+            {activeDomains.map(d => (
+              <span key={d} className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400 font-medium">
+                {domainDisplayName(d)}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Steps: show bubbles during execution, collapsible summary when complete */}
@@ -104,32 +125,41 @@ export function BotMessageGroup({
             // In-progress: show actual step bubbles
             <div className="space-y-2">
               {stepMessages.map((message) => (
-                <MessageBubble
-                  key={message.id}
-                  type={message.type}
-                  content={message.content}
-                  timestamp={message.timestamp}
-                  stepNumber={message.stepNumber}
-                  isLive={message.isLive}
-                  isPending={message.isPending}
-                  defaultExpanded={message.defaultExpanded}
-                  isFinalInsight={message.isFinalInsight}
-                  role={message.role}
-                  skills={message.skills}
-                  stepStartedAt={message.stepStartedAt}
-                  stepDurationMs={message.stepDurationMs}
-                  stepAttempts={message.stepAttempts}
-                  stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
-                  stepDisplayModeVersion={stepOverride?.version}
-                  queryText={queryText}
-                  isSuperseded={message.isSuperseded}
-                  onStepEdit={onStepEdit}
-                  onStepDelete={onStepDelete}
-                  stepOutputs={message.stepNumber ? stepOutputsMap.get(message.stepNumber) : undefined}
-                  onOutputClick={(output) => onOutputClick(message.stepNumber, output)}
-                  onRoleClick={onRoleClick}
-                  hideHeader
-                />
+                <div key={message.id}>
+                  <MessageBubble
+                    type={message.type}
+                    content={message.content}
+                    timestamp={message.timestamp}
+                    stepNumber={message.stepNumber}
+                    isLive={message.isLive}
+                    isPending={message.isPending}
+                    defaultExpanded={message.defaultExpanded}
+                    isFinalInsight={message.isFinalInsight}
+                    role={message.role}
+                    skills={message.skills}
+                    stepStartedAt={message.stepStartedAt}
+                    stepDurationMs={message.stepDurationMs}
+                    stepAttempts={message.stepAttempts}
+                    stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
+                    stepDisplayModeVersion={stepOverride?.version}
+                    queryText={queryText}
+                    isSuperseded={message.isSuperseded}
+                    onStepEdit={onStepEdit}
+                    onStepDelete={onStepDelete}
+                    stepOutputs={message.stepNumber ? stepOutputsMap.get(message.stepNumber) : undefined}
+                    onOutputClick={(output) => onOutputClick(message.stepNumber, output)}
+                    onRoleClick={onRoleClick}
+                    stepSourcesRead={message.stepSourcesRead}
+                    stepTablesCreated={message.stepTablesCreated}
+                    hideHeader
+                  />
+                  <StepTablePreview
+                    message={message}
+                    tables={tables}
+                    sessionId={session?.session_id}
+                    onOutputClick={onOutputClick}
+                  />
+                </div>
               ))}
             </div>
           ) : allComplete ? (
@@ -154,32 +184,41 @@ export function BotMessageGroup({
               {expanded && (
                 <div className="mt-2 space-y-2 border-l-2 border-gray-200 dark:border-gray-700 pl-3 ml-1">
                   {stepMessages.map((message) => (
-                    <MessageBubble
-                      key={message.id}
-                      type={message.type}
-                      content={message.content}
-                      timestamp={message.timestamp}
-                      stepNumber={message.stepNumber}
-                      isLive={message.isLive}
-                      isPending={message.isPending}
-                      defaultExpanded={message.defaultExpanded}
-                      isFinalInsight={message.isFinalInsight}
-                      role={message.role}
-                      skills={message.skills}
-                      stepStartedAt={message.stepStartedAt}
-                      stepDurationMs={message.stepDurationMs}
-                      stepAttempts={message.stepAttempts}
-                      stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
-                      stepDisplayModeVersion={stepOverride?.version}
-                      queryText={queryText}
-                      isSuperseded={message.isSuperseded}
-                      onStepEdit={onStepEdit}
-                      onStepDelete={onStepDelete}
-                      stepOutputs={message.stepNumber ? stepOutputsMap.get(message.stepNumber) : undefined}
-                      onOutputClick={(output) => onOutputClick(message.stepNumber, output)}
-                      onRoleClick={onRoleClick}
-                      hideHeader
-                    />
+                    <div key={message.id}>
+                      <MessageBubble
+                        type={message.type}
+                        content={message.content}
+                        timestamp={message.timestamp}
+                        stepNumber={message.stepNumber}
+                        isLive={message.isLive}
+                        isPending={message.isPending}
+                        defaultExpanded={message.defaultExpanded}
+                        isFinalInsight={message.isFinalInsight}
+                        role={message.role}
+                        skills={message.skills}
+                        stepStartedAt={message.stepStartedAt}
+                        stepDurationMs={message.stepDurationMs}
+                        stepAttempts={message.stepAttempts}
+                        stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
+                        stepDisplayModeVersion={stepOverride?.version}
+                        queryText={queryText}
+                        isSuperseded={message.isSuperseded}
+                        onStepEdit={onStepEdit}
+                        onStepDelete={onStepDelete}
+                        stepOutputs={message.stepNumber ? stepOutputsMap.get(message.stepNumber) : undefined}
+                        onOutputClick={(output) => onOutputClick(message.stepNumber, output)}
+                        onRoleClick={onRoleClick}
+                        stepSourcesRead={message.stepSourcesRead}
+                        stepTablesCreated={message.stepTablesCreated}
+                        hideHeader
+                      />
+                      <StepTablePreview
+                        message={message}
+                        tables={tables}
+                        sessionId={session?.session_id}
+                        onOutputClick={onOutputClick}
+                      />
+                    </div>
                   ))}
                 </div>
               )}
@@ -201,6 +240,8 @@ export function BotMessageGroup({
             isPending={message.isPending}
             defaultExpanded={message.defaultExpanded}
             isFinalInsight={message.isFinalInsight}
+            insightCollapsed={message.isFinalInsight ? insightOverride?.collapsed : undefined}
+            insightCollapsedVersion={insightOverride?.version}
             onViewResult={message.isFinalInsight && message.content?.toLowerCase().includes('proof')
               ? openProofPanel : undefined}
             role={message.role}
@@ -323,6 +364,33 @@ function InlineMarkdownArtifact({
         </div>
       )}
     </div>
+  )
+}
+
+// Per-step inline table preview — renders when a step created exactly 1 table
+function StepTablePreview({
+  message,
+  tables,
+  sessionId,
+  onOutputClick,
+}: {
+  message: StoreMessage
+  tables: Array<{ name: string; columns: string[]; row_count: number }>
+  sessionId?: string
+  onOutputClick: (stepNumber: number | undefined, output: { type: 'table' | 'artifact'; name: string; id: string }) => void
+}) {
+  if (message.stepTablesCreated?.length !== 1 || message.stepDurationMs === undefined) return null
+  const tableName = message.stepTablesCreated[0]
+  const t = tables.find(t => t.name === tableName)
+  if (!t) return null
+  return (
+    <InlineTablePreview
+      table={t}
+      sessionId={sessionId}
+      onClick={() => onOutputClick(message.stepNumber, {
+        type: 'table', name: tableName, id: `table-${tableName}`
+      })}
+    />
   )
 }
 

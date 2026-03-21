@@ -142,12 +142,16 @@ interface MessageBubbleProps {
   stepAttempts?: number
   stepDisplayMode?: StepDisplayMode // External override for condense-all / expand-all
   stepDisplayModeVersion?: number // Increment to re-trigger override
+  insightCollapsed?: boolean // External override for collapse-all / expand-all on final insights
+  insightCollapsedVersion?: number // Increment to re-trigger override
   queryText?: string // The user query that produced this answer (for flagging)
   isSuperseded?: boolean // Step from a previous run (dimmed)
   onStepEdit?: (stepNumber: number, newGoal: string) => void
   onStepDelete?: (stepNumber: number) => void
   stepOutputs?: Array<{ type: 'table' | 'artifact'; name: string; id: string }>
   onOutputClick?: (output: { type: 'table' | 'artifact'; name: string; id: string }) => void
+  stepSourcesRead?: string[]
+  stepTablesCreated?: string[]
   onRoleClick?: (role: string) => void
   onEditMessage?: (content: string) => void
   hideHeader?: boolean // Suppress avatar+name header (used inside BotMessageGroup)
@@ -194,6 +198,8 @@ export function MessageBubble({
   stepAttempts,
   stepDisplayMode: externalStepMode,
   stepDisplayModeVersion: externalStepModeVersion,
+  insightCollapsed: externalInsightCollapsed,
+  insightCollapsedVersion: externalInsightCollapsedVersion,
   queryText,
   isSuperseded,
   onStepEdit,
@@ -201,6 +207,8 @@ export function MessageBubble({
   stepOutputs,
   onOutputClick,
   onRoleClick,
+  stepSourcesRead,
+  stepTablesCreated: _stepTablesCreated,
   onEditMessage,
   hideHeader,
 }: MessageBubbleProps) {
@@ -242,6 +250,13 @@ export function MessageBubble({
       setStepMode(externalStepMode)
     }
   }, [externalStepMode, externalStepModeVersion])
+
+  // Sync external insight collapsed override
+  useEffect(() => {
+    if (isFinalInsight && externalInsightCollapsed !== undefined) {
+      setIsExpanded(!externalInsightCollapsed)
+    }
+  }, [externalInsightCollapsed, externalInsightCollapsedVersion])
 
   // Auto-collapse step to condensed when it completes
   useEffect(() => {
@@ -443,21 +458,39 @@ export function MessageBubble({
               )}
             </div>
           )}
-          {/* Artifact/table pills for completed steps */}
-          {isStep && stepOutputs && stepOutputs.length > 0 && stepDurationMs !== undefined && !isLive && (
+          {/* Action chips — Reading (green) during execution */}
+          {isStep && stepSourcesRead && stepSourcesRead.length > 0 && isLive && !isPending && (
             <div className="flex flex-wrap gap-1 mt-1.5">
-              {stepOutputs.map((output) => (
+              {stepSourcesRead.map((source) => (
+                <span key={source} className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400">
+                  <CircleStackIcon className="w-3 h-3" />
+                  Reading {source.split('.').pop()}
+                </span>
+              ))}
+            </div>
+          )}
+          {/* Action chips — Reading (green) + Created (purple) after completion */}
+          {isStep && stepDurationMs !== undefined && !isLive && (
+            ((stepSourcesRead && stepSourcesRead.length > 0) || (stepOutputs && stepOutputs.length > 0)) && (
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {(stepSourcesRead || []).map((source) => (
+                <span key={`read-${source}`} className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400">
+                  Reading {source.split('.').pop()}
+                </span>
+              ))}
+              {(stepOutputs || []).map((output) => (
                 <button
                   key={output.id}
                   onClick={() => onOutputClick?.(output)}
-                  className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-primary-50 text-primary-600 hover:bg-primary-100 dark:bg-primary-900/20 dark:text-primary-400 dark:hover:bg-primary-900/40 transition-colors"
+                  className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 hover:bg-purple-100 dark:bg-purple-900/20 dark:text-purple-400 dark:hover:bg-purple-900/40 transition-colors"
                   title={`Jump to ${output.name}`}
                 >
                   {output.type === 'table' ? <CircleStackIcon className="w-3 h-3" /> : <StarIcon className="w-3 h-3" />}
-                  {output.name}
+                  Created {output.name}
                 </button>
               ))}
             </div>
+            )
           )}
           {/* Render children at bottom only when not already inlined above */}
           {!(isFinalInsight && children) && children}

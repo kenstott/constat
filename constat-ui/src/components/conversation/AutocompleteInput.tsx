@@ -176,7 +176,7 @@ function InputToolbar({
 }) {
   const { status, cancelExecution, submitQuery } = useSessionStore()
   const { stepCodes, tables } = useArtifactStore()
-  const { briefMode, toggleBriefMode } = useUIStore()
+  const { briefMode, toggleBriefMode, enterReasonChainMode } = useUIStore()
   const { openPanel: openProofPanel, clearFacts } = useProofStore()
 
   const isExecuting = status === 'planning' || status === 'executing'
@@ -185,6 +185,7 @@ function InputToolbar({
   const handleShowProof = () => {
     clearFacts()
     openProofPanel()
+    enterReasonChainMode()
     submitQuery('/reason', true)
   }
 

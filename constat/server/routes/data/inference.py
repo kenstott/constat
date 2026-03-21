@@ -258,8 +258,26 @@ def generate_inference_script(
         '',
     ])
 
+    # Detect document names referenced in inference code via doc_read() or
+    # llm_extract_table(document=...) — these need helpers even if _gather_source_configs
+    # missed the document (e.g. cross-domain documents).
+    import re as _re
+    _all_inf_code = '\n'.join(inf.get("code", "") for inf in inferences)
+    _code_doc_names: set[str] = set()
+    for _m in _re.finditer(r"doc_read\(['\"]([^'\"]+)['\"]\)", _all_inf_code):
+        _code_doc_names.add(_m.group(1))
+    for _m in _re.finditer(r"llm_extract_table\([^)]*document\s*=\s*['\"]([^'\"]+)['\"]", _all_inf_code):
+        _code_doc_names.add(_m.group(1))
+
+    # Merge code-detected doc names with provided documents list
+    _doc_by_name = {d['name']: d for d in (documents or [])}
+    for _dn in _code_doc_names:
+        if _dn not in _doc_by_name:
+            _doc_by_name[_dn] = {"name": _dn, "path": None}  # path unknown
+    _effective_docs = list(_doc_by_name.values())
+
     # Generate document constants and helpers
-    if documents:
+    if _effective_docs:
         lines.extend([
             '',
             '# ============================================================================',
@@ -267,9 +285,12 @@ def generate_inference_script(
             '# ============================================================================',
             '',
         ])
-        for doc in documents:
+        for doc in _effective_docs:
             const_name = f"DOC_{doc['name'].upper().replace('-', '_').replace(' ', '_')}"
-            lines.append(f"{const_name} = {doc['path']!r}")
+            if doc.get('path'):
+                lines.append(f"{const_name} = {doc['path']!r}")
+            else:
+                lines.append(f"{const_name} = None  # TODO: set path to {doc['name']!r} document")
         lines.extend([
             '',
             '',
@@ -277,7 +298,7 @@ def generate_inference_script(
             '    """Read a reference document by name. Returns the document text content."""',
             '    _doc_paths = {',
         ])
-        for doc in documents:
+        for doc in _effective_docs:
             const_name = f"DOC_{doc['name'].upper().replace('-', '_').replace(' ', '_')}"
             lines.append(f"        {doc['name']!r}: {const_name},")
         lines.extend([
@@ -421,13 +442,12 @@ def generate_inference_script(
             param_parts.append(f'{pname}={repr(value)}')
         global_overrides.append((f'_{pname}', pname))
 
-    # 2. Document paths — only if doc_read or llm_extract_table references the document
-    if documents:
-        for doc in documents:
-            if doc['name'] in all_inference_code:
-                const_name = f"DOC_{doc['name'].upper().replace('-', '_').replace(' ', '_')}"
-                param_parts.append(f"{const_name.lower()}={const_name}")
-                global_overrides.append((const_name, const_name.lower()))
+    # 2. Document paths — use _effective_docs (includes code-detected docs)
+    for doc in _effective_docs:
+        if doc['name'] in all_inference_code:
+            const_name = f"DOC_{doc['name'].upper().replace('-', '_').replace(' ', '_')}"
+            param_parts.append(f"{const_name.lower()}={const_name}")
+            global_overrides.append((const_name, const_name.lower()))
 
     # 3. Database connections — only if schema-qualified queries reference the database
     #    Use uppercase DB_X constant as default, lowercase db_x as param (matches doc pattern)

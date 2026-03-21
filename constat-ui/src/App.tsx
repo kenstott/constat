@@ -9,7 +9,8 @@ import { FullscreenArtifactModal } from '@/components/artifacts/FullscreenArtifa
 import { ClarificationDialog } from '@/components/conversation/ClarificationDialog'
 import { PlanApprovalDialog } from '@/components/conversation/PlanApprovalDialog'
 import { LoginPage } from '@/components/auth/LoginPage'
-import { ProofDAGPanel } from '@/components/proof/ProofDAGPanel'
+import { ProofDAGPanel, type ProofDAGActions } from '@/components/proof/ProofDAGPanel'
+import { ReasonChainCommandStrip } from '@/components/proof/ReasonChainCommandStrip'
 import { HelpModal } from '@/components/help/HelpModal'
 import { useSessionStore } from '@/store/sessionStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
@@ -364,41 +365,95 @@ function MainApp() {
   }, [session, createSession, userId])
 
   // Proof panel state
-  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, isPlanningComplete, proofSummary, isSummaryGenerating, closePanel: closeProofPanel, clearFacts } = useProofStore()
+  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, isPlanningComplete, proofSummary, isSummaryGenerating, closePanel: closeProofPanel, clearFacts, isProving, hasCompletedProof } = useProofStore()
   const { submitQuery } = useSessionStore()
+  const uiMode = useUIStore((s) => s.uiMode)
+  const exitReasonChainMode = useUIStore((s) => s.exitReasonChainMode)
 
   // Help modal state
   const [isHelpOpen, setIsHelpOpen] = useState(false)
+  const proofActionsRef = useRef<ProofDAGActions>(null)
 
   // Show connecting overlay until session exists and WebSocket is connected
   if (!session || !wsConnected) {
     return <ConnectingOverlay phase={initPhase} />
   }
 
-  return (
-    <>
-      <NavigationSync />
-      <MainLayout
-        conversationPanel={<ConversationPanel />}
-        artifactPanel={<ArtifactPanel />}
-      />
-      <ClarificationDialog />
-      <PlanApprovalDialog />
-      <FullscreenArtifactModal />
+  const isReasonChain = uiMode === 'reason-chain'
+  const proofComplete = !isProving && hasCompletedProof
+
+  const handleRedo = (guidance?: string) => {
+    clearFacts()
+    submitQuery(guidance ? `/reason ${guidance}` : '/reason', true)
+  }
+
+  // Explore: exit reason-chain mode. If proof incomplete, abandon (clear facts).
+  const handleExplore = () => {
+    if (!proofComplete) clearFacts()
+    closeProofPanel()
+    exitReasonChainMode()
+  }
+
+  // Check if result node exists for "Final" button
+  const hasResultNode = (() => {
+    if (proofFacts.size === 0) return false
+    const entries = Array.from(proofFacts.values())
+    // Final node = no other node depends on it
+    const depsOf = new Set(entries.flatMap(n => n.dependencies))
+    const roots = entries.filter(n => !depsOf.has(n.id))
+    return roots.length > 0 && roots[0].status === 'resolved'
+  })()
+
+  const reasonChainPanel = (
+    <div className="flex-1 flex flex-col overflow-hidden">
       <ProofDAGPanel
-        isOpen={isProofPanelOpen}
-        onClose={closeProofPanel}
+        embedded
+        isOpen
+        onClose={() => {}}
         facts={proofFacts}
         isPlanningComplete={isPlanningComplete}
         summary={proofSummary}
         isSummaryGenerating={isSummaryGenerating}
         sessionId={session?.session_id}
         onSkillCreated={() => fetchAllSkills()}
-        onRedo={(guidance) => {
-          clearFacts()
-          submitQuery(guidance ? `/reason ${guidance}` : '/reason', true)
-        }}
+        onRedo={handleRedo}
+        actionsRef={proofActionsRef}
       />
+      <ReasonChainCommandStrip
+        onExplore={handleExplore}
+        isProofComplete={proofComplete}
+        isSummaryGenerating={isSummaryGenerating}
+        hasSummary={!!proofSummary}
+        hasSessionId={!!session?.session_id}
+        hasResultNode={hasResultNode}
+        proofActions={proofActionsRef}
+      />
+    </div>
+  )
+
+  return (
+    <>
+      <NavigationSync />
+      <MainLayout
+        conversationPanel={isReasonChain ? reasonChainPanel : <ConversationPanel />}
+        artifactPanel={<ArtifactPanel />}
+      />
+      <ClarificationDialog />
+      <PlanApprovalDialog />
+      <FullscreenArtifactModal />
+      {!isReasonChain && (
+        <ProofDAGPanel
+          isOpen={isProofPanelOpen}
+          onClose={closeProofPanel}
+          facts={proofFacts}
+          isPlanningComplete={isPlanningComplete}
+          summary={proofSummary}
+          isSummaryGenerating={isSummaryGenerating}
+          sessionId={session?.session_id}
+          onSkillCreated={() => fetchAllSkills()}
+          onRedo={handleRedo}
+        />
+      )}
       <HelpModal
         isOpen={isHelpOpen}
         onClose={() => setIsHelpOpen(false)}

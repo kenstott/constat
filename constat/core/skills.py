@@ -473,7 +473,10 @@ allowed-tools: []
         if not skill:
             return False
 
-        skill_file = self._skills_dir / skill.filename / SKILL_FILENAME
+        skill_dir = self.get_skill_dir(name)
+        if not skill_dir:
+            return False
+        skill_file = skill_dir / SKILL_FILENAME
 
         # Read current content
         with open(skill_file, "r") as f:
@@ -523,7 +526,10 @@ allowed-tools: []
         if not skill:
             return False
 
-        skill_file = self._skills_dir / skill.filename / SKILL_FILENAME
+        skill_dir = self.get_skill_dir(name)
+        if not skill_dir:
+            return False
+        skill_file = skill_dir / SKILL_FILENAME
 
         # Parse the new content to validate and extract fields
         frontmatter, body = parse_frontmatter(content)
@@ -567,12 +573,22 @@ allowed-tools: []
         if not skill:
             return False
 
-        skill_dir = self._skills_dir / skill.filename
+        skill_dir = self.get_skill_dir(name)
+        if not skill_dir:
+            # Already gone from disk — just clean up in-memory
+            del self._skills[name]
+            self._active_skills.discard(name)
+            return True
         try:
             # Remove the SKILL.md file
             skill_file = skill_dir / SKILL_FILENAME
             if skill_file.exists():
                 skill_file.unlink()
+            # Remove scripts dir if present
+            scripts_dir = skill_dir / "scripts"
+            if scripts_dir.exists():
+                import shutil
+                shutil.rmtree(scripts_dir)
             # Remove the directory if empty
             if skill_dir.exists() and not any(skill_dir.iterdir()):
                 skill_dir.rmdir()
@@ -597,7 +613,10 @@ allowed-tools: []
         if not skill:
             return None
 
-        skill_file = self._skills_dir / skill.filename / SKILL_FILENAME
+        skill_dir = self.get_skill_dir(name)
+        if not skill_dir:
+            return None
+        skill_file = skill_dir / SKILL_FILENAME
         try:
             with open(skill_file, "r") as f:
                 content = f.read()
@@ -730,7 +749,7 @@ A skill file has two parts:
    - **Capability**: What the skill does (1-2 sentences)
    - **Data Sources**: Which APIs/databases it uses (names and what they provide)
    - **Parameters**: The `run_proof()` function signature — each parameter, its type, default value, and what it controls
-   - **Returns**: What datasets are returned (names, key columns, data types)
+   - **Returns**: `run_proof()` returns `dict[str, DataFrame | str | dict | bytes]` mapping artifact names to values. Document each key name, its value type, and columns for DataFrames.
    - **Usage**: How to call `run_proof()` with examples showing parameter overrides
 
 DO NOT include:

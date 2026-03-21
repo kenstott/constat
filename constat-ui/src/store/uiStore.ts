@@ -145,6 +145,11 @@ interface UIState {
   toggleBriefMode: () => void
   initPreferences: () => Promise<void>
 
+  // UI mode — exploratory (default) or reason-chain (DAG-dominant)
+  uiMode: 'exploratory' | 'reason-chain'
+  enterReasonChainMode: () => void
+  exitReasonChainMode: () => void
+
   // Panels
   menuOpen: boolean
   conversationPanelHidden: boolean
@@ -192,6 +197,7 @@ export const useUIStore = create<UIState>()(
     (set, get) => ({
       theme: 'system' as Theme,
       briefMode: false,
+      uiMode: 'exploratory' as const,
       menuOpen: false,
       conversationPanelHidden: false,
       artifactPanelHidden: true,
@@ -223,6 +229,13 @@ export const useUIStore = create<UIState>()(
           return { collapsedResultSteps: next }
         }),
       clearPublicSession: () => set({ publicSessionId: null }),
+
+      enterReasonChainMode: () => set({
+        uiMode: 'reason-chain',
+        conversationPanelHidden: false,
+        artifactPanelHidden: false,
+      }),
+      exitReasonChainMode: () => set({ uiMode: 'exploratory' }),
 
       openFullscreenArtifact: (artifact: FullscreenArtifact) => set({ fullscreenArtifact: artifact }),
       closeFullscreenArtifact: () => set({ fullscreenArtifact: null }),

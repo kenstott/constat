@@ -617,6 +617,16 @@ class CoreMixin:
     def _emit_cached_proof_events(self, result: dict) -> None:
         """Emit proof events from cached result so UI updates correctly."""
         proof_nodes = result.get("proof_nodes", [])
+
+        # Build id→name map so dependencies can use the same "{id}: {name}" format as live path
+        id_to_name = {node["id"]: node["name"] for node in proof_nodes}
+
+        def _fact_label(node: dict) -> str:
+            return f"{node['id']}: {node['name']}"
+
+        def _dep_labels(deps: list) -> list[str]:
+            return [f"{did}: {id_to_name[did]}" for did in deps if did in id_to_name]
+
         self._emit_event(StepEvent(
             event_type="proof_start",
             step_number=0,
@@ -628,9 +638,9 @@ class CoreMixin:
                 event_type="fact_start",
                 step_number=0,
                 data={
-                    "fact_name": node["name"],
+                    "fact_name": _fact_label(node),
                     "fact_description": node.get("description", ""),
-                    "dependencies": node.get("dependencies", []),
+                    "dependencies": _dep_labels(node.get("dependencies", [])),
                     "cached": True,
                 },
             ))
@@ -645,10 +655,11 @@ class CoreMixin:
                 event_type="fact_resolved",
                 step_number=0,
                 data={
-                    "name": node["name"],
+                    "fact_name": _fact_label(node),
                     "value": node.get("value"),
                     "source": node.get("source", ""),
                     "confidence": node.get("confidence", 1.0),
+                    "dependencies": _dep_labels(node.get("dependencies", [])),
                     "cached": True,
                 },
             ))
@@ -664,9 +675,9 @@ class CoreMixin:
         summary = result.get("summary")
         if not summary and self.datastore:
             try:
-                art = self.datastore.get_artifact("proof_summary")
+                art = self.datastore.get_artifact_by_name("proof_summary")
                 if art:
-                    summary = art.get("content", "")
+                    summary = art.content
             except Exception:
                 pass
         if summary:

@@ -1,6 +1,7 @@
 // Proof state store for auditable mode
 
 import { create } from 'zustand'
+import { useUIStore } from '@/store/uiStore'
 
 type NodeStatus = 'pending' | 'planning' | 'executing' | 'resolved' | 'failed' | 'blocked'
 
@@ -64,9 +65,10 @@ export const useProofStore = create<ProofState>((set, get) => ({
       return
     }
     if (eventType === 'dag_execution_start') {
-      // All fact_start events have been received - now open the panel
-      console.log('[proofStore] dag_execution_start - all nodes known, opening panel')
+      // All fact_start events have been received - enter reason-chain mode
+      console.log('[proofStore] dag_execution_start - all nodes known, entering reason-chain mode')
       set({ isPlanningComplete: true, isPanelOpen: true })
+      useUIStore.getState().enterReasonChainMode()
       return
     }
     if (eventType === 'proof_complete') {
@@ -204,9 +206,12 @@ export const useProofStore = create<ProofState>((set, get) => ({
     set({
       facts: factsMap,
       isProving: false,
+      isPanelOpen: true,
       isPlanningComplete: true,  // Restored proofs are already complete
       proofSummary: summary ?? null,
       hasCompletedProof: facts.length > 0,
     })
+    // Enter reason-chain mode so the DAG panel renders embedded
+    useUIStore.getState().enterReasonChainMode()
   },
 }))

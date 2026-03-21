@@ -1,7 +1,7 @@
 // Proof DAG Panel - Floating panel for auditable mode fact resolution visualization
 // Uses d3-dag for proper directed acyclic graph layout
 
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect, useImperativeHandle } from 'react'
 import { XMarkIcon, TableCellsIcon, ChevronDownIcon } from '@heroicons/react/24/outline'
 import * as d3dag from 'd3-dag'
 import ReactMarkdown from 'react-markdown'
@@ -40,6 +40,14 @@ interface FactNode {
   profile?: string[]
 }
 
+export interface ProofDAGActions {
+  showSkillForm: () => void
+  showTestForm: () => void
+  showSummary: () => void
+  showRedoForm: () => void
+  showFinalResult: () => void
+}
+
 interface ProofDAGPanelProps {
   isOpen: boolean
   onClose: () => void
@@ -50,6 +58,8 @@ interface ProofDAGPanelProps {
   sessionId?: string
   onSkillCreated?: () => void
   onRedo?: (guidance?: string) => void
+  embedded?: boolean  // When true, renders as flex column filling parent (no overlay/drag/resize)
+  actionsRef?: React.Ref<ProofDAGActions>  // Expose form triggers for external buttons
 }
 
 // Status symbols as per design doc
@@ -255,7 +265,7 @@ function NodeTooltip({ node, position }: { node: FactNode; position: { x: number
 }
 
 
-export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary, isSummaryGenerating = false, sessionId, onSkillCreated, onRedo }: ProofDAGPanelProps) {
+export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary, isSummaryGenerating = false, sessionId, onSkillCreated, onRedo, embedded = false, actionsRef }: ProofDAGPanelProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [allDomains, setAllDomains] = useState<DomainInfo[]>([])
@@ -271,8 +281,6 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   const [isSavingSkill, setIsSavingSkill] = useState(false)
   const [showRedoForm, setShowRedoForm] = useState(false)
   const [redoGuidance, setRedoGuidance] = useState('')
-  const [showTestForm, setShowTestForm] = useState(false)
-  const [testDomain, setTestDomain] = useState('')
   const [isSavingTest, setIsSavingTest] = useState(false)
   const [codeExpanded, setCodeExpanded] = useState(false)
   const pushSelectedNode = (node: FactNode) => { setSelectedIdStack(prev => [...prev, node.id]); setCodeExpanded(false) }
@@ -413,8 +421,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     }))
 
     return dagNodes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [structuralKey])
+  }, [facts, structuralKey])
 
   // Compute DAG layout
   const layout = useMemo(() => {
@@ -501,6 +508,54 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
 
   const isProofComplete = pendingCount === 0 && (resolvedCount > 0 || failedCount > 0)
 
+  // Save test directly to user domain (no picker needed)
+  const handleSaveTest = async () => {
+    if (!sessionId || isSavingTest) return
+    setIsSavingTest(true)
+    try {
+      let domains = allDomains
+      if (domains.length === 0) {
+        const resp = await listDomains()
+        domains = resp.domains
+        setAllDomains(domains)
+      }
+      const userDomain = domains.find(d => d.tier === 'user')
+      if (!userDomain) {
+        alert('No user domain available')
+        return
+      }
+      const fallbackNodes = Array.from(facts.values()).map(f => ({
+        id: f.id,
+        name: f.name,
+        source: f.source,
+        status: f.status,
+      }))
+      const expect = await extractExpectations(sessionId, fallbackNodes, currentQuery || undefined, summary ?? undefined)
+      const questionText = expect.suggested_question || currentQuery || finalNode?.description || finalNode?.name?.replace(/^I\d+:\s*/, '') || 'Untitled question'
+      const body: GoldenQuestionRequest = {
+        question: questionText,
+        tags: ['from-reason-chain'],
+        expect,
+        objectives: expect.objectives ?? [],
+      }
+      await saveGoldenQuestion(sessionId, userDomain.filename, null, body)
+    } catch (err) {
+      console.error('Failed to save test:', err)
+      alert(`Failed to save test: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setIsSavingTest(false)
+    }
+  }
+
+  // Expose form triggers for external buttons (used by ReasonChainCommandStrip)
+  useImperativeHandle(actionsRef, () => ({
+    showSkillForm: () => setShowSkillForm(true),
+    showTestForm: () => handleSaveTest(),
+    showSummary: () => setShowSummary(true),
+    showRedoForm: () => setShowRedoForm(true),
+    showFinalResult: () => { if (resultNode) pushSelectedNode(resultNode) },
+  }), [resultNode, allDomains])
+
   // Compute critical path: longest dependency chain by elapsed_ms (or node count)
   const criticalPath = useMemo(() => {
     if (!isProofComplete || nodes.length === 0 || failedCount > 0) return new Set<string>()
@@ -577,7 +632,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     return pathSet
   }, [nodes, isProofComplete, failedCount, finalNode])
 
-  if (!isOpen) return null
+  if (!embedded && !isOpen) return null
 
   // Render edge path with curve
   const renderEdge = (
@@ -714,11 +769,17 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   }
 
   return (
-    <div className={`fixed inset-0 z-40 ${panelPosition ? '' : 'flex items-center justify-center'} pointer-events-none`}>
+    <div className={embedded
+      ? "flex-1 flex flex-col overflow-hidden"
+      : `fixed inset-0 z-40 ${panelPosition ? '' : 'flex items-center justify-center'} pointer-events-none`
+    }>
       <div
-        ref={panelRef}
-        className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl flex flex-col pointer-events-auto border border-gray-200 dark:border-gray-700 relative"
-        style={{
+        ref={embedded ? undefined : panelRef}
+        className={embedded
+          ? "flex-1 flex flex-col min-h-0 bg-white dark:bg-gray-900"
+          : "bg-white dark:bg-gray-900 rounded-xl shadow-2xl flex flex-col pointer-events-auto border border-gray-200 dark:border-gray-700 relative"
+        }
+        style={embedded ? undefined : {
           width: panelSize.width,
           height: panelSize.height,
           maxWidth: '95vw',
@@ -726,30 +787,40 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
           ...(panelPosition ? { position: 'absolute', left: panelPosition.x, top: panelPosition.y } : {}),
         }}
       >
-        {/* Resize handles */}
-        <div className="absolute -top-1 -left-1 w-3 h-3 cursor-nw-resize" onMouseDown={(e) => handleMouseDown(e, 'nw')} />
-        <div className="absolute -top-1 -right-1 w-3 h-3 cursor-ne-resize" onMouseDown={(e) => handleMouseDown(e, 'ne')} />
-        <div className="absolute -bottom-1 -left-1 w-3 h-3 cursor-sw-resize" onMouseDown={(e) => handleMouseDown(e, 'sw')} />
-        <div className="absolute -bottom-1 -right-1 w-3 h-3 cursor-se-resize" onMouseDown={(e) => handleMouseDown(e, 'se')} />
-        <div className="absolute top-0 left-3 right-3 h-1 cursor-n-resize" onMouseDown={(e) => handleMouseDown(e, 'n')} />
-        <div className="absolute bottom-0 left-3 right-3 h-1 cursor-s-resize" onMouseDown={(e) => handleMouseDown(e, 's')} />
-        <div className="absolute left-0 top-3 bottom-3 w-1 cursor-w-resize" onMouseDown={(e) => handleMouseDown(e, 'w')} />
-        <div className="absolute right-0 top-3 bottom-3 w-1 cursor-e-resize" onMouseDown={(e) => handleMouseDown(e, 'e')} />
-        {/* Header - draggable */}
-        <div
-          className={`flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
-          onMouseDown={handleDragStart}
-        >
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-            Reason-Chain
-          </h2>
-          <button
-            onClick={onClose}
-            className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+        {!embedded && (
+          <>
+            {/* Resize handles */}
+            <div className="absolute -top-1 -left-1 w-3 h-3 cursor-nw-resize" onMouseDown={(e) => handleMouseDown(e, 'nw')} />
+            <div className="absolute -top-1 -right-1 w-3 h-3 cursor-ne-resize" onMouseDown={(e) => handleMouseDown(e, 'ne')} />
+            <div className="absolute -bottom-1 -left-1 w-3 h-3 cursor-sw-resize" onMouseDown={(e) => handleMouseDown(e, 'sw')} />
+            <div className="absolute -bottom-1 -right-1 w-3 h-3 cursor-se-resize" onMouseDown={(e) => handleMouseDown(e, 'se')} />
+            <div className="absolute top-0 left-3 right-3 h-1 cursor-n-resize" onMouseDown={(e) => handleMouseDown(e, 'n')} />
+            <div className="absolute bottom-0 left-3 right-3 h-1 cursor-s-resize" onMouseDown={(e) => handleMouseDown(e, 's')} />
+            <div className="absolute left-0 top-3 bottom-3 w-1 cursor-w-resize" onMouseDown={(e) => handleMouseDown(e, 'w')} />
+            <div className="absolute right-0 top-3 bottom-3 w-1 cursor-e-resize" onMouseDown={(e) => handleMouseDown(e, 'e')} />
+          </>
+        )}
+        {/* Header */}
+        {embedded ? (
+          <div className="flex items-center px-4 py-2">
+            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Reason-Chain</h2>
+          </div>
+        ) : (
+          <div
+            className={`flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+            onMouseDown={handleDragStart}
           >
-            <XMarkIcon className="w-5 h-5" />
-          </button>
-        </div>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Reason-Chain
+            </h2>
+            <button
+              onClick={onClose}
+              className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            >
+              <XMarkIcon className="w-5 h-5" />
+            </button>
+          </div>
+        )}
 
         {/* DAG Content */}
         <div className="flex-1 overflow-hidden p-2">
@@ -989,7 +1060,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
               </button>
             </div>
           </div>
-          <div className="flex gap-2 items-center">
+          {!embedded && <div className="flex gap-2 items-center">
             {isProofComplete && onRedo && (
               <button
                 onClick={() => setShowRedoForm(true)}
@@ -999,49 +1070,6 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                 Redo
               </button>
             )}
-            {showRedoForm && onRedo && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}>
-                <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-[480px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
-                  <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
-                    <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Redo Reason-Chain</h3>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Provide guidance for the new reasoning attempt</p>
-                  </div>
-                  <form
-                    className="px-5 py-4"
-                    onSubmit={(e) => {
-                      e.preventDefault()
-                      onRedo(redoGuidance.trim() || undefined)
-                      setShowRedoForm(false)
-                      setRedoGuidance('')
-                    }}
-                  >
-                    <textarea
-                      value={redoGuidance}
-                      onChange={(e) => setRedoGuidance(e.target.value)}
-                      placeholder="What should be different this time? (optional)"
-                      className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
-                      rows={4}
-                      autoFocus
-                    />
-                    <div className="flex justify-end gap-2 mt-4">
-                      <button
-                        type="button"
-                        onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}
-                        className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="submit"
-                        className="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors"
-                      >
-                        Reason
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              </div>
-            )}
             {isProofComplete && sessionId && !showSkillForm && (
               <button
                 onClick={() => setShowSkillForm(true)}
@@ -1050,128 +1078,14 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                 Save as Skill
               </button>
             )}
-            {isProofComplete && showSkillForm && sessionId && (
-              <form
-                className="flex items-center gap-2"
-                onSubmit={async (e) => {
-                  e.preventDefault()
-                  if (!skillName.trim() || isSavingSkill) return
-                  setIsSavingSkill(true)
-                  try {
-                    await createSkillFromProof(sessionId, skillName.trim())
-                    setShowSkillForm(false)
-                    setSkillName('')
-                    onSkillCreated?.()
-                  } catch (err) {
-                    console.error('Failed to save skill:', err)
-                  } finally {
-                    setIsSavingSkill(false)
-                  }
-                }}
-              >
-                <input
-                  type="text"
-                  value={skillName}
-                  onChange={(e) => setSkillName(e.target.value)}
-                  placeholder="Skill name..."
-                  className="px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  autoFocus
-                  disabled={isSavingSkill}
-                />
-                <button
-                  type="submit"
-                  disabled={!skillName.trim() || isSavingSkill}
-                  className="px-3 py-1 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-600/70 disabled:cursor-not-allowed rounded transition-colors flex items-center gap-1.5"
-                >
-                  {isSavingSkill ? (<><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Saving...</>) : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setShowSkillForm(false); setSkillName('') }}
-                  disabled={isSavingSkill}
-                  className="px-2 py-1 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-                >
-                  Cancel
-                </button>
-              </form>
-            )}
-            {isProofComplete && sessionId && !showTestForm && (
+            {isProofComplete && sessionId && (
               <button
-                onClick={async () => {
-                  if (allDomains.length === 0) {
-                    const resp = await listDomains()
-                    setAllDomains(resp.domains)
-                  }
-                  setShowTestForm(true)
-                }}
-                className="px-4 py-2 text-sm font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors"
+                onClick={handleSaveTest}
+                disabled={isSavingTest}
+                className="px-4 py-2 text-sm font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Save as Test
               </button>
-            )}
-            {isProofComplete && showTestForm && sessionId && (
-              <form
-                className="flex items-center gap-2"
-                onSubmit={async (e) => {
-                  e.preventDefault()
-                  if (!testDomain || isSavingTest) return
-                  setIsSavingTest(true)
-                  try {
-                    // Send client-side nodes as fallback; server prefers its own richer nodes when available
-                    const fallbackNodes = Array.from(facts.values()).map(f => ({
-                      id: f.id,
-                      name: f.name,
-                      source: f.source,
-                      status: f.status,
-                    }))
-                    const expect = await extractExpectations(sessionId, fallbackNodes, currentQuery || undefined, summary ?? undefined)
-                    // LLM-synthesized question preserves all constraints from possibly multiple
-                    // exploratory questions + follow-ups. Fall back to currentQuery if unavailable.
-                    const questionText = expect.suggested_question || currentQuery || finalNode?.description || finalNode?.name?.replace(/^I\d+:\s*/, '') || 'Untitled question'
-                    const body: GoldenQuestionRequest = {
-                      question: questionText,
-                      tags: ['from-reason-chain'],
-                      expect,
-                      objectives: expect.objectives ?? [],
-                    }
-                    await saveGoldenQuestion(sessionId, testDomain, null, body)
-                    setShowTestForm(false)
-                    setTestDomain('')
-                  } catch (err) {
-                    console.error('Failed to save test:', err)
-                    alert(`Failed to save test: ${err instanceof Error ? err.message : String(err)}`)
-                  } finally {
-                    setIsSavingTest(false)
-                  }
-                }}
-              >
-                <select
-                  value={testDomain}
-                  onChange={(e) => setTestDomain(e.target.value)}
-                  className="px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
-                  disabled={isSavingTest}
-                >
-                  <option value="">Select domain...</option>
-                  {allDomains.map(d => (
-                    <option key={d.filename} value={d.filename}>{d.name}</option>
-                  ))}
-                </select>
-                <button
-                  type="submit"
-                  disabled={!testDomain || isSavingTest}
-                  className="px-3 py-1 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:bg-amber-600/70 disabled:cursor-not-allowed rounded transition-colors flex items-center gap-1.5"
-                >
-                  {isSavingTest ? (<><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Saving...</>) : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setShowTestForm(false); setTestDomain('') }}
-                  disabled={isSavingTest}
-                  className="px-2 py-1 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-                >
-                  Cancel
-                </button>
-              </form>
             )}
             {resultNode && resultNode.status === 'resolved' && (
               <button
@@ -1205,7 +1119,106 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
             >
               Close
             </button>
-          </div>
+          </div>}
+          {/* Modal forms — render in both embedded and floating modes */}
+          {showRedoForm && onRedo && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}>
+              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-[480px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
+                <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Redo Reason-Chain</h3>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Provide guidance for the new reasoning attempt</p>
+                </div>
+                <form
+                  className="px-5 py-4"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    onRedo(redoGuidance.trim() || undefined)
+                    setShowRedoForm(false)
+                    setRedoGuidance('')
+                  }}
+                >
+                  <textarea
+                    value={redoGuidance}
+                    onChange={(e) => setRedoGuidance(e.target.value)}
+                    placeholder="What should be different this time? (optional)"
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+                    rows={4}
+                    autoFocus
+                  />
+                  <div className="flex justify-end gap-2 mt-4">
+                    <button
+                      type="button"
+                      onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}
+                      className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors"
+                    >
+                      Reason
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+          {showSkillForm && sessionId && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setShowSkillForm(false); setSkillName('') }}>
+              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-[400px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
+                <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Save as Skill</h3>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Create a reusable skill from this proof</p>
+                </div>
+                <form
+                  className="px-5 py-4"
+                  onSubmit={async (e) => {
+                    e.preventDefault()
+                    if (!skillName.trim() || isSavingSkill) return
+                    setIsSavingSkill(true)
+                    try {
+                      await createSkillFromProof(sessionId, skillName.trim())
+                      setShowSkillForm(false)
+                      setSkillName('')
+                      onSkillCreated?.()
+                    } catch (err) {
+                      console.error('Failed to save skill:', err)
+                    } finally {
+                      setIsSavingSkill(false)
+                    }
+                  }}
+                >
+                  <input
+                    type="text"
+                    value={skillName}
+                    onChange={(e) => setSkillName(e.target.value)}
+                    placeholder="Skill name..."
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    autoFocus
+                    disabled={isSavingSkill}
+                  />
+                  <div className="flex justify-end gap-2 mt-4">
+                    <button
+                      type="button"
+                      onClick={() => { setShowSkillForm(false); setSkillName('') }}
+                      disabled={isSavingSkill}
+                      className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!skillName.trim() || isSavingSkill}
+                      className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-600/70 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-1.5"
+                    >
+                      {isSavingSkill ? (<><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Saving...</>) : 'Save'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

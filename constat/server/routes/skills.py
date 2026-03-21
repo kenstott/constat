@@ -314,14 +314,26 @@ async def create_skill_from_proof(
                 if schema:
                     result_schemas[local_table_name] = schema
 
-    # Filter source configs to only those referenced in inference code
+    # Filter source configs to only those referenced in inference code or premises
     _all_code = ""
+    _premise_sources: set[str] = set()
     if session.history and session.session_id:
         _inferences = session.history.list_inference_codes(session.session_id)
         _all_code = '\n'.join(inf.get("code", "") for inf in _inferences)
-    _used_docs = [d for d in _documents if d['name'] in _all_code] or None
-    _used_dbs = [d for d in _databases if f"{d['name']}." in _all_code] or None
-    _used_apis = [a for a in _apis if f"api_{a['name']}" in _all_code] or None
+        # Also collect premise sources (e.g. "document:guidelines", "database:hr")
+        _premises = session.history.list_inference_premises(session.session_id)
+        for p in _premises:
+            src = p.get("source", "")
+            if ":" in src:
+                _premise_sources.add(src.split(":", 1)[1])
+    # Also check proof_node sources
+    for node in proof_nodes:
+        src = node.get("source", "")
+        if ":" in src:
+            _premise_sources.add(src.split(":", 1)[1])
+    _used_docs = [d for d in _documents if d['name'] in _all_code or d['name'] in _premise_sources] or None
+    _used_dbs = [d for d in _databases if f"{d['name']}." in _all_code or d['name'] in _premise_sources] or None
+    _used_apis = [a for a in _apis if f"api_{a['name']}" in _all_code or a['name'] in _premise_sources] or None
 
     # Generate SKILL.md content via LLM
     try:

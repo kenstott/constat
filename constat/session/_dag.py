@@ -780,6 +780,10 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 table_name=table_name,
                 user_request=problem,
             ) + step_hints_section
+            # Append available skill functions so LLM can call them
+            skill_fns_section = self._get_skill_functions_section()
+            if skill_fns_section:
+                inference_prompt += skill_fns_section
             if inference_learnings:
                 inference_prompt += f"\n\nLEARNINGS FROM PREVIOUS ERRORS:\n{inference_learnings}"
 
@@ -1162,6 +1166,34 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
 
             elapsed_ms = int((_time.time() - _inf_start) * 1000)
             return result_value, confidence, "llm_knowledge" if used_llm else "derived", _val_passed, _val_profile, elapsed_ms, attempt + 1
+
+    def _get_skill_functions_section(self) -> str:
+        """Build prompt section listing available skill functions for inference code generation."""
+        active_skills = self.skill_manager.active_skill_objects
+        if not active_skills:
+            return ""
+        lines = []
+        for skill in active_skills:
+            pkg_name = skill.name.replace("-", "_").replace(" ", "_")
+            exports = skill.exports
+            if not exports:
+                skill_dir = self.skill_manager.get_skill_dir(skill.name)
+                if skill_dir and (skill_dir / "scripts" / "proof.py").exists():
+                    exports = [{"script": "proof.py", "functions": ["run_proof"]}]
+            if not exports:
+                continue
+            for entry in exports:
+                for fn_name in entry.get("functions", []):
+                    namespaced = f"{pkg_name}_{fn_name}"
+                    desc = skill.description or skill.name
+                    lines.append(f"  - `{namespaced}()` — from skill '{skill.name}': {desc}")
+        if not lines:
+            return ""
+        return (
+            "\n\nAVAILABLE SKILL FUNCTIONS (pre-injected, call directly — prefer these over regenerating logic):\n"
+            + "\n".join(lines)
+            + "\nIf a skill function can compute what this inference needs, CALL IT instead of writing the logic from scratch."
+        )
 
     @staticmethod
     def _find_skill_script(scripts_dir: Path) -> Path | None:

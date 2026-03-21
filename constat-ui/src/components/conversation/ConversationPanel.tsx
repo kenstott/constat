@@ -118,6 +118,7 @@ export function ConversationPanel() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [copiedAll, setCopiedAll] = useState(false)
   const [stepOverride, setStepOverride] = useState<{ mode: StepDisplayMode; version: number } | undefined>()
+  const [insightOverride, setInsightOverride] = useState<{ collapsed: boolean; version: number } | undefined>()
   const [shareOpen, setShareOpen] = useState(false)
   const [shareEmail, setShareEmail] = useState('')
   const [shareResult, setShareResult] = useState<string | null>(null)
@@ -128,6 +129,7 @@ export function ConversationPanel() {
   const [editValue, setEditValue] = useState<string | null>(null)
 
   const hasSteps = messages.some((m) => m.type === 'step')
+  const hasInsights = messages.some((m) => m.isFinalInsight)
 
   // Compute grouped messages
   const groups = useMemo(() => groupMessages(messages), [messages])
@@ -244,11 +246,14 @@ export function ConversationPanel() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Toolbar */}
-      <div className="flex justify-end gap-1 px-4 pt-2 opacity-0 hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200">
-        {hasSteps && (
+      <div className="flex justify-end gap-1 pl-4 pr-12 pt-2 opacity-0 hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200">
+        {(hasSteps || hasInsights) && (
           <>
             <button
-              onClick={() => setStepOverride({ mode: 'oneline', version: (stepOverride?.version ?? 0) + 1 })}
+              onClick={() => {
+                setStepOverride({ mode: 'oneline', version: (stepOverride?.version ?? 0) + 1 })
+                setInsightOverride({ collapsed: true, version: (insightOverride?.version ?? 0) + 1 })
+              }}
               className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
               title="Collapse all steps"
             >
@@ -256,7 +261,10 @@ export function ConversationPanel() {
               Collapse
             </button>
             <button
-              onClick={() => setStepOverride({ mode: 'condensed', version: (stepOverride?.version ?? 0) + 1 })}
+              onClick={() => {
+                setStepOverride({ mode: 'condensed', version: (stepOverride?.version ?? 0) + 1 })
+                setInsightOverride({ collapsed: false, version: (insightOverride?.version ?? 0) + 1 })
+              }}
               className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
               title="Expand all steps"
             >
@@ -442,6 +450,7 @@ export function ConversationPanel() {
                 key={group.messages[0].id}
                 messages={group.messages}
                 stepOverride={stepOverride}
+                insightOverride={insightOverride}
                 stepOutputsMap={stepOutputsMap}
                 onOutputClick={handleOutputClick}
                 onRoleClick={handleRoleClick}

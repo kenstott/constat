@@ -1440,10 +1440,11 @@ Prove all of the above claims and provide a complete audit trail."""
             if not clean_code:
                 clean_code = code  # Use original if stripping removed everything
 
+            fact_label = f"{inf_id}: {name}"
             self._emit_event(StepEvent(
                 event_type="fact_start",
                 step_number=0,
-                data={"name": name, "replay": True},
+                data={"fact_name": fact_label, "replay": True},
             ))
 
             result = self.executor.execute(clean_code, exec_globals)
@@ -1455,6 +1456,7 @@ Prove all of the above claims and provide a complete audit trail."""
                 self._auto_save_results(result.namespace, 0)
 
                 proof_nodes.append({
+                    "id": inf_id,
                     "name": name,
                     "value": value,
                     "source": "replay",
@@ -1466,7 +1468,7 @@ Prove all of the above claims and provide a complete audit trail."""
                     event_type="fact_resolved",
                     step_number=0,
                     data={
-                        "name": name,
+                        "fact_name": fact_label,
                         "value": value,
                         "source": "replay",
                         "confidence": 1.0,
@@ -1478,6 +1480,7 @@ Prove all of the above claims and provide a complete audit trail."""
                 exec_globals.update(result.namespace)
             else:
                 proof_nodes.append({
+                    "id": inf_id,
                     "name": name,
                     "value": None,
                     "source": "replay",
@@ -1489,7 +1492,7 @@ Prove all of the above claims and provide a complete audit trail."""
                     event_type="fact_resolved",
                     step_number=0,
                     data={
-                        "name": name,
+                        "fact_name": fact_label,
                         "value": None,
                         "source": "replay",
                         "confidence": 0.0,

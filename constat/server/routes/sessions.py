@@ -352,6 +352,8 @@ async def create_session(
         if existing.user_id != effective_user_id and effective_user_id not in shared_with:
             raise HTTPException(status_code=403, detail="Not authorized to access this session")
         logger.info(f"Reconnecting to existing session {client_session_id}")
+        from constat.server.routes.learnings import _ensure_user_domain_config
+        _ensure_user_domain_config(effective_user_id, existing.session.config)
         existing.touch()
         return _session_to_response(existing)
 
@@ -361,6 +363,10 @@ async def create_session(
     logger.debug(f"[create_session] session created, getting managed session...")
     managed = session_manager.get_session(session_id)
     logger.debug(f"[create_session] got managed session")
+
+    # Ensure user domain config exists
+    from constat.server.routes.learnings import _ensure_user_domain_config
+    _ensure_user_domain_config(effective_user_id, managed.session.config)
 
     # Seed per-session prompt from global config
     managed.session_prompt = managed.session.config.system_prompt

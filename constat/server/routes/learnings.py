@@ -75,27 +75,29 @@ def get_session_manager(request: Request) -> SessionManager:
 
 def _ensure_user_domain_config(user_id: str, config: Config) -> None:
     """Create or load a user-level DomainConfig so the user appears in domain lists."""
-    filename = f"{user_id}.yaml"
+    filename = user_id  # The user directory IS the domain
     if filename in config.domains:
         return
 
-    user_dir = Path(".constat") / user_id / "domains"
+    user_dir = Path(".constat") / user_id
     user_dir.mkdir(parents=True, exist_ok=True)
-    yaml_path = user_dir / filename
+    yaml_path = user_dir / "config.yaml"
 
-    if not yaml_path.exists():
-        import yaml as _yaml
-        data = {"name": "User", "description": "Personal domain", "tier": "user", "owner": user_id}
-        yaml_path.write_text(_yaml.dump(data, default_flow_style=False))
-
-    from constat.core.config import DomainConfig
     import yaml as _yaml
-    raw = _yaml.safe_load(yaml_path.read_text()) or {}
+    from constat.core.config import DomainConfig
+
+    raw = None
+    if yaml_path.exists():
+        raw = _yaml.safe_load(yaml_path.read_text())
+
+    if not raw or "name" not in raw:
+        raw = {"name": "User", "description": "Personal domain", "tier": "user", "owner": user_id}
+        yaml_path.write_text(_yaml.dump(raw, default_flow_style=False))
+
     raw["filename"] = filename
     raw["source_path"] = str(yaml_path.resolve())
     raw["tier"] = "user"
     raw["owner"] = user_id
-    # Normalize legacy files that stored the raw user token as name
     if raw.get("name") == user_id:
         raw["name"] = "User"
     config.domains[filename] = DomainConfig(**raw)
@@ -907,19 +909,22 @@ async def list_domains(
         info.setdefault("active", True)
         info.setdefault("owner", "")
 
-    # Scan shared domains (.constat/shared/domains/*.yaml)
+    # Scan shared domains (.constat/shared/domains/{slug}/config.yaml)
     shared_domains_dir = Path(".constat") / "shared" / "domains"
     if shared_domains_dir.is_dir():
         import yaml
-        for yaml_file in sorted(shared_domains_dir.glob("*.yaml")):
-            filename = yaml_file.name
+        for domain_dir in sorted(shared_domains_dir.iterdir()):
+            config_file = domain_dir / "config.yaml"
+            if not domain_dir.is_dir() or not config_file.exists():
+                continue
+            filename = domain_dir.name
             if filename in config.domains:
                 continue
             try:
-                data = yaml.safe_load(yaml_file.read_text()) or {}
+                data = yaml.safe_load(config_file.read_text()) or {}
                 domain_infos.append({
                     "filename": filename,
-                    "name": data.get("name", yaml_file.stem),
+                    "name": data.get("name", filename),
                     "description": data.get("description", ""),
                     "tier": "shared",
                     "active": data.get("active", True),
@@ -928,35 +933,37 @@ async def list_domains(
                 })
                 from constat.core.config import DomainConfig
                 data["filename"] = filename
-                data["source_path"] = str(yaml_file.resolve())
+                data["source_path"] = str(config_file.resolve())
                 data["tier"] = "shared"
                 config.domains[filename] = DomainConfig(**data)
             except Exception as e:
                 logger.warning(f"Failed to load shared domain {filename}: {e}")
 
-    # Also scan user-level domains (.constat/{user_id}/domains/*.yaml)
+    # Scan user-level sub-domains (.constat/{user_id}/domains/{slug}/config.yaml)
     user_domains_dir = Path(".constat") / user_id / "domains"
     if user_domains_dir.is_dir():
         import yaml
-        for yaml_file in sorted(user_domains_dir.glob("*.yaml")):
-            filename = yaml_file.name
+        for domain_dir in sorted(user_domains_dir.iterdir()):
+            config_file = domain_dir / "config.yaml"
+            if not domain_dir.is_dir() or not config_file.exists():
+                continue
+            filename = domain_dir.name
             if filename in config.domains:
                 continue  # System domain takes precedence
             try:
-                data = yaml.safe_load(yaml_file.read_text()) or {}
+                data = yaml.safe_load(config_file.read_text()) or {}
                 domain_infos.append({
                     "filename": filename,
-                    "name": data.get("name", yaml_file.stem),
+                    "name": data.get("name", filename),
                     "description": data.get("description", ""),
                     "tier": "user",
                     "active": data.get("active", True),
                     "owner": user_id,
                     "steward": data.get("steward", ""),
                 })
-                # Register in config.domains so load_domain/get_domain_content work
                 from constat.core.config import DomainConfig
                 data["filename"] = filename
-                data["source_path"] = str(yaml_file.resolve())
+                data["source_path"] = str(config_file.resolve())
                 data["tier"] = "user"
                 data["owner"] = user_id
                 config.domains[filename] = DomainConfig(**data)
