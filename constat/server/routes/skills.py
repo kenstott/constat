@@ -10,7 +10,9 @@ from pathlib import Path
 
 import yaml
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from constat.server.persona_config import require_write
 from fastapi.responses import Response
@@ -551,12 +553,13 @@ async def delete_skill(
     request: Request,
     skill_name: str,
     user_id: CurrentUserId,
+    domain: Optional[str] = Query(None, description="Domain to scope deletion to"),
 ) -> dict:
     """Delete a skill."""
     server_config = get_server_config(request)
     manager = get_skill_manager(user_id, server_config.data_dir)
 
-    if not manager.delete_skill(skill_name):
+    if not manager.delete_skill(skill_name, domain=domain):
         raise HTTPException(status_code=404, detail=f"Skill not found: {skill_name}")
 
     return {"status": "deleted", "name": skill_name}

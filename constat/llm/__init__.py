@@ -854,6 +854,7 @@ def llm_extract_table(
     text: str,
     description: str,
     columns: list[str] | None = None,
+    dtypes: dict[str, str] | None = None,
 ) -> "pd.DataFrame":
     """Extract a table from document text into a DataFrame.
 
@@ -865,9 +866,15 @@ def llm_extract_table(
         description: What table to find (e.g., "employee rating scale",
                      "raise percentage guidelines").
         columns: Optional column names to enforce. If None, LLM infers them.
+        dtypes: Optional dict mapping column names to types for conversion.
+                Supported types: 'str', 'int', 'float', 'bool'.
+                Example: {'rating': 'str', 'min_raise_rate': 'float'}
 
     Returns:
         pandas DataFrame with extracted rows and columns.
+
+    Raises:
+        ValueError: If no table is found or extraction fails.
     """
     import pandas as pd
 
@@ -897,9 +904,18 @@ YOUR JSON RESPONSE:"""
 
     if not content.startswith("["):
         logger.warning(f"[LLM_EXTRACT_TABLE] Could not parse response: {content[:200]}")
-        rows = []
+        raise ValueError(
+            f"llm_extract_table failed to extract '{description}': LLM did not return a valid JSON array. "
+            f"Try a more specific description or verify the document contains the expected table."
+        )
     else:
         rows = json.loads(content)
+
+    if len(rows) == 0:
+        raise ValueError(
+            f"llm_extract_table found no rows for '{description}'. "
+            f"The document may not contain a matching table, or the description may need to be more specific."
+        )
 
     logger.info(
         f"[LLM_EXTRACT_TABLE] Extracted {len(rows)} rows for '{description}'"
@@ -1097,6 +1113,24 @@ YOUR JSON RESPONSE:"""
             )
 
         df = result_df
+
+    # --- Phase 4: Apply explicit dtype conversions ---
+    if dtypes:
+        _DTYPE_MAP = {'str': str, 'int': 'Int64', 'float': float, 'bool': 'boolean'}
+        for col, dtype_str in dtypes.items():
+            if col not in df.columns:
+                continue
+            target = _DTYPE_MAP.get(dtype_str, dtype_str)
+            try:
+                if target is str:
+                    df[col] = df[col].astype(str).str.strip()
+                else:
+                    df[col] = pd.to_numeric(df[col], errors='coerce') if target in (float, 'Int64') else df[col].astype(target)
+                    if target == 'Int64':
+                        df[col] = df[col].astype('Int64')
+                logger.info(f"[LLM_EXTRACT_TABLE] Converted '{col}' to {dtype_str}")
+            except Exception as e:
+                logger.warning(f"[LLM_EXTRACT_TABLE] Failed to convert '{col}' to {dtype_str}: {e}")
 
     return df
 

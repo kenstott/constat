@@ -329,14 +329,19 @@ export function MessageBubble({
               ) : stepDurationMs !== undefined ? (
                 <CheckIcon className="w-3.5 h-3.5 text-green-500" />
               ) : null}
-              {role && (
-                <button
-                  onClick={() => onRoleClick?.(role)}
-                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-800/50 cursor-pointer transition-colors"
-                >
-                  @{role}
-                </button>
-              )}
+              {role && (() => {
+                const parts = role.split('/')
+                const agentName = parts.length > 1 ? parts[parts.length - 1] : role
+                const domainPrefix = parts.length > 1 ? parts.slice(0, -1).join('/') : null
+                return (
+                  <button
+                    onClick={() => onRoleClick?.(agentName)}
+                    className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-800/50 cursor-pointer transition-colors"
+                  >
+                    @{domainPrefix && <span className="opacity-60">{domainPrefix}/</span>}{agentName}
+                  </button>
+                )
+              })()}
               {skills && skills.length > 0 && skills.map((skill) => (
                 <span
                   key={skill}

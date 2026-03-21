@@ -522,6 +522,7 @@ export function ArtifactPanel() {
   // Move-to-domain state
   const [domainList, setDomainList] = useState<{ filename: string; name: string }[]>([])
   const [movingSkill, setMovingSkill] = useState<string | null>(null)
+  const [deletingSkill, setDeletingSkill] = useState<string | null>(null)
   const [movingAgent, setMovingAgent] = useState<string | null>(null)
   const [movingFact, setMovingFact] = useState<string | null>(null)
   const [movingRule, setMovingRule] = useState<string | null>(null)
@@ -1042,10 +1043,13 @@ ${skill.body}`
 
   const handleDeleteSkill = async (skillName: string) => {
     if (!confirm(`Delete skill "${skillName}"?`)) return
+    setDeletingSkill(skillName)
     try {
       await deleteSkill(skillName)
     } catch (err) {
       console.error('Failed to delete skill:', err)
+    } finally {
+      setDeletingSkill(null)
     }
   }
 
@@ -3110,7 +3114,7 @@ ${skill.body}`
               const allowedTools = Array.isArray(rawTools) ? rawTools as string[] : typeof rawTools === 'string' ? rawTools.split(',').map(s => s.trim()).filter(Boolean) : undefined
 
               return (
-                <div key={skill.name} className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
+                <div key={skill.name} className={`border-b border-gray-200 dark:border-gray-700 last:border-b-0${deletingSkill === skill.name ? ' opacity-40 animate-pulse pointer-events-none' : ''}`}>
                   {/* Sub-accordion header */}
                   <div className="flex items-center group">
                     <button

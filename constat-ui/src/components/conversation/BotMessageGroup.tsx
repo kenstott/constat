@@ -63,7 +63,7 @@ export function BotMessageGroup({
   allMessages,
 }: BotMessageGroupProps) {
   const [expanded, setExpanded] = useState(false)
-  const { session } = useSessionStore()
+  const { session, suggestions, submitQuery } = useSessionStore()
   const { tables } = useArtifactStore()
   // Show all domains except synthetic root/user nodes (constants, not useful)
   const activeDomains = (session?.active_domains || []).filter(d => d !== 'root' && d !== 'user')
@@ -93,6 +93,9 @@ export function BotMessageGroup({
   // Count completed steps
   const completedSteps = stepMessages.filter((m) => m.type === 'step' && m.stepDurationMs !== undefined).length
   const totalSteps = stepMessages.filter((m) => m.type === 'step').length
+
+  // Detect clarification message in group
+  const clarificationMsg = stepMessages.find((m) => m.type === 'system' && m.content?.startsWith('Please clarify'))
 
   const timestamp = messages[0]?.timestamp
 
@@ -170,8 +173,10 @@ export function BotMessageGroup({
                 className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
               >
                 <CheckCircleIcon className="w-4 h-4 text-green-500 flex-shrink-0" />
-                <span>
-                  {totalSteps > 0
+                <span className="text-left">
+                  {clarificationMsg
+                    ? clarificationMsg.content
+                    : totalSteps > 0
                     ? `Completed ${completedSteps} step${completedSteps !== 1 ? 's' : ''}`
                     : 'Analyzed data and generated results'}
                 </span>
@@ -228,37 +233,58 @@ export function BotMessageGroup({
       )}
 
       {/* Output messages render as regular content below the step summary */}
-      {outputMessages.map((message) => (
-        <div key={message.id} className="ml-11">
-          <MessageBubble
-            hideHeader
-            type={message.type}
-            content={message.content}
-            timestamp={message.timestamp}
-            stepNumber={message.stepNumber}
-            isLive={message.isLive}
-            isPending={message.isPending}
-            defaultExpanded={message.defaultExpanded}
-            isFinalInsight={message.isFinalInsight}
-            insightCollapsed={message.isFinalInsight ? insightOverride?.collapsed : undefined}
-            insightCollapsedVersion={insightOverride?.version}
-            onViewResult={message.isFinalInsight && message.content?.toLowerCase().includes('proof')
-              ? openProofPanel : undefined}
-            role={message.role}
-            skills={message.skills}
-            stepStartedAt={message.stepStartedAt}
-            stepDurationMs={message.stepDurationMs}
-            stepAttempts={message.stepAttempts}
-            queryText={queryText}
-            isSuperseded={message.isSuperseded}
-            stepOutputs={message.stepNumber ? stepOutputsMap.get(message.stepNumber) : undefined}
-            onOutputClick={(output) => onOutputClick(message.stepNumber, output)}
-            onRoleClick={onRoleClick}
-          >
-            {message.isFinalInsight && <InlineArtifacts />}
-          </MessageBubble>
-        </div>
-      ))}
+      {outputMessages.map((message) => {
+        // Strip "Next Steps" section from final insight — rendered as pills below instead
+        const displayContent = message.isFinalInsight && suggestions.length > 0
+          ? message.content.replace(/\n+\*{0,2}Next Steps\*{0,2}[:\s]*\n(?:\d+\.\s+.+\n?)+/i, '').trimEnd()
+          : message.content
+
+        return (
+          <div key={message.id} className="ml-11">
+            <MessageBubble
+              hideHeader
+              type={message.type}
+              content={displayContent}
+              timestamp={message.timestamp}
+              stepNumber={message.stepNumber}
+              isLive={message.isLive}
+              isPending={message.isPending}
+              defaultExpanded={message.defaultExpanded}
+              isFinalInsight={message.isFinalInsight}
+              insightCollapsed={message.isFinalInsight ? insightOverride?.collapsed : undefined}
+              insightCollapsedVersion={insightOverride?.version}
+              onViewResult={message.isFinalInsight && message.content?.toLowerCase().includes('proof')
+                ? openProofPanel : undefined}
+              role={message.role}
+              skills={message.skills}
+              stepStartedAt={message.stepStartedAt}
+              stepDurationMs={message.stepDurationMs}
+              stepAttempts={message.stepAttempts}
+              queryText={queryText}
+              isSuperseded={message.isSuperseded}
+              stepOutputs={message.stepNumber ? stepOutputsMap.get(message.stepNumber) : undefined}
+              onOutputClick={(output) => onOutputClick(message.stepNumber, output)}
+              onRoleClick={onRoleClick}
+            >
+              {message.isFinalInsight && <InlineArtifacts />}
+            </MessageBubble>
+            {/* Follow-up suggestions as clickable pills below the final insight */}
+            {message.isFinalInsight && suggestions.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-3">
+                {suggestions.map((s, i) => (
+                  <button
+                    key={i}
+                    onClick={() => submitQuery(s)}
+                    className="px-3 py-1.5 text-sm rounded-full border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-200 transition-colors"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

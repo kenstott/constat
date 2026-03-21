@@ -233,7 +233,6 @@ export const useUIStore = create<UIState>()(
       enterReasonChainMode: () => set({
         uiMode: 'reason-chain',
         conversationPanelHidden: false,
-        artifactPanelHidden: false,
       }),
       exitReasonChainMode: () => set({ uiMode: 'exploratory' }),
 

@@ -376,7 +376,7 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                 step_number=0,
                 data={
                     "steps": [
-                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
+                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id, "domain": s.domain}
                         for s in follow_up_plan.steps
                     ],
                     "reasoning": planner_response.reasoning,

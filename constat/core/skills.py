@@ -391,16 +391,35 @@ class SkillManager:
         """Get the path to the 'skills' directory."""
         return self._skills_dir
 
-    def get_skill_dir(self, name: str) -> Optional[Path]:
-        """Get the full directory path for a skill, searching all skill directories."""
+    def get_skill_dir(self, name: str, domain: Optional[str] = None) -> Optional[Path]:
+        """Get the full directory path for a skill, searching all skill directories.
+
+        Args:
+            name: Skill name.
+            domain: If provided, scope search to only that domain's dir (or "user" for user dir).
+        """
         skill = self._skills.get(name)
         if not skill:
             return None
-        # Search in reverse precedence: user > domain > system (first match wins)
-        search_dirs = [self._skills_dir]
-        search_dirs.extend(reversed(self._domain_skill_dirs))
-        if self._system_skills_dir:
-            search_dirs.append(self._system_skills_dir)
+
+        if domain:
+            if domain == "user":
+                search_dirs = [self._skills_dir]
+            else:
+                # Find the domain dir matching the given domain filename
+                search_dirs = [
+                    Path(d) for d, df in self._domain_skill_domain_map.items()
+                    if df == domain
+                ]
+            if not search_dirs:
+                return None
+        else:
+            # Search in reverse precedence: user > domain > system (first match wins)
+            search_dirs = [self._skills_dir]
+            search_dirs.extend(reversed(self._domain_skill_dirs))
+            if self._system_skills_dir:
+                search_dirs.append(self._system_skills_dir)
+
         for search_dir in search_dirs:
             candidate = search_dir / skill.filename
             if candidate.exists():
@@ -560,11 +579,12 @@ allowed-tools: []
 
         return True
 
-    def delete_skill(self, name: str) -> bool:
+    def delete_skill(self, name: str, domain: Optional[str] = None) -> bool:
         """Delete a skill.
 
         Args:
             name: Skill name
+            domain: If provided, scope deletion to only that domain's dir.
 
         Returns:
             True if deleted, False if not found
@@ -573,7 +593,7 @@ allowed-tools: []
         if not skill:
             return False
 
-        skill_dir = self.get_skill_dir(name)
+        skill_dir = self.get_skill_dir(name, domain=domain)
         if not skill_dir:
             # Already gone from disk — just clean up in-memory
             del self._skills[name]

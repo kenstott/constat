@@ -216,18 +216,18 @@ class TestLlmExtractTableInternal:
         assert list(df.columns) == ["col_a", "col_b"]
 
     @patch("constat.llm._execute")
-    def test_empty_result(self, mock_execute):
+    def test_empty_result_raises(self, mock_execute):
         mock_execute.return_value = ("[]", "claude-sonnet", "anthropic")
         from constat.llm import llm_extract_table
-        df = llm_extract_table("text", "nonexistent table")
-        assert len(df) == 0
+        with pytest.raises(ValueError, match="found no rows"):
+            llm_extract_table("text", "nonexistent table")
 
     @patch("constat.llm._execute")
-    def test_invalid_json_returns_empty(self, mock_execute):
+    def test_invalid_json_raises(self, mock_execute):
         mock_execute.return_value = ("not json", "claude-sonnet", "anthropic")
         from constat.llm import llm_extract_table
-        df = llm_extract_table("text", "table")
-        assert len(df) == 0
+        with pytest.raises(ValueError, match="failed to extract"):
+            llm_extract_table("text", "table")
 
 
 # =============================================================================

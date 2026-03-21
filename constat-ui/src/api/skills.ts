@@ -55,8 +55,9 @@ export async function updateSkillContent(
 }
 
 // Delete a skill
-export async function deleteSkill(skillName: string): Promise<{ status: string; name: string }> {
-  return del<{ status: string; name: string }>(`/skills/${encodeURIComponent(skillName)}`)
+export async function deleteSkill(skillName: string, domain?: string): Promise<{ status: string; name: string }> {
+  const params = domain ? `?domain=${encodeURIComponent(domain)}` : ''
+  return del<{ status: string; name: string }>(`/skills/${encodeURIComponent(skillName)}${params}`)
 }
 
 // Set active skills

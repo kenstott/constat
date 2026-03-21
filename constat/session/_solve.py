@@ -446,6 +446,7 @@ class SolveMixin:
                             "depends_on": s.depends_on,
                             "task_type": s.task_type.value if s.task_type else None,
                             "role_id": s.role_id,
+                            "domain": s.domain,
                         }
                         for s in self.plan.steps
                     ],
@@ -628,7 +629,7 @@ class SolveMixin:
                 step_number=0,
                 data={
                     "steps": [
-                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
+                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id, "domain": s.domain}
                         for s in self.plan.steps
                     ],
                     "reasoning": planner_response.reasoning,
@@ -1055,10 +1056,10 @@ class SolveMixin:
                 step_number=0,
                 data={
                     "steps": [
-                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
+                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id, "domain": s.domain}
                         for s in current_plan.steps if s.status == StepStatus.COMPLETED
                     ] + [
-                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
+                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id, "domain": s.domain}
                         for s in new_steps
                     ],
                     "reasoning": planner_response.reasoning,

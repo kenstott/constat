@@ -108,6 +108,7 @@ export interface Step {
   expected_outputs: string[]
   depends_on: number[]
   role_id?: string | null
+  domain?: string | null
   skill_ids?: string[] | null
   code?: string
   result?: StepResult

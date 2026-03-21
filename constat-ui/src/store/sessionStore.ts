@@ -467,7 +467,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!session) return
 
     // If editedSteps provided, use those; otherwise use original plan steps (minus deleted)
-    let stepsToShow: Array<{ number: number; goal: string; role_id?: string; skill_ids?: string[] }>
+    let stepsToShow: Array<{ number: number; goal: string; role_id?: string; domain?: string; skill_ids?: string[] }>
     if (editedSteps && editedSteps.length > 0) {
       // Use edited steps - these are already renumbered and filtered
       stepsToShow = editedSteps.map(s => ({ number: s.number, goal: s.goal }))
@@ -484,6 +484,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           number: step.number ?? index + 1,
           goal: step.goal || '',
           role_id: step.role_id ?? undefined,
+          domain: step.domain ?? undefined,
           skill_ids: step.skill_ids ?? undefined,
         }))
     }
@@ -507,7 +508,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           stepNumber: step.number,
           isLive: false, // Not live until step starts
           isPending: true, // Pending animation until step starts
-          ...(step.role_id ? { role: step.role_id } : {}),
+          ...(step.role_id ? { role: step.domain ? `${step.domain}/${step.role_id}` : step.role_id } : {}),
           ...(step.skill_ids?.length ? { skills: step.skill_ids } : {}),
         }
       })
@@ -840,7 +841,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           set({ status: 'awaiting_approval', plan: planData, executionPhase: 'awaiting_approval' })
         } else {
           // Auto-approved or follow-up — create step messages and go straight to executing
-          const autoSteps = (event.data.steps as Array<{ number: number; goal: string; depends_on?: number[]; role_id?: string }>) || []
+          const autoSteps = (event.data.steps as Array<{ number: number; goal: string; depends_on?: number[]; role_id?: string; domain?: string }>) || []
           // Skip steps that already have messages (prevents duplicates on replan/re-emit)
           const existingStepNumbers = new Set(
             get().messages.filter((m) => m.type === 'step' && m.stepNumber !== undefined && !m.isSuperseded).map((m) => m.stepNumber)
@@ -859,7 +860,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 stepNumber: step.number,
                 isLive: false,
                 isPending: true,
-                ...(step.role_id ? { role: step.role_id } : {}),
+                ...(step.role_id ? { role: step.domain ? `${step.domain}/${step.role_id}` : step.role_id } : {}),
               }
             })
           autoStepMsgs.sort((a, b) => (a.stepNumber || 0) - (b.stepNumber || 0))
@@ -878,7 +879,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'plan_updated': {
         // Mid-execution replan (e.g., after user_input step) — update step list
         // without disrupting execution state or showing approval dialog
-        const updatedSteps = (event.data.steps as Array<{ number: number; goal: string; depends_on?: number[]; role_id?: string }>) || []
+        const updatedSteps = (event.data.steps as Array<{ number: number; goal: string; depends_on?: number[]; role_id?: string; domain?: string }>) || []
         // Build a fresh copy of stepMessageIds to avoid stale closure issues
         const freshIds = { ...get().stepMessageIds }
         // Remove pending step messages that are no longer in the plan
@@ -910,7 +911,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             stepNumber: step.number,
             isLive: false,
             isPending: true,
-            role: step.role_id,
+            role: step.domain ? `${step.domain}/${step.role_id}` : step.role_id,
           }))
           for (const msg of newMsgs) {
             freshIds[msg.stepNumber!] = msg.id
@@ -932,12 +933,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
         // Agent/skills are shown as badges in the step header (not in content)
         updateStepMessage(event.step_number, `Step ${event.step_number}: ${goal}...`)
-        // Set stepStartedAt on the step message
+        // Set stepStartedAt + domain-qualified role on the step message
         const startMsgId = stepMessageIds[event.step_number]
         if (startMsgId) {
+          const agent = event.data.agent as string | undefined
+          const stepDomain = event.data.domain as string | undefined
+          const qualifiedRole = agent ? (stepDomain ? `${stepDomain}/${agent}` : agent) : undefined
           set((state) => ({
             messages: state.messages.map((m) =>
-              m.id === startMsgId ? { ...m, stepStartedAt: Date.now(), stepAttempts: 0 } : m
+              m.id === startMsgId ? { ...m, stepStartedAt: Date.now(), stepAttempts: 0, ...(qualifiedRole ? { role: qualifiedRole } : {}) } : m
             ),
           }))
         }
@@ -1364,7 +1368,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         // Replace live/thinking with the actual question text
         clearLiveMessage()
-        const questionText = data.questions?.[0]?.text || data.original_question || 'Please clarify your question.'
+        const rawText = data.questions?.[0]?.text || data.original_question || ''
+        const questionText = rawText
+          ? (rawText.match(/^please clarify/i) ? rawText : `Please clarify: ${rawText}`)
+          : 'Please clarify your question.'
         // Insert the question as a system message at the current position (near the active step)
         const { currentStepNumber } = get()
         const stepMsgId = currentStepNumber ? stepMessageIds[currentStepNumber] : null

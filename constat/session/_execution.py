@@ -283,6 +283,7 @@ class ExecutionMixin:
             description: str,
             document: str,
             columns: list[str] | None = None,
+            dtypes: dict[str, str] | None = None,
         ) -> "pd.DataFrame":
             """Extract a table from a document into a DataFrame.
 
@@ -293,18 +294,22 @@ class ExecutionMixin:
                 description: What table to find (e.g., "raise guidelines").
                 document: Document name as configured (e.g., 'business_rules').
                 columns: Optional column names to enforce.
+                dtypes: Optional dict mapping column names to types ('str', 'int', 'float', 'bool').
 
             Returns:
                 pandas DataFrame with extracted rows and columns.
+
+            Raises:
+                ValueError: If no table is found or extraction fails.
             """
             if '\n' in document or len(document) > 100:
                 # Caller passed raw text instead of document name — use it directly
-                return _llm_extract_table(document, description, columns=columns)
+                return _llm_extract_table(document, description, columns=columns, dtypes=dtypes)
             results = self._search_document_chunks(description, document)
             if not results:
                 raise ValueError(f"No content found in document '{document}' matching '{description}'")
             text = self._assemble_chunk_text(results)
-            return _llm_extract_table(text, description, columns=columns)
+            return _llm_extract_table(text, description, columns=columns, dtypes=dtypes)
         return llm_extract_table
 
     def _create_extract_facts_helper(self) -> Callable:
@@ -843,6 +848,8 @@ class ExecutionMixin:
         step_start_data: dict = {"goal": step.goal}
         if step.role_id:
             step_start_data["agent"] = step.role_id
+        if step.domain:
+            step_start_data["domain"] = step.domain
         if step.skill_ids:
             step_start_data["skills"] = step.skill_ids
         self._emit_event(StepEvent(

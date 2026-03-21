@@ -723,9 +723,9 @@ CRITICAL INTENT RULES (apply in order):
             logger.debug(f"[CLARIFICATION] Q: {question!r} -> A: {answer!r}")
             if answer:
                 line = f"{question}: {answer}"
-                # Append structured data if present for this question
+                # Append structured data if present and non-redundant
                 structured = response.structured_answers.get(question)
-                if structured:
+                if structured and structured != answer:
                     import json
                     line += f"\n[Structured: {json.dumps(structured)}]"
                 clarifications.append(line)

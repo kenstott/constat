@@ -60,6 +60,7 @@ class IntentsMixin:
                 "inputs": step.expected_inputs,
                 "outputs": step.expected_outputs,
                 "role_id": step.role_id,
+                "domain": step.domain,
             }
             for step in planner_response.plan.steps
         ]

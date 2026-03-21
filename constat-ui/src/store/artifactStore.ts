@@ -381,10 +381,14 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   },
 
   deleteSkill: async (name) => {
+    const skill = get().allSkills.find(s => s.name === name)
+    const domain = skill?.domain
+    set(state => ({ allSkills: state.allSkills.filter(s => s.name !== name) }))
     try {
-      await skillsApi.deleteSkill(name)
+      await skillsApi.deleteSkill(name, domain)
       get().fetchAllSkills()
     } catch (error) {
+      get().fetchAllSkills()
       set({ error: String(error) })
       throw error
     }
