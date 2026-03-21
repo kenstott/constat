@@ -854,7 +854,20 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
 
                 # Build full execution globals (databases, APIs, file sources)
                 exec_globals = self._get_execution_globals()
-                exec_globals["store"] = self.datastore
+                # Wrap store to inject inference step_number (negative) for result grouping
+                inf_num = int(inf_id.lstrip("I") or "0") if inf_id.startswith("I") else 0
+                inf_step = -inf_num if inf_num > 0 else 0
+
+                class _InferenceStore:
+                    """Thin wrapper that injects step_number into save_dataframe calls."""
+                    def __init__(self, ds, step):
+                        self._ds = ds
+                        self._step = step
+                    def save_dataframe(self, name, df, step_number=None, **kw):
+                        return self._ds.save_dataframe(name, df, step_number=step_number if step_number is not None else self._step, **kw)
+                    def __getattr__(self, name):
+                        return getattr(self._ds, name)
+                exec_globals["store"] = _InferenceStore(self.datastore, inf_step)
                 exec_globals["pd"] = pd
                 exec_globals["np"] = np
                 exec_globals["llm_map"] = constat.llm.wrappers.llm_map
@@ -1088,7 +1101,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 # If computed is a DataFrame, save it to datastore and use row count
                 if hasattr(computed, 'empty') and hasattr(computed, 'columns'):
                     if self.datastore:
-                        self.datastore.save_dataframe(table_name, computed)
+                        self.datastore.save_dataframe(table_name, computed, step_number=inf_step)
                         row_count = len(computed)
                         node.row_count = row_count
                         resolved_inferences[inf_id] = f"{row_count} rows"
