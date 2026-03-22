@@ -207,7 +207,7 @@ INFERENCE RULES:
 - Each inference must reference at least one premise (P1/P2/etc) or prior inference (I1/I2/etc)
 - CRITICAL: ALL premises MUST be used in the inference chain. Never define a premise that isn't referenced.
 - CRITICAL: Each inference result_name MUST be GLOBALLY UNIQUE. NEVER reuse any name. BAD: two inferences both named "data_verified". GOOD: "validation_result" then "final_verification".
-- CRITICAL: If the question specifies "Expected outputs" with named artifacts, use those EXACT names as inference result_names. Example: if expected output is "raise_recommendations", the inference must be: I3: raise_recommendations = calculate(...). Do NOT invent alternative names like "raise_calculations" or "raise_recommendations_table".
+- CRITICAL: If the question specifies "Expected outputs" with named artifacts, use those EXACT names as inference result_names. Example: if expected output is "final_results", the inference must be: I3: final_results = calculate(...). Do NOT invent alternative names like "results_v2" or "final_results_table".
 - CRITICAL: The final inference(s) should COMPUTE THE ACTUAL ANSWER, not just verify data exists. If the user asks for recommendations, calculate them. If they ask for comparisons, compute them.
 - CRITICAL: Only ONE verify_exists() at the very end, referencing the computed answer. Do NOT add validate() or verify() steps before it.
 - CRITICAL: Do NOT add intermediate analysis steps that are not required by the question. If the question asks to "match X to Y", plan ONE inference that does the matching — do NOT plan separate steps to "analyze characteristics", "classify categories", "score complexity" etc. unless explicitly requested.
@@ -219,7 +219,7 @@ INFERENCE RULES:
 
 CONCLUSION:
 C: <final sentence describing what the final inference contains - use ENGLISH NAMES not I1/I2 references>
-IMPORTANT: In the conclusion, ALWAYS use the English result_name (e.g., "raise_recommendations") NOT the ID (e.g., "I4")
+IMPORTANT: In the conclusion, ALWAYS use the English result_name (e.g., "final_results") NOT the ID (e.g., "I4")
 
 EXAMPLE 1 - "What is the total multiplied by Pi?":
 
@@ -247,21 +247,20 @@ I3: trend = analyze(I2) -- Calculate trend direction
 CONCLUSION:
 C: Monthly trend is provided in trend, showing direction based on monthly_totals analysis.
 
-EXAMPLE 3 - "Recommend raises based on performance reviews and guidelines":
+EXAMPLE 3 - "Calculate shipping costs based on order weights and rate schedule":
 
 PREMISES:
-P1: employees = ? (All employees with current salary) [source: database:hr]
-P2: performance_reviews = ? (Performance review records with ratings) [source: database:hr]
-P3: raise_guidelines = ? (Business rules for raise percentages by rating) [source: document]
+P1: orders = ? (All orders with item weights and destinations) [source: database:warehouse]
+P2: shipping_rates = ? (Rate schedule by weight tier and zone) [source: document]
 
 INFERENCE:
-I1: recent_reviews = filter(P2, most_recent_per_employee) -- Get most recent review per employee
-I2: employee_data = join(P1, I1, employee_id) -- Join employees with their reviews
-I3: raises_with_rules = apply_guidelines(I2, P3) -- Apply raise guidelines based on rating (NOTE: P3 is USED here)
-I4: raise_recommendations = calculate(I3, salary * raise_percentage) -- Calculate actual raise amounts
+I1: order_weights = aggregate(P1, total_weight_per_order) -- Sum item weights per order
+I2: orders_with_zones = join(I1, P1, order_id) -- Join weights with destination zones
+I3: rated_orders = apply_guidelines(I2, P2) -- Apply rate schedule based on weight tier and zone (NOTE: P2 is USED here)
+I4: shipping_costs = calculate(I3, weight * rate_per_unit) -- Calculate actual shipping cost per order
 
 CONCLUSION:
-C: Raise recommendations with calculated amounts are provided in raise_recommendations, derived by applying raise_guidelines to employee performance ratings.
+C: Shipping costs per order are provided in shipping_costs, derived by applying shipping_rates to order weights and destination zones.
 
 Now generate the derivation. Use P1:, P2:, I1:, I2: prefixes EXACTLY as shown.
 Premises are DATA. Operations (filter, extract, group, apply_guidelines) go in INFERENCE.

@@ -236,13 +236,13 @@ export function BotMessageGroup({
       {outputMessages.map((message) => {
         // Extract "Next Steps" items from final insight to render as pills
         const nextStepsMatch = message.isFinalInsight
-          ? message.content.match(/\n+\*{0,2}Next Steps\*{0,2}[:\s]*\n([\s\S]*)$/i)
+          ? message.content.match(/\n+\*{0,2}Next Steps[:\s]*\*{0,2}[:\s]*\n([\s\S]*)$/i)
           : null
         const extractedFollowUps = nextStepsMatch
-          ? nextStepsMatch[1].split(/\n\d+\.\s+/).filter(Boolean).map(s => s.trim())
+          ? nextStepsMatch[1].split(/\n?\d+\.\s+/).filter(Boolean).map(s => s.trim())
           : []
         const displayContent = extractedFollowUps.length > 0
-          ? message.content.replace(/\n+\*{0,2}Next Steps\*{0,2}[:\s]*\n[\s\S]*$/i, '').trimEnd()
+          ? message.content.replace(/\n+\*{0,2}Next Steps[:\s]*\*{0,2}[:\s]*\n[\s\S]*$/i, '').trimEnd()
           : message.content
         // Only show pills on the very last final insight
         const isLastInsight = message.isFinalInsight &&
@@ -260,7 +260,7 @@ export function BotMessageGroup({
               isPending={message.isPending}
               defaultExpanded={message.defaultExpanded}
               isFinalInsight={message.isFinalInsight}
-              insightCollapsed={message.isFinalInsight ? insightOverride?.collapsed : undefined}
+              insightCollapsed={insightOverride?.collapsed}
               insightCollapsedVersion={insightOverride?.version}
               onViewResult={message.isFinalInsight && message.content?.toLowerCase().includes('proof')
                 ? openProofPanel : undefined}
@@ -283,7 +283,7 @@ export function BotMessageGroup({
                 {extractedFollowUps.map((s, i) => (
                   <button
                     key={i}
-                    onClick={() => submitQuery(s)}
+                    onClick={() => submitQuery(s, true)}
                     className="px-3 py-1.5 text-sm rounded-full border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-200 transition-colors text-left"
                   >
                     {s}

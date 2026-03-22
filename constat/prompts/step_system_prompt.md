@@ -31,7 +31,7 @@ Share data between steps ONLY via `store`. Choose the right method:
 - **ALWAYS write SQL in PostgreSQL dialect** regardless of the target database. A transpiler converts to the native dialect automatically. Do NOT use SQLite, MySQL, or DuckDB-specific syntax.
 - **Named result**: `store.create_view('name', 'SELECT ... FROM db_name.table ...', step_number=N)` — lazy, no materialization, queryable by later steps
 - **Read into Python**: `store.query('SELECT ... FROM db_name.table ...')` — only when you need a DataFrame for Python ops (llm_score, llm_map, etc.)
-- NEVER use `pd.read_sql()` — it cannot access federated schema prefixes (e.g., `hr.employees`). Use `store.query()` or `store.create_view()` instead.
+- NEVER use `pd.read_sql()` — it cannot access federated schema prefixes (e.g., `mydb.customers`). Use `store.query()` or `store.create_view()` instead.
 - NEVER use db.execute()
 
 **NoSQL databases** (MongoDB, Cassandra, Elasticsearch, etc.):
@@ -50,17 +50,17 @@ Share data between steps ONLY via `store`. Choose the right method:
 
 **Data Federation — Unified Query Namespace**:
 Source databases (SQLite, DuckDB) are automatically attached to the session store. All data — source DB tables, intermediate tables, and views — is queryable through `store.query()` using PostgreSQL syntax.
-- **Source DB tables**: queryable as `db_name.table_name` (e.g., `hr.employees`, `sales.orders`)
-- **Store tables/views**: queryable by name (e.g., `employee_list`, `most_recent_reviews`)
-- **Cross-source JOINs**: `store.query('SELECT ... FROM hr.employees e JOIN employee_list el ON ...')` — joins source DB and store tables in one query
+- **Source DB tables**: queryable as `db_name.table_name` (e.g., `mydb.customers`, `warehouse.products`)
+- **Store tables/views**: queryable by name (e.g., `filtered_items`, `enriched_records`)
+- **Cross-source JOINs**: `store.query('SELECT ... FROM mydb.customers c JOIN enriched_records er ON ...')` — joins source DB and store tables in one query
 - If data already exists in the store, use it. Do NOT re-query the database for it.
 
 **CRITICAL anti-pattern — do NOT materialize what can be a view**:
-- WRONG: `df = store.query('SELECT ... FROM hr.employees'); store.save_dataframe('filtered', df)` — query+save when a view suffices
-- RIGHT: `store.create_view('filtered', 'SELECT ... FROM hr.employees WHERE ...', step_number=N)` — lazy, zero-copy, queryable by later steps
-- WRONG: `df1 = store.load_dataframe('table_a'); df2 = store.query('SELECT ... FROM hr.employees'); merged = pd.merge(df1, df2, ...); store.save_dataframe('merged', merged)` — unnecessary DataFrame round-trip
-- RIGHT: `store.create_view('merged', 'SELECT ... FROM table_a a JOIN hr.employees e ON a.id = e.id', step_number=N)` — single SQL, no materialization
-- OK: `df = store.query('SELECT ... FROM hr.employees'); df['score'] = llm_score(df['text'].tolist(), ...); store.save_dataframe('scored', df, step_number=N)` — query() is correct here because the data feeds into a Python operation
+- WRONG: `df = store.query('SELECT ... FROM mydb.customers'); store.save_dataframe('filtered', df)` — query+save when a view suffices
+- RIGHT: `store.create_view('filtered', 'SELECT ... FROM mydb.customers WHERE ...', step_number=N)` — lazy, zero-copy, queryable by later steps
+- WRONG: `df1 = store.load_dataframe('table_a'); df2 = store.query('SELECT ... FROM mydb.customers'); merged = pd.merge(df1, df2, ...); store.save_dataframe('merged', merged)` — unnecessary DataFrame round-trip
+- RIGHT: `store.create_view('merged', 'SELECT ... FROM table_a a JOIN mydb.customers c ON a.id = c.id', step_number=N)` — single SQL, no materialization
+- OK: `df = store.query('SELECT ... FROM mydb.customers'); df['score'] = llm_score(df['text'].tolist(), ...); store.save_dataframe('scored', df, step_number=N)` — query() is correct here because the data feeds into a Python operation
 - **Schema discovery**: `find_relevant_tables(query)`, `get_table_schema(table)`, `find_entity(name)` are available ONLY as tool calls during code generation. They are NOT available in generated code — calling them will raise NameError. Use them to explore schemas before writing your code, then hardcode the table/column names you found.
 
 <!-- @api -->
@@ -96,14 +96,14 @@ Source databases (SQLite, DuckDB) are automatically attached to the session stor
     df['score'] = [r[0] for r in results]
     df['explanation'] = [r[1] for r in results]
     ```
-- `llm_extract_table(description, document, columns=None, dtypes=None) -> DataFrame`: extract a table from a document into a DataFrame. `document` is the configured document NAME (e.g., `'business_rules'`), NOT raw text. Do NOT call `doc_read()` first — the function handles chunk retrieval internally. Optional `columns` enforces column names. Optional `dtypes` dict maps column names to types ('str', 'int', 'float', 'bool') for post-extraction conversion — use when join keys must match types. **Raises ValueError if no data found.** **Types are auto-coerced**: percentages become decimal rates (8% → 0.08), currency and units (k/M/B) become numeric, ranges like "5-8%" become separate `_min`/`_max` columns, bools and dates are detected. Values are ready for direct arithmetic: `salary * (1 + rate)`. Do NOT divide by 100. Do NOT rename columns to `_pct` or `_percent` — use `_rate` for decimal values.
+- `llm_extract_table(description, document, columns=None, dtypes=None) -> DataFrame`: extract a table from a document into a DataFrame. `document` is the configured document NAME (e.g., `'policy_doc'`), NOT raw text. Do NOT call `doc_read()` first — the function handles chunk retrieval internally. Optional `columns` enforces column names. Optional `dtypes` dict maps column names to types ('str', 'int', 'float', 'bool') for post-extraction conversion — use to cast extracted columns to match database column types for merging. **Raises ValueError if no data found.** **Types are auto-coerced**: percentages become decimal rates (8% → 0.08), currency and units (k/M/B) become numeric, ranges like "5-8%" become separate `_min`/`_max` columns, bools and dates are detected. Values are ready for direct arithmetic: `amount * (1 + rate)`. Do NOT divide by 100. Do NOT rename columns to `_pct` or `_percent` — use `_rate` for decimal values.
   **CRITICAL anti-patterns for `llm_extract_table`**:
   - WRONG: `text = doc_read('policy'); llm_extract_table(desc, text)` — do NOT call doc_read first
-  - WRONG: `columns=['raise_rate']` then manually split ranges — request the FINAL columns you need: `columns=['rating', 'min_raise_rate', 'max_raise_rate']`. Ranges auto-expand into `_min`/`_max` columns.
+  - WRONG: `columns=['value_rate']` then manually split ranges — request the FINAL columns you need: `columns=['category', 'min_value_rate', 'max_value_rate']`. Ranges auto-expand into `_min`/`_max` columns.
   - WRONG: Using `parse_number()` on llm_extract_table output — values are already numeric decimals
-  - RIGHT: `df = llm_extract_table('raise rates by rating', 'compensation_policy', columns=['rating', 'min_raise_rate', 'max_raise_rate'], dtypes={'rating': 'str'})`
+  - RIGHT: `df = llm_extract_table('discount rates by tier', 'pricing_rules', columns=['tier', 'min_discount_rate', 'max_discount_rate'], dtypes={'tier': 'int'})`
   The returned DataFrame has numeric columns ready for arithmetic. No parsing needed.
-- `llm_extract_facts(query, document, context="") -> list[dict]`: extract facts matching a query from a document. Searches document chunks by `query` to find relevant sections, then extracts typed facts. Each fact has `name`, `value`, `dtype` ("scalar"|"range"|"table"|"list"|"rule"|"text"), and `metadata` dict. Best for: discovering data points, thresholds, rules, and structured elements relevant to a specific topic.
+- `llm_extract_facts(query, document, context="") -> list[dict]`: extract facts matching a query from a document. `document` is the configured document NAME, NOT raw text. Searches document chunks by `query` to find relevant sections, then extracts typed facts. Each fact has `name`, `value`, `dtype` ("scalar"|"range"|"table"|"list"|"rule"|"text"), and `metadata` dict. Best for: discovering data points, thresholds, rules, and structured elements relevant to a specific topic.
 
 <!-- @llm_guide -->
 ## LLM Primitive Selection Guide
@@ -160,7 +160,44 @@ Do NOT import skill modules. The functions are already available as globals, jus
 - **NEVER use `input()`** — it blocks the server. To ask users questions, the step must have `task_type: user_input` with `ask_user()`. Regular steps cannot interact with users.
 - **NEVER hardcode mapping dicts, classification tables, or extracted constants**. Use `llm_map()`, `llm_extract()`, or `llm_summarize()`. Hardcoded data breaks auditability and won't update when source data changes.
 - **No external NLP libraries** (TextBlob, VADER, spaCy, nltk, etc.) are available. For sentiment analysis, scoring, or text classification use `llm_score()` or `llm_map(..., allow_none=True)` — they are already provided and model-routed.
-- **ALWAYS convert string-formatted numbers to numeric before saving**. Use `parse_number(val)` which returns a tuple of all extracted numbers: `"8-12%" → (8.0, 12.0)`, `"5%" → (5.0,)`, `"1,2,3" → (1.0, 2.0, 3.0)`. For min/max columns: `df['raise_min'] = df['raise_pct'].apply(lambda v: min(parse_number(v)))`. NEVER write your own parser. Downstream steps cannot aggregate string columns.
+- **ALWAYS convert string-formatted numbers to numeric before saving**. Use `parse_number(val)` which returns a tuple of all extracted numbers: `"8-12%" → (8.0, 12.0)`, `"5%" → (5.0,)`, `"1,2,3" → (1.0, 2.0, 3.0)`. For min/max columns: `df['rate_min'] = df['rate_pct'].apply(lambda v: min(parse_number(v)))`. NEVER write your own parser. Downstream steps cannot aggregate string columns.
+
+## Output Type Validation
+After every query or DataFrame operation, validate the result schema before proceeding:
+
+1. **Assert expected columns exist:**
+   ```python
+   assert {"revenue", "quarter"}.issubset(df.columns), f"Missing columns: {{'revenue', 'quarter'} - set(df.columns)}"
+   ```
+
+2. **Assert expected dtypes — never assume numeric:**
+   ```python
+   df["revenue"] = pd.to_numeric(df["revenue"], errors="coerce")
+   null_count = df["revenue"].isna().sum()
+   assert null_count == 0, f"revenue has {null_count} non-numeric values after coercion"
+   ```
+
+3. **When a step consumes a previous step's output, re-check the schema:**
+   ```python
+   df = store.load_dataframe("step1_output")
+   expected = {"customer_id": "int", "amount": "float", "date": "datetime"}
+   for col, kind in expected.items():
+       assert col in df.columns, f"Missing column: {col}"
+       if kind == "int":
+           assert pd.api.types.is_integer_dtype(df[col]), f"{col} is {df[col].dtype}, expected int"
+       elif kind == "float":
+           assert pd.api.types.is_numeric_dtype(df[col]), f"{col} is {df[col].dtype}, expected numeric"
+       elif kind == "datetime":
+           assert pd.api.types.is_datetime64_any_dtype(df[col]), f"{col} is {df[col].dtype}, expected datetime"
+   ```
+
+4. **For final outputs, add a shape sanity check:**
+   ```python
+   assert len(df) > 0, "Query returned no rows"
+   assert len(df.columns) >= 2, f"Expected at least 2 columns, got {list(df.columns)}"
+   ```
+
+Do NOT silently drop rows or coerce types without reporting. If coercion produces nulls, raise an assertion error with counts.
 
 ## Variable vs Hardcoded Values
 - Relative terms ("today", "last month") → compute dynamically with datetime
@@ -170,16 +207,16 @@ Do NOT import skill modules. The functions are already available as globals, jus
 ## Code Rules
 1. Use appropriate access pattern for database type
 2. **ALWAYS create named results** — use `store.create_view()` for SQL-derivable results, `store.save_dataframe()` only for Python-computed results. Never leave data in an unnamed DataFrame.
-3. Print a brief summary of what was done (e.g., "Loaded 150 employees")
+3. Print a brief summary of what was done (e.g., "Loaded 150 records")
 4. **Self-check: can this be a view?** If the step is pure SQL (filter, join, aggregate), use `create_view()`. Only use `store.query()` when you need data in Python:
-   - WRONG: `df = store.query('SELECT ... FROM hr.employees'); store.save_dataframe('employees', df, step_number=1)`
-   - RIGHT: `store.create_view('employees', 'SELECT ... FROM hr.employees', step_number=1)`
-   - WRONG: `df = store.query('...'); filtered = df[df['salary'] > 50000]; store.save_dataframe('high_earners', filtered, step_number=1)`
-   - RIGHT: `store.create_view('high_earners', 'SELECT ... FROM hr.employees WHERE salary > 50000', step_number=1)`
-   - OK: `df = store.query('SELECT ... FROM hr.employees'); df['sentiment'] = llm_score(df['comments'].tolist(), 0, 1, "Rate sentiment"); store.save_dataframe('scored_employees', df, step_number=1)` — query() needed for LLM call
+   - WRONG: `df = store.query('SELECT ... FROM mydb.items'); store.save_dataframe('items', df, step_number=1)`
+   - RIGHT: `store.create_view('items', 'SELECT ... FROM mydb.items', step_number=1)`
+   - WRONG: `df = store.query('...'); filtered = df[df['amount'] > 50000]; store.save_dataframe('high_value', filtered, step_number=1)`
+   - RIGHT: `store.create_view('high_value', 'SELECT ... FROM mydb.items WHERE amount > 50000', step_number=1)`
+   - OK: `df = store.query('SELECT ... FROM mydb.items'); df['sentiment'] = llm_score(df['comments'].tolist(), 0, 1, "Rate sentiment"); store.save_dataframe('scored_items', df, step_number=1)` — query() needed for LLM call
 
 ## Output Guidelines
-- Print brief summaries and key metrics (e.g., "Loaded 150 employees", "Average salary: $85,000")
+- Print brief summaries and key metrics (e.g., "Loaded 150 records", "Average value: $85,000")
 - **NEVER print raw DataFrames** - `print(df)`, `print(df.head())` produce unreadable output
 - Tables saved to `store` appear automatically as clickable artifacts - don't dump their contents to stdout
 - For final reports/exports: Use `viz` methods to save files (creates clickable file:// URIs)

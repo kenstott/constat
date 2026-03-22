@@ -954,10 +954,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           const agent = event.data.agent as string | undefined
           const stepDomain = event.data.domain as string | undefined
           console.log(`[step_start] step=${event.step_number} agent=${agent} domain=${stepDomain} data_keys=${Object.keys(event.data).join(',')}`)
-          const qualifiedRole = agent ? (stepDomain ? `${stepDomain}/${agent}` : agent) : undefined
+          const qualifiedRole = agent && stepDomain ? `${stepDomain}/${agent}` : undefined
           set((state) => ({
             messages: state.messages.map((m) =>
-              m.id === startMsgId ? { ...m, stepStartedAt: Date.now(), stepAttempts: 0, ...(qualifiedRole ? { role: qualifiedRole } : {}) } : m
+              m.id === startMsgId ? { ...m, stepStartedAt: Date.now(), stepAttempts: 0, ...(qualifiedRole ? { role: qualifiedRole } : agent && !m.role ? { role: agent } : {}) } : m
             ),
           }))
         }

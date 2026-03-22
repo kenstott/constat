@@ -845,8 +845,12 @@ class ExecutionMixin:
         previous_role_id = self._current_agent_id
         self._current_agent_id = step.role_id
 
-        # Resolve domain: explicit > inferred from active domains
+        # Resolve domain: explicit > agent's domain > single active domain
         step_domain = step.domain
+        if not step_domain and step.role_id and hasattr(self, 'agent_manager'):
+            agent_obj = self.agent_manager.get_agent(step.role_id)
+            if agent_obj and agent_obj.domain and agent_obj.domain != "user":
+                step_domain = agent_obj.domain
         if not step_domain and hasattr(self, 'doc_tools') and self.doc_tools:
             active = getattr(self.doc_tools, '_active_domain_ids', None)
             if active and len(active) == 1:
@@ -1279,6 +1283,38 @@ class ExecutionMixin:
                     f"Step expected to produce {missing} but they were not found.",
                     f"Expected outputs: {step.expected_outputs}, available tables: {sorted(tables_after)}"
                 )
+
+        # Detect fabricated DataFrames — pd.DataFrame({literal}) in generated code
+        # LLMs sometimes hardcode data instead of calling llm_extract_table/doc_read
+        try:
+            import ast as _ast
+            code_artifact = None
+            if self.datastore:
+                arts = self.datastore.get_artifacts(step.number)
+                code_arts = [a for a in arts if a.get('artifact_type') == 'code']
+                if code_arts:
+                    code_artifact = code_arts[-1].get('content', '')
+            if code_artifact:
+                tree = _ast.parse(code_artifact)
+                for node in _ast.walk(tree):
+                    if (isinstance(node, _ast.Call)
+                            and isinstance(node.func, _ast.Attribute)
+                            and node.func.attr == 'DataFrame'
+                            and node.args):
+                        arg = node.args[0]
+                        # Dict literal with list values: pd.DataFrame({'col': [v1, v2, ...]})
+                        if isinstance(arg, _ast.Dict) and len(arg.keys) >= 2:
+                            list_vals = [v for v in arg.values if isinstance(v, _ast.List) and len(v.elts) >= 3]
+                            if list_vals:
+                                return (
+                                    "Code creates a DataFrame from hardcoded literal data instead of reading from a data source. "
+                                    "Use llm_extract_table(description, document_name) to extract tabular data from documents, "
+                                    "store.query() to read from databases, or doc_read() + llm_extract() for structured extraction. "
+                                    "NEVER fabricate data as literal Python dicts/lists.",
+                                    "Detected pd.DataFrame({...}) with hardcoded values."
+                                )
+        except Exception:
+            pass  # Don't block on parse errors
 
         # Check DataFrames in namespace for degenerate content
         import pandas as pd

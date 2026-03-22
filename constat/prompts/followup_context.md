@@ -16,7 +16,7 @@ Available state variables:
 - Reference and build on existing tables/state rather than recreating from scratch
 - The final result should only contain items that address the complete plan (original + extensions)
 - **ENHANCE = UPDATE SOURCE**: "enhance X", "add column to X", "enrich X" → the plan MUST end with a step that saves the updated X. Intermediate mapping/lookup tables are not the deliverable.
-- **WRONG**: Step says "Query employees and performance reviews from database" when `most_recent_reviews` already exists above.
-- **RIGHT**: Step says "Load most_recent_reviews from store and enrich with raise rate data"
+- **WRONG**: Step says "Query customers and orders from database" when `recent_orders` already exists above.
+- **RIGHT**: Step says "Load recent_orders from store and enrich with additional data"
 
 Follow-up question: {question}

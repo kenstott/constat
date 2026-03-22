@@ -66,24 +66,24 @@ CRITICAL Rules:
    df['category'] = llm_classify(df['description'].tolist(), ["bug", "feature", "question"], "support tickets")
 
    Example (scoring — number only):
-   df['sentiment_score'] = llm_score(df['review_text'].tolist(), min_val=0.0, max_val=3.0, instruction="Rate sentiment of this employee evaluation")
+   df['quality_score'] = llm_score(df['feedback_text'].tolist(), min_val=0.0, max_val=3.0, instruction="Rate quality of this written response")
 
    Example (scoring + explanation):
-   results = llm_score(df['review_text'].tolist(), min_val=0.0, max_val=3.0, instruction="Rate sentiment of this employee evaluation", explain=True)
-   df['sentiment_score'] = [r[0] for r in results]
-   df['sentiment_explanation'] = [r[1] for r in results]
+   results = llm_score(df['feedback_text'].tolist(), min_val=0.0, max_val=3.0, instruction="Rate quality of this written response", explain=True)
+   df['quality_score'] = [r[0] for r in results]
+   df['quality_explanation'] = [r[1] for r in results]
 
    KEY: When the user asks for BOTH a score AND an explanation, use `llm_score(..., explain=True)` which returns `(score, explanation)` tuples.
 
    Prefer passing full columns — one call, direct assignment. Per-row .apply() calls work but waste tokens.
    BEST: df['score'] = llm_score(df['text'].tolist(), 0, 1, "Rate sentiment")
 
-   - `llm_extract_table(description, document, columns=None, dtypes=None) -> DataFrame` — extract a table from a document into a DataFrame. Searches document chunks by `description` to find the relevant section, then extracts tabular data via LLM. `document` is the configured document NAME (e.g., `'business_rules'`), NOT raw text. Do NOT call `doc_read()` first — the function handles chunk retrieval internally. **Raises ValueError if no data found** — this triggers automatic retry with a revised approach. **Types are auto-coerced**: percentages become decimal rates (8% → 0.08), currency and units (k/M/B) become numeric, ranges like "5-8%" become separate `_min`/`_max` columns, bools and dates are detected. Values are ready for direct arithmetic: `salary * (1 + rate)`. Do NOT divide by 100. Do NOT rename columns to `_pct` or `_percent` — use `_rate` for decimal values. **Optional `dtypes`**: dict mapping column names to types ('str', 'int', 'float', 'bool') for explicit post-extraction conversion. Use when join keys must match types: `dtypes={'rating': 'str'}` ensures rating is a string for merging.
+   - `llm_extract_table(description, document, columns=None, dtypes=None) -> DataFrame` — extract a table from a document into a DataFrame. Searches document chunks by `description` to find the relevant section, then extracts tabular data via LLM. `document` is the configured document NAME (e.g., `'policy_doc'`), NOT raw text. Do NOT call `doc_read()` first — the function handles chunk retrieval internally. **Raises ValueError if no data found** — this triggers automatic retry with a revised approach. **Types are auto-coerced**: percentages become decimal rates (8% → 0.08), currency and units (k/M/B) become numeric, ranges like "5-8%" become separate `_min`/`_max` columns, bools and dates are detected. Values are ready for direct arithmetic: `amount * (1 + rate)`. Do NOT divide by 100. Do NOT rename columns to `_pct` or `_percent` — use `_rate` for decimal values. **Optional `dtypes`**: dict mapping column names to types ('str', 'int', 'float', 'bool') for explicit post-extraction conversion. Use to cast extracted columns to match the database column type for merging: `dtypes={{'tier': 'int'}}` ensures tier is an integer to match the source table's int64 column.
      **CRITICAL anti-patterns**:
      - WRONG: `text = doc_read('policy'); llm_extract_table(desc, text)` — do NOT call doc_read first
-     - WRONG: `columns=['raise_rate']` then manually split ranges — request FINAL columns: `columns=['rating', 'min_raise_rate', 'max_raise_rate']`. Ranges auto-expand into `_min`/`_max` columns.
+     - WRONG: `columns=['value_rate']` then manually split ranges — request FINAL columns: `columns=['category', 'min_value_rate', 'max_value_rate']`. Ranges auto-expand into `_min`/`_max` columns.
      - WRONG: Using `parse_number()` on llm_extract_table output — values are already numeric decimals
-     - RIGHT: `df = llm_extract_table('raise rates by rating', 'compensation_policy', columns=['rating', 'min_raise_rate', 'max_raise_rate'], dtypes={'rating': 'str'})`
+     - RIGHT: `df = llm_extract_table('discount rates by tier', 'pricing_rules', columns=['tier', 'min_discount_rate', 'max_discount_rate'], dtypes={{'tier': 'int'}})`
      The returned DataFrame has numeric columns ready for arithmetic. No post-processing needed.
    - `llm_extract_facts(query, document, context="") -> list[dict]` — extract facts matching a query from a document. `document` is the configured document NAME, NOT raw text. Searches document chunks by `query` to find relevant sections, then extracts typed facts. Each fact has `name`, `value`, `dtype`, and `metadata`. Do NOT call `doc_read()` first.
 
@@ -114,9 +114,9 @@ CRITICAL Rules:
     When business rules, policy thresholds, or configuration values
     come from a reference document, NEVER hardcode them. Load the document at runtime:
     ```
-    policy_text = doc_read('compensation_policy')
-    rules = llm_extract([policy_text], ['rating_5_raise_pct', 'rating_4_raise_pct', ...], 'raise percentages by rating')
-    # rules is a dict: {{'rating_5_raise_pct': '8-12%', 'rating_4_raise_pct': '5-8%', ...}}
+    policy_text = doc_read('pricing_rules')
+    rules = llm_extract([policy_text], ['tier_1_discount_pct', 'tier_2_discount_pct', ...], 'discount percentages by tier')
+    # rules is a dict: {{'tier_1_discount_pct': '8-12%', 'tier_2_discount_pct': '5-8%', ...}}
     ```
     This ensures code stays current when documents are updated.
 13. STRING-TO-NUMERIC CONVERSION: Data from documents, APIs, or mapped values often contains
@@ -125,8 +125,8 @@ CRITICAL Rules:
     # parse_number(val) → tuple of ALL extracted numbers
     # "8-12%" → (8.0, 12.0), "5%" → (5.0,), "1,2,3" → (1.0, 2.0, 3.0)
     # Also: "8 to 12", "$1,200", "10k", "1.5M", "(5%)" → accounting negative
-    df['raise_min'] = df['raise_pct'].apply(lambda v: min(parse_number(v)))
-    df['raise_max'] = df['raise_pct'].apply(lambda v: max(parse_number(v)))
+    df['rate_min'] = df['rate_pct'].apply(lambda v: min(parse_number(v)))
+    df['rate_max'] = df['rate_pct'].apply(lambda v: max(parse_number(v)))
     ```
     ALWAYS use `parse_number()` for string-to-numeric conversion. NEVER write your own parser.
     NEVER save columns with string-formatted numbers — downstream steps cannot aggregate them.

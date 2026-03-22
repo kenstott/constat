@@ -74,6 +74,9 @@ class ManagedSession:
     # Cancellation flag for background glossary generation
     _glossary_cancelled: threading.Event = field(default_factory=threading.Event)
 
+    # Cancellation flag for background NER / entity extraction
+    _ner_cancelled: threading.Event = field(default_factory=threading.Event)
+
     # Whether glossary generation is currently in progress (for WS reconnect replay)
     _glossary_generating: bool = False
 
@@ -627,14 +630,19 @@ class SessionManager:
 
         # Try scope-level cache (cross-session, persisted in DuckDB)
         vs = session.doc_tools._vector_store if hasattr(session.doc_tools, '_vector_store') else None
-        if vs and hasattr(vs, 'has_ner_scope_cache') and vs.has_ner_scope_cache(fingerprint):
-            try:
-                count = vs.restore_ner_scope_cache(fingerprint, session_id)
-                update_ner_fingerprint(session_id, fingerprint)
-                logger.info(f"Session {session_id}: NER scope cache hit — restored {count} entities")
-                return
-            except Exception as e:
-                logger.warning(f"Session {session_id}: NER scope cache restore failed, running full NER: {e}")
+        if vs and hasattr(vs, 'has_ner_scope_cache'):
+            has_cache = vs.has_ner_scope_cache(fingerprint)
+            logger.info(f"Session {session_id}: NER scope cache check: has_cache={has_cache} fingerprint={fingerprint}")
+            if has_cache:
+                try:
+                    count = vs.restore_ner_scope_cache(fingerprint, session_id)
+                    update_ner_fingerprint(session_id, fingerprint)
+                    logger.info(f"Session {session_id}: NER scope cache hit — restored {count} entities")
+                    return
+                except Exception as e:
+                    logger.warning(f"Session {session_id}: NER scope cache restore failed, running full NER: {e}")
+        else:
+            logger.warning(f"Session {session_id}: no vector store for NER scope cache check")
 
         if should_skip_ner(session_id, fingerprint):
             # Even when NER is skipped, always rebuild clusters (in-memory state lost on restart)
@@ -710,15 +718,17 @@ class SessionManager:
                 logger.warning(f"Cannot refresh entities: session {session_id} not found")
                 return
             managed = self._sessions[session_id]
-            logger.info(f"refresh_entities({session_id}): calling _run_entity_extraction")
-            self._run_entity_extraction(session_id, managed.session)
-            logger.info(f"refresh_entities({session_id}): complete")
+        # Run extraction OUTSIDE the lock to avoid blocking other operations
+        logger.info(f"refresh_entities({session_id}): calling _run_entity_extraction")
+        self._run_entity_extraction(session_id, managed.session)
+        logger.info(f"refresh_entities({session_id}): complete")
 
     def refresh_entities_async(self, session_id: str) -> None:
         """Refresh entity extraction in a background thread.
 
         Non-blocking — returns immediately and pushes ENTITY_REBUILD_START
         and ENTITY_REBUILD_COMPLETE events via the session's WebSocket queue.
+        Cancels any previous NER thread for this session before starting.
 
         Args:
             session_id: Session ID to refresh
@@ -729,14 +739,26 @@ class SessionManager:
                 return
             managed = self._sessions[session_id]
 
+        # Cancel any previously running NER for this session
+        managed._ner_cancelled.set()
+        # Create a fresh cancellation flag for this run
+        cancel_event = threading.Event()
+        managed._ner_cancelled = cancel_event
+
         def _run():
             import time
             t0 = time.time()
             try:
+                if cancel_event.is_set():
+                    logger.info(f"refresh_entities_async({session_id}): cancelled before start")
+                    return
                 self._push_event(managed, EventType.ENTITY_REBUILD_START, {
                     "session_id": session_id,
                 })
                 self._run_entity_extraction(session_id, managed.session)
+                if cancel_event.is_set():
+                    logger.info(f"refresh_entities_async({session_id}): cancelled during extraction")
+                    return
                 duration_ms = int((time.time() - t0) * 1000)
                 self._push_event(managed, EventType.ENTITY_REBUILD_COMPLETE, {
                     "session_id": session_id,
@@ -744,6 +766,9 @@ class SessionManager:
                 })
                 logger.info(f"refresh_entities_async({session_id}): complete in {duration_ms}ms")
             except Exception as e:
+                if cancel_event.is_set():
+                    logger.info(f"refresh_entities_async({session_id}): cancelled (exception during extraction)")
+                    return
                 logger.exception(f"refresh_entities_async({session_id}): failed: {e}")
                 duration_ms = int((time.time() - t0) * 1000)
                 self._push_event(managed, EventType.ENTITY_REBUILD_COMPLETE, {
@@ -1155,7 +1180,11 @@ class SessionManager:
 
     @staticmethod
     def _push_event(managed: "ManagedSession", event_type: EventType, data: dict) -> None:
-        """Push an event to a managed session's WebSocket queue."""
+        """Push an event to a managed session's WebSocket queue.
+
+        Uses call_soon_threadsafe when called from a background thread to ensure
+        the event loop wakes up and delivers the event promptly.
+        """
         from constat.server.models import StepEventWS
         try:
             ws_event = StepEventWS(
@@ -1174,7 +1203,21 @@ class SessionManager:
             elif event_type == EventType.ENTITY_REBUILD_START:
                 managed._entity_rebuild_event = None
 
-            managed.event_queue.put_nowait(event_dict)
+            # Use call_soon_threadsafe to wake the event loop — asyncio.Queue
+            # is not thread-safe and put_nowait from a background thread won't
+            # wake up await queue.get() on the event loop.
+            try:
+                loop = asyncio.get_running_loop()
+                # We're on the event loop thread — safe to put directly
+                managed.event_queue.put_nowait(event_dict)
+            except RuntimeError:
+                # We're on a background thread — use call_soon_threadsafe
+                try:
+                    loop = asyncio.get_event_loop()
+                    loop.call_soon_threadsafe(managed.event_queue.put_nowait, event_dict)
+                except RuntimeError:
+                    # No event loop available — direct put as fallback
+                    managed.event_queue.put_nowait(event_dict)
         except asyncio.QueueFull:
             logger.warning(f"Event queue full for session {managed.session_id}, dropping {event_type}")
 

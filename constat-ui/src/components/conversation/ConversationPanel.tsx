@@ -217,7 +217,7 @@ export function ConversationPanel() {
         <div className="flex-1" />
         <div className="w-full max-w-2xl mx-auto px-6">
           {welcomeTagline && (
-            <p className="text-sm text-gray-500 dark:text-gray-400 mb-2 text-center"
+            <p className="text-base text-gray-600 dark:text-gray-300 mb-2 text-center"
                dangerouslySetInnerHTML={{ __html: welcomeTagline.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/_(.+?)_/g, '<em>$1</em>') }} />
           )}
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100 mb-6 text-center">

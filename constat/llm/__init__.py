@@ -985,10 +985,21 @@ YOUR JSON RESPONSE:"""
             if has_ranges:
                 df[col] = parsed
             else:
-                df[col] = parsed.apply(
-                    lambda v: float(v) if isinstance(v, (int, float))
-                    and not isinstance(v, bool) else None
-                ).astype(float)
+                # Use Int64 when all non-null values are whole integers
+                all_int = parsed.apply(
+                    lambda v: isinstance(v, int) and not isinstance(v, bool)
+                    if v is not None else True
+                ).all()
+                if all_int:
+                    df[col] = parsed.apply(
+                        lambda v: int(v) if isinstance(v, (int, float))
+                        and not isinstance(v, bool) else pd.NA
+                    ).astype('Int64')
+                else:
+                    df[col] = parsed.apply(
+                        lambda v: float(v) if isinstance(v, (int, float))
+                        and not isinstance(v, bool) else None
+                    ).astype(float)
 
     # --- Phase 1b: Rename pct → rate for percent-converted columns ---
     _PCT_RE = re.compile(r'(?i)(percentage|percent|pct)')

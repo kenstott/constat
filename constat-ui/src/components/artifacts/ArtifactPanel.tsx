@@ -1289,10 +1289,16 @@ ${skill.body}`
       })),
   ]
 
-  // Sort by step_number ascending (1, 2, 3...), then by name
+  // Sort: inferences (negative step_number) descending first (-1, -2, …),
+  // then regular steps ascending (1, 2, 3…). Within same step, by name.
   allResults.sort((a, b) => {
-    const stepDiff = (a.data.step_number || 0) - (b.data.step_number || 0)
-    if (stepDiff !== 0) return stepDiff
+    const aStep = a.data.step_number || 0
+    const bStep = b.data.step_number || 0
+    const aIsInf = aStep < 0
+    const bIsInf = bStep < 0
+    if (aIsInf && bIsInf) return bStep - aStep // -1 before -2 before -3
+    if (aIsInf !== bIsInf) return aIsInf ? -1 : 1 // inferences before steps
+    if (aStep !== bStep) return aStep - bStep
     return a.data.name.localeCompare(b.data.name)
   })
 

@@ -1546,16 +1546,22 @@ class RelationalStore:
     # ------------------------------------------------------------------
 
     def has_ner_scope_cache(self, fingerprint: str) -> bool:
-        row = self._conn.execute(
-            "SELECT entity_count FROM ner_scope_cache WHERE fingerprint = ?",
-            [fingerprint],
-        ).fetchone()
+        try:
+            row = self._conn.execute(
+                "SELECT entity_count FROM ner_scope_cache WHERE fingerprint = ?",
+                [fingerprint],
+            ).fetchone()
+        except Exception as e:
+            logger.warning(f"has_ner_scope_cache query failed for {fingerprint[:12]}: {e}")
+            return False
         if row is None:
+            logger.info(f"NER scope cache miss: no entry for fingerprint {fingerprint[:12]}")
             return False
         if row[0] == 0:
             self._evict_ner_scope_fingerprint(fingerprint)
             logger.info(f"Evicted empty NER scope cache for fingerprint {fingerprint[:12]}...")
             return False
+        logger.info(f"NER scope cache hit: fingerprint {fingerprint[:12]}, {row[0]} entities")
         return True
 
     def restore_ner_scope_cache(self, fingerprint: str, session_id: str) -> int:

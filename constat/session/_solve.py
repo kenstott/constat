@@ -608,12 +608,16 @@ class SolveMixin:
                 )
                 break
 
-        # Backfill step.domain from active domains when LLM didn't set it
-        if self.plan and hasattr(self, 'doc_tools') and self.doc_tools:
-            active = getattr(self.doc_tools, '_active_domain_ids', None)
-            if active and len(active) == 1:
-                for step in self.plan.steps:
-                    if not step.domain:
+        # Backfill step.domain from agent's domain or single active domain
+        if self.plan:
+            for step in self.plan.steps:
+                if not step.domain and step.role_id and hasattr(self, 'agent_manager'):
+                    agent_obj = self.agent_manager.get_agent(step.role_id)
+                    if agent_obj and agent_obj.domain and agent_obj.domain != "user":
+                        step.domain = agent_obj.domain
+                if not step.domain and hasattr(self, 'doc_tools') and self.doc_tools:
+                    active = getattr(self.doc_tools, '_active_domain_ids', None)
+                    if active and len(active) == 1:
                         step.domain = active[0]
 
         # Save plan to datastore (for UI restoration)

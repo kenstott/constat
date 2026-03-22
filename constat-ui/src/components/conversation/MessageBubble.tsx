@@ -253,7 +253,7 @@ export function MessageBubble({
 
   // Sync external insight collapsed override
   useEffect(() => {
-    if (isFinalInsight && externalInsightCollapsed !== undefined) {
+    if (externalInsightCollapsed !== undefined) {
       setIsExpanded(!externalInsightCollapsed)
     }
   }, [externalInsightCollapsed, externalInsightCollapsedVersion])
@@ -390,12 +390,12 @@ export function MessageBubble({
             className={`text-sm text-gray-900 dark:text-gray-100 ${
               isStep
                 ? stepMode === 'condensed' ? 'overflow-y-auto' : ''
-                : !isExpanded && needsExpansion ? 'overflow-y-auto pr-[5px]' : ''
+                : !isUser && !isExpanded && needsExpansion ? 'overflow-y-auto pr-[5px]' : ''
             }`}
             style={{
               maxHeight: isStep
                 ? stepMode === 'condensed' ? `${MAX_COLLAPSED_HEIGHT}px` : undefined
-                : !isExpanded && needsExpansion ? `${MAX_COLLAPSED_HEIGHT}px` : undefined,
+                : !isUser && !isExpanded && needsExpansion ? `${MAX_COLLAPSED_HEIGHT}px` : undefined,
             }}
           >
             {type === 'thinking' ? (
@@ -432,9 +432,9 @@ export function MessageBubble({
           </div>
           )}
           {/* Action buttons row — non-step expand/collapse + view proof */}
-          {((!isStep && needsExpansion) || (isFinalInsight && onViewResult)) && (
+          {((!isStep && !isUser && needsExpansion) || (isFinalInsight && onViewResult)) && (
             <div className="mt-2 flex items-center gap-3">
-              {!isStep && needsExpansion && (
+              {!isStep && !isUser && needsExpansion && (
                 <button
                   onClick={() => setIsExpanded(!isExpanded)}
                   className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"

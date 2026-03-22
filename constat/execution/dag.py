@@ -1017,6 +1017,8 @@ class DAGExecutor:
                                 event_data["attempt"] = attempt
                             self.event_callback("node_resolved", event_data)
                     except Exception as e:
+                        import traceback
+                        logger.error(f"DAG node {node.fact_id} ({node.name}) failed with {type(e).__name__}: {e}\n{traceback.format_exc()}")
                         node.status = NodeStatus.FAILED
                         node.error = str(e)
                         failed_nodes.append(node.name)

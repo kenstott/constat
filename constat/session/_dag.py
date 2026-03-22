@@ -806,7 +806,33 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
             for attempt in range(max_retries):
                 prompt = inference_prompt
                 if last_error:
-                    prompt = f"PREVIOUS ERROR: {last_error}\n\n{inference_prompt}"
+                    error_hint = ""
+                    # Detect merge dtype mismatch and add targeted fix instructions
+                    merge_match = re.search(
+                        r"trying to merge on (\w+) and (\w+) columns for key '(\w+)'",
+                        last_error,
+                    )
+                    if merge_match:
+                        dtype_a, dtype_b, key = merge_match.groups()
+                        # Pick the numeric type if one side is numeric
+                        if "int" in dtype_a or "float" in dtype_a:
+                            error_hint = (
+                                f"\nFIX: Before merging, cast the join key to match: "
+                                f"df['{key}'] = pd.to_numeric(df['{key}'], errors='coerce'). "
+                                f"Apply this to BOTH DataFrames being merged."
+                            )
+                        elif "int" in dtype_b or "float" in dtype_b:
+                            error_hint = (
+                                f"\nFIX: Before merging, cast the join key to match: "
+                                f"df['{key}'] = pd.to_numeric(df['{key}'], errors='coerce'). "
+                                f"Apply this to BOTH DataFrames being merged."
+                            )
+                        else:
+                            error_hint = (
+                                f"\nFIX: Before merging, cast the join key '{key}' to the same type "
+                                f"on both DataFrames using .astype(str) or pd.to_numeric()."
+                            )
+                    prompt = f"PREVIOUS ERROR: {last_error}{error_hint}\n\n{inference_prompt}"
 
                 code_result = self.router.execute(
                     task_type=TaskType.SQL_GENERATION,
@@ -859,16 +885,43 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 inf_step = -inf_num if inf_num > 0 else 0
 
                 class _InferenceStore:
-                    """Thin wrapper that injects step_number into save_dataframe calls."""
-                    def __init__(self, ds, step):
+                    """Thin wrapper that forces inference step_number and emits table_created events."""
+                    def __init__(self, ds, step, emit_fn):
                         self._ds = ds
                         self._step = step
+                        self._emit = emit_fn
                     def save_dataframe(self, name, df, step_number=None, **kw):
-                        return self._ds.save_dataframe(name, df, step_number=step_number if step_number is not None else self._step, **kw)
+                        result = self._ds.save_dataframe(name, df, step_number=self._step, **kw)
+                        self._emit(StepEvent(event_type="table_created", step_number=self._step, data={"name": name, "row_count": len(df)}))
+                        return result
+                    def create_view(self, name, sql, step_number=None, **kw):
+                        result = self._ds.create_view(name, sql, step_number=self._step, **kw)
+                        self._emit(StepEvent(event_type="table_created", step_number=self._step, data={"name": name}))
+                        return result
                     def __getattr__(self, name):
                         return getattr(self._ds, name)
-                exec_globals["store"] = _InferenceStore(self.datastore, inf_step)
-                exec_globals["pd"] = pd
+                exec_globals["store"] = _InferenceStore(self.datastore, inf_step, self._emit_event)
+                # Proxy pd.merge to auto-coerce mismatched join key types
+                class _PdProxy:
+                    """Wraps pd module; intercepts pd.merge() to coerce key types."""
+                    def __init__(self, pd_mod):
+                        self._pd = pd_mod
+                    def merge(self, left, right, *args, **kwargs):
+                        try:
+                            return self._pd.merge(left, right, *args, **kwargs)
+                        except ValueError as e:
+                            m = re.search(r"trying to merge on (\w+) and (\w+) columns for key '(\w+)'", str(e))
+                            if m:
+                                key = m.group(3)
+                                if key in left.columns:
+                                    left[key] = left[key].astype(str)
+                                if key in right.columns:
+                                    right[key] = right[key].astype(str)
+                                return self._pd.merge(left, right, *args, **kwargs)
+                            raise
+                    def __getattr__(self, name):
+                        return getattr(self._pd, name)
+                exec_globals["pd"] = _PdProxy(pd)
                 exec_globals["np"] = np
                 exec_globals["llm_map"] = constat.llm.wrappers.llm_map
                 exec_globals["llm_classify"] = constat.llm.wrappers.llm_classify
@@ -1432,8 +1485,8 @@ Respond with ONLY valid JSON array. Empty array [] if no explicit constraints fo
 
 Example:
 [
-  {{"label": "No raise exceeds 15%", "sql": "SELECT COUNT(*) = 0 FROM \\"{{table}}\\" WHERE raise_pct > 0.15", "target": "I3"}},
-  {{"label": "Total budget under $100k", "sql": "SELECT SUM(raise_amount) < 100000 FROM \\"{{table}}\\"", "target": "I3"}}
+  {{"label": "No discount exceeds 15%", "sql": "SELECT COUNT(*) = 0 FROM \\"{{table}}\\" WHERE discount_rate > 0.15", "target": "I3"}},
+  {{"label": "Total cost under $100k", "sql": "SELECT SUM(line_total) < 100000 FROM \\"{{table}}\\"", "target": "I3"}}
 ]
 
 YOUR JSON RESPONSE:"""

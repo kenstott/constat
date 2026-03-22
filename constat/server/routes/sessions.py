@@ -357,44 +357,34 @@ async def create_session(
         existing.touch()
         return _session_to_response(existing)
 
-    # Create new session with client-provided session_id
-    logger.debug(f"[create_session] creating new session...")
-    session_id = session_manager.create_session(session_id=client_session_id, user_id=effective_user_id)
-    logger.debug(f"[create_session] session created, getting managed session...")
-    managed = session_manager.get_session(session_id)
-    logger.debug(f"[create_session] got managed session")
+    # Run heavy session initialization in a thread to avoid blocking the event loop.
+    # Session creation involves database connections, schema loading, model init.
+    import asyncio
 
-    # Ensure user domain config exists
-    from constat.server.routes.learnings import _ensure_user_domain_config
-    _ensure_user_domain_config(effective_user_id, managed.session.config)
+    def _init_session():
+        _session_id = session_manager.create_session(session_id=client_session_id, user_id=effective_user_id)
+        _managed = session_manager.get_session(_session_id)
 
-    # Seed per-session prompt from global config
-    managed.session_prompt = managed.session.config.system_prompt
+        from constat.server.routes.learnings import _ensure_user_domain_config
+        _ensure_user_domain_config(effective_user_id, _managed.session.config)
 
-    # Load preferred domains from user preferences (only for new sessions)
-    preferred_domains = get_selected_domains(effective_user_id)
-    logger.info(f"[create_session] preferred_domains from preferences: {preferred_domains}")
-    if preferred_domains:
-        logger.info(f"Loading {len(preferred_domains)} preferred domains for user {effective_user_id}")
-        loaded, conflicts = _load_domains_into_session(managed, preferred_domains)
-        logger.info(f"[create_session] after _load_domains_into_session: loaded={loaded}, conflicts={conflicts}, active_domains={managed.active_domains}")
-        if conflicts:
-            logger.warning(f"Domain conflicts when loading preferences: {conflicts}")
-        if loaded:
-            logger.info(f"Loaded preferred domains: {loaded}")
-            # Re-resolve config with active domains
-            session_manager.resolve_config(session_id)
-    else:
-        logger.info(f"[create_session] No preferred domains found for user {effective_user_id}")
+        _managed.session_prompt = _managed.session.config.system_prompt
 
-    # Seed 'user' domain as active by default (toggleable by user)
-    if 'user' not in managed.active_domains:
-        managed.active_domains.append('user')
+        preferred_domains = get_selected_domains(effective_user_id)
+        logger.info(f"[create_session] preferred_domains: {preferred_domains}")
+        if preferred_domains:
+            loaded, conflicts = _load_domains_into_session(_managed, preferred_domains)
+            logger.info(f"[create_session] loaded={loaded}, conflicts={conflicts}")
+            if loaded:
+                session_manager.resolve_config(_session_id)
 
-    # Run NER after domain loading (or even with no domains) so schema
-    # entities are available for pattern matching in entity extraction.
-    session_manager.refresh_entities_async(session_id)
+        if 'user' not in _managed.active_domains:
+            _managed.active_domains.append('user')
 
+        session_manager.refresh_entities_async(_session_id)
+        return _managed
+
+    managed = await asyncio.to_thread(_init_session)
     return _session_to_response(managed)
 
 
