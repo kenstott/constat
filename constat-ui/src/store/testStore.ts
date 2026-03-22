@@ -17,6 +17,7 @@ interface TestState {
   testableDomains: TestableDomainInfo[]
   results: TestRunResponse | null
   loading: boolean
+  domainsLoading: boolean
   error: string | null
   progress: TestProgress | null
   selectedDomains: Set<string>
@@ -46,6 +47,7 @@ export const useTestStore = create<TestState>((set, get) => ({
   testableDomains: [],
   results: null,
   loading: false,
+  domainsLoading: true,
   error: null,
   progress: null,
   selectedDomains: new Set(),
@@ -55,11 +57,12 @@ export const useTestStore = create<TestState>((set, get) => ({
   editingQuestion: null,
 
   loadTestableDomains: async (sessionId: string) => {
+    set({ domainsLoading: true })
     try {
       const domains = await testingApi.listTestableDomains(sessionId)
-      set({ testableDomains: domains })
+      set({ testableDomains: domains, domainsLoading: false })
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) })
+      set({ error: e instanceof Error ? e.message : String(e), domainsLoading: false })
     }
   },
 

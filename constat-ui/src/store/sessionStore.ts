@@ -569,7 +569,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const { clarification, currentStepNumber } = get()
 
     // Merge any structured answers from clarification state
-    const finalStructured = structuredAnswers || clarification?.structuredAnswers || {}
+    const finalStructured: Record<string, unknown> = structuredAnswers || clarification?.structuredAnswers || {}
 
     // Remap numeric keys → question text for backend (plan shows "Q: A" not "0: A")
     const questionTexts = clarification?.questions || []

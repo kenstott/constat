@@ -622,7 +622,10 @@ class SessionManager:
         chunk_ids = []
         if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
             try:
-                chunk_ids = session.doc_tools._vector_store.get_all_chunk_ids(session_id=session_id)
+                # Use global-only chunks (session_id IS NULL) for fingerprinting.
+                # Session-scoped chunks differ per session_id, making the fingerprint
+                # unique per session even when the semantic scope is identical.
+                chunk_ids = session.doc_tools._vector_store.get_all_chunk_ids(global_only=True)
             except Exception:
                 pass
         fingerprint = compute_ner_fingerprint(chunk_ids, schema_entities, api_entities, business_terms, entity_terms=entity_terms)
@@ -777,7 +780,6 @@ class SessionManager:
                     "error": str(e),
                 })
 
-        import threading
         thread = threading.Thread(target=_run, name=f"entity-rebuild-{session_id}", daemon=True)
         thread.start()
 

@@ -200,7 +200,7 @@ class NumpyVectorStore(VectorStoreBackend):
         """Get all stored chunks."""
         return self._chunks.copy()
 
-    def get_all_chunk_ids(self, session_id: str | None = None) -> list[str]:
+    def get_all_chunk_ids(self, session_id: str | None = None, global_only: bool = False) -> list[str]:
         """Get all chunk IDs, optionally filtered by session."""
         return list(self._chunk_ids)
 
@@ -949,6 +949,12 @@ class DuckDBVectorStore(VectorStoreBackend):
 
     def get_entity_references(self, *a, **kw):
         return self._relational.get_entity_references(*a, **kw)
+
+    def batch_get_entity_references(self, *a, **kw):
+        return self._relational.batch_get_entity_references(*a, **kw)
+
+    def batch_get_cooccurring_entities(self, *a, **kw):
+        return self._relational.batch_get_cooccurring_entities(*a, **kw)
 
     def count_session_links(self, *a, **kw):
         return self._relational.count_session_links(*a, **kw)

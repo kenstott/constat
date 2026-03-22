@@ -227,32 +227,32 @@ async def list_entities(
             # Get entities visible to this session
             result = vs.list_entities_with_refcount(where_clause, params)
 
+            # Filter to entities with refs, collect IDs for batch queries
+            filtered_rows = []
             for row in result:
                 ent_id, name, display_name, semantic_type, ner_type, ref_count = row
                 if entity_type and semantic_type != entity_type:
                     continue
-
-                # Skip orphaned entities (no chunk links = can't trace origin)
                 if ref_count == 0:
                     continue
+                filtered_rows.append(row)
 
-                # Get reference locations for this entity
-                references = []
-                if ref_count > 0:
-                    for doc_name, section, confidence in vs.get_entity_references(ent_id):
-                        references.append({
-                            "document": doc_name,
-                            "section": section,
-                            "confidence": confidence,
-                        })
+            entity_ids = [row[0] for row in filtered_rows]
 
-                # No synthetic references - entities should have real chunk links
-                # If no chunk links exist, the entity simply has no reference locations
-                # Use semantic_type as the type, and derive source from ner_type
+            # Batch-fetch references and co-occurrences (2 queries instead of 2*N)
+            all_refs = vs.batch_get_entity_references(entity_ids) if entity_ids else {}
+            all_related = vs.batch_get_cooccurring_entities(entity_ids, session_id) if entity_ids else {}
+
+            for row in filtered_rows:
+                ent_id, name, display_name, semantic_type, ner_type, ref_count = row
+
+                references = [
+                    {"document": doc_name, "section": section, "confidence": confidence}
+                    for doc_name, section, confidence in all_refs.get(ent_id, [])
+                ]
+
                 source = "ner" if ner_type else "schema"
-
-                # Get related entities (entities that co-occur in same chunks)
-                related = get_related_entities(vs, ent_id, session_id) if ref_count > 0 else []
+                related = all_related.get(ent_id, [])
 
                 add_entity(
                     name, semantic_type or "concept", source,

@@ -67,7 +67,7 @@ class VectorBackend(ABC):
         ...
 
     @abstractmethod
-    def get_all_chunk_ids(self, session_id: str | None = None) -> list[str]:
+    def get_all_chunk_ids(self, session_id: str | None = None, global_only: bool = False) -> list[str]:
         ...
 
     @abstractmethod

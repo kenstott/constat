@@ -65,7 +65,7 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   filters: { scope: 'all' },
   totalDefined: 0,
   totalSelfDescribing: 0,
-  loading: false,
+  loading: true,
   generating: false,
   generationStage: null,
   generationPercent: 0,

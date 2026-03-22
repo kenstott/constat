@@ -45,6 +45,7 @@ import { ArtifactItemAccordion } from './ArtifactItemAccordion'
 import { CodeViewer } from './CodeViewer'
 import GlossaryPanel from './GlossaryPanel'
 import RegressionPanel from './RegressionPanel'
+import { SkeletonLoader } from '../common/SkeletonLoader'
 import * as sessionsApi from '@/api/sessions'
 import * as agentsApi from '@/api/agents'
 
@@ -399,8 +400,12 @@ export function ArtifactPanel() {
     deleteSkill,
     draftSkill,
     updateSystemPrompt,
+    sourcesLoading,
+    factsLoading,
+    learningsLoading,
+    configLoading,
   } = useArtifactStore()
-  const { totalDefined, totalSelfDescribing } = useGlossaryStore()
+  const { totalDefined, totalSelfDescribing, loading: glossaryLoading } = useGlossaryStore()
   const authPermissions = useAuthStore(s => s.permissions)
   const canSeeSection = (key: string) => isAuthDisabled || (authPermissions?.visibility?.[key] ?? false)
   const canWrite = (key: string) => isAuthDisabled || (authPermissions?.writes?.[key] ?? false)
@@ -1786,8 +1791,9 @@ ${skill.body}`
         }}
         className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
       >
-        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
           Sources ({databases.length + apis.length + documents.length + facts.length})
+          {(sourcesLoading || factsLoading) && <span className="inline-block w-2.5 h-2.5 border-[1.5px] border-gray-400 border-t-transparent rounded-full animate-spin" />}
         </span>
         <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${sourcesCollapsed ? '' : 'rotate-90'}`} />
       </button>
@@ -1816,6 +1822,7 @@ ${skill.body}`
         }
       >
         {databases.length === 0 ? (
+          sourcesLoading ? <SkeletonLoader lines={2} /> :
           <p className="text-sm text-gray-500 dark:text-gray-400">No databases configured</p>
         ) : (
           <div className="space-y-2">
@@ -2005,6 +2012,7 @@ ${skill.body}`
         }
       >
         {apis.length === 0 ? (
+          sourcesLoading ? <SkeletonLoader lines={2} /> :
           <p className="text-sm text-gray-500 dark:text-gray-400">No APIs configured</p>
         ) : (
           <div className="space-y-2">
@@ -2198,6 +2206,7 @@ ${skill.body}`
         }
       >
         {documents.length === 0 ? (
+          sourcesLoading ? <SkeletonLoader lines={2} /> :
           <p className="text-sm text-gray-500 dark:text-gray-400">No documents indexed</p>
         ) : (
           <div className="space-y-2">
@@ -2306,6 +2315,7 @@ ${skill.body}`
         }
       >
         {facts.length === 0 ? (
+          factsLoading ? <SkeletonLoader lines={2} /> :
           <p className="text-sm text-gray-500 dark:text-gray-400">No facts yet</p>
         ) : (
           <div className="overflow-x-auto">
@@ -2391,8 +2401,9 @@ ${skill.body}`
         }}
         className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
       >
-        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
           Glossary ({totalDefined + totalSelfDescribing})
+          {glossaryLoading && <span className="inline-block w-2.5 h-2.5 border-[1.5px] border-gray-400 border-t-transparent rounded-full animate-spin" />}
         </span>
         <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${glossaryCollapsed ? '' : 'rotate-90'}`} />
       </button>
@@ -2414,8 +2425,9 @@ ${skill.body}`
         }}
         className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
       >
-        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
           Reasoning
+          {(configLoading || learningsLoading) && <span className="inline-block w-2.5 h-2.5 border-[1.5px] border-gray-400 border-t-transparent rounded-full animate-spin" />}
         </span>
         <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${reasoningCollapsed ? '' : 'rotate-90'}`} />
       </button>
@@ -2483,6 +2495,8 @@ ${skill.body}`
           <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-48 overflow-y-auto">
             {promptContext.systemPrompt}
           </div>
+        ) : promptContext === null ? (
+          <SkeletonLoader lines={3} />
         ) : (
           <p className="text-sm text-gray-500 dark:text-gray-400 italic">No session prompt configured</p>
         )}
@@ -2704,6 +2718,7 @@ ${skill.body}`
         )}
 
         {allAgents.length === 0 && !creatingAgent ? (
+          configLoading ? <SkeletonLoader lines={2} /> :
           <p className="text-sm text-gray-500 dark:text-gray-400">No agents defined</p>
         ) : (
           <div className="-mx-4">
@@ -3111,6 +3126,7 @@ ${skill.body}`
         )}
 
         {allSkills.length === 0 && !creatingSkill ? (
+          configLoading ? <SkeletonLoader lines={2} /> :
           <p className="text-sm text-gray-500 dark:text-gray-400">No skills defined</p>
         ) : (
           <div className="-mx-4">
@@ -3366,6 +3382,7 @@ ${skill.body}`
         }
       >
         {learnings.length === 0 && rules.length === 0 ? (
+          learningsLoading ? <SkeletonLoader lines={2} /> :
           <p className="text-sm text-gray-500 dark:text-gray-400">No learnings yet</p>
         ) : (
           <div className="space-y-3">
@@ -3525,6 +3542,7 @@ ${skill.body}`
               </div>
             )}
             {learningsTab === 'rules' && rules.length === 0 && (
+              learningsLoading ? <SkeletonLoader lines={2} /> :
               <p className="text-sm text-gray-500 dark:text-gray-400">No rules yet. Compact pending learnings to generate rules.</p>
             )}
 

@@ -530,8 +530,12 @@ class DuckDBVectorBackend(VectorBackend):
             for row in result
         ]
 
-    def get_all_chunk_ids(self, session_id: str | None = None) -> list[str]:
-        if session_id:
+    def get_all_chunk_ids(self, session_id: str | None = None, global_only: bool = False) -> list[str]:
+        if global_only:
+            result = self._conn.execute(
+                "SELECT chunk_id FROM embeddings WHERE session_id IS NULL",
+            ).fetchall()
+        elif session_id:
             result = self._conn.execute(
                 "SELECT chunk_id FROM embeddings WHERE session_id IS NULL OR session_id = ?",
                 [session_id],

@@ -98,6 +98,10 @@ interface ArtifactState {
 
   // Loading states
   loading: boolean
+  sourcesLoading: boolean
+  factsLoading: boolean
+  learningsLoading: boolean
+  configLoading: boolean
   error: string | null
 
   // Actions
@@ -177,6 +181,10 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   selectedTable: null,
   supersededStepNumbers: new Set<number>(),
   loading: false,
+  sourcesLoading: true,
+  factsLoading: true,
+  learningsLoading: true,
+  configLoading: true,
   error: null,
 
   fetchArtifacts: async (sessionId) => {
@@ -200,12 +208,12 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   },
 
   fetchFacts: async (sessionId) => {
-    set({ loading: true, error: null })
+    set({ factsLoading: true, error: null })
     try {
       const response = await sessionsApi.listFacts(sessionId)
-      set({ facts: response.facts, loading: false })
+      set({ facts: response.facts, factsLoading: false })
     } catch (error) {
-      set({ error: String(error), loading: false })
+      set({ error: String(error), factsLoading: false })
     }
   },
 
@@ -220,15 +228,15 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   },
 
   fetchLearnings: async () => {
-    set({ loading: true, error: null })
+    set({ learningsLoading: true, error: null })
     try {
       console.log('[LEARNINGS] Fetching learnings...')
       const response = await sessionsApi.listLearnings()
       console.log('[LEARNINGS] Received:', response.learnings.length, 'learnings,', response.rules?.length || 0, 'rules')
-      set({ learnings: response.learnings, rules: response.rules || [], loading: false })
+      set({ learnings: response.learnings, rules: response.rules || [], learningsLoading: false })
     } catch (error) {
       console.error('[LEARNINGS] Error fetching learnings:', error)
-      set({ error: String(error), loading: false })
+      set({ error: String(error), learningsLoading: false })
     }
   },
 
@@ -280,7 +288,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   },
 
   fetchDataSources: async (sessionId) => {
-    set({ loading: true, error: null })
+    set({ sourcesLoading: true, error: null })
     try {
       // Use unified sources endpoint that includes config + active projects + session data
       const response = await sessionsApi.listDataSources(sessionId)
@@ -310,10 +318,10 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
         databases: response.databases,
         apis,
         documents: docs,
-        loading: false,
+        sourcesLoading: false,
       })
     } catch (error) {
-      set({ error: String(error), loading: false })
+      set({ error: String(error), sourcesLoading: false })
     }
   },
 
@@ -354,9 +362,11 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
           domain: s.domain || '',
           source: s.source || '',
         })),
+        configLoading: false,
       })
     } catch (error) {
       console.warn('Failed to fetch skills:', error)
+      set({ configLoading: false })
     }
   },
 
@@ -771,6 +781,10 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       selectedArtifact: null,
       selectedTable: null,
       supersededStepNumbers: new Set<number>(),
+      sourcesLoading: true,
+      factsLoading: true,
+      learningsLoading: true,
+      configLoading: true,
       error: null,
     }),
 

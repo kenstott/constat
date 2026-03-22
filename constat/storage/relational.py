@@ -1592,8 +1592,11 @@ class RelationalStore:
         self._conn.execute(
             """
             INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at, entity_class)
-            SELECT DISTINCT id, name, display_name, semantic_type, ner_type, ?, domain_id, created_at, entity_class
-            FROM ner_cached_entities WHERE fingerprint = ?
+            SELECT id, name, display_name, semantic_type, ner_type, ?, domain_id, created_at, entity_class
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
+                FROM ner_cached_entities WHERE fingerprint = ?
+            ) sub WHERE rn = 1
             ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id, entity_class = excluded.entity_class
             """,
             [session_id, fingerprint],
@@ -1981,6 +1984,55 @@ class RelationalStore:
             ORDER BY ce.confidence DESC
             LIMIT ?
         """, [entity_id, limit]).fetchall()
+
+    def batch_get_entity_references(
+        self, entity_ids: list[str], limit_per_entity: int = 10,
+    ) -> dict[str, list[tuple]]:
+        """Get references for multiple entities in a single query."""
+        if not entity_ids:
+            return {}
+        placeholders = ",".join("?" * len(entity_ids))
+        rows = self._conn.execute(f"""
+            SELECT ce.entity_id, em.document_name, em.section, ce.confidence
+            FROM chunk_entities ce
+            JOIN embeddings em ON ce.chunk_id = em.chunk_id
+            WHERE ce.entity_id IN ({placeholders})
+            ORDER BY ce.entity_id, ce.confidence DESC
+        """, entity_ids).fetchall()
+        result: dict[str, list[tuple]] = {}
+        for ent_id, doc_name, section, confidence in rows:
+            if ent_id not in result:
+                result[ent_id] = []
+            if len(result[ent_id]) < limit_per_entity:
+                result[ent_id].append((doc_name, section, confidence))
+        return result
+
+    def batch_get_cooccurring_entities(
+        self, entity_ids: list[str], session_id: str, limit_per_entity: int = 5,
+    ) -> dict[str, list[dict]]:
+        """Get co-occurring entities for multiple entities in a single query."""
+        if not entity_ids:
+            return {}
+        placeholders = ",".join("?" * len(entity_ids))
+        rows = self._conn.execute(f"""
+            SELECT ce1.entity_id AS source_id, e2.name, e2.semantic_type,
+                   COUNT(*) AS co_occurrences
+            FROM chunk_entities ce1
+            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
+            JOIN entities e2 ON ce2.entity_id = e2.id
+            WHERE ce1.entity_id IN ({placeholders})
+              AND ce2.entity_id != ce1.entity_id
+              AND (e2.session_id IS NULL OR e2.session_id = ?)
+            GROUP BY ce1.entity_id, e2.id, e2.name, e2.semantic_type
+            ORDER BY ce1.entity_id, co_occurrences DESC
+        """, [*entity_ids, session_id]).fetchall()
+        result: dict[str, list[dict]] = {}
+        for source_id, name, stype, co_count in rows:
+            if source_id not in result:
+                result[source_id] = []
+            if len(result[source_id]) < limit_per_entity:
+                result[source_id].append({"name": name, "type": stype or "concept", "co_occurrences": co_count})
+        return result
 
     def count_session_links(self, session_id: str) -> int:
         return self._conn.execute(

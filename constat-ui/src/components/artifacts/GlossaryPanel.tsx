@@ -41,6 +41,7 @@ import {
 } from '@/api/sessions'
 import type { DomainTreeNode } from '@/api/sessions'
 import { forceSimulation, forceLink, forceManyBody, forceCollide, forceX, forceY } from 'd3-force'
+import { SkeletonLoader } from '../common/SkeletonLoader'
 import type { GlossaryTerm, GlossaryEditorialStatus, GlossarySuggestion } from '@/types/api'
 import { useAuthStore } from '@/store/authStore'
 import {
@@ -3729,7 +3730,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
 
       {/* Terms list or tree */}
       {loading ? (
-        <div className="text-xs text-gray-400 py-4 text-center">Loading glossary...</div>
+        <SkeletonLoader lines={4} />
       ) : displayTerms.length === 0 && entityRebuilding ? (
         <div className="flex flex-col items-center gap-2 py-6 text-xs text-gray-400">
           <svg className="animate-spin h-5 w-5 text-blue-400" viewBox="0 0 24 24" fill="none">

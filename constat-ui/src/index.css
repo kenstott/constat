@@ -92,3 +92,31 @@
 .animate-slide-in {
   animation: slide-in 0.2s ease-out;
 }
+
+/* Skeleton shimmer for loading panels */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton-line {
+  @apply rounded;
+  background: linear-gradient(
+    90deg,
+    theme('colors.gray.200') 25%,
+    theme('colors.gray.100') 50%,
+    theme('colors.gray.200') 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+:is(.dark) .skeleton-line {
+  background: linear-gradient(
+    90deg,
+    theme('colors.gray.700') 25%,
+    theme('colors.gray.600') 50%,
+    theme('colors.gray.700') 75%
+  );
+  background-size: 200% 100%;
+}

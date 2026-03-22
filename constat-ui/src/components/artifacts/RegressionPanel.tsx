@@ -12,6 +12,7 @@ import {
   XMarkIcon,
 } from '@heroicons/react/24/outline'
 import { useTestStore } from '@/store/testStore'
+import { SkeletonLoader } from '../common/SkeletonLoader'
 import type { ExpectedOutput, GoldenQuestionExpectations, GoldenQuestionRequest, GoldenQuestionResponse, TestQuestionResult } from '@/types/api'
 
 interface Props {
@@ -222,6 +223,7 @@ export default function RegressionPanel({ sessionId }: Props) {
     testableDomains,
     results,
     loading,
+    domainsLoading,
     error,
     progress,
     selectedTags,
@@ -339,6 +341,9 @@ export default function RegressionPanel({ sessionId }: Props) {
   }
 
   if (testableDomains.length === 0 && !loading) {
+    if (domainsLoading) {
+      return <div className="px-3 py-2"><SkeletonLoader lines={3} /></div>
+    }
     return (
       <div className="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
         No domains with golden questions configured.
