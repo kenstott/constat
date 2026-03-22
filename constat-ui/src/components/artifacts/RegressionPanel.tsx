@@ -237,6 +237,7 @@ export default function RegressionPanel({ sessionId }: Props) {
     moveGoldenQuestion,
     setEditingQuestion,
     clearEditing,
+    includeE2e,
   } = useTestStore()
 
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set())
@@ -354,7 +355,7 @@ export default function RegressionPanel({ sessionId }: Props) {
           disabled={loading}
           className="px-2.5 py-1 rounded bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
         >
-          {loading && (
+          {loading && !includeE2e && (
             <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -365,8 +366,14 @@ export default function RegressionPanel({ sessionId }: Props) {
         <button
           onClick={() => handleRun(true)}
           disabled={loading}
-          className="px-2.5 py-1 rounded border border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-500 text-xs font-medium hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-2.5 py-1 rounded border border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-500 text-xs font-medium hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
         >
+          {loading && includeE2e && (
+            <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+          )}
           Run Integration
         </button>
         <button

@@ -509,16 +509,19 @@ async def extract_expectations(
     # Tables created in the final step are the deliverables; earlier tables
     # are intermediates.  Include all tables from the last step that produced
     # tables, plus any tables that are explicitly starred/published.
+    # NOTE: DAG proof inferences use negative step numbers (-1, -2, ..., -N)
+    # where -N is the LAST step.  Use max(abs(step)) to find the final step.
     expected_outputs: list[dict] = []
     datastore = getattr(session, "datastore", None)
     if datastore:
         try:
             all_tables = datastore.list_tables()
             if all_tables:
-                max_step = max(t.get("step_number", 0) or 0 for t in all_tables)
+                step_numbers = [t.get("step_number", 0) or 0 for t in all_tables]
+                max_abs_step = max(abs(s) for s in step_numbers)
                 for t in all_tables:
                     step = t.get("step_number", 0) or 0
-                    is_final = step == max_step or t.get("is_published")
+                    is_final = abs(step) == max_abs_step or t.get("is_published")
                     if not is_final:
                         continue
                     name = t["name"]
@@ -531,7 +534,7 @@ async def extract_expectations(
                     })
                 logger.info(
                     f"[extract_expectations] auto-extracted {len(expected_outputs)} "
-                    f"expected outputs from step {max_step}"
+                    f"expected outputs from step abs={max_abs_step}"
                 )
         except Exception as e:
             logger.debug(f"[extract_expectations] could not extract expected outputs: {e}")

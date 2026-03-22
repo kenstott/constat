@@ -432,14 +432,10 @@ def _run_e2e_with_events(
         # Collect tables for validator and judge
         tables = _collect_tables(api)
 
-        # When expected_outputs is defined, only show those tables to the judge
-        # to prevent intermediate/broken tables from confusing the evaluation.
-        if gq.expect.expected_outputs:
-            eo_names = {eo.name for eo in gq.expect.expected_outputs}
-            judge_tables = {k: v for k, v in tables.items() if k in eo_names}
-        else:
-            judge_tables = tables
-        artifact_summary = _collect_artifact_summary(judge_tables)
+        # Show ALL tables to the judge — the judge prompt is explicit about what
+        # it's evaluating, and filtering by expected_outputs can hide the final
+        # output table when it has a different name from intermediate tables.
+        artifact_summary = _collect_artifact_summary(tables)
 
         for substring in assertion.result_contains:
             evt_queue.put(f"Checking: result_contains '{substring[:40]}'")
@@ -573,13 +569,9 @@ def _run_e2e_question(
     # Collect tables for validator and judge
     tables = _collect_tables(api)
 
-    # When expected_outputs is defined, only show those tables to the judge
-    if gq.expect.expected_outputs:
-        eo_names = {eo.name for eo in gq.expect.expected_outputs}
-        judge_tables = {k: v for k, v in tables.items() if k in eo_names}
-    else:
-        judge_tables = tables
-    artifact_summary = _collect_artifact_summary(judge_tables)
+    # Show ALL tables to the judge — filtering by expected_outputs can hide
+    # the final output when it has a different name from intermediate tables.
+    artifact_summary = _collect_artifact_summary(tables)
 
     # Check result_contains
     for substring in assertion.result_contains:

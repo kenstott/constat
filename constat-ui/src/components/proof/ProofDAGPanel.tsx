@@ -13,6 +13,7 @@ import { createSkillFromProof } from '@/api/skills'
 import { extractExpectations } from '@/api/testing'
 import { listDomains } from '@/api/sessions'
 import type { DomainInfo } from '@/api/sessions'
+import { useToastStore } from '@/store/toastStore'
 import type { GoldenQuestionRequest } from '@/types/api'
 import { MermaidBlock } from './MermaidBlock'
 import { CodeViewer } from '@/components/artifacts/CodeViewer'
@@ -268,6 +269,7 @@ function NodeTooltip({ node, position }: { node: FactNode; position: { x: number
 export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary, isSummaryGenerating = false, sessionId, onSkillCreated, onRedo, embedded = false, actionsRef }: ProofDAGPanelProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  const addToast = useToastStore((s) => s.addToast)
   const [allDomains, setAllDomains] = useState<DomainInfo[]>([])
   const saveGoldenQuestion = useTestStore(s => s.saveGoldenQuestion)
   const currentQuery = useSessionStore(s => s.currentQuery)
@@ -539,22 +541,27 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
         objectives: expect.objectives ?? [],
       }
       await saveGoldenQuestion(sessionId, userDomain.filename, null, body)
+      addToast('Test saved successfully')
     } catch (err) {
       console.error('Failed to save test:', err)
-      alert(`Failed to save test: ${err instanceof Error ? err.message : String(err)}`)
+      addToast(`Failed to save test: ${err instanceof Error ? err.message : String(err)}`, 'error')
     } finally {
       setIsSavingTest(false)
     }
   }
 
+  // Keep a stable ref to handleSaveTest so imperative handle never goes stale
+  const handleSaveTestRef = useRef(handleSaveTest)
+  handleSaveTestRef.current = handleSaveTest
+
   // Expose form triggers for external buttons (used by ReasonChainCommandStrip)
   useImperativeHandle(actionsRef, () => ({
     showSkillForm: () => setShowSkillForm(true),
-    showTestForm: () => handleSaveTest(),
+    showTestForm: () => handleSaveTestRef.current(),
     showSummary: () => setShowSummary(true),
     showRedoForm: () => setShowRedoForm(true),
     showFinalResult: () => { if (resultNode) pushSelectedNode(resultNode) },
-  }), [resultNode, allDomains])
+  }), [resultNode])
 
   // Compute critical path: longest dependency chain by elapsed_ms (or node count)
   const criticalPath = useMemo(() => {
@@ -1182,8 +1189,10 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                       setShowSkillForm(false)
                       setSkillName('')
                       onSkillCreated?.()
+                      addToast(`Skill "${skillName.trim()}" created successfully`)
                     } catch (err) {
                       console.error('Failed to save skill:', err)
+                      addToast(`Failed to save skill: ${err instanceof Error ? err.message : String(err)}`, 'error')
                     } finally {
                       setIsSavingSkill(false)
                     }

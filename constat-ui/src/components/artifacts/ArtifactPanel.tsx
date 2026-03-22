@@ -384,8 +384,6 @@ export function ArtifactPanel() {
     taskRouting,
     allSkills,
     allAgents,
-    fetchArtifacts,
-    fetchTables,
     fetchFacts,
     fetchEntities,
     fetchLearnings,
@@ -628,28 +626,32 @@ export function ArtifactPanel() {
   }, [pendingDeepLink])
 
   // Fetch data when session changes
+  // NOTE: fetchTables and fetchArtifacts are already called in createSession (sessionStore)
   useEffect(() => {
     if (session) {
-      fetchArtifacts(session.session_id)
-      fetchTables(session.session_id)
+      // Critical data — fetch immediately
       fetchFacts(session.session_id)
       fetchEntities(session.session_id)
-      fetchLearnings()
       fetchDataSources(session.session_id)
-      fetchPromptContext(session.session_id)
       fetchAllSkills()
       fetchAllAgents(session.session_id)
-      fetchTaskRouting(session.session_id)
-      fetchScratchpad(session.session_id)
-      fetchDDL(session.session_id)
-      // Fetch domain list for move-to pickers
+      fetchLearnings()
       sessionsApi.getDomainTree().then((nodes) => {
         const collect = (ns: sessionsApi.DomainTreeNode[]): { filename: string; name: string }[] =>
           ns.flatMap((n) => [{ filename: n.filename, name: n.name }, ...collect(n.children)])
         setDomainList(collect(nodes))
       }).catch(() => {})
+      // Deferred data — not needed for initial render
+      const sid = session.session_id
+      const timer = setTimeout(() => {
+        fetchPromptContext(sid)
+        fetchTaskRouting(sid)
+        fetchScratchpad(sid)
+        fetchDDL(sid)
+      }, 500)
+      return () => clearTimeout(timer)
     }
-  }, [session, fetchArtifacts, fetchTables, fetchFacts, fetchEntities, fetchLearnings, fetchDataSources, fetchPromptContext, fetchAllSkills, fetchAllAgents, fetchTaskRouting, fetchScratchpad, fetchDDL])
+  }, [session, fetchFacts, fetchEntities, fetchDataSources, fetchAllSkills, fetchAllAgents, fetchLearnings, fetchPromptContext, fetchTaskRouting, fetchScratchpad, fetchDDL])
 
   // Auto-refresh fine-tune jobs when any are training
   useEffect(() => {

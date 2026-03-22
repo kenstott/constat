@@ -17,6 +17,7 @@ import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import { useProofStore } from '@/store/proofStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import { pathToDeepLink, applyDeepLink, useUIStore } from '@/store/uiStore'
+import { ToastContainer } from '@/components/common/ToastContainer'
 import * as sessionsApi from '@/api/sessions'
 
 const SPLASH_MIN_DURATION = 1500 // Minimum splash screen duration in ms
@@ -509,9 +510,12 @@ function App() {
 
   // All routes render the same MainApp — deep links are handled by NavigationSync
   return (
-    <Routes>
-      <Route path="/*" element={<MainApp />} />
-    </Routes>
+    <>
+      <Routes>
+        <Route path="/*" element={<MainApp />} />
+      </Routes>
+      <ToastContainer />
+    </>
   )
 }
 

@@ -1176,6 +1176,8 @@ class Config(BaseModel):
                 "name": domain.name,
                 "description": domain.description,
                 "steward": domain.steward,
+                "tier": domain.tier,
+                "owner": domain.owner,
             }
             for filename, domain in self.domains.items()
         ]
