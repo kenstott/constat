@@ -2114,15 +2114,21 @@ async def update_rule(
 @router.delete("/rules/{rule_id}", dependencies=[Depends(require_write("learnings"))])
 async def delete_rule(
     rule_id: str,
+    request: Request,
     user_id: CurrentUserId,
+    session_id: str | None = None,
     _config: Config = Depends(get_config),
+    session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict:
     """Delete a rule.
 
     Args:
         rule_id: Rule ID to delete
+        request: FastAPI request
         user_id: Authenticated user ID
+        session_id: Optional session ID for config tombstone
         _config: Injected application config
+        session_manager: Injected session manager
 
     Returns:
         Deletion confirmation
@@ -2134,9 +2140,31 @@ async def delete_rule(
         import yaml as _yaml
         from constat.storage.learnings import LearningStore
 
-        # Try user-level store first
+        # Look up rule summary before deletion for tombstone reverse-mapping
         store = LearningStore(user_id=user_id)
+        rule_summary: str | None = None
+        rule_domain: str | None = None
+        rules = store.list_rules()
+        for r in rules:
+            if r["id"] == rule_id:
+                rule_summary = r.get("summary")
+                rule_domain = r.get("domain")
+                break
+
+        # Try user-level store first
         if store.delete_rule(rule_id):
+            # Write tombstone for config-seeded rules
+            if session_id and rule_domain == "__system__" and rule_summary:
+                managed = session_manager.get_session_or_none(session_id)
+                if managed and managed.resolved_config:
+                    cfg_rules = managed.resolved_config.learnings.get("rules", {})
+                    for cfg_key, cfg_val in cfg_rules.items():
+                        cfg_summary = cfg_val if isinstance(cfg_val, str) else (cfg_val.get("summary", "") if isinstance(cfg_val, dict) else "")
+                        if cfg_summary == rule_summary:
+                            session_manager.write_config_tombstone(
+                                session_id, "learnings", f"rules.{cfg_key}",
+                            )
+                            break
             return {"status": "deleted", "id": rule_id}
 
         # Search domain-scoped learnings.yaml files

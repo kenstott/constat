@@ -733,6 +733,14 @@ CRITICAL INTENT RULES (apply in order):
         if clarifications:
             enhanced = f"{request.original_question}\n\nClarifications:\n" + "\n".join(clarifications)
             logger.debug(f"[CLARIFICATION] Enhanced problem:\n{enhanced}")
+
+            # Stage clarification Q&A for persistence after datastore is created.
+            # solve() saves this to session meta so it survives restore.
+            # noinspection PyAttributeOutsideInit
+            self._pending_clarifications = [
+                {"question": q, "answer": a}
+                for q, a in response.answers.items() if a
+            ]
             return enhanced
 
         return None

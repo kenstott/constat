@@ -69,7 +69,7 @@ class TestTieredResolution:
         """Test that tiered resolution is enabled by default."""
         strategy = ResolutionStrategy()
         assert strategy.use_tiered_resolution is True
-        assert strategy.tier1_timeout == 15.0
+        assert strategy.tier1_timeout == 30.0
 
     def test_tier1_sources_default(self):
         """Test default Tier 1 sources."""

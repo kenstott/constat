@@ -370,8 +370,8 @@ class PromptsMixin:
         """
         parts = []
 
-        # Base system prompt from config
-        base_prompt = self.config.system_prompt or ""
+        # Base system prompt from config (override takes precedence)
+        base_prompt = getattr(self, '_system_prompt_override', None) or self.config.system_prompt or ""
         if base_prompt:
             parts.append(base_prompt)
 

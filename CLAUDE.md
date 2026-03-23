@@ -51,6 +51,8 @@ CRITICAL:  Maximum brevity. No pleasantries. No explanations unless asked. Code 
 - Type check: `cd constat-ui && npx tsc --noEmit`
 - Server: `python -m constat.server -c demo/config.yaml`
 - Demo config: `demo/config.yaml` (domains: sales-analytics, hr-reporting)
+- Server logs: `.logs/server.log`, `.logs/ui.log`
+- Session data: `.constat/{user-id}/sessions/{timestamped-dir}/` (session.duckdb, state.json, proof_facts.json, etc.)
 
 # Module Boundaries (for parallel work)
 - Backend and frontend are fully independent — safe to work in parallel
@@ -59,6 +61,27 @@ CRITICAL:  Maximum brevity. No pleasantries. No explanations unless asked. Code 
 - `constat/execution/` depends on `constat/storage/`, `constat/llm/`
 - `constat-ui/src/store/` depends on `constat-ui/src/api/` and `constat-ui/src/types/`
 - `constat-ui/src/components/` depends on `constat-ui/src/store/` and `constat-ui/src/hooks/`
+
+# Swarm Mode (Self-Claim)
+
+All agents operate autonomously. No lead assignment required.
+
+## After completing any task:
+1. Call `TaskList` to see all tasks
+2. Find the first task (lowest ID) that is **unblocked** AND has **no owner**
+3. Call `TaskUpdate` to set yourself as owner and status to "in_progress"
+4. Begin work immediately
+
+## Rules:
+- Never wait for assignment — self-claim
+- Prefer lowest task ID among unblocked/unowned tasks
+- If no tasks available, report idle and stop
+- Respect module boundaries (see below) — only claim tasks in your domain
+- Run the verification command for your module when done
+- After completing a task, loop back to step 1 above — always pull the next task
+
+## TeammateIdle Pattern:
+When a teammate finishes and becomes idle, they must immediately self-claim the next available task rather than reporting back to a lead. The lead spawns initial teammates; after that, agents are self-sustaining.
 
 # Teammate Spawn Context
 When spawning teammates for parallel work, include:

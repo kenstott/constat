@@ -11,8 +11,8 @@ import { useTestStore } from '@/store/testStore'
 import { useSessionStore } from '@/store/sessionStore'
 import { createSkillFromProof } from '@/api/skills'
 import { extractExpectations } from '@/api/testing'
-import { listDomains } from '@/api/sessions'
-import type { DomainInfo } from '@/api/sessions'
+import { listDomains, getObjectives } from '@/api/sessions'
+import type { DomainInfo, ObjectivesEntry } from '@/api/sessions'
 import { useToastStore } from '@/store/toastStore'
 import type { GoldenQuestionRequest } from '@/types/api'
 import { MermaidBlock } from './MermaidBlock'
@@ -43,10 +43,11 @@ interface FactNode {
 
 export interface ProofDAGActions {
   showSkillForm: () => void
-  showTestForm: () => void
+  showTestForm: () => Promise<void>
   showSummary: () => void
   showRedoForm: () => void
   showFinalResult: () => void
+  showObjectives: () => void
 }
 
 interface ProofDAGPanelProps {
@@ -317,6 +318,15 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   const [, setIsResizing] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [showSummary, setShowSummary] = useState(false)
+  const [showObjectives, setShowObjectives] = useState(false)
+  const [objectives, setObjectives] = useState<ObjectivesEntry[]>([])
+
+  // Fetch objectives when panel opens
+  useEffect(() => {
+    if (showObjectives && sessionId) {
+      getObjectives(sessionId).then(res => setObjectives(res.objectives))
+    }
+  }, [showObjectives, sessionId])
 
   // Persist panel geometry to localStorage when size or position changes
   useEffect(() => {
@@ -532,8 +542,28 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
         source: f.source,
         status: f.status,
       }))
-      const expect = await extractExpectations(sessionId, fallbackNodes, currentQuery || undefined, summary ?? undefined)
-      const questionText = expect.suggested_question || currentQuery || finalNode?.description || finalNode?.name?.replace(/^I\d+:\s*/, '') || 'Untitled question'
+      // Build test question from objectives_log: raw question + clarifications + redos
+      let questionText = currentQuery || ''
+      try {
+        const objRes = await getObjectives(sessionId)
+        const entries = objRes.objectives
+        const qEntry = entries.find(o => o.type === 'question')
+        if (qEntry?.text) {
+          const parts: string[] = [qEntry.text]
+          const clarifs = entries.filter(o => o.type === 'clarification')
+          if (clarifs.length > 0) {
+            parts.push('\nClarifications:')
+            for (const c of clarifs) parts.push(`${c.question}: ${c.answer}`)
+          }
+          const redos = entries.filter(o => o.type === 'redo')
+          if (redos.length > 0) {
+            parts.push('\nRedos:')
+            for (const r of redos) parts.push(`[${r.mode}] ${r.guidance}`)
+          }
+          questionText = parts.join('\n')
+        }
+      } catch { /* use currentQuery as fallback */ }
+      const expect = await extractExpectations(sessionId, fallbackNodes, questionText || undefined, summary ?? undefined)
       const body: GoldenQuestionRequest = {
         question: questionText,
         tags: ['from-reason-chain'],
@@ -561,6 +591,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     showSummary: () => setShowSummary(true),
     showRedoForm: () => setShowRedoForm(true),
     showFinalResult: () => { if (resultNode) pushSelectedNode(resultNode) },
+    showObjectives: () => setShowObjectives(true),
   }), [resultNode])
 
   // Compute critical path: longest dependency chain by elapsed_ms (or node count)
@@ -1528,6 +1559,69 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                   {summary}
                 </ReactMarkdown>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Objectives Panel */}
+      {showObjectives && (
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/20 pointer-events-auto" onClick={() => setShowObjectives(false)}>
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-auto pointer-events-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between">
+              <h3 className="font-semibold text-gray-900 dark:text-gray-100">Objectives</h3>
+              <button
+                onClick={() => setShowObjectives(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              {objectives.length === 0 && (
+                <p className="text-sm text-gray-500 italic">No objectives recorded.</p>
+              )}
+
+              {/* Question */}
+              {objectives.filter(o => o.type === 'question').map((o, i) => (
+                <div key={`q-${i}`}>
+                  <h4 className="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400 mb-1">Question</h4>
+                  <p className="text-sm text-gray-900 dark:text-gray-100" style={{ whiteSpace: 'pre-line' }}>{o.text}</p>
+                </div>
+              ))}
+
+              {/* Clarifications */}
+              {objectives.filter(o => o.type === 'clarification').length > 0 && (
+                <div>
+                  <h4 className="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400 mb-1">Clarifications</h4>
+                  <dl className="space-y-2">
+                    {objectives.filter(o => o.type === 'clarification').map((o, i) => (
+                      <div key={`c-${i}`} className="text-sm">
+                        <dt className="font-medium text-gray-700 dark:text-gray-300">Q: {o.question}</dt>
+                        <dd className="ml-4 text-gray-600 dark:text-gray-400">A: {o.answer}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              )}
+
+              {/* Redo History */}
+              {objectives.filter(o => o.type === 'redo').length > 0 && (
+                <div>
+                  <h4 className="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400 mb-1">Redo History</h4>
+                  <div className="space-y-2">
+                    {objectives.filter(o => o.type === 'redo').map((o, i) => (
+                      <div key={`r-${i}`} className="text-sm flex items-start gap-2">
+                        <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">{o.mode}</span>
+                        <span className="text-gray-700 dark:text-gray-300">{o.guidance}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -306,6 +306,8 @@ def _load_domains_into_session(
     # Store state
     managed._domain_databases = newly_loaded
     managed._domain_alias_map = domain_alias_map
+    managed._loaded_db_configs = {name: db_config.model_dump() for _, _, dbs, _, _ in valid_domains for name, db_config in dbs.items()}
+    managed._loaded_api_configs = {name: api_config.model_dump() if hasattr(api_config, 'model_dump') else dict(api_config) for _, _, _, apis, _ in valid_domains for name, api_config in apis.items()}
     managed.active_domains = [fn for fn, _, _, _, _ in valid_domains]
 
     # Update doc_tools with active domain IDs for automatic search filtering
@@ -314,6 +316,51 @@ def _load_domains_into_session(
         logger.debug(f"Set doc_tools._active_domain_ids: {managed.active_domains}")
 
     return managed.active_domains, conflicts
+
+
+def _apply_resolved_source_overrides(
+    managed: ManagedSession,
+    resolved: "ResolvedConfig",
+) -> None:
+    """Apply tiered source overrides that differ from what was loaded from raw domain configs.
+
+    Compares resolved.sources (merged from all tiers) against what was loaded
+    from raw domain configs. Re-registers databases/APIs where a higher tier
+    (user-domain, session) changed the config.
+    """
+    from constat.core.config import DatabaseConfig
+
+    loaded_db_configs = getattr(managed, "_loaded_db_configs", {})
+    loaded_api_configs = getattr(managed, "_loaded_api_configs", {})
+
+    # Check databases
+    for db_name, resolved_db in resolved.sources.databases.items():
+        loaded = loaded_db_configs.get(db_name)
+        if loaded is None:
+            # New database from user/session tier — not loaded from any domain
+            if managed.session.schema_manager and db_name not in (managed.session.schema_manager.connections or {}):
+                try:
+                    db_config = DatabaseConfig(**resolved_db)
+                    managed.session.schema_manager.add_database_dynamic(db_name, db_config)
+                    logger.info(f"Loaded tiered-override database: {db_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to load tiered-override database {db_name}: {e}")
+        elif resolved_db != loaded:
+            # Config changed by a higher tier — re-register
+            if managed.session.schema_manager:
+                try:
+                    db_config = DatabaseConfig(**resolved_db)
+                    managed.session.schema_manager.add_database_dynamic(db_name, db_config)
+                    logger.info(f"Re-registered tiered-override database: {db_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to re-register tiered-override database {db_name}: {e}")
+
+    # Check APIs
+    for api_name, resolved_api in resolved.sources.apis.items():
+        loaded = loaded_api_configs.get(api_name)
+        if loaded is None or resolved_api != loaded:
+            managed.session.add_domain_api(api_name, resolved_api)
+            logger.info(f"{'Loaded' if loaded is None else 'Re-registered'} tiered-override API: {api_name}")
 
 
 @router.post("", response_model=SessionResponse)
@@ -376,7 +423,12 @@ async def create_session(
             loaded, conflicts = _load_domains_into_session(_managed, preferred_domains)
             logger.info(f"[create_session] loaded={loaded}, conflicts={conflicts}")
             if loaded:
-                session_manager.resolve_config(_session_id)
+                resolved = session_manager.resolve_config(_session_id)
+                if resolved:
+                    _apply_resolved_source_overrides(_managed, resolved)
+                    if resolved.system_prompt:
+                        _managed.session.config.system_prompt = resolved.system_prompt
+                        _managed.session_prompt = resolved.system_prompt
 
         if 'user' not in _managed.active_domains:
             _managed.active_domains.append('user')
@@ -489,6 +541,22 @@ async def get_session(
     if not managed:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_response(managed)
+
+
+@router.get("/{session_id}/objectives")
+async def get_objectives(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Get the objectives log for a session."""
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+    log_json = None
+    if managed.session.datastore:
+        log_json = managed.session.datastore.get_session_meta("objectives_log")
+    import json
+    return {"objectives": json.loads(log_json) if log_json else []}
 
 
 @router.delete("/{session_id}")
@@ -646,14 +714,16 @@ async def set_active_domains(
         )
 
     # Re-resolve tiered config with new domains
-    session_manager.resolve_config(session_id)
+    resolved = session_manager.resolve_config(session_id)
 
-    # Load single domain's system_prompt into session
-    if len(real_filenames) == 1:
-        single = config.load_domain(real_filenames[0])
-        if single and single.system_prompt:
-            managed.session.config.system_prompt = single.system_prompt
-            managed.session_prompt = single.system_prompt
+    # Write resolved system_prompt into session (works for any number of domains)
+    if resolved and resolved.system_prompt:
+        managed.session.config.system_prompt = resolved.system_prompt
+        managed.session_prompt = resolved.system_prompt
+
+    # Apply tiered source overrides (user/session tier database/API changes)
+    if resolved:
+        _apply_resolved_source_overrides(managed, resolved)
 
     # Save to user preferences for future sessions (exclude synthetic nodes)
     effective_user_id = user_id if user_id != "default" else managed.user_id

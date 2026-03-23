@@ -144,6 +144,8 @@ interface MessageBubbleProps {
   stepDisplayModeVersion?: number // Increment to re-trigger override
   insightCollapsed?: boolean // External override for collapse-all / expand-all on final insights
   insightCollapsedVersion?: number // Increment to re-trigger override
+  contentExpanded?: boolean // External override for expand/collapse non-step content
+  contentExpandedVersion?: number // Increment to re-trigger override
   queryText?: string // The user query that produced this answer (for flagging)
   isSuperseded?: boolean // Step from a previous run (dimmed)
   onStepEdit?: (stepNumber: number, newGoal: string) => void
@@ -200,6 +202,8 @@ export function MessageBubble({
   stepDisplayModeVersion: externalStepModeVersion,
   insightCollapsed: externalInsightCollapsed,
   insightCollapsedVersion: externalInsightCollapsedVersion,
+  contentExpanded: externalContentExpanded,
+  contentExpandedVersion: externalContentExpandedVersion,
   queryText,
   isSuperseded,
   onStepEdit,
@@ -257,6 +261,13 @@ export function MessageBubble({
       setIsExpanded(!externalInsightCollapsed)
     }
   }, [externalInsightCollapsed, externalInsightCollapsedVersion])
+
+  // Sync external content expanded override (non-step messages with Show more/less)
+  useEffect(() => {
+    if (externalContentExpanded !== undefined && needsExpansion) {
+      setIsExpanded(externalContentExpanded)
+    }
+  }, [externalContentExpandedVersion])
 
   // Auto-collapse step to condensed when it completes
   useEffect(() => {
@@ -390,12 +401,12 @@ export function MessageBubble({
             className={`text-sm text-gray-900 dark:text-gray-100 ${
               isStep
                 ? stepMode === 'condensed' ? 'overflow-y-auto' : ''
-                : !isUser && !isExpanded && needsExpansion ? 'overflow-y-auto pr-[5px]' : ''
+                : !isExpanded && needsExpansion ? 'overflow-y-auto pr-[5px]' : ''
             }`}
             style={{
               maxHeight: isStep
                 ? stepMode === 'condensed' ? `${MAX_COLLAPSED_HEIGHT}px` : undefined
-                : !isUser && !isExpanded && needsExpansion ? `${MAX_COLLAPSED_HEIGHT}px` : undefined,
+                : !isExpanded && needsExpansion ? `${MAX_COLLAPSED_HEIGHT}px` : undefined,
             }}
           >
             {type === 'thinking' ? (
@@ -432,9 +443,9 @@ export function MessageBubble({
           </div>
           )}
           {/* Action buttons row — non-step expand/collapse + view proof */}
-          {((!isStep && !isUser && needsExpansion) || (isFinalInsight && onViewResult)) && (
+          {((!isStep && needsExpansion) || (isFinalInsight && onViewResult)) && (
             <div className="mt-2 flex items-center gap-3">
-              {!isStep && !isUser && needsExpansion && (
+              {!isStep && needsExpansion && (
                 <button
                   onClick={() => setIsExpanded(!isExpanded)}
                   className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"

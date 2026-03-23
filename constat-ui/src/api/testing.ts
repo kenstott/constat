@@ -23,6 +23,7 @@ export async function runTestsStreaming(
   domains: string[] = [],
   tags: string[] = [],
   includeE2e: boolean = false,
+  excludeQuestions: Record<string, number[]> = {},
   onEvent: (event: TestProgressEvent) => void,
 ): Promise<TestRunResponse> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -34,7 +35,7 @@ export async function runTestsStreaming(
   const response = await fetch(`/api/sessions/${sessionId}/tests/run`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ domains, tags, include_e2e: includeE2e }),
+    body: JSON.stringify({ domains, tags, include_e2e: includeE2e, exclude_questions: excludeQuestions }),
   })
 
   if (!response.ok) {

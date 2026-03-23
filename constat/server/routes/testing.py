@@ -32,7 +32,7 @@ from constat.server.models import (
 from constat.server.permissions import get_user_permissions
 from constat.server.session_manager import SessionManager
 from constat.testing.grounding import (
-    _GROUNDABLE_SOURCES,
+    _NON_GROUNDABLE_SOURCES,
     build_source_patterns,
 )
 from constat.testing.models import parse_golden_questions
@@ -51,6 +51,7 @@ class RunTestsRequest(BaseModel):
     domains: list[str] = []
     tags: list[str] = []
     include_e2e: bool = False
+    exclude_questions: dict[str, list[int]] = {}  # domain -> list of question indices to skip
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +178,7 @@ def _gq_to_response(index: int, raw: dict) -> GoldenQuestionResponse:
             step_hints=expect_raw.get("step_hints", []),
         ),
         objectives=raw.get("objectives", []),
+        system_prompt=raw.get("system_prompt"),
     )
 
 
@@ -237,59 +239,92 @@ def _generate_test_metadata(
 ) -> tuple[str | None, str | None]:
     """Generate test question and semantic_match criteria.
 
-    If the original question has no follow-ups, use it directly.
-    Only use LLM to merge when follow-ups exist.
+    If the original question has no follow-ups or clarifications, use it
+    directly (LLM only generates criteria).  When clarifications or
+    follow-ups are present, the LLM merges everything into a single
+    well-structured question.
 
     Returns (suggested_question, semantic_match).
     """
     from constat.providers.router import TaskRouter
 
     has_followups = original_question and "Follow-up requests:" in original_question
+    has_clarifications = original_question and "\nClarifications:\n" in original_question
 
-    if original_question and not has_followups:
-        # Single question — strip any "Original request:" prefix, use as-is
+    # Simple case: single question with no follow-ups or clarifications
+    if original_question and not has_followups and not has_clarifications:
         question = original_question.removeprefix("Original request:").strip()
-        # Still need LLM for semantic_match criteria only
-        router = TaskRouter(config.llm)
-        system = (
-            "Given a data analytics question, produce a single-line criteria string "
-            "describing what a correct answer should contain. "
-            "Reply with exactly one line starting with CRITERIA:"
-        )
-        response = router.generate(system=system, user_message=f"Question: {question}")
+        # LLM for criteria only — failure here must not lose the question
         semantic_match = None
-        for line in response.strip().split("\n"):
-            line = line.strip()
-            if line.upper().startswith("CRITERIA:"):
-                semantic_match = line.split(":", 1)[1].strip()
-                break
+        try:
+            router = TaskRouter(config.llm)
+            system = (
+                "Given a data analytics question, produce a single-line criteria string "
+                "describing what a correct answer's OUTPUT artifacts should contain. "
+                "Focus on verifiable outcomes: expected table names, column names, "
+                "row counts, value ranges, and data relationships. "
+                "Do NOT include process requirements (methodology, algorithms used) — "
+                "only what can be checked by inspecting the final output data. "
+                "Reply with exactly one line starting with CRITERIA:"
+            )
+            response = router.generate(system=system, user_message=f"Question: {question}")
+            for line in response.strip().split("\n"):
+                line = line.strip()
+                if line.upper().startswith("CRITERIA:"):
+                    semantic_match = line.split(":", 1)[1].strip()
+                    break
+        except Exception as e:
+            logger.warning(f"LLM criteria generation failed: {e}")
         return question, semantic_match
 
-    # Multiple questions/follow-ups — LLM merges into single coherent question
+    # Complex case: follow-ups or clarifications present — LLM merges into
+    # a single well-structured question with all constraints folded in.
     router = TaskRouter(config.llm)
     system = (
         "You are merging a multi-turn conversation into a single test question. "
-        "The input contains an original question and follow-up corrections/refinements. "
-        "Produce a SINGLE question that incorporates ALL constraints from ALL turns. "
-        "If a follow-up contradicts the original, the follow-up takes precedence. "
+        "The input may contain an original question plus follow-up corrections, "
+        "refinements, and/or clarification Q&A pairs. "
+        "Produce a SINGLE question that incorporates ALL constraints from ALL turns, "
+        "INCLUDING all clarification answers as integral constraints. "
+        "If a follow-up or clarification contradicts the original, it takes precedence. "
         "DO NOT reference proof results, data values, row counts, or execution details. "
         "Only reference the user's INTENT: what they want computed, from what sources, "
         "with what filters and exclusions.\n\n"
-        "Reply with exactly two lines:\n"
-        "QUESTION: <merged question preserving all constraints>\n"
-        "CRITERIA: <what a correct answer should demonstrate>"
+        "IMPORTANT: Clarification answers contain critical user decisions that MUST appear "
+        "in the final question. For example, if a clarification says 'use most recent review "
+        "per employee', that constraint must be in the question.\n\n"
+        "Format the question as well-structured multiline text:\n"
+        "- First line: main objective\n"
+        "- Then output spec (table name, columns, formatting) if applicable\n"
+        "- Then numbered steps for the methodology\n"
+        "- Then any exclusions or special instructions\n\n"
+        "Reply with:\n"
+        "QUESTION:\n<well-formatted multiline question>\n"
+        "CRITERIA: <single-line criteria for verifying output artifacts>"
     )
     user_message = original_question or ""
     response = router.generate(system=system, user_message=user_message)
 
     suggested_question = None
     semantic_match = None
-    for line in response.strip().split("\n"):
-        line = line.strip()
-        if line.upper().startswith("QUESTION:"):
-            suggested_question = line.split(":", 1)[1].strip()
-        elif line.upper().startswith("CRITERIA:"):
-            semantic_match = line.split(":", 1)[1].strip()
+    # Parse multiline QUESTION: block and single-line CRITERIA:
+    lines = response.strip().split("\n")
+    question_lines: list[str] = []
+    in_question = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.upper().startswith("QUESTION:"):
+            in_question = True
+            rest = stripped.split(":", 1)[1].strip()
+            if rest:
+                question_lines.append(rest)
+        elif stripped.upper().startswith("CRITERIA:"):
+            in_question = False
+            semantic_match = stripped.split(":", 1)[1].strip()
+        elif in_question:
+            question_lines.append(line.rstrip())
+    if question_lines:
+        suggested_question = "\n".join(question_lines).strip()
 
     return suggested_question, semantic_match
 
@@ -336,15 +371,24 @@ async def extract_expectations(
 
     # Server-side proof nodes are richer (source_name, table_name, api_endpoint).
     # Client-side nodes are always available (survive session restore).
-    # Use server-side when available, fall back to client-side.
+    # Use server-side when available, fall back to persisted state, then client.
     proof_nodes: list[dict] = []
     proof = managed.session.last_proof_result
     if proof and proof.get("proof_nodes"):
         proof_nodes = proof["proof_nodes"]
         logger.info(f"[extract_expectations] using {len(proof_nodes)} server-side proof nodes")
-    elif body and body.proof_nodes:
-        proof_nodes = [n.model_dump() for n in body.proof_nodes]
-        logger.info(f"[extract_expectations] using {len(proof_nodes)} client-supplied proof nodes")
+    else:
+        # Try loading from persisted state.json (covers race condition where
+        # proof completed but last_proof_result not yet set in memory)
+        state = managed.session.history.load_state(session_id)
+        if state and "last_proof_result" in state:
+            persisted_proof = state["last_proof_result"]
+            if persisted_proof and persisted_proof.get("proof_nodes"):
+                proof_nodes = persisted_proof["proof_nodes"]
+                logger.info(f"[extract_expectations] using {len(proof_nodes)} persisted proof nodes from state.json")
+        if not proof_nodes and body and body.proof_nodes:
+            proof_nodes = [n.model_dump() for n in body.proof_nodes]
+            logger.info(f"[extract_expectations] using {len(proof_nodes)} client-supplied proof nodes")
 
     if not proof_nodes:
         raise HTTPException(status_code=404, detail="No reasoning chain result available")
@@ -370,7 +414,7 @@ async def extract_expectations(
             f"source_type={source_type!r} source_name={node.get('source_name')!r} "
             f"table_name={node.get('table_name')!r} status={node.get('status')!r}"
         )
-        if source_type not in _GROUNDABLE_SOURCES:
+        if source_type in _NON_GROUNDABLE_SOURCES or not source_type:
             continue
 
         raw_name = node.get("name", "")
@@ -443,17 +487,76 @@ async def extract_expectations(
     end_to_end = None
     proof_summary = body.proof_summary if body else None
 
-    # Server-side proof result has the real analytical question (not slash commands).
-    # Always prefer it over client-supplied originalQuestion.
+    # Use the raw user question from objectives_log (before clarification expansion).
+    # The "problem" session meta contains the expanded/enhanced version which is too verbose
+    # for a regression test question.
+    import json as _json
     original_question = None
-    proof = getattr(managed.session, 'last_proof_result', None)
-    if proof:
-        original_question = proof.get("problem")
+    question_source = "none"
+    has_clarifications = False
+
+    # 1. Best source: objectives_log — raw user question + structured clarifications
+    if managed.session.datastore:
+        obj_json = managed.session.datastore.get_session_meta("objectives_log")
+        if obj_json:
+            try:
+                obj_log = _json.loads(obj_json)
+                q_entry = next((e for e in obj_log if e.get("type") == "question"), None)
+                if q_entry and q_entry.get("text"):
+                    original_question = q_entry["text"]
+                    question_source = "objectives_log"
+                    # Append clarifications from the same log
+                    clarifs = [e for e in obj_log if e.get("type") == "clarification"]
+                    if clarifs:
+                        clarif_lines = [f"{c['question']}: {c['answer']}" for c in clarifs]
+                        original_question = f"{original_question}\n\nClarifications:\n" + "\n".join(clarif_lines)
+                        has_clarifications = True
+            except (ValueError, KeyError) as e:
+                logger.warning(f"[extract_expectations] failed to parse objectives_log: {e}")
+
+    # 2. Fallback: datastore "problem" meta (expanded, includes clarifications inline)
+    if not original_question and managed.session.datastore:
+        original_question = managed.session.datastore.get_session_meta("problem")
+        if original_question:
+            question_source = "datastore"
+
+    # 3. Fallback: last_proof_result
+    if not original_question:
+        proof = getattr(managed.session, 'last_proof_result', None)
+        if proof:
+            original_question = proof.get("problem")
+            if original_question:
+                question_source = "last_proof_result"
+
+    # 4. Last resort: client-supplied query
     if not original_question:
         client_q = body.original_question if body else None
-        # Skip slash commands
         if client_q and not client_q.strip().startswith("/"):
             original_question = client_q
+            question_source = "client"
+
+    # If we fell back to "problem" meta, check for separately stored clarifications
+    if not has_clarifications and original_question and "\nClarifications:\n" not in original_question:
+        if managed.session.datastore:
+            clarif_json = managed.session.datastore.get_session_meta("clarifications")
+            if clarif_json:
+                try:
+                    qa_pairs = _json.loads(clarif_json)
+                    if qa_pairs:
+                        clarif_lines = [f"{qa['question']}: {qa['answer']}" for qa in qa_pairs]
+                        original_question = f"{original_question}\n\nClarifications:\n" + "\n".join(clarif_lines)
+                        has_clarifications = True
+                        logger.info(f"[extract_expectations] restored {len(qa_pairs)} clarification Q&A from session meta")
+                except (ValueError, KeyError) as e:
+                    logger.warning(f"[extract_expectations] failed to parse clarifications: {e}")
+    elif original_question and "\nClarifications:\n" in original_question:
+        has_clarifications = True
+
+    logger.info(
+        f"[extract_expectations] question source={question_source} "
+        f"has_clarifications={has_clarifications} "
+        f"len={len(original_question) if original_question else 0}"
+    )
 
     if original_question or grounded_entities:
         try:
@@ -539,6 +642,9 @@ async def extract_expectations(
         except Exception as e:
             logger.debug(f"[extract_expectations] could not extract expected outputs: {e}")
 
+    # Capture domain system_prompt so replay uses the same context
+    system_prompt = managed.session._get_system_prompt()
+
     return GoldenQuestionExpectations(
         terms=[],
         grounding=grounding,
@@ -550,6 +656,7 @@ async def extract_expectations(
         suggested_question=suggested_question,
         objectives=objectives,
         step_hints=step_hints,
+        system_prompt=system_prompt,
     )
 
 
@@ -611,11 +718,14 @@ async def run_tests(
             evt_queue: queue.Queue = queue.Queue()
             thread_error: list[Exception] = []
 
-            def _run(d=df):
+            excluded = set(body.exclude_questions.get(df, []))
+
+            def _run(d=df, excl=excluded):
                 try:
                     for evt in iter_domain_test(
                         config, d, tag_list, session_id, user_id,
                         include_e2e=body.include_e2e,
+                        exclude_indices=excl,
                     ):
                         evt_queue.put(evt)
                 except Exception as exc:
@@ -779,6 +889,10 @@ async def create_golden_question(
     domain_path, data = _read_domain_yaml(dc)
     gq_list = data.setdefault("golden_questions", [])
     new_entry = {"question": body.question, "tags": body.tags, "expect": expect}
+    # Persist system_prompt — prefer expect-level (from extraction), fall back to request-level
+    sp = body.expect.system_prompt or body.system_prompt
+    if sp:
+        new_entry["system_prompt"] = sp
     if body.objectives:
         new_entry["objectives"] = body.objectives
     # Step hints from expect (captured from exploratory session)

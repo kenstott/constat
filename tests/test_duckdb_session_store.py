@@ -360,6 +360,19 @@ class TestCreateView:
         result = store.load_dataframe("filtered")
         assert len(result) == 2
 
+    def test_stale_view_recovery(self, store):
+        """Views auto-recover when upstream schema changes (column rename)."""
+        store.save_dataframe("upstream", pd.DataFrame({"salary": [100, 200]}))
+        df = store.query("SELECT * FROM upstream")
+        store.save_dataframe("downstream", df, step_number=1)
+        assert store.load_dataframe("downstream") is not None
+        # Recreate upstream with different column name
+        store.save_dataframe("upstream", pd.DataFrame({"current_salary": [100, 200]}))
+        # downstream view is now stale — should auto-recover
+        result = store.load_dataframe("downstream")
+        assert result is not None
+        assert "current_salary" in result.columns
+
     def test_no_auto_convert_for_non_select(self, store):
         """save_dataframe does NOT auto-convert for SHOW TABLES or other non-SELECT SQL."""
         # Simulate a DataFrame from store.query("SHOW TABLES")

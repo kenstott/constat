@@ -606,6 +606,7 @@ export interface GoldenQuestionExpectations {
   suggested_question?: string | null
   objectives?: string[]
   step_hints?: Array<Record<string, unknown>>
+  system_prompt?: string | null
 }
 
 export interface GoldenQuestionRequest {
@@ -613,6 +614,7 @@ export interface GoldenQuestionRequest {
   tags: string[]
   expect: GoldenQuestionExpectations
   objectives?: string[]
+  system_prompt?: string | null
 }
 
 export interface GoldenQuestionResponse {
@@ -622,4 +624,5 @@ export interface GoldenQuestionResponse {
   expect: GoldenQuestionExpectations
   objectives?: string[]
   warnings?: string[]
+  system_prompt?: string | null
 }

@@ -76,6 +76,9 @@ function QuestionForm({
   const [validatorCode, setValidatorCode] = useState(
     String(initial?.expect.end_to_end?.validator_code ?? '')
   )
+  const [systemPrompt, setSystemPrompt] = useState(
+    initial?.system_prompt ?? initial?.expect.system_prompt ?? ''
+  )
 
   const handleSave = () => {
     const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, '_')
@@ -93,7 +96,7 @@ function QuestionForm({
         ? { judge_prompt: judgePrompt.trim(), validator_code: validatorCode.trim() }
         : undefined,
     }
-    onSave({ question, tags, expect })
+    onSave({ question, tags, expect, system_prompt: systemPrompt || undefined })
   }
 
   const inputClass = 'w-full px-2 py-1 text-xs border rounded dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200'
@@ -103,7 +106,7 @@ function QuestionForm({
     <div className="p-2 space-y-1.5 bg-gray-50 dark:bg-gray-800/50 border-t dark:border-gray-700">
       <div>
         <div className={labelClass}>Question</div>
-        <input className={inputClass} value={question} onChange={e => setQuestion(e.target.value)} placeholder="What is the total revenue?" />
+        <textarea className={`${inputClass} h-24 resize-y`} value={question} onChange={e => setQuestion(e.target.value)} placeholder="What is the total revenue?" />
       </div>
       <div>
         <div className={labelClass}>Tags (comma-separated)</div>
@@ -203,6 +206,17 @@ function QuestionForm({
           value={validatorCode}
           onChange={e => setValidatorCode(e.target.value)}
           placeholder={'# result = last table created, tables = all by name\nassert len(result) == 15'}
+        />
+      </div>
+
+      {/* System prompt — captured at test creation, injected during e2e replay */}
+      <div>
+        <div className={labelClass}>System prompt</div>
+        <textarea
+          className={`${inputClass} h-20`}
+          value={systemPrompt}
+          onChange={e => setSystemPrompt(e.target.value)}
+          placeholder="Domain context injected into LLM calls during replay. Auto-captured from session."
         />
       </div>
 
@@ -314,13 +328,19 @@ export default function RegressionPanel({ sessionId }: Props) {
     })
   }
 
-  // Run tests — derive domains from selected questions
+  // Run tests — derive domains and excluded questions from selection state
   const handleRun = (e2e: boolean) => {
     const domainsToRun = new Set<string>()
+    const excludeQuestions: Record<string, number[]> = {}
     for (const d of testableDomains) {
       const qs = visibleQuestions(d.filename)
-      if (qs.some(q => !deselected.has(makeKey(d.filename, q.index)))) {
+      const selected = qs.filter(q => !deselected.has(makeKey(d.filename, q.index)))
+      const excluded = qs.filter(q => deselected.has(makeKey(d.filename, q.index)))
+      if (selected.length > 0) {
         domainsToRun.add(d.filename)
+        if (excluded.length > 0) {
+          excludeQuestions[d.filename] = excluded.map(q => q.index)
+        }
       }
     }
     if (domainsToRun.size === 0) return
@@ -328,6 +348,7 @@ export default function RegressionPanel({ sessionId }: Props) {
       selectedDomains: domainsToRun,
       selectedTags: new Set(selectedTags),
       includeE2e: e2e,
+      excludeQuestions,
     })
     runTests(sessionId)
   }
@@ -503,7 +524,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                           {q.tags.map(t => (
                             <span key={t} className="px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400 text-[10px] flex-shrink-0">{t}</span>
                           ))}
-                          <span className="text-gray-700 dark:text-gray-300 truncate flex-1">{q.question}</span>
+                          <span className="text-gray-700 dark:text-gray-300 truncate flex-1">{q.question.split('\n')[0]}</span>
                           {/* Result badges inline */}
                           {qResult && (
                             <div className="flex gap-1 flex-shrink-0">
@@ -596,6 +617,13 @@ export default function RegressionPanel({ sessionId }: Props) {
                         {/* Expanded detail: definition + test results */}
                         {expandedQuestions.has(key) && (
                           <div className="px-3 py-2 bg-gray-50 dark:bg-gray-800/50 space-y-2 text-xs border-t dark:border-gray-700">
+                            {/* Full question text */}
+                            {q.question.includes('\n') && (
+                              <div>
+                                <span className="text-[10px] font-medium text-gray-500 uppercase">Question</span>
+                                <div className="text-gray-600 dark:text-gray-400 pl-2 whitespace-pre-line text-xs">{q.question}</div>
+                              </div>
+                            )}
                             {/* Definition */}
                             <div className="space-y-1">
                               {(q.expect.terms ?? []).length > 0 && (
@@ -656,6 +684,12 @@ export default function RegressionPanel({ sessionId }: Props) {
                                       )}
                                     </span>
                                   ))}
+                                </div>
+                              )}
+                              {q.system_prompt && (
+                                <div>
+                                  <span className="text-[10px] font-medium text-gray-500 uppercase">System prompt</span>
+                                  <div className="text-gray-600 dark:text-gray-400 pl-2 line-clamp-2 text-[10px]">{q.system_prompt}</div>
                                 </div>
                               )}
                               {(q.expect.terms ?? []).length === 0 && (q.expect.grounding ?? []).length === 0 && (q.expect.relationships ?? []).length === 0 && (q.expect.expected_outputs ?? []).length === 0 && !q.expect.end_to_end && (

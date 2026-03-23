@@ -76,6 +76,9 @@ class ResolvedConfig:
     llm: Optional[LLMConfig] = None
     preferences: Optional[dict] = None
 
+    # NER stop list (merged by replacement — last tier wins)
+    ner_stop_list: list[str] = field(default_factory=list)
+
     # System prompt fragments (merged from all tiers)
     system_prompt: str = ""
     databases_description: str = ""
@@ -152,7 +155,7 @@ def _extract_mergeable_sections(data: dict) -> dict:
     sections = {}
     for key in ("databases", "apis", "documents", "glossary", "relationships",
                 "rights", "facts", "learnings", "skills", "system_prompt",
-                "databases_description", "task_routing"):
+                "databases_description", "task_routing", "ner_stop_list"):
         if key in data:
             sections[key] = data[key]
     return sections
@@ -290,6 +293,8 @@ class TieredConfigLoader:
             data["rights"] = dict(self._config.rights)
         if self._config.skills:
             data["skills"] = {"paths": list(self._config.skills.paths)}
+        if self._config.ner_stop_list:
+            data["ner_stop_list"] = list(self._config.ner_stop_list)
         if self._config.system_prompt:
             data["system_prompt"] = self._config.system_prompt
         if self._config.databases_description:
@@ -322,6 +327,8 @@ class TieredConfigLoader:
             data["facts"] = dict(domain.facts)
         if domain.learnings:
             data["learnings"] = dict(domain.learnings)
+        if domain.ner_stop_list:
+            data["ner_stop_list"] = list(domain.ner_stop_list)
         if domain.system_prompt:
             data["system_prompt"] = domain.system_prompt
         if domain.databases_description:
@@ -366,6 +373,7 @@ class TieredConfigLoader:
             glossary=merged.get("glossary", {}),
             relationships=merged.get("relationships", {}),
             skills=merged.get("skills", {}),
+            ner_stop_list=merged.get("ner_stop_list", []),
             llm=self._config.llm,
             system_prompt=merged.get("system_prompt", ""),
             databases_description=merged.get("databases_description", ""),

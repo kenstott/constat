@@ -243,9 +243,11 @@ async def get_table_data(
             has_more=end_idx < total_rows,
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error getting table data: {e}")
-        raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
+        logger.error(f"Error getting table data for '{table_name}': {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 DownloadFormat = Literal["csv", "parquet", "arrow", "excel", "text", "markdown"]

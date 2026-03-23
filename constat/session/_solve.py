@@ -249,6 +249,9 @@ class SolveMixin:
         # PLAN_NEW, PLAN_CONTINUE, or re-routed QUERY - continue with planning flow
         self._apply_phase_transition("plan_new")
 
+        # Capture raw question before clarification/enhancement modifies it
+        original_question = problem
+
         # Apply sub-intent enhancements for PLAN_NEW (COMPARE, PREDICT)
         enhanced_problem = problem
         if turn_intent and turn_intent.primary == PrimaryIntent.PLAN_NEW:
@@ -332,6 +335,23 @@ class SolveMixin:
         # Save problem statement to datastore (for UI restoration)
         self.datastore.set_session_meta("problem", problem)
         self.datastore.set_session_meta("status", "planning")
+
+        # Initialize objectives log with the original question and any clarifications
+        import json as _json_obj
+        from datetime import datetime as _dt_obj, timezone as _tz_obj
+        _obj_log = [{"type": "question", "text": original_question, "ts": _dt_obj.now(_tz_obj.utc).isoformat()}]
+        pending = getattr(self, '_pending_clarifications', None)
+        if pending:
+            for item in pending:
+                _obj_log.append({"type": "clarification", "question": item["question"], "answer": item["answer"], "ts": _dt_obj.now(_tz_obj.utc).isoformat()})
+        self.datastore.set_session_meta("objectives_log", _json_obj.dumps(_obj_log))
+
+        # Persist clarification Q&A as structured data (survives restore)
+        pending = getattr(self, '_pending_clarifications', None)
+        if pending:
+            import json as _json
+            self.datastore.set_session_meta("clarifications", _json.dumps(pending))
+            self._pending_clarifications = None
 
         # Log the initial query
         self.history.log_user_input(self.session_id, problem, "query")

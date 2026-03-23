@@ -23,6 +23,7 @@ interface TestState {
   selectedDomains: Set<string>
   selectedTags: Set<string>
   includeE2e: boolean
+  excludeQuestions: Record<string, number[]>
 
   // Golden question CRUD
   goldenQuestions: Record<string, GoldenQuestionResponse[]>
@@ -53,6 +54,7 @@ export const useTestStore = create<TestState>((set, get) => ({
   selectedDomains: new Set(),
   selectedTags: new Set(),
   includeE2e: false,
+  excludeQuestions: {},
   goldenQuestions: {},
   editingQuestion: null,
 
@@ -67,7 +69,7 @@ export const useTestStore = create<TestState>((set, get) => ({
   },
 
   runTests: async (sessionId: string) => {
-    const { selectedDomains, selectedTags, includeE2e } = get()
+    const { selectedDomains, selectedTags, includeE2e, excludeQuestions } = get()
     set({ loading: true, error: null, progress: null, results: null })
     try {
       const results = await testingApi.runTestsStreaming(
@@ -75,6 +77,7 @@ export const useTestStore = create<TestState>((set, get) => ({
         [...selectedDomains],
         [...selectedTags],
         includeE2e,
+        excludeQuestions,
         (evt: TestProgressEvent) => {
           if (evt.event === 'domain_start' || evt.event === 'question_start') {
             set({

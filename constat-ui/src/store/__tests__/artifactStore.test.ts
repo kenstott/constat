@@ -102,7 +102,7 @@ describe('useArtifactStore', () => {
 
   describe('fetchArtifacts', () => {
     it('sets loading and populates artifacts on success', async () => {
-      const mockArtifacts = [{ id: 1, name: 'chart1', artifact_type: 'chart' }]
+      const mockArtifacts = [{ id: 1, name: 'chart1', artifact_type: 'chart' as const, step_number: 1, mime_type: 'image/png' }]
       vi.mocked(sessionsApi.listArtifacts).mockResolvedValue({ artifacts: mockArtifacts })
 
       await useArtifactStore.getState().fetchArtifacts('sess-1')
@@ -126,7 +126,7 @@ describe('useArtifactStore', () => {
 
   describe('fetchTables', () => {
     it('populates tables on success', async () => {
-      const mockTables = [{ name: 'sales', row_count: 100 }]
+      const mockTables = [{ name: 'sales', row_count: 100, step_number: 1, columns: ['id', 'amount'] }]
       vi.mocked(sessionsApi.listTables).mockResolvedValue({ tables: mockTables })
 
       await useArtifactStore.getState().fetchTables('sess-1')
@@ -137,7 +137,7 @@ describe('useArtifactStore', () => {
 
   describe('fetchFacts', () => {
     it('sets factsLoading and populates facts', async () => {
-      const mockFacts = [{ name: 'total_sales', value: '1000' }]
+      const mockFacts = [{ name: 'total_sales', value: '1000', source: 'derived' as const, is_persisted: false }]
       vi.mocked(sessionsApi.listFacts).mockResolvedValue({ facts: mockFacts })
 
       await useArtifactStore.getState().fetchFacts('sess-1')
@@ -152,7 +152,7 @@ describe('useArtifactStore', () => {
     it('resets all state to defaults', async () => {
       // First populate some data
       vi.mocked(sessionsApi.listArtifacts).mockResolvedValue({
-        artifacts: [{ id: 1, name: 'x', artifact_type: 'chart' }],
+        artifacts: [{ id: 1, name: 'x', artifact_type: 'chart', step_number: 1, mime_type: 'image/png' }],
       })
       await useArtifactStore.getState().fetchArtifacts('sess-1')
       expect(useArtifactStore.getState().artifacts).toHaveLength(1)
@@ -175,7 +175,7 @@ describe('useArtifactStore', () => {
     it('clears query results but keeps data sources', async () => {
       // Populate artifacts
       vi.mocked(sessionsApi.listArtifacts).mockResolvedValue({
-        artifacts: [{ id: 1, name: 'x', artifact_type: 'chart' }],
+        artifacts: [{ id: 1, name: 'x', artifact_type: 'chart', step_number: 1, mime_type: 'image/png' }],
       })
       await useArtifactStore.getState().fetchArtifacts('sess-1')
 

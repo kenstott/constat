@@ -49,8 +49,20 @@ _DEFAULT_JUDGE_PROMPT = (
     "3. The actual computed artifacts (tables with data)\n\n"
     "The artifacts are the PRIMARY evidence. The prose summary may omit details "
     "that exist in the artifact data. If the artifacts contain the expected data "
-    "(correct columns, reasonable values, all employees covered), the test PASSES "
+    "(correct columns, reasonable values, appropriate row counts), the test PASSES "
     "even if the prose summary is incomplete.\n\n"
+    "PASS/FAIL should be based on DATA CORRECTNESS only:\n"
+    "- Expected tables exist with correct columns\n"
+    "- Values are in reasonable ranges\n"
+    "- Row counts match expectations\n"
+    "- Computed columns are mathematically consistent\n\n"
+    "Do NOT fail for:\n"
+    "- Process transparency (whether methodology is visible in output)\n"
+    "- Minor floating-point display differences\n"
+    "- Integer values where integers are expected (e.g., ratings 1-5)\n"
+    "- Trailing zero display: 'rounded to N decimal places' means the value has "
+    "AT MOST N decimal places of precision, NOT that it must display exactly N digits. "
+    "0.03 and 0.030 are identical values; both satisfy 'rounded to 3 decimal places'.\n\n"
     "Reply with exactly YES or NO on the first line, then one sentence explaining why."
 )
 
@@ -89,6 +101,7 @@ class GoldenQuestion:
     expect: GoldenExpectations
     objectives: list[str] = field(default_factory=list)  # original question + follow-ups
     step_hints: list[dict] = field(default_factory=list)  # reference code from exploratory session
+    system_prompt: str = ""  # domain context captured at test creation time
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +241,7 @@ def parse_golden_questions(raw: list[dict]) -> list[GoldenQuestion]:
                 expect=_parse_expectations(expect_raw),
                 objectives=item.get("objectives", []),
                 step_hints=item.get("step_hints", []),
+                system_prompt=item.get("system_prompt", ""),
             )
         )
     return results

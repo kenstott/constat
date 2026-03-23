@@ -1371,7 +1371,7 @@ class Config(BaseModel):
 
 def _substitute_env_vars(content: str) -> str:
     """Replace ${VAR_NAME} with environment variable values."""
-    pattern = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)}')
+    pattern = re.compile(r'\$\{([A-Za-z0-9_]+)}')
 
     def replacer(match: re.Match) -> str:
         var_name = match.group(1)

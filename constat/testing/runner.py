@@ -144,6 +144,7 @@ def iter_domain_test(
     session_id: str = "golden-test",
     user_id: str = "default",
     include_e2e: bool = False,
+    exclude_indices: set[int] | None = None,
 ):
     """Generator that yields TestProgressEvent per question."""
     domain_config = config.load_domain(domain_filename)
@@ -151,10 +152,15 @@ def iter_domain_test(
         raise ValueError(f"Domain not found: {domain_filename}")
 
     domain_name = domain_config.name or domain_filename
-    questions = parse_golden_questions(domain_config.golden_questions)
+    all_questions = parse_golden_questions(domain_config.golden_questions)
+    # Build (original_index, question) pairs, then filter
+    indexed = list(enumerate(all_questions))
     if tags:
         tag_set = set(tags)
-        questions = [q for q in questions if tag_set & set(q.tags)]
+        indexed = [(i, q) for i, q in indexed if tag_set & set(q.tags)]
+    if exclude_indices:
+        indexed = [(i, q) for i, q in indexed if i not in exclude_indices]
+    questions = [q for _, q in indexed]
 
     total = len(questions)
     if total == 0:
@@ -319,6 +325,8 @@ def _run_e2e_with_events(
             require_approval=False,
             auto_approve=True,
         )
+        if gq.system_prompt:
+            api.session._system_prompt_override = gq.system_prompt
         logger.info("[E2E_TRACE] test API created, loading domain resources")
 
         # Load ALL configured domains — same as real session startup.
@@ -536,6 +544,9 @@ def _run_e2e_question(
         require_approval=False,
         auto_approve=True,
     )
+
+    if gq.system_prompt:
+        api.session._system_prompt_override = gq.system_prompt
 
     question_text = gq.question
     if gq.expect.expected_outputs:

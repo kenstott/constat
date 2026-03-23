@@ -12,6 +12,8 @@
 import re
 
 _GROUNDABLE_SOURCES = {"database", "document", "api"}
+_NON_GROUNDABLE_SOURCES = {"embedded", "derived", "llm_knowledge", "llm_heuristic",
+                           "cache", "replay", "user_provided", "config", "unresolved"}
 
 # Regex to extract table names from SQL FROM/JOIN clauses.
 _SQL_TABLE_RE = re.compile(
@@ -44,7 +46,7 @@ def build_source_patterns(node: dict) -> list[str]:
     """
     raw_source = node.get("source", "")
     source_type = raw_source.split(":")[0] if raw_source else ""
-    if source_type not in _GROUNDABLE_SOURCES:
+    if source_type in _NON_GROUNDABLE_SOURCES or not source_type:
         return []
 
     source_name = node.get("source_name")
@@ -79,5 +81,10 @@ def build_source_patterns(node: dict) -> list[str]:
         doc_name = source_suffix or source_name
         if doc_name:
             resolves_to.append(f"document:{doc_name}")
+    elif source_type not in _GROUNDABLE_SOURCES:
+        # Domain-specific source (e.g., "hr", "business_rules") — LLM used the
+        # domain config name as source rather than a canonical type.
+        # Treat as a domain data source for grounding.
+        resolves_to.append(f"domain:{source_type}")
 
     return resolves_to

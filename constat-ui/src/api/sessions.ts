@@ -1252,6 +1252,21 @@ export async function getProofFacts(
   )
 }
 
+// Objectives
+export interface ObjectivesEntry {
+  type: 'question' | 'clarification' | 'redo'
+  text?: string       // for type=question
+  question?: string   // for type=clarification
+  answer?: string     // for type=clarification
+  mode?: string       // for type=redo
+  guidance?: string   // for type=redo
+  ts: string
+}
+
+export async function getObjectives(sessionId: string): Promise<{ objectives: ObjectivesEntry[] }> {
+  return get<{ objectives: ObjectivesEntry[] }>(`/sessions/${sessionId}/objectives`)
+}
+
 // Fine-Tuning
 export async function listFineTuneJobs(params?: {
   status?: string

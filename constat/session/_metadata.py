@@ -397,8 +397,11 @@ class MetadataMixin:
 
         Args:
             name: API name
-            api_config: API configuration (ApiConfig object)
+            api_config: API configuration (ApiConfig object or dict)
         """
+        if isinstance(api_config, dict):
+            from constat.core.config import APIConfig
+            api_config = APIConfig(**api_config)
         self._domain_apis[name] = api_config
         logger.info(f"Registered domain API: {name}")
 

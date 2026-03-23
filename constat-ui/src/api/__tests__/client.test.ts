@@ -171,7 +171,7 @@ describe('API client methods', () => {
         statusText: 'Bad Request',
         json: () => Promise.reject(new Error('not json')),
       })
-      const err = await get('/fail').catch((e: ApiError) => e)
+      const err = await get('/fail').catch((e: unknown) => e) as ApiError
       expect(err).toBeInstanceOf(ApiError)
       expect(err.status).toBe(400)
       expect(err.data).toBeUndefined()

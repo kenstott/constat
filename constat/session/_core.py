@@ -689,8 +689,25 @@ class CoreMixin:
 
     def _save_proof_result(self, result: dict, proof_hash: str | None = None) -> None:
         """Persist last_proof_result to session state.json and proven grounding."""
+        import json as _json
+
+        def _make_serializable(obj):
+            """Convert non-JSON-serializable objects (DataFrames, etc.) to strings."""
+            if isinstance(obj, dict):
+                return {k: _make_serializable(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_make_serializable(v) for v in obj]
+            try:
+                _json.dumps(obj)
+                return obj
+            except (TypeError, ValueError):
+                # DataFrame, numpy array, etc. — convert to summary string
+                if hasattr(obj, '__len__'):
+                    return f"{len(obj)} rows"
+                return str(obj)[:500]
+
         state = self.history.load_state(self.session_id) or {}
-        state["last_proof_result"] = result
+        state["last_proof_result"] = _make_serializable(result)
         if proof_hash:
             state["proof_inputs_hash"] = proof_hash
         self.history.save_state(self.session_id, state)

@@ -251,17 +251,17 @@ class TestSessionManager:
         assert managed.is_expired(0) is True
 
     def test_cleanup_expired(self, minimal_config, mock_session_class):
-        """Test cleanup of expired sessions."""
+        """Test cleanup_expired is a no-op (sessions persist until deleted)."""
         server_config = ServerConfig(session_timeout_minutes=0)
         manager = SessionManager(minimal_config, server_config)
 
         manager.create_session(str(uuid.uuid4()))
         manager.create_session(str(uuid.uuid4()))
 
-        # Should cleanup both
+        # cleanup_expired is a no-op — sessions persist until explicitly deleted
         count = manager.cleanup_expired()
-        assert count == 2
-        assert len(manager.list_sessions()) == 0
+        assert count == 0
+        assert len(manager.list_sessions()) == 2
 
     def test_update_status(self, session_manager_with_mock):
         """Test updating session status."""
@@ -433,7 +433,7 @@ class TestSessionEndpoints:
 
         assert response.status_code == 404
         data = response.json()
-        assert data["error"] == "not_found"
+        assert data["detail"] == "Session not found"
 
     def test_delete_session(self, client_with_mock):
         """Test deleting a session."""

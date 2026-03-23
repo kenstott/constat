@@ -41,6 +41,7 @@ interface BotMessageGroupProps {
   messages: StoreMessage[]
   stepOverride?: { mode: StepDisplayMode; version: number }
   insightOverride?: { collapsed: boolean; version: number }
+  groupOverride?: { expanded: boolean; version: number }
   stepOutputsMap: Map<number, Array<{ type: 'table' | 'artifact'; name: string; id: string }>>
   onOutputClick: (stepNumber: number | undefined, output: { type: 'table' | 'artifact'; name: string; id: string }) => void
   onRoleClick: (role: string) => void
@@ -54,6 +55,7 @@ export function BotMessageGroup({
   messages,
   stepOverride,
   insightOverride,
+  groupOverride,
   stepOutputsMap,
   onOutputClick,
   onRoleClick,
@@ -63,6 +65,13 @@ export function BotMessageGroup({
   allMessages,
 }: BotMessageGroupProps) {
   const [expanded, setExpanded] = useState(false)
+
+  // Sync group expanded state from conversation-level override
+  useEffect(() => {
+    if (groupOverride !== undefined) {
+      setExpanded(groupOverride.expanded)
+    }
+  }, [groupOverride?.version])
   const { session, submitQuery } = useSessionStore()
   const { tables } = useArtifactStore()
   // Show all domains except synthetic root/user nodes (constants, not useful)
@@ -145,6 +154,8 @@ export function BotMessageGroup({
                     stepAttempts={message.stepAttempts}
                     stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
                     stepDisplayModeVersion={stepOverride?.version}
+                    contentExpanded={groupOverride?.expanded}
+                    contentExpandedVersion={groupOverride?.version}
                     queryText={queryText}
                     isSuperseded={message.isSuperseded}
                     onStepEdit={onStepEdit}
@@ -206,6 +217,8 @@ export function BotMessageGroup({
                         stepAttempts={message.stepAttempts}
                         stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
                         stepDisplayModeVersion={stepOverride?.version}
+                        contentExpanded={groupOverride?.expanded}
+                        contentExpandedVersion={groupOverride?.version}
                         queryText={queryText}
                         isSuperseded={message.isSuperseded}
                         onStepEdit={onStepEdit}
@@ -262,6 +275,8 @@ export function BotMessageGroup({
               isFinalInsight={message.isFinalInsight}
               insightCollapsed={insightOverride?.collapsed}
               insightCollapsedVersion={insightOverride?.version}
+              contentExpanded={groupOverride?.expanded}
+              contentExpandedVersion={groupOverride?.version}
               onViewResult={message.isFinalInsight && message.content?.toLowerCase().includes('proof')
                 ? openProofPanel : undefined}
               role={message.role}

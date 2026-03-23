@@ -727,6 +727,9 @@ async def delete_definition(
     if not result:
         raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
 
+    # Write tombstone for config-seeded glossary terms so they don't re-seed
+    session_manager.write_config_tombstone(session_id, "glossary", name)
+
     return {"status": "deleted", **result}
 
 

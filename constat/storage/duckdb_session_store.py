@@ -231,8 +231,9 @@ class DuckDBSessionStore:
                     continue
                 try:
                     existing = conn.execute(
-                        "SELECT COUNT(*) FROM information_schema.tables "
-                        "WHERE table_name = ? AND table_schema = 'main'",
+                        "SELECT COUNT(*) FROM duckdb_tables() "
+                        "WHERE table_name = ? AND schema_name = 'main' "
+                        "AND database_name = current_database()",
                         [name],
                     ).fetchone()[0]
                     if existing:
@@ -274,7 +275,11 @@ class DuckDBSessionStore:
             and len(df) == df.attrs.get('_source_len', -1)
         ):
             logger.info(f"Auto-converting save_dataframe('{name}') to create_view (data from query)")
-            self.create_view(name, source_sql, step_number=step_number, description=description)
+            # source_sql is already DuckDB SQL (post-transpilation from query())
+            self._create_view_impl(
+                _validate_table_name(name), source_sql, step_number=step_number,
+                description=description, is_final_step=is_final_step, is_published=is_published,
+            )
             return
 
         validated = _validate_table_name(name)
@@ -376,11 +381,40 @@ class DuckDBSessionStore:
         )
 
     def load_dataframe(self, name: str) -> Optional[pd.DataFrame]:
+        validated = _validate_table_name(name)
         with self._locked_conn() as conn:
             try:
-                return conn.execute(f"SELECT * FROM {_validate_table_name(name)}").fetchdf()
-            except (duckdb.Error, ValueError):
+                return conn.execute(f"SELECT * FROM {validated}").fetchdf()
+            except duckdb.Error as e:
+                if "Contents of view were altered" in str(e):
+                    # Stale view — upstream schema changed. Recreate to re-bind columns.
+                    df = self._refresh_stale_view(conn, validated)
+                    if df is not None:
+                        return df
+                logger.warning(f"load_dataframe('{name}') failed: {e}")
                 return None
+            except ValueError as e:
+                logger.warning(f"load_dataframe('{name}') failed: {e}")
+                return None
+
+    def _refresh_stale_view(self, conn: duckdb.DuckDBPyConnection, name: str) -> Optional[pd.DataFrame]:
+        """Recreate a stale view whose upstream schema changed, then re-query."""
+        try:
+            row = conn.execute(
+                "SELECT sql FROM duckdb_views() "
+                "WHERE database_name = current_database() AND schema_name = 'main' "
+                "AND view_name = ?", [name]
+            ).fetchone()
+            if not row or not row[0]:
+                return None
+            view_ddl = row[0]
+            conn.execute(f"DROP VIEW IF EXISTS {name}")
+            conn.execute(view_ddl)
+            logger.info(f"Refreshed stale view '{name}'")
+            return conn.execute(f"SELECT * FROM {name}").fetchdf()
+        except duckdb.Error as e:
+            logger.warning(f"Failed to refresh stale view '{name}': {e}")
+            return None
 
     def get_table_data(self, name: str) -> Optional[pd.DataFrame]:
         return self.load_dataframe(name)
@@ -391,7 +425,8 @@ class DuckDBSessionStore:
         with self._locked_conn() as conn:
             df = conn.execute(duckdb_sql).fetchdf()
         # Tag result so save_dataframe can auto-convert to view
-        df.attrs["_source_sql"] = sql
+        # Store DuckDB SQL (post-transpilation) to avoid double transpilation
+        df.attrs["_source_sql"] = duckdb_sql
         df.attrs["_source_columns"] = list(df.columns)
         df.attrs["_source_len"] = len(df)
         return df
@@ -438,14 +473,21 @@ class DuckDBSessionStore:
             user_id=self._user_id,
             session_id=self._session_id,
         )
-        # Collect view names from information_schema
+        # Identify views: anything NOT in duckdb_tables() is a view.
+        # Using duckdb_tables() instead of information_schema because
+        # information_schema fails with DuckDB 1.4.x when SQLite DBs are ATTACHed.
         with self._locked_conn() as conn:
-            view_names = {
+            real_table_names = {
                 row[0]
                 for row in conn.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'main' AND table_type = 'VIEW'"
+                    "SELECT table_name FROM duckdb_tables() "
+                    "WHERE database_name = current_database() "
+                    "AND schema_name = 'main' AND NOT internal"
                 ).fetchall()
+            }
+            view_names = {
+                t.name for t in tables
+                if t.name not in real_table_names
             }
         return [
             {
@@ -483,14 +525,11 @@ class DuckDBSessionStore:
                 return None
 
     def table_exists(self, name: str) -> bool:
+        validated = _validate_table_name(name)
         with self._locked_conn() as conn:
             try:
-                count = conn.execute(
-                    "SELECT COUNT(*) FROM information_schema.tables "
-                    "WHERE table_name = ? AND table_schema = 'main'",
-                    [name],
-                ).fetchone()[0]
-                return count > 0
+                conn.execute(f"SELECT 1 FROM {validated} LIMIT 0")
+                return True
             except duckdb.Error:
                 return False
 
@@ -605,7 +644,10 @@ class DuckDBSessionStore:
         """Create a lazy SQL view from DuckDB-dialect SQL (no transpilation)."""
         self._create_view_impl(_validate_table_name(name), duckdb_sql, step_number, description)
 
-    def _create_view_impl(self, validated_name: str, duckdb_sql: str, step_number: int = 0, description: str = "") -> None:
+    def _create_view_impl(
+        self, validated_name: str, duckdb_sql: str, step_number: int = 0, description: str = "",
+        is_final_step: bool = False, is_published: bool = False,
+    ) -> None:
         """Shared impl: create view from DuckDB-dialect SQL."""
         with self._locked_conn() as conn:
             # Drop existing TABLE if present — DuckDB can't replace a TABLE with a VIEW
@@ -620,7 +662,8 @@ class DuckDBSessionStore:
                 row_count = conn.execute(f"SELECT COUNT(*) FROM {validated_name}").fetchone()[0]
                 col_info = conn.execute(f"DESCRIBE {validated_name}").fetchall()
                 columns = [{"name": row[0], "type": row[1]} for row in col_info]
-            except Exception:
+            except Exception as e:
+                logger.warning(f"View probe failed for '{validated_name}': {e}")
                 row_count = 0
                 columns = []
 
@@ -636,14 +679,22 @@ class DuckDBSessionStore:
             columns=columns,
             description=description or None,
             step_number=step_number,
+            is_final_step=is_final_step,
+            is_published=is_published or is_final_step,
         )
 
-    def create_view(self, name: str, pg_sql: str, step_number: int = 0, description: str = "") -> None:
+    def create_view(
+        self, name: str, pg_sql: str, step_number: int = 0, description: str = "",
+        is_final_step: bool = False, is_published: bool = False,
+    ) -> None:
         """Create a lazy SQL view. PG SQL is transpiled to DuckDB."""
         from constat.catalog.sql_transpiler import transpile_sql
         validated = _validate_table_name(name)
         duckdb_sql = transpile_sql(pg_sql, target_dialect="duckdb", source_dialect="postgres")
-        self._create_view_impl(validated, duckdb_sql, step_number, description)
+        self._create_view_impl(
+            validated, duckdb_sql, step_number, description,
+            is_final_step=is_final_step, is_published=is_published,
+        )
 
     def attach(self, name: str, path: str, db_type: str = "sqlite", read_only: bool = True) -> None:
         """ATTACH a source SQLite/DuckDB file. Tables queryable as schema.table.
@@ -681,20 +732,25 @@ class DuckDBSessionStore:
             return [{"name": row[0]} for row in rows]
 
     def get_ddl(self) -> str:
-        """Return full DDL of the session store: attached DBs, tables, views."""
+        """Return full DDL of the session store: attached DBs, tables, views.
+
+        Uses duckdb_tables() instead of information_schema to avoid DuckDB 1.4.x
+        bug where information_schema fails when SQLite databases are ATTACHed.
+        """
         lines: list[str] = []
         with self._locked_conn() as conn:
-            # Attached databases
+            # Attached databases — list tables via duckdb_tables()
             dbs = conn.execute("SHOW DATABASES").fetchall()
+            current_db = conn.execute("SELECT current_database()").fetchone()[0]
             for row in dbs:
                 db_name = row[0]
-                if db_name == "memory" or db_name == self._db_path.stem:
+                if db_name == "memory" or db_name == current_db:
                     continue
                 lines.append(f"-- Attached: {db_name}")
                 try:
                     tables = conn.execute(
-                        "SELECT table_name FROM information_schema.tables "
-                        "WHERE table_catalog = ? AND table_schema = 'main'",
+                        "SELECT table_name FROM duckdb_tables() "
+                        "WHERE database_name = ? AND schema_name = 'main'",
                         [db_name],
                     ).fetchall()
                     for (tbl,) in tables:
@@ -708,40 +764,43 @@ class DuckDBSessionStore:
                     pass
                 lines.append("")
 
-            # User tables and views (exclude _constat_* internals)
-            # Filter by catalog to exclude attached DB tables
-            main_catalog = self._db_path.stem
-            objects = conn.execute(
-                "SELECT table_name, table_type FROM information_schema.tables "
-                "WHERE table_schema = 'main' AND table_catalog = ? "
-                "AND table_name NOT LIKE '_constat_%' "
-                "ORDER BY table_type, table_name",
-                [main_catalog],
+            # User tables (exclude _constat_* internals)
+            real_tables = conn.execute(
+                "SELECT table_name FROM duckdb_tables() "
+                "WHERE database_name = current_database() AND schema_name = 'main' "
+                "AND NOT internal AND table_name NOT LIKE '_constat_%' "
+                "ORDER BY table_name",
             ).fetchall()
-            for tbl_name, tbl_type in objects:
+            for (tbl_name,) in real_tables:
                 if _VERSION_BACKUP.match(tbl_name):
                     continue
-                if tbl_type == "VIEW":
-                    try:
-                        view_row = conn.execute(
-                            f"SELECT sql FROM duckdb_views() WHERE view_name = '{tbl_name}'"
-                        ).fetchone()
-                        if view_row and view_row[0]:
-                            raw = view_row[0].strip().rstrip(";")
-                            # duckdb_views().sql returns full CREATE VIEW ... AS ...; strip prefix
-                            prefix = f"CREATE VIEW {tbl_name} AS "
-                            if raw.upper().startswith(prefix.upper()):
-                                raw = raw[len(prefix):]
-                            lines.append(f"CREATE VIEW {tbl_name} AS\n  {raw};")
-                        else:
-                            lines.append(f"CREATE VIEW {tbl_name} AS ...;")
-                    except duckdb.Error:
-                        lines.append(f"CREATE VIEW {tbl_name} AS ...;")
-                else:
+                try:
                     cols = conn.execute(f"DESCRIBE {tbl_name}").fetchall()
                     col_defs = ", ".join(f"{c[0]} {c[1]}" for c in cols)
                     row_count = conn.execute(f"SELECT COUNT(*) FROM {tbl_name}").fetchone()[0]
                     lines.append(f"CREATE TABLE {tbl_name} ({col_defs}); -- {row_count} rows")
+                except duckdb.Error:
+                    lines.append(f"-- TABLE {tbl_name} (error reading schema)")
+                lines.append("")
+
+            # Views: registered names that are not in duckdb_tables()
+            real_table_names = {r[0] for r in real_tables}
+            registry_names = [
+                r[0] for r in conn.execute(
+                    "SELECT table_name FROM _constat_table_registry "
+                    "WHERE table_name NOT LIKE '_constat_%' ORDER BY table_name"
+                ).fetchall()
+            ]
+            for vname in registry_names:
+                if vname in real_table_names or _VERSION_BACKUP.match(vname):
+                    continue
+                # This is likely a view
+                try:
+                    cols = conn.execute(f"DESCRIBE {vname}").fetchall()
+                    col_defs = ", ".join(f"{c[0]} {c[1]}" for c in cols)
+                    lines.append(f"CREATE VIEW {vname} AS ...; -- columns: {col_defs}")
+                except duckdb.Error:
+                    lines.append(f"CREATE VIEW {vname} AS ...;")
                 lines.append("")
 
         return "\n".join(lines)

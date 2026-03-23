@@ -344,6 +344,9 @@ async def forget_fact(
                 managed.session.fact_resolver._cache.pop(fact_name, None)
                 deleted_session = True
 
+        # Write tombstone for config-seeded facts so they don't re-seed
+        session_manager.write_config_tombstone(session_id, "facts", fact_name)
+
         return {
             "status": "forgotten",
             "fact_name": fact_name,

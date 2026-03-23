@@ -505,12 +505,93 @@ class SessionManager:
         # Wire domain task routing into the session's TaskRouter
         self._apply_domain_routing(managed.session, resolved)
 
+        # Materialize domain glossary defined terms into runtime store
+        if resolved.glossary and managed.session.doc_tools:
+            vs = managed.session.doc_tools._vector_store
+            relational = getattr(vs, '_relational', None) if vs else None
+            if relational:
+                _seed_domain_glossary(
+                    relational, resolved.glossary,
+                    managed.session.session_id, managed.user_id,
+                )
+
+        # Materialize domain rules into LearningStore
+        if resolved.learnings and managed.session.learning_store:
+            _seed_domain_rules(managed.session.learning_store, resolved.learnings)
+
+        # Materialize domain facts into fact_resolver
+        if resolved.facts:
+            _seed_domain_facts(managed.session, resolved.facts)
+
         logger.info(f"Resolved tiered config for session {session_id}: "
                      f"{len(resolved.sources.databases)} dbs, "
                      f"{len(resolved.sources.apis)} apis, "
                      f"{len(resolved.glossary)} glossary, "
                      f"domains={resolved.active_domains}")
         return resolved
+
+    def write_config_tombstone(
+        self, session_id: str, section: str, key: str,
+    ) -> bool:
+        """Write a null tombstone to user config for a config-seeded element.
+
+        Only writes tombstones for items sourced from SYSTEM or SYSTEM_DOMAIN
+        tiers. Items created by the user (USER, USER_DOMAIN, SESSION) are
+        managed via their own YAML files and don't need tombstones.
+
+        Args:
+            session_id: Session ID to look up resolved config
+            section: Config section (e.g. "glossary", "facts", "learnings")
+            key: Item key, may be dotted (e.g. "rules.my_rule")
+
+        Returns:
+            True if tombstone was written, False if skipped
+        """
+        import yaml
+        from constat.core.tiered_config import ConfigSource
+
+        managed = self.get_session_or_none(session_id)
+        if not managed or not managed.resolved_config:
+            return False
+
+        # Check attribution — only tombstone system-tier items.
+        # Walk up from the exact path (e.g. "glossary.revenue") to section
+        # root (e.g. "glossary") because _deep_merge may attribute the whole
+        # section rather than individual keys when the base dict was empty.
+        rc = managed.resolved_config
+        attr_key = f"{section}.{key}"
+        source = rc._attribution.get(attr_key)
+        if source is None:
+            # Walk up dotted path to find parent attribution
+            parts = attr_key.split(".")
+            for i in range(len(parts) - 1, 0, -1):
+                parent = ".".join(parts[:i])
+                source = rc._attribution.get(parent)
+                if source is not None:
+                    break
+        if source not in (ConfigSource.SYSTEM, ConfigSource.SYSTEM_DOMAIN):
+            return False
+
+        # Load user config YAML
+        config_path = self._server_config.data_dir / managed.user_id / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        data: dict = {}
+        if config_path.exists():
+            data = yaml.safe_load(config_path.read_text()) or {}
+
+        # Navigate dotted key path, setting nested dicts as needed
+        parts = key.split(".")
+        target = data.setdefault(section, {})
+        for part in parts[:-1]:
+            target = target.setdefault(part, {})
+        target[parts[-1]] = None
+
+        config_path.write_text(
+            yaml.dump(data, default_flow_style=False, sort_keys=False)
+        )
+        logger.info(f"Wrote config tombstone: {section}.{key} for user {managed.user_id}")
+        return True
 
     @staticmethod
     def _apply_domain_routing(session: Session, resolved: ResolvedConfig) -> None:
@@ -583,24 +664,27 @@ class SessionManager:
         ))
         api_entities = list(session._get_api_entity_names())
 
-        # Collect glossary + relationship terms for NER business_terms
+        # Collect glossary + relationship terms from resolved config (already merged from all tiers)
         from constat.catalog.glossary_builder import get_glossary_terms_for_ner, get_relationship_terms_for_ner
         business_terms: list[str] = []
-        if session.config.glossary:
+        resolved = self._sessions[session_id].resolved_config if session_id in self._sessions else None
+        if resolved and resolved.glossary:
+            business_terms.extend(get_glossary_terms_for_ner(resolved.glossary))
+        elif session.config.glossary:
             business_terms.extend(get_glossary_terms_for_ner(session.config.glossary))
-        if session.config.relationships:
+        if resolved and resolved.relationships:
+            business_terms.extend(get_relationship_terms_for_ner(resolved.relationships))
+        elif session.config.relationships:
             business_terms.extend(get_relationship_terms_for_ner(session.config.relationships))
 
-        # Build NER stop list from system config + active domains
+        # Build NER stop list from resolved config (already merged from all tiers)
         stop_words: set[str] = set()
-        for w in (session.config.ner_stop_list or []):
-            stop_words.add(w.lower())
-        if hasattr(self, '_sessions') and session_id in self._sessions:
-            for domain_name in (self._sessions[session_id].active_domains or []):
-                domain_cfg = session.config.load_domain(domain_name)
-                if domain_cfg and domain_cfg.ner_stop_list:
-                    for w in domain_cfg.ner_stop_list:
-                        stop_words.add(w.lower())
+        if resolved and resolved.ner_stop_list:
+            for w in resolved.ner_stop_list:
+                stop_words.add(w.lower())
+        else:
+            for w in (session.config.ner_stop_list or []):
+                stop_words.add(w.lower())
         if stop_words:
             session.doc_tools._stop_list = stop_words
 
@@ -1384,4 +1468,153 @@ class SessionManager:
                 "max_sessions": self._server_config.max_concurrent_sessions,
                 "by_status": by_status,
             }
+
+
+def _seed_domain_glossary(
+    relational: "RelationalStore",
+    glossary: dict,
+    session_id: str,
+    user_id: str,
+) -> None:
+    """Seed domain-config glossary terms into the relational glossary_terms table.
+
+    Only inserts terms that have a definition. Skips terms that already exist
+    with a non-system canonical_source (user-created terms take precedence).
+    """
+    from constat.discovery.models import GlossaryTerm
+    import uuid
+
+    for term_name, value in glossary.items():
+        if isinstance(value, str):
+            definition = value
+            aliases: list[str] = []
+            domain: str | None = None
+        elif isinstance(value, dict):
+            definition = value.get("definition", "")
+            aliases = value.get("aliases", [])
+            domain = value.get("domain")
+        else:
+            continue
+
+        if not definition:
+            continue
+
+        # Check if term already exists with a user-created source
+        existing = relational.get_glossary_term_by_name_or_alias(
+            term_name, session_id, user_id=user_id,
+        )
+        if existing and existing.canonical_source and existing.canonical_source != "domain_config":
+            continue
+
+        term = GlossaryTerm(
+            id=existing.id if existing else str(uuid.uuid4()),
+            name=term_name,
+            display_name=term_name.replace("_", " ").title(),
+            definition=definition,
+            domain=domain,
+            aliases=aliases,
+            status="published",
+            provenance="system",
+            canonical_source="domain_config",
+            session_id=session_id,
+            user_id=user_id,
+        )
+        relational.add_glossary_term(term)
+
+    logger.info(f"Seeded domain glossary terms for session {session_id}")
+
+
+def _seed_domain_rules(
+    learning_store: "LearningStore",
+    learnings_config: dict,
+) -> None:
+    """Seed domain-config rules into the LearningStore.
+
+    Deduplicates by summary text against existing rules.
+    """
+    from constat.storage.learnings import LearningCategory
+
+    rules_config = learnings_config.get("rules", {})
+    if not rules_config:
+        return
+
+    existing_rules = learning_store.list_rules()
+    existing_summaries = {r["summary"] for r in existing_rules}
+
+    for rule_id, rule_data in rules_config.items():
+        if isinstance(rule_data, str):
+            summary = rule_data
+            category = LearningCategory.USER_CORRECTION
+            confidence = 1.0
+            tags: list[str] = []
+        elif isinstance(rule_data, dict):
+            summary = rule_data.get("summary", "")
+            cat_str = rule_data.get("category", "user_correction")
+            try:
+                category = LearningCategory(cat_str)
+            except ValueError:
+                category = LearningCategory.USER_CORRECTION
+            confidence = rule_data.get("confidence", 1.0)
+            tags = rule_data.get("tags", [])
+        else:
+            continue
+
+        if not summary or summary in existing_summaries:
+            continue
+
+        learning_store.save_rule(
+            summary=summary,
+            category=category,
+            confidence=confidence,
+            source_learnings=[],
+            tags=tags,
+            domain="__system__",
+        )
+        existing_summaries.add(summary)
+
+    logger.info("Seeded domain rules into LearningStore")
+
+
+def _seed_domain_facts(
+    session: "Session",
+    facts_config: dict,
+) -> None:
+    """Seed domain-config facts into the session's fact_resolver.
+
+    Skips facts that already exist in the resolver (user-provided facts
+    take precedence over config-defined ones).
+    """
+    from constat.execution.fact_resolver._types import FactSource
+
+    if not hasattr(session, "fact_resolver") or not session.fact_resolver:
+        return
+
+    seeded = 0
+    for fact_name, fact_data in facts_config.items():
+        # Skip if fact already exists
+        existing = session.fact_resolver.get_fact(fact_name)
+        if existing:
+            continue
+
+        if isinstance(fact_data, str):
+            value = fact_data
+            description = None
+        elif isinstance(fact_data, dict):
+            value = fact_data.get("value", fact_data.get("definition", ""))
+            description = fact_data.get("description")
+        else:
+            value = fact_data
+            description = None
+
+        session.fact_resolver.add_user_fact(
+            fact_name,
+            value,
+            reasoning="From domain config",
+            source=FactSource.CONFIG,
+            description=description,
+        )
+        seeded += 1
+
+    if seeded:
+        logger.info(f"Seeded {seeded} domain facts into fact_resolver")
 

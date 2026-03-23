@@ -1082,6 +1082,7 @@ class GoldenQuestionExpectations(BaseModel):
     suggested_question: str | None = None
     objectives: list[str] = Field(default_factory=list)
     step_hints: list[dict[str, Any]] = Field(default_factory=list)
+    system_prompt: str | None = None
 
 
 class GoldenQuestionRequest(BaseModel):
@@ -1089,6 +1090,7 @@ class GoldenQuestionRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     expect: GoldenQuestionExpectations = Field(default_factory=GoldenQuestionExpectations)
     objectives: list[str] = Field(default_factory=list)
+    system_prompt: str | None = None
 
 
 class GoldenQuestionResponse(BaseModel):
@@ -1098,3 +1100,4 @@ class GoldenQuestionResponse(BaseModel):
     expect: GoldenQuestionExpectations = Field(default_factory=GoldenQuestionExpectations)
     objectives: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    system_prompt: str | None = None

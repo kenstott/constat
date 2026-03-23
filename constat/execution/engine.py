@@ -265,6 +265,19 @@ class QueryEngine:
             return ENGINE_TOOLS
         return SCHEMA_TOOLS
 
+    def _build_retry_data_sources(self) -> str:
+        """Build data source summary for retry prompts."""
+        lines: list[str] = []
+        by_db: dict[str, list[str]] = {}
+        for table_meta in self.schema_manager.metadata_cache.values():
+            by_db.setdefault(table_meta.database, []).append(table_meta.name)
+        if by_db:
+            lines.append("\nDATA SOURCES:")
+            for db_name in sorted(by_db):
+                tables = sorted(by_db[db_name])
+                lines.append(f"  {db_name}: {', '.join(tables)}")
+        return "\n".join(lines) if lines else ""
+
     def _get_execution_globals(self) -> dict:
         """Get globals dict for code execution."""
         globals_dict = {}
@@ -361,6 +374,7 @@ class QueryEngine:
                 retry_message = RETRY_PROMPT_TEMPLATE.format(
                     error_details=last_error,
                     previous_code=last_code,
+                    data_sources=self._build_retry_data_sources(),
                 )
                 code = self.llm.generate_code(
                     system=system_prompt,

@@ -859,6 +859,15 @@ Provide a brief, high-level summary of the key findings."""
 
         # Redo stays in session mode: replan and re-execute from scratch
         session_mode = self.datastore.get_session_meta("mode")
+
+        # Append redo entry to objectives log
+        import json as _json_redo
+        from datetime import datetime as _dt_redo, timezone as _tz_redo
+        _redo_log_json = self.datastore.get_session_meta("objectives_log")
+        _redo_log = _json_redo.loads(_redo_log_json) if _redo_log_json else []
+        _redo_log.append({"type": "redo", "mode": session_mode or "exploratory", "guidance": guidance or "", "ts": _dt_redo.now(_tz_redo.utc).isoformat()})
+        self.datastore.set_session_meta("objectives_log", _json_redo.dumps(_redo_log))
+
         if session_mode == "auditable":
             return self.prove_conversation(guidance=guidance)
 

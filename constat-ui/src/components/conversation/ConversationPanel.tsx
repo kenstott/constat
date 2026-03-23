@@ -119,6 +119,7 @@ export function ConversationPanel() {
   const [copiedAll, setCopiedAll] = useState(false)
   const [stepOverride, setStepOverride] = useState<{ mode: StepDisplayMode; version: number } | undefined>()
   const [insightOverride, setInsightOverride] = useState<{ collapsed: boolean; version: number } | undefined>()
+  const [groupOverride, setGroupOverride] = useState<{ expanded: boolean; version: number } | undefined>()
   const [shareOpen, setShareOpen] = useState(false)
   const [shareEmail, setShareEmail] = useState('')
   const [shareResult, setShareResult] = useState<string | null>(null)
@@ -253,6 +254,7 @@ export function ConversationPanel() {
               onClick={() => {
                 setStepOverride({ mode: 'oneline', version: (stepOverride?.version ?? 0) + 1 })
                 setInsightOverride({ collapsed: true, version: (insightOverride?.version ?? 0) + 1 })
+                setGroupOverride({ expanded: false, version: (groupOverride?.version ?? 0) + 1 })
               }}
               className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
               title="Collapse all steps"
@@ -264,6 +266,7 @@ export function ConversationPanel() {
               onClick={() => {
                 setStepOverride({ mode: 'condensed', version: (stepOverride?.version ?? 0) + 1 })
                 setInsightOverride({ collapsed: false, version: (insightOverride?.version ?? 0) + 1 })
+                setGroupOverride({ expanded: true, version: (groupOverride?.version ?? 0) + 1 })
               }}
               className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
               title="Expand all steps"
@@ -407,6 +410,8 @@ export function ConversationPanel() {
                   stepAttempts={message.stepAttempts}
                   stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
                   stepDisplayModeVersion={stepOverride?.version}
+                  contentExpanded={groupOverride?.expanded}
+                  contentExpandedVersion={groupOverride?.version}
                   isSuperseded={message.isSuperseded}
                   onStepEdit={(stepNumber, newGoal) => replanFromStep(stepNumber, 'edit', newGoal)}
                   onStepDelete={(stepNumber) => replanFromStep(stepNumber, 'delete')}
@@ -438,6 +443,8 @@ export function ConversationPanel() {
                   isPending={message.isPending}
                   defaultExpanded={message.defaultExpanded}
                   isFinalInsight={message.isFinalInsight}
+                  contentExpanded={groupOverride?.expanded}
+                  contentExpandedVersion={groupOverride?.version}
                   queryText={queryText}
                   isSuperseded={message.isSuperseded}
                 />
@@ -451,6 +458,7 @@ export function ConversationPanel() {
                 messages={group.messages}
                 stepOverride={stepOverride}
                 insightOverride={insightOverride}
+                groupOverride={groupOverride}
                 stepOutputsMap={stepOutputsMap}
                 onOutputClick={handleOutputClick}
                 onRoleClick={handleRoleClick}
