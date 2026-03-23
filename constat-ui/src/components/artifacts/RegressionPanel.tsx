@@ -735,7 +735,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                                     {qResult.end_to_end.answer && (
                                       <div className="mt-1">
                                         <span className="text-[10px] font-medium text-gray-500 uppercase">Answer</span>
-                                        <div className="text-gray-600 dark:text-gray-400 pl-2 line-clamp-3">{qResult.end_to_end.answer}</div>
+                                        <div className="text-gray-600 dark:text-gray-400 pl-2 whitespace-pre-line max-h-60 overflow-y-auto">{qResult.end_to_end.answer}</div>
                                       </div>
                                     )}
                                     {qResult.end_to_end.judge_reasoning && (

@@ -16,6 +16,7 @@ import {
   SUMMARIZE_TARGETS,
 } from '@/data/commands'
 import { listAllPermissions, type UserPermissions } from '@/api/users'
+import { useAuthStore } from '@/store/authStore'
 
 interface AutocompleteInputProps {
   onSubmit: (query: string) => void
@@ -83,14 +84,17 @@ function getMentionCompletions(prefix: string, users: { user_id: string; email: 
   const lowerPrefix = prefix.toLowerCase()
   const mentions: AutocompleteItem[] = [
     { label: '@vera', value: '@vera', description: 'Teach Vera a rule or correction', category: 'Learning' },
-    ...users.map((u) => ({
-      label: `@${u.user_id}`,
-      value: `@${u.user_id}`,
-      description: u.email ?? u.user_id,
-      category: 'Share',
-    })),
+    ...users.map((u) => {
+      const displayName = u.email ? u.email.split('@')[0] : u.user_id
+      return {
+        label: `@${displayName}`,
+        value: `@${u.user_id}`,
+        description: u.email ?? u.user_id,
+        category: 'Share',
+      }
+    }),
   ]
-  return mentions.filter((m) => m.value.toLowerCase().startsWith(lowerPrefix))
+  return mentions.filter((m) => m.label.toLowerCase().startsWith(lowerPrefix) || m.value.toLowerCase().startsWith(lowerPrefix))
 }
 
 function getClientCompletions(parsed: ParsedInput, users: { user_id: string; email: string | null }[] = []): AutocompleteItem[] {
@@ -309,8 +313,16 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
   // Cached user list for @mention autocomplete
   const [mentionUsers, setMentionUsers] = useState<Pick<UserPermissions, 'user_id' | 'email'>[]>([])
   useEffect(() => {
+    const authUser = useAuthStore.getState().user
     listAllPermissions()
-      .then((perms) => setMentionUsers(perms.map((p) => ({ user_id: p.user_id, email: p.email }))))
+      .then((perms) => {
+        const users = perms.map((p) => {
+          // Enrich with current user's email from auth (permissions API doesn't return email)
+          const email = (authUser && p.user_id === authUser.uid) ? (authUser.email ?? p.email) : p.email
+          return { user_id: p.user_id, email }
+        })
+        setMentionUsers(users)
+      })
       .catch(() => {}) // non-admin users may not have access
   }, [])
 
