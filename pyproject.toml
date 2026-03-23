@@ -115,6 +115,9 @@ all = [
 [project.scripts]
 constat = "constat.cli:main"
 
+[project.entry-points."pytest11"]
+bug_queue = "constat.testing.bug_queue_plugin"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
