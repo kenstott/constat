@@ -1,105 +1,413 @@
 %PDF-1.4
-%“Œ‹ž ReportLab Generated PDF document (opensource)
+%âãÏÓ
 1 0 obj
 <<
-/F1 2 0 R /F2 3 0 R /F3 4 0 R /F4 6 0 R
+/Producer (pypdf)
 >>
 endobj
 2 0 obj
 <<
-/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+/Type /Pages
+/Count 2
+/Kids [ 4 0 R 12 0 R ]
 >>
 endobj
 3 0 obj
 <<
-/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+/Type /Catalog
+/Pages 2 0 R
 >>
 endobj
 4 0 obj
 <<
-/BaseFont /Helvetica-BoldOblique /Encoding /WinAnsiEncoding /Name /F3 /Subtype /Type1 /Type /Font
+/Contents 5 0 R
+/MediaBox [ 0 0 612 792 ]
+/Resources <<
+/Font <<
+/F1 6 0 R
+/F1-0 7 0 R
+/F2 8 0 R
+/F3 9 0 R
+/F4 10 0 R
+>>
+/XObject <<
+/FormXob.e7574915f525801a2a2fe5eec96e01d3 11 0 R
+>>
+/ProcSet [ /ImageB /ImageC /ImageI /PDF /Text ]
+>>
+/Rotate 0
+/Trans <<
+>>
+/Type /Page
+/Annots [ ]
+/Parent 2 0 R
 >>
 endobj
 5 0 obj
 <<
-/Contents 11 0 R /MediaBox [ 0 0 612 792 ] /Parent 10 0 R /Resources <<
-/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
->> /Rotate 0 /Trans <<
-
->> 
-  /Type /Page
+/Length 5809
 >>
+stream
+q
+1 0 0 1 0 0 cm  BT /F1 12 Tf 14.4 TL ET
+q
+1 0 0 1 78 692 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 4 Tm /F2 18 Tf 22 TL 34.95 0 Td (Employee Compensation and Benefits Policy) Tj T* -34.95 0 Td ET
+Q
+Q
+q
+1 0 0 1 78 660 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 10 Tf 12 TL (Effective Date: January 1, 2024 | Version 2.3) Tj T* ET
+Q
+Q
+q
+1 0 0 1 78 632 cm
+Q
+q
+1 0 0 1 78 598 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 4 Tm /F2 14 Tf 18 TL (1. Salary Structure) Tj T* ET
+Q
+Q
+q
+1 0 0 1 78 566 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 14 Tm /F1 10 Tf 12 TL (All positions are assigned to a salary band based on job family, level, and market data. Salary bands) Tj T* (are reviewed annually and adjusted based on market conditions.) Tj T* ET
+Q
+Q
+q
+1 0 0 1 126 427 cm
+q
+.501961 .501961 .501961 rg
+n 0 131 360 -23 re f*
+.960784 .960784 .862745 rg
+n 0 108 360 -108 re f*
+.960784 .960784 .960784 rg
+BT /F2 9 Tf 12 TL ET
+BT 1 0 0 1 17.55 119 Tm (Band) Tj T* ET
+BT 1 0 0 1 89.2935 119 Tm (Level) Tj T* ET
+BT 1 0 0 1 157.491 119 Tm (Min Salary) Tj T* ET
+BT 1 0 0 1 229.491 119 Tm (Mid Salary) Tj T* ET
+BT 1 0 0 1 300.4875 119 Tm (Max Salary) Tj T* ET
+0 0 0 rg
+BT /F1 9 Tf 12 TL ET
+BT 1 0 0 1 25.7985 96 Tm (A) Tj T* ET
+BT 1 0 0 1 90.297 96 Tm (Entry) Tj T* ET
+BT 1 0 0 1 163.737 96 Tm ($45,000) Tj T* ET
+BT 1 0 0 1 235.737 96 Tm ($52,500) Tj T* ET
+BT 1 0 0 1 307.737 96 Tm ($60,000) Tj T* ET
+BT 1 0 0 1 25.7985 78 Tm (B) Tj T* ET
+BT 1 0 0 1 81.2925 78 Tm (Associate) Tj T* ET
+BT 1 0 0 1 163.737 78 Tm ($55,000) Tj T* ET
+BT 1 0 0 1 235.737 78 Tm ($67,500) Tj T* ET
+BT 1 0 0 1 307.737 78 Tm ($80,000) Tj T* ET
+BT 1 0 0 1 25.551 60 Tm (C) Tj T* ET
+BT 1 0 0 1 87.795 60 Tm (Senior) Tj T* ET
+BT 1 0 0 1 163.737 60 Tm ($75,000) Tj T* ET
+BT 1 0 0 1 235.737 60 Tm ($92,500) Tj T* ET
+BT 1 0 0 1 305.235 60 Tm ($110,000) Tj T* ET
+BT 1 0 0 1 25.551 42 Tm (D) Tj T* ET
+BT 1 0 0 1 71.784 42 Tm (Lead/Manager) Tj T* ET
+BT 1 0 0 1 163.737 42 Tm ($95,000) Tj T* ET
+BT 1 0 0 1 233.235 42 Tm ($117,500) Tj T* ET
+BT 1 0 0 1 305.235 42 Tm ($140,000) Tj T* ET
+BT 1 0 0 1 25.7985 24 Tm (E) Tj T* ET
+BT 1 0 0 1 85.05 24 Tm (Director) Tj T* ET
+BT 1 0 0 1 161.235 24 Tm ($120,000) Tj T* ET
+BT 1 0 0 1 233.235 24 Tm ($150,000) Tj T* ET
+BT 1 0 0 1 305.235 24 Tm ($180,000) Tj T* ET
+BT 1 0 0 1 26.0505 6 Tm (F) Tj T* ET
+BT 1 0 0 1 74.0385 6 Tm (VP/Executive) Tj T* ET
+BT 1 0 0 1 161.235 6 Tm ($150,000) Tj T* ET
+BT 1 0 0 1 233.235 6 Tm ($200,000) Tj T* ET
+BT 1 0 0 1 305.235 6 Tm ($250,000) Tj T* ET
+q
+1 J
+1 j
+0 0 0 RG
+1 w
+n 0 131 m 360 131 l S
+n 0 0 m 360 0 l S
+n 0 0 m 0 131 l S
+n 360 0 m 360 131 l S
+n 0 108 m 360 108 l S
+n 0 90 m 360 90 l S
+n 0 72 m 360 72 l S
+n 0 54 m 360 54 l S
+n 0 36 m 360 36 l S
+n 0 18 m 360 18 l S
+n 57.6 0 m 57.6 131 l S
+n 144 0 m 144 131 l S
+n 216 0 m 216 131 l S
+n 288 0 m 288 131 l S
+Q
+Q
+Q
+q
+1 0 0 1 78 415 cm
+Q
+q
+1 0 0 1 78 381 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 4 Tm /F2 14 Tf 18 TL (2. Annual Merit Increase Guidelines) Tj T* ET
+Q
+Q
+q
+1 0 0 1 78 349 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 14 Tm /F1 10 Tf 12 TL (Merit increases are determined by performance rating and position within salary band. Increases are) Tj T* (effective April 1st following the annual review cycle.) Tj T* ET
+Q
+Q
+q
+1 0 0 1 78 323 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F3 12 Tf 14 TL (2.1 Merit Increase Matrix) Tj T* ET
+Q
+Q
+q
+1 0 0 1 104.4 204 cm
+q
+0 0 .545098 rg
+n 0 113 403.2 -23 re f*
+.960784 .960784 .960784 rg
+BT /F2 9 Tf 12 TL ET
+BT 1 0 0 1 29.241 101 Tm (Performance Rating) Tj T* ET
+BT 1 0 0 1 164.9475 101 Tm (Below Mid) Tj T* ET
+BT 1 0 0 1 259.8525 101 Tm (At Mid) Tj T* ET
+BT 1 0 0 1 337.248 101 Tm (Above Mid) Tj T* ET
+0 0 0 rg
+BT /F1 9 Tf 12 TL ET
+BT 1 0 0 1 42.237 78 Tm (5 - Exceptional) Tj T* ET
+BT 1 0 0 1 171.693 78 Tm (10-12%) Tj T* ET
+BT 1 0 0 1 260.595 78 Tm (8-10%) Tj T* ET
+BT 1 0 0 1 349.497 78 Tm (6-8%) Tj T* ET
+BT 1 0 0 1 21.2265 60 Tm (4 - Exceeds Expectations) Tj T* ET
+BT 1 0 0 1 176.697 60 Tm (6-8%) Tj T* ET
+BT 1 0 0 1 263.097 60 Tm (5-6%) Tj T* ET
+BT 1 0 0 1 349.497 60 Tm (4-5%) Tj T* ET
+BT 1 0 0 1 26.2305 42 Tm (3 - Meets Expectations) Tj T* ET
+BT 1 0 0 1 176.697 42 Tm (3-4%) Tj T* ET
+BT 1 0 0 1 263.097 42 Tm (2-3%) Tj T* ET
+BT 1 0 0 1 349.497 42 Tm (1-2%) Tj T* ET
+BT 1 0 0 1 24.984 24 Tm (2 - Needs Improvement) Tj T* ET
+BT 1 0 0 1 180.6975 24 Tm (0%) Tj T* ET
+BT 1 0 0 1 267.0975 24 Tm (0%) Tj T* ET
+BT 1 0 0 1 353.4975 24 Tm (0%) Tj T* ET
+BT 1 0 0 1 36.99 6 Tm (1 - Unsatisfactory) Tj T* ET
+BT 1 0 0 1 179.6985 6 Tm (N/A) Tj T* ET
+BT 1 0 0 1 266.0985 6 Tm (N/A) Tj T* ET
+BT 1 0 0 1 352.4985 6 Tm (N/A) Tj T* ET
+q
+1 J
+1 j
+0 0 0 RG
+1 w
+n 0 113 m 403.2 113 l S
+n 0 0 m 403.2 0 l S
+n 0 0 m 0 113 l S
+n 403.2 0 m 403.2 113 l S
+n 0 90 m 403.2 90 l S
+n 0 72 m 403.2 72 l S
+n 0 54 m 403.2 54 l S
+n 0 36 m 403.2 36 l S
+n 0 18 m 403.2 18 l S
+n 144 0 m 144 113 l S
+n 230.4 0 m 230.4 113 l S
+n 316.8 0 m 316.8 113 l S
+Q
+Q
+Q
+q
+1 0 0 1 78 192 cm
+Q
+q
+1 0 0 1 78 158 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 4 Tm /F2 14 Tf 18 TL (3. Bonus Program) Tj T* ET
+Q
+Q
+q
+1 0 0 1 78 126 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 14 Tm /F1 10 Tf 12 TL (Eligible employees may receive an annual bonus based on individual performance and company) Tj T* (results. Bonus targets are set as a percentage of base salary.) Tj T* ET
+Q
+Q
+q
+1 0 0 1 108 95 cm
+q
+0 .392157 0 rg
+n 0 23 396 -23 re f*
+.960784 .960784 .960784 rg
+BT /F2 9 Tf 12 TL ET
+BT 1 0 0 1 31.6935 11 Tm (Level) Tj T* ET
+BT 1 0 0 1 93.3975 11 Tm (Target Bonus) Tj T* ET
+BT 1 0 0 1 166.797 11 Tm (Max Bonus) Tj T* ET
+BT 1 0 0 1 226.0485 11 Tm (Company Weight) Tj T* ET
+BT 1 0 0 1 311.9445 11 Tm (Individual Weight) Tj T* ET
+q
+1 J
+1 j
+0 0 0 RG
+1 w
+n 0 23 m 396 23 l S
+n 0 0 m 0 23 l S
+n 396 0 m 396 23 l S
+n 0 0 m 396 0 l S
+n 86.4 0 m 86.4 23 l S
+n 158.4 0 m 158.4 23 l S
+n 223.2 0 m 223.2 23 l S
+n 302.4 0 m 302.4 23 l S
+Q
+Q
+Q
+ 
+
+Q
+
+q
+0.0 0.0 612 792 re
+W
+n
+1 0 0 1 0 0 cm
+BT
+/F1-0 12 Tf
+14.4 TL
+ET
+q
+400 0 0 200 100 100 cm
+/FormXob.e7574915f525801a2a2fe5eec96e01d3 Do
+Q
+Q
+
+
+endstream
 endobj
 6 0 obj
 <<
-/BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding /Name /F4 /Subtype /Type1 /Type /Font
+/BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
+/Name /F1
+/Subtype /Type1
+/Type /Font
 >>
 endobj
 7 0 obj
 <<
-/Contents 12 0 R /MediaBox [ 0 0 612 792 ] /Parent 10 0 R /Resources <<
-/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
->> /Rotate 0 /Trans <<
-
->> 
-  /Type /Page
+/BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
+/Name /F1
+/Subtype /Type1
+/Type /Font
 >>
 endobj
 8 0 obj
 <<
-/PageMode /UseNone /Pages 10 0 R /Type /Catalog
+/BaseFont /Helvetica-Bold
+/Encoding /WinAnsiEncoding
+/Name /F2
+/Subtype /Type1
+/Type /Font
 >>
 endobj
 9 0 obj
 <<
-/Author (\(anonymous\)) /CreationDate (D:20260119111818-05'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20260119111818-05'00') /Producer (ReportLab PDF Library - \(opensource\)) 
-  /Subject (\(unspecified\)) /Title (\(anonymous\)) /Trapped /False
+/BaseFont /Helvetica-BoldOblique
+/Encoding /WinAnsiEncoding
+/Name /F3
+/Subtype /Type1
+/Type /Font
 >>
 endobj
 10 0 obj
 <<
-/Count 2 /Kids [ 5 0 R 7 0 R ] /Type /Pages
+/BaseFont /Helvetica-Oblique
+/Encoding /WinAnsiEncoding
+/Name /F4
+/Subtype /Type1
+/Type /Font
 >>
 endobj
 11 0 obj
 <<
-/Filter [ /ASCII85Decode /FlateDecode ] /Length 1997
+/BitsPerComponent 8
+/ColorSpace /DeviceRGB
+/Filter [ /ASCII85Decode /FlateDecode ]
+/Height 200
+/Subtype /Image
+/Type /XObject
+/Width 400
+/Length 5876
 >>
 stream
-Gatm<>uTK;'Rf.Gg]r"Wm1?$ggY+T"Br@NMTdAHA2NErhogdSVJB[A@h^_i16AV2>Zbq=4eWFsVY,$Ci$3YjWrL4Q&=&ZVR:Ot9gc@Lj<_"9Ef:J^sMTahsZ&1WEBZk7)S(FRjoqOXocJ\<b1Z0?rsdg$\?P#s`8_:`t9bcA/&n?sg4\nmNfX%Gq*)-lE(ca1'2gFCOtp$XS_JE\#?Cpc_f?h*;*Tob3F@N?V6McdG>TsO(\>c2H4W8V%1l9F3*;Qc1/%J1VW@06F^n%*BF1D]JOakkFUSW4_k<:Osl,V5kGEhWTi-+RH(f@I"0?.F7;A/U,3@o0G^n]O%MA^t='ef..p%8##ZMc.loXWW1l@rQ>fEh>1%`]8:BmU;\$=h[(T>X.NOg]jiNlG%HLZ_U;XFjmSZBqLgmC]0Xb-gW61EK9X<D;-DDLK2ggX[-31BiWG>G/9jGP_C5^e@?Yl6<-QbpPT\_)DnA-EJ[@+7k-3BEtYF57'QalNC+Hfko5_oCL@JO/_mh)Et_*PR:9^='aP]];?E];7-!V@?/P3f$Q#jo.DA)s2Uf;\8nA\B76U8i/)BR\a"sT9n?YtS-R97C[,H%h4MPd<^$<fk)k6pUK1Nro<+nA*gcq_]k^V*7Y02!E*=[9*EK<3snsg7Hi&R,WY`bR#+Y5"g$Z&@'qK4FL0!nIr#Ur3/Qq(F?9pK=8g5Ppjd&6F?^Ns]5*VQPS`oDM>8HBXBJ\E.D$i@j5fR`I4R8rpi9+H7d*T9nW<MQ7N!TH8.d_e6TRg76qm0?':0`0OS53la&EKcX/66G^@2)nU2SoMr^a&4r:/bp#1N`_$0FIQkb?8<WEo.I'umgTM\g<gr9Pd7RASR3Eh8&2fF*^%"B6Y).G]:J_G+ClZ=4RPMmD_J8cFh0=WIGD=$#e%E^%a2p*T(U`;rL1+d$%F&POnnAHrq#2l;dklL.HPM]Xi/o6$d1H*X*rgPA1VB4;K#Pu<,Hr?R'U4p[n5Op=QjTaF>b]F;>_R8(mpCO9?7l,N2R<=Cq^i=UE/!7\#aT)=n16N^V3`3K$$6&MoYJQobIqndRk.^d<4$Wa"jbSWY,$1b%<]\9&4<;nJ)]ie1^$hDQ(bgeL@_jDKT5q7YBO#@B&R<<>S5pU38kG>V<*cl9uXSAaL#Ppfg':nC2<)?@?N@E\Ec%Q31u-QreQ>4df("+50:A-da&BVn!jL?,gLk;2;P;pK%VZcZFAcDj%QSSqltZ0p`D?`+H5=$;"&opEGT;&-R4AR'&MWV4g4b_Mh.T0#$-K_)E<bTeckU-Gh/WfC2Dmj8o[iT`\L&Z"+gOANL=_4@2s9#(']c,[\EL(1DgR+lu.CKF(mJVg<%m<&,^T0e%j7pMD=H;"iYjJP?3F][DX63Y*?Qe"@KL7)DMXe0U^;/G(r/36$9qi-1%$g>3d<+mL4KpL7TB'[5TJ"-f#=!:QN)6k8pH'2<iUkK*Nilh4snpJ!$p!,DgM'7PJ>"4G;!!-'%>:3"r)2\g_F;uNt'f!suP?+'j*@q%Fp`'+lZ(.O&L5oc6H0KtF'"/T8JV+C>VqiK1K'-hCLD@VdqY$Nl2\JVi6YRpKJ&NDB\EZMrTAUQ\Q$?pfanog>fXKOCo8+lQPg8g3Y2q*!%h-Ai?GI)^1h9G\3\9M@mpDe/6#G&OYD/)$>K.ao_V7pP;L8SeDM[G`an=mc%\>m\O"1NE\W0:[A[@&t-T24Y%H+(f^Et-hdCGep6CJ79u2L.51q\4BqH2,F?XINj_g!%r^kBiEVe#HLsV-h,Q[;K#jg[qYU8\Hh@M%L5WDBZijkp+/1MAI&,k&qH:%n>DP:a%=A],Ye/W/NdX:!bVqEkDbZ0A2WF6t5!d%R"YWN^P(PS6B8]a+lEhLj,MjDdZm$7aTB7/4Ak%J(m[Tr2$a=O+@t);i3SApbj3QOaGVpACE?@kKSr@^9bA`_:4YHW33/,`1bpq[bu_H6(GV=q$P.<,GQc+`Zr^8kXoZ<9>\f#GY\l6~>endstream
+Gb"0WBssaRFRSbDk"[&:\1d8d16oMn*--fX8<4laO4*dNL`he<i2eu)kjql*TCnbkZhId+V_$0&!<<*"zzzzzzz!!'gDqq$<2^T,g)I9MORDd&+H/sKHt#pWNr>2%<!8GY1Di$ZGRaGVjaJQZ2-bW,K9<je*EQS$VYF1,S6`?Y="!:UZ]#NWksO6Kj:Wp$]ja2.+$k)cXa=e*qKbF10Mf)U>n&3h9j0&hiVeFT+$8<pa0MUR82B@k@g-i*7n8\YH0r.OhGH#[qKeO#"-7mWpe[Th22>P^``k2WJK"mOV=J=dB;+><0A(]#Gh2VhoMB#R8/D68R<2<]Fk3YUc0!.^[Q59MUSZHeLo2i2=JdZ;%9bEejsqG8e)n$*Aef)U>n&3h9jDW0iC3ljH+.`8o;WUsG8MoM\hA(YGlr!M@(NVEO"EVh_g9<RjrRQZ<s/p4::hbUA]8lh\VUgF3(IR<s_]X[NQQ$6[&k?DaZ[_#d%1$a#!NO<YGWfql@!;Hlj"7kH)iu$M#WO7Y1Xb>PMDuS1h]CO<OdSV=h)?B7?iWnP`eJG]5o?F2HXip\?[ATi/UNP!2M6_.Ir>G\*'B08X`U2m11mVN65A'qWea,$s40S>%S[.S%*U2/UJ=dB;+><01-5Ca_bN?#HH7*dmlI@G^?fm4&1kG:7!5MBd+-7;j,`eh-q+]@?MPcY>b=j9jl1NVm:"5AU%06/0nH8@IHPP%CB1lgT/P\Ane1GHVHIfZ/1p'FG4rJm#1u\c$`>'c@bCgNN%`c7+YK=QshI7?da(8[mOa[`>p^-Hmo&>s\[ePsQU,-Xg[oSaYgmr5HRG#JPh339s!;Hlj"7kI,*Tq"Ukn6]Zh^W9i;75C9SI[X)4LUOICB2.GL`_]pf29Y$C_(pSBhCb=8gSM5^ie(\aH[?dIKf5%7f7eL\D4.>EtYnC&k2J94/A.QZhg0e0^/`'$K.P9p]5Y[=uhFt>FbP=%[i_Z2O[JHg=VDN`S)TcY5nVf+au[_gam>;i5BLGdlH/XF#''*m5ukr[.GF`l.5ocT+F4005d?9Z;B.iVQRP#CrEkr1!uj]N4\Q(0'UsfJ=dB;+>7Uc28\l?/CpC&I50HuSo$Q/[XG^ogjo$4!5MBd+-9R].k\Jm'O=a+D/rq5fEZW3h]mSWF[9#kILQ;P$1S,giiIlQqs$#?JifTB><DGu2BD#']/\gOJ%c!Z7jEIJ?CX1/$r'51Q!Eoc;;(iA^;jO=`s+2gF4.5m!'_WU5[N66ja;gSn)?T,QZMIkd:Nk,CGWWZ;)[[j!.^[Q59MW)Q?S8`E0sO&G0735ptP5tFB#6BU)`+c9`Y*d&O.Bk0!ot"TG5ER:T(9PjauUB_N8#"QrPphr>G\*'B08X`>t#7Huf-8]a6"H0c_M67crUHib[+&9DULGi$ZGRaK+d[V0;-7n+o+q0JA<)$<_Z6F?V3:EU$*0"p"RSp]5Y[(JhdBBDEBHM.d-:c%`!6g+D-W$?h:mqDA92-c?P:MrX96Od>";+%*Jr7Pu2L]r$&Q9(+Si+oN;Zzzzzz!!!#g:\TA=oDbL#,in8R1)_6oQ`tHWKo;nK4dY2Wf3S$"oFq;<#NC[>--^2@R1r(Il-=.2o0=VeG_n3+<a0^bpVm=5&`S`H-(QH6aVmpWL[E%;XJ(^$nT$c0V]o;SO7X+d]EdGSr$<(.*?K.*k?hdJlgF/b@5$6"]1^9*3>(L)!-f$m(\p]BW/rq6[42NeOec+8h%/b9WEsDE\W+?7!rNYiMu4mcf;os8m^,/qnLPs[9KDRZc,m:ZlphT7;ZQ;.LbJ=cAGc'Q9rk8!Js)SQ>0[J#A*7Z7*u_hSScXH:5^\^/Um>FJlEV@!rM]=/-/0e:P-dWgl:lcFhZj2]#k:@_OubB+H-1(XIl_852T/45IS_NUM=_or85B9%HQ^&D?W%uTkB'Se\P"PidSO8>cfVW!mr*rRlq'tR^j@3<aBt+HXGgTC,X9n6?+/2#6cfGpZ#06LMJ:L;!:V%c0CkIj*c+TngN.@j\>st6,Kd)GmmKa&eXU^/;ZQ;.LbJ=c1^V`9d9CL.1OEibkaii`JS#'W8elb"4TtiSJbUF=8QH]^RU]Lul+!#Q4q`b>cC)&c\D&:go*bVKK_Qa@8V4o_`T/e"VWOuJSFVmTFDdfpVd4H$Oe)W)pHX+g^EhCn*ts&^:5(@k(TBPi\!9%eF8@k->#0GO!8[hJ7K/H:P>`B`VKUF&.*[Z_H44;L!O!qNF\bS)!Pj%)^;s[0eqI10P>fF[*$+aHZf?aVo#=R5K/R;h;ZQ;.LbJ=cA56oK*%`eFMRd8Y.Q&;27aEu)@&Ou.^B40T`#&5B3fT=DL"e(tnU30\paXI2;1*2W_=]P^I1Y=t&7=KOWB:KEQk&cEHrP0V/[nK;NH6T:qsA^Z85B9%HQ^&D?dbKZ0Cq3Qd`\'`4)_AL/Y],^c`)>*(Smr/i&qWYj=a(Q"@6760DFOb<MQ+TQuR1]lTm\&;+l3B!8[hJ7K/H:[J-f))B-:dpWOI5NYL@u`@s>_boG/1!:V%c0CkGTFknVtfp+5Ngm(=qXQ78YmA&7uCYL-u"T\"Bp`b2ZnLC@;SZoG$F8Ck2maZ>p48,s$=*HilScXH:5^\^/,Yp0K65:sI\P.GNHI@lB/__;/90lEt8U:^Dh?3::rfW;"VT:,>4m5?iC.ioA[e[]<aCRm@b23r^;ZQ;.LbJ=cPe5(Pk%9LsDnGYkN^G$FZ'3MR3Gr\]rtW<k+hl$);I](h97O4+e?c$Gbp0rB>p\7iFZJ7Hq0%9Q6@=p1U`ho)jc]DJhWUb.F\N?@Z>8:UlrdPHc\hl&&`S`H,n8[iM/LAF3Rs?Ye7*k#-@M0Jbi<$tCsl5^n/dB=ns?/s]t^tS+U3i?8O6&90m>.nN6PT\PXKg)!8[hJ7K/J0?KtXrme"q(''3fk%+?fMeHt7%[`?&_p`m]nq+EK3>Q;cd]=OtJk/lSXD3`YP>1F_H.n+akzzzzzzi/dj6^S"A?h6X2h8@SE+)Hs,)FO<_Dg7*jLG#Hc+#OkC)(CE=39<?S]jTMH-:8CQIWg%>B66&(,S&lJp_[#[(U_aA$[E600UGEXnZX0HTlYf(Q*$[V(j(5O"Uk]K=QUibDH>5`Rk<h-1d8`%Gh',kq4Z&,.?fEVn)q)V/n4TPn$9besn;T_j@]->ql!Y%5a5P&*o4G0BC<M_\5(Hua]hmplNJXn)a+prbpER@q*;S5b/C./b5WP8uHM@JhM=a-.VtQ3iEmj@1Jt@uH]sFd9G2lA!6lD?XNo/:mmtUI$Tr3(/[F*a/?49j-g6rC>?)C=eMRs\DVFZ%.!.Kds6D<RSBj0a[<0mpC]g`Bm`!*Oep[h>M0+@+("8F2%$\b1?`YN;HbuO4Gm9*6)SOgB,`5_t,j>_O*4M2W]$\b1@4K=o<-.a7nd`,;@;&SNf3Mq[CmjIlnXmg4!0,/_I13]9VLJ%?a3H^?JD6;-(`aQEe%r0,IgYptM?7>Hqp3n"c8l7=T'BL&5UQ3`QcQ02"K[KKa%j/S?O^9I.e9Hu9fkRo5:['j=\qYETkbF=^LpNk3Uk]K=QUibDH>:P;%`@X'97-5/.4ValgpJ/,%$-ogCsp3+n4TPn$9^7,'ka/,flh7HiT.$;[C%W-EoP&[4QHJ%^q1c';!=l]ag$ma8IG<h\(T5t%q9JqW4@"gZ58]G5(Hua]hmplm6f^YqSDWid)iBgG%J_73iHb8n/bYto^DnZ''Y*::T`KA6.-!tr88u!)=l3U3;8QkkC\46nG+SZ2l%5s4gdX6=2M+Tc_2-;EmQ<]A+-.6\R(]/Le&$u^b:gV..l"m/(!=,@]RnBa)U[W[[re%&GB#_"tf)u"8F1j$\b2+8_flB@->o$lK/moCQ58)_Ck3b7XLMuLC`=081t['C51847alV(_T'"CQ-$UpF'Q$UXTk1cHM@JhM=a-.Vj?OnSo5^7]/kg`1KNF)d:GBC6@YsLSb2CPr"A7J6;Pjj\79b#gXVF'@1lOfc>(t#+#ch78ppUFh@8_'6;O`I#4pu:rRTS1InHd<auG+lb*m_b=depO!W3SpKgJS[F9RQ.-(>dlk.F@3j'sOooG#lN@ik,b#'`)&(CE;_:7N"k'7EA\Xi%D.%M`h@c+VhLU:fL_OQ##W?7>HqcBl-qQq>$_<cd^[:YgBl0WI#e?)j&64a[7E7!bQR;_-l")L4sl8A:QuB^Sb(HlL7fB*<:j,<^DS^I3CAcr8E'X0'O/GeUK7UC$X0G[s,aUP(6ppNt?+#OkB^(CE=56b7V,'!"`eJeRO)PWs2>1@H`iG-.bf4a[7E7!bQR;d6q!M=7P\F3?qP("k_eelb*CSiI`G^98((%I&R5:G(TnrKN8'Y54^9AQOmAZgj\.]Rk$SRe6(Mr"A7J6;NTPC#'>tqqHOGW/FcHFEcYr\kD.I`RcmGzzzzz!!!#shLGHqs,YP,HH.3ES2./RVVEbsQDoX'9U@=&l:k7JrtaQH&Kbi]Obm<%hKIL4,E2kDgo8>kLZRIfe(G]&SFk=K]-9GkkTd\F%S$nhU:'02]c)@4\@J.GI\Bps[?@,-GZVfg)gu7CH0qDF1XeJLqF7HN>X.aP\CMg=chKX>n<\qA2YtLBOZK'%rl3Du2:?AL=IC3PBk,2&AP//XH?`N0#9/)%#QIb;@Rk@&km3dE#$^(F>M3Un29.cBWJ>[dI'D!gG-6W"BUlKKaK44Y(FJ6E74mllg'VYD;'>c_ie*4S1:uoG>=95'Q?'>n0T+;C*SDF'[FC.lo[Ldj,!OZC,BLEmK?Dr<@)Qe9lUOlkcV;H"V.m>q8p]d]>nJ/poT<GA<FW(7UZ<4sSTm1UR.IWEntoX_"2@>7rY"b;7NWL0=*>b^Vds!(^omX"TDPuK*d6L?`FmUt&+>DN@&&c6lW*cs/E?DhS5N#9R'epDo9#p5/jA3"_-\BMf]XR'pUfq79<iKL;G$0B/)CoG/IglWDlX,k;\/>SpgBkXN)(P.FI_u+GjM.chn8od+8%*TcMPu$PFd)F=2Y=_I:SDp]"\V0^LolZmFaIZ9Z^g][rDend7@%r]IVuoNBXY#FlnBof+7;fjtc<,AM^0#4k%r,n)4(Ri%GZaD"NiY@qYY/+&GHRe[pF$cg"Z+9IH;fN=SQU4hN<)K8i(#NdhJh24<5M2jem5bsfAT`T,dN'/o#E:Hc?@ie*4SZE#K?-u2t2C?=2hktZpeZh-DAPQ&X7Uo,9j(%K+0+5)Xsp6iJQnq/sFbqZ0.dF4W6ZSS4rA("9dmu$mJUQ=d*0/q#Ao!)kl2A@*+PdoomG0-Qt<giU0_n.*Vf]XOno^O%>Z)Om3H9Y^4eM#OKckV2]_q?>!p$f,?%lX:*%W^tWc1&H(IM[1(&erNaaf'/d<c8mI:Hc?@ie*4S1-/6m9n.(!A^ufr]-bU!hla=5D6tbPrsutR,!OZC,@cLsj]QF\dIsCR>&-W2f%H$"V($;E7saIZ>nJ/poT9HZam71Db[2!B90/ua46,FED6M4^d.$i]pe/O1)gu7le`LS_?_c91pSW2UDfX;8[4"+2^uJb;?Qq\dkTe8=Wu7ASc\t='6=Z1*L?mqU9CnWcj'KQ/,!OZC,L^dZ^Bo!!lc8E7gQm%Tk<!0D.kg/kmM5XGie*4SZBii*"#"kRgqV^Ya%[sSEV&<[RRjuJn*>V@7!u5d8%*-WFJ>)si]g[(.uZM]g>:Jb+]TQfI%LiF-/sQ:5-c2Q+0TE)-ZsAf9Sl)#io\,@VlM3K'2*Z:iE[$;D"NiiHci>;R#+_`19Jgh3e:S'nkSrGc'h4"4hN<)K8i&ML"Qt!DH%jERqSEs&&%$m@E520=_T).;\/>SpgBkXbb0Pqm(A5rd"CJ^c6[I&:Yj9Q2EBbhHKkM2zzzzzzzz!8r@l^AoC`<J:~>
+endstream
 endobj
 12 0 obj
 <<
-/Filter [ /ASCII85Decode /FlateDecode ] /Length 1464
+/Contents 13 0 R
+/MediaBox [ 0 0 612 792 ]
+/Resources <<
+/Font 14 0 R
+/ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>>
+/Rotate 0
+/Trans <<
+>>
+/Type /Page
+/Parent 2 0 R
+>>
+endobj
+13 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ]
+/Length 1464
 >>
 stream
-Gat=*>uTcA'Rf.Ggm?=5G&]'_,YjuCh1b6>Q5L%o^+8n'(>*Y.;TS"XpI^`g#-c!UQk8BU8GD]qR6aAnbl,k'JA5,=]4/Q"=PX'PJco-3i,Wu6j,A7/$T"/?$),HX3htE!q0boF/b5CPf^E:c1<rd"A?`)mr)+GUR!mJqaTXWu/$'e"p"QN1Bojn_rMK4R&R6(UBp/+u750ITdPt>[e)A5a";iLp^to6:31,I2G)&sPC+Pi6M!^<GbJoQQ)/FlkJ4Hs9^uT/e*]P6aSHLK:+Gh*))tIH]bpD9*Z(1`Pd88L?$c41SJPgO%7iluh8&p/-,,!nfOgV.66=Fbl2T__hUJ:<pGgq#*NX(Tq^/)cO8%Zn*6"6fMGHgNpZceu.mu2K0V,90rdub,]GGLc-fX5NW5':f=[<hBSI3-%SgjYq=q_RJceFZmu:r+.iioSs`m!!@VHdcA*^4BHUhF<FKQ6tHXMp<*a]o<euNFgs9Mq41kjdfnjkhWI"oCd@X5DZ$nLtmW+2<5H@IRh$@&,p^$K@H(ZbXkK"BjXt@qRk86mWf(UJ7_jpn_*/HB(bp]$/e91F^mfaiQFt1=:'i\=]8XP:Xa"":Xo5tqs2,r@;oA+NED*2Qil.'Nua@c7VS`j`G]!2YFO8RBXhTu<t25Cd(-1gmMc>a0$+WSosSTFL`5QL2GbV:0VsJ'<O3K^"1]$KQ/I-c7`J2ZliO>D'_SW;L:WMEe0$$t4/JkgTUH4cHm[%#I,:Nj)Ur$S#`9Rj@WP<I6$4WqVF5!*W#I2jae4OoT*4R0,?^NNa_.EF[@n_IJ@qkjBMdgri!(J+1f3-E<j#m&hgKo"UI\2H6$n%5Cn$k_Yi'Es\L^!1MX<hO"lIbT4Rm/AJ5aJZ!^9KD'fr8B#h<sh!3-E$LYU*o<(>Z$gr6*q4UbC2I)gnnP9M\McKLZ'h!p9&"+2X@L`VkT;uYcjd:(.d(&2]?I\'D7[k<@=m_%7W1j18sjLSo8m<M(lZ9KZ'@8.1=@!1+"TrR(]0&1LkF%,t_k_dOm&Y'Do?-rHS'Y(!J4!G+"gGW6F$LEHqM%T1RalJZ-m_>m6B`N?]Uc7'94pdMCC2GLV-g*U(-Zh5RP"V!MT(d9R9pD3s9^dTE5+q$CX2$SG&=T0;FKN'UE@H*rGCIV)QM2[tcse6UUf75-Xr_;qFXcbCN$bI:_!k)gm3GPpZlNA+6L,ZbQ7E)!?Wt=>SVIh8G+=0!D]Ps`KQQM2EI+pmdJSY*/gV"`=uC@7oX,XO8O)a@T94.):58T<p"n&cGMFVSKpnfi0#<]]6g.#f,PGknF>:G&@fj0KG9H;7\WpYWWJ7W@oL1DORS\+(Y'8U6)JH@'ma]FEp\W54.a-QCl_QK1FU6EW/a!OKIZG$jJaE3/?]oeQRnDa:8G$fu5k"?R(3sWY+2AWQs+<e\M<Y>WI\bqUYTmVM<.D=[3!AmP+pg7++-]jCFo~>endstream
+Gat=*>uTcA'Rf.Ggm?=5G&]'_,YjuCh1b6>Q5L%o^+8n'(>*Y.;TS"XpI^`g#-c!UQk8BU8GD]qR6aAnbl,k'JA5,=]4/Q"=PX'PJco-3i,Wu6j,A7/$T"/?$),HX3htE!q0boF/b5CPf^E:c1<rd"A?`)mr)+GUR!mJqaTXWu/$'e"p"QN1Bojn_rMK4R&R6(UBp/+u750ITdPt>[e)A5a";iLp^to6:31,I2G)&sPC+Pi6M!^<GbJoQQ)/FlkJ4Hs9^uT/e*]P6aSHLK:+Gh*))tIH]bpD9*Z(1`Pd88L?$c41SJPgO%7iluh8&p/-,,!nfOgV.66=Fbl2T__hUJ:<pGgq#*NX(Tq^/)cO8%Zn*6"6fMGHgNpZceu.mu2K0V,90rdub,]GGLc-fX5NW5':f=[<hBSI3-%SgjYq=q_RJceFZmu:r+.iioSs`m!!@VHdcA*^4BHUhF<FKQ6tHXMp<*a]o<euNFgs9Mq41kjdfnjkhWI"oCd@X5DZ$nLtmW+2<5H@IRh$@&,p^$K@H(ZbXkK"BjXt@qRk86mWf(UJ7_jpn_*/HB(bp]$/e91F^mfaiQFt1=:'i\=]8XP:Xa"":Xo5tqs2,r@;oA+NED*2Qil.'Nua@c7VS`j`G]!2YFO8RBXhTu<t25Cd(-1gmMc>a0$+WSosSTFL`5QL2GbV:0VsJ'<O3K^"1]$KQ/I-c7`J2ZliO>D'_SW;L:WMEe0$$t4/JkgTUH4cHm[%#I,:Nj)Ur$S#`9Rj@WP<I6$4WqVF5!*W#I2jae4OoT*4R0,?^NNa_.EF[@n_IJ@qkjBMdgri!(J+1f3-E<j#m&hgKo"UI\2H6$n%5Cn$k_Yi'Es\L^!1MX<hO"lIbT4Rm/AJ5aJZ!^9KD'fr8B#h<sh!3-E$LYU*o<(>Z$gr6*q4UbC2I)gnnP9M\McKLZ'h!p9&"+2X@L`VkT;uYcjd:(.d(&2]?I\'D7[k<@=m_%7W1j18sjLSo8m<M(lZ9KZ'@8.1=@!1+"TrR(]0&1LkF%,t_k_dOm&Y'Do?-rHS'Y(!J4!G+"gGW6F$LEHqM%T1RalJZ-m_>m6B`N?]Uc7'94pdMCC2GLV-g*U(-Zh5RP"V!MT(d9R9pD3s9^dTE5+q$CX2$SG&=T0;FKN'UE@H*rGCIV)QM2[tcse6UUf75-Xr_;qFXcbCN$bI:_!k)gm3GPpZlNA+6L,ZbQ7E)!?Wt=>SVIh8G+=0!D]Ps`KQQM2EI+pmdJSY*/gV"`=uC@7oX,XO8O)a@T94.):58T<p"n&cGMFVSKpnfi0#<]]6g.#f,PGknF>:G&@fj0KG9H;7\WpYWWJ7W@oL1DORS\+(Y'8U6)JH@'ma]FEp\W54.a-QCl_QK1FU6EW/a!OKIZG$jJaE3/?]oeQRnDa:8G$fu5k"?R(3sWY+2AWQs+<e\M<Y>WI\bqUYTmVM<.D=[3!AmP+pg7++-]jCFo~>
+endstream
+endobj
+14 0 obj
+<<
+/F1 6 0 R
+/F2 8 0 R
+/F3 9 0 R
+/F4 10 0 R
+>>
 endobj
 xref
-0 13
+0 15
 0000000000 65535 f 
-0000000061 00000 n 
-0000000122 00000 n 
-0000000229 00000 n 
-0000000341 00000 n 
-0000000460 00000 n 
-0000000655 00000 n 
-0000000770 00000 n 
-0000000965 00000 n 
-0000001034 00000 n 
-0000001314 00000 n 
-0000001380 00000 n 
-0000003469 00000 n 
+0000000015 00000 n 
+0000000054 00000 n 
+0000000120 00000 n 
+0000000169 00000 n 
+0000000487 00000 n 
+0000006348 00000 n 
+0000006455 00000 n 
+0000006562 00000 n 
+0000006674 00000 n 
+0000006793 00000 n 
+0000006909 00000 n 
+0000012975 00000 n 
+0000013167 00000 n 
+0000014724 00000 n 
 trailer
 <<
-/ID 
-[<f3507113112bbbef9e22b619a7ad6bce><f3507113112bbbef9e22b619a7ad6bce>]
-% ReportLab generated PDF document -- digest (opensource)
-
-/Info 9 0 R
-/Root 8 0 R
-/Size 13
+/Size 15
+/Root 3 0 R
+/Info 1 0 R
 >>
 startxref
-5025
+14787
 %%EOF

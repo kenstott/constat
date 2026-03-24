@@ -579,6 +579,36 @@ class TaskRouter:
         """Clear the provider cache."""
         self._provider_cache.clear()
 
+    def generate_vision(
+        self,
+        system: str,
+        image_bytes: bytes,
+        mime_type: str,
+        text_prompt: str,
+        max_tokens: int = 1024,
+        model: str | None = None,
+    ) -> str:
+        """Vision generation via the summarization model chain."""
+        models = self._resolve_models_for_domain(
+            TaskType.SUMMARIZATION.value, "low", None
+        )
+        if not models:
+            models = self.routing_config.get_models_for_task("general", "low")
+        if not models:
+            from constat.core.config import ModelSpec
+            models = [ModelSpec(model=self.llm_config.model)]
+
+        spec = models[0]
+        provider = self._get_provider(spec)
+        return provider.generate_vision(
+            system=system,
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            text_prompt=text_prompt,
+            max_tokens=max_tokens,
+            model=spec.model,
+        )
+
     def generate(
         self,
         system: str,

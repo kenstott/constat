@@ -66,9 +66,15 @@ Plan:
 Steps produce **artifacts** that persist across the session:
 
 - **Tables**: DataFrames saved to DuckDBSessionStore
+- **Views**: Lazy SQL intermediates (CREATE VIEW, not materialized)
 - **Code**: Generated Python for each step
 - **Charts**: Plotly/Folium visualizations
+- **Markdown**: Reports, summaries, explanations
+- **JSON**: Structured data outputs
+- **Images**: Binary image data (bytes)
 - **Traces**: Derivation reason-chains (auditable mode)
+
+Artifact dispatch is type-aware: `run_proof()` returns `dict[str, DataFrame | str | dict | bytes]` and each type is stored and rendered appropriately.
 
 ## System Overview
 
@@ -252,7 +258,8 @@ Returns ranked results from:
 | `doc_tools/_transport.py` | Transport abstraction (file, HTTP, S3, FTP, SFTP) |
 | `doc_tools/_mime.py` | MIME type detection and normalization |
 | `doc_tools/_crawler.py` | BFS link crawler for `follow_links` documents |
-| `doc_tools/_file_extractors.py` | PDF, DOCX, XLSX, PPTX, HTML extraction |
+| `doc_tools/_file_extractors.py` | PDF, DOCX, XLSX, PPTX, HTML extraction (including embedded image extraction) |
+| `doc_tools/_image.py` | Image ingestion pipeline: OCR (Tesseract) → classification → LLM vision summary |
 | `doc_tools/_access.py` | Document access control and resolution |
 | `api_tools.py` | `search_operations` for API discovery |
 | `vector_store.py` | DuckDB VSS backend for embedding storage/search |
@@ -324,6 +331,8 @@ Golden question regression testing framework.
 | `runner.py` | Phase 1 (metadata DB lookups) + Phase 2 (e2e LLM judge) |
 | `grounding.py` | Deterministic source pattern extraction from reason-chain DAGs |
 | `models.py` | Data structures for test cases and results |
+| `bug_queue.py` | DuckDB-backed bug queue with CRUD, analytics, and auto-escalation |
+| `bug_queue_plugin.py` | pytest plugin for auto-filing test failures as bugs |
 
 **Five assertion layers:**
 
@@ -336,6 +345,8 @@ Golden question regression testing framework.
 | End-to-end | LLM generates plan, executes, answer matches reference | LLM call |
 
 The first four layers are pure database lookups. End-to-end is opt-in (`--e2e`).
+
+**System prompt capture:** Golden questions capture the active `system_prompt` at test creation time. During e2e replay, the captured prompt is injected via `_system_prompt_override`, ensuring tests reproduce the exact prompt context. The prompt is editable in the regression testing UI.
 
 ### catalog/
 
@@ -687,6 +698,60 @@ Entity resolution bridges the gap between structural metadata ("the orders table
 
 Multiple sources for the same entity type merge. Each source gets its own summary chunk and individual value embeddings in the vector store.
 
+## Image & Attachment Pipeline
+
+Constat ingests images as first-class documents through a multi-stage pipeline. See `docs/arch/images.md` for the full architecture spec.
+
+### Image Ingestion
+
+Supported formats: PNG, JPEG, TIFF, WebP, BMP, GIF, SVG.
+
+```
+image file → fetch → MIME detect → OCR (Tesseract) → classify → LLM vision summary → chunk → embed
+```
+
+**Processing stages:**
+1. **OCR text extraction** — Tesseract extracts text with per-word confidence scores
+2. **Classification** — Text-primary (>50 words, >60% confidence) vs image-primary
+3. **LLM vision summary** — For image-primary content, LLM generates a descriptive summary
+4. **Rendering** — Combined text + summary becomes the vectorization source
+
+Dependencies: `pytesseract`, `Pillow`, system `tesseract`.
+
+### Embedded Image Extraction
+
+When `extract_images: true` is set on a document config, images are extracted from PDFs, DOCX, PPTX, and XLSX files. See `docs/arch/attachments.md`.
+
+**Addressing scheme:**
+```
+<data_source>:<parent_doc>:<image_name>
+```
+
+Examples:
+```
+business_rules:page_3_img_1.png       # PDF embedded image
+onboarding_guide:image1.png           # DOCX embedded image
+quarterly_deck:slide_4_img_1.png      # PPTX embedded image
+```
+
+Extracted images are routed through the image pipeline above. Filtering removes tiny images (below minimum dimensions/bytes) and deduplicates via SHA-256 hashing.
+
+### Email Inbox Source (Planned)
+
+IMAP email inboxes as a document source — not yet implemented. See `docs/arch/email.md` for the design spec covering addressing, OAuth2 authentication, incremental sync, and attachment filtering.
+
+## Bug Queue
+
+DuckDB-backed test failure tracking with automatic escalation. Files: `constat/testing/bug_queue.py`, `constat/testing/bug_queue_plugin.py`.
+
+**Features:**
+- CRUD operations on bug entries (open, triage, close, escalate)
+- Analytics: failure frequency, flaky test detection, domain-level summaries
+- Auto-escalation: bugs exceeding configurable thresholds are auto-promoted
+- pytest plugin: `--bug-queue` flag auto-files failures as bugs (registered as pytest11 entry point)
+
+**Integration:** The bug queue plugin hooks into pytest's `pytest_runtest_makereport` to capture failures with full tracebacks and test metadata.
+
 ## UX Architecture
 
 ### Web UI
@@ -703,9 +768,11 @@ constat-ui/
 │   ├── store/
 │   │   ├── sessionStore.ts  # Session state, WebSocket events (Zustand)
 │   │   ├── artifactStore.ts # Artifacts, tables, facts, step codes, scratchpad
-│   │   ├── uiStore.ts       # Deep linking, accordion state, public sessions
+│   │   ├── uiStore.ts       # Deep linking, accordion state, exploratory/reason-chain mode
+│   │   ├── proofStore.ts    # Proof facts, DAG state, reason-chain mode
 │   │   ├── glossaryStore.ts # Glossary terms, taxonomy, relationships
 │   │   ├── testStore.ts     # Golden question test execution
+│   │   ├── toastStore.ts    # Transient toast notifications
 │   │   └── authStore.ts     # Firebase auth, permissions
 │   ├── api/
 │   │   ├── sessions.ts      # Session/data API calls
@@ -763,15 +830,21 @@ WebSocket connection delivers live events:
 
 | Event | UI Update |
 |-------|-----------|
-| `step_start` | Show "Step N: [goal]" with spinner |
+| `step_start` | Show "Step N: [goal]" with spinner, agent role, domain |
+| `step_executing` | Show execution indicator + green "Reading source" chips |
+| `step_complete` | Checkmark, purple "Created table" chips, inline table preview |
+| `table_created` | Register new table in artifact panel |
 | `generating` | Show thinking indicator |
-| `executing` | Show execution indicator |
-| `step_complete` | Checkmark, add artifacts, refresh scratchpad |
 | `validation_retry` | Show retry indicator |
 | `validation_warnings` | Show warning badges |
 | `clarification` | Open clarification dialog |
 | `plan_approval` | Open plan review dialog |
 | `steps_truncated` | Remove superseded steps from UI |
+| `dynamic_context` | Show agent + skill context in thinking message |
+| `proof_start` | Switch to reason-chain mode, clear previous inference codes |
+| `proof_complete` | Complete DAG visualization, save proof facts |
+| `proof_summary_ready` | Render proof summary in DAG panel |
+| `inference_code` | Add inference code to right panel |
 | `error` | Show error with recovery options |
 
 ### Reason-Chain DAG Visualization

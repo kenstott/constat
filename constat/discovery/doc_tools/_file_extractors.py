@@ -9,6 +9,259 @@
 
 """File content extraction functions for PDF, DOCX, XLSX, PPTX."""
 
+import hashlib
+import io
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+MIN_IMAGE_BYTES = 2048
+MIN_IMAGE_DIMENSION = 64
+_MAX_VISION_CALLS_PER_DOC = 50
+
+# Skip vector metafile formats (not rasterizable without system deps)
+_SKIP_MIMES = {"image/x-emf", "image/x-wmf", "image/emf", "image/wmf"}
+_SKIP_EXTS = {".emf", ".wmf"}
+
+
+@dataclass
+class ExtractedImage:
+    name: str
+    data: bytes
+    mime_type: str
+    page: int | None
+    index: int
+
+
+def _guess_mime(data: bytes) -> str:
+    """Guess MIME type from magic bytes."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:2] == b"\xff\xd8":
+        return "image/jpeg"
+    if data[:4] == b"GIF8":
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:4] in (b"II\x2a\x00", b"MM\x00\x2a"):
+        return "image/tiff"
+    if data[:2] == b"BM":
+        return "image/bmp"
+    return "image/png"
+
+
+def _ext_from_mime(mime: str) -> str:
+    """Get file extension from MIME type."""
+    mapping = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/tiff": ".tiff",
+        "image/bmp": ".bmp",
+    }
+    return mapping.get(mime, ".png")
+
+
+def _is_emf_wmf(name: str, mime: str) -> bool:
+    """Check if image is EMF/WMF format."""
+    lower_name = name.lower()
+    return (
+        mime.lower() in _SKIP_MIMES
+        or any(lower_name.endswith(ext) for ext in _SKIP_EXTS)
+    )
+
+
+def _passes_size_filter(data: bytes) -> bool:
+    """Check if image meets minimum size requirements."""
+    if len(data) < MIN_IMAGE_BYTES:
+        return False
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(data))
+        w, h = img.size
+        if w < MIN_IMAGE_DIMENSION and h < MIN_IMAGE_DIMENSION:
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _filter_and_dedup(images: list[ExtractedImage]) -> list[ExtractedImage]:
+    """Apply size filter, EMF/WMF skip, and SHA-256 dedup."""
+    seen: set[str] = set()
+    result: list[ExtractedImage] = []
+    for img in images:
+        if _is_emf_wmf(img.name, img.mime_type):
+            logger.warning("Skipping EMF/WMF image: %s", img.name)
+            continue
+        if not _passes_size_filter(img.data):
+            continue
+        h = hashlib.sha256(img.data).hexdigest()[:16]
+        if h in seen:
+            continue
+        seen.add(h)
+        result.append(img)
+    return result
+
+
+def _fetch_linked_image(ref: str, config_dir: str | None = None) -> bytes | None:
+    """Fetch a linked/external image by reference.
+
+    Supports: http(s), file:/, or bare path (treated as file:/).
+    Returns None with warning on failure.
+    """
+    try:
+        if ref.startswith(("http://", "https://")):
+            from ._transport import _get_http_session
+            resp = _get_http_session().get(ref, timeout=15)
+            resp.raise_for_status()
+            return resp.content
+        else:
+            path = ref.removeprefix("file://")
+            p = Path(path)
+            if not p.is_absolute() and config_dir:
+                p = (Path(config_dir) / path).resolve()
+            return p.read_bytes()
+    except Exception as e:
+        logger.warning("Failed to fetch linked image %s: %s", ref, e)
+        return None
+
+
+def _extract_pdf_images(path: Path | None, data: bytes | None) -> list[ExtractedImage]:
+    """Extract embedded images from a PDF."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(path or io.BytesIO(data))
+    images: list[ExtractedImage] = []
+    for page_num, page in enumerate(reader.pages, 1):
+        for img_idx, image in enumerate(page.images, 1):
+            mime = _guess_mime(image.data)
+            ext = _ext_from_mime(mime)
+            images.append(ExtractedImage(
+                name=f"page_{page_num}_img_{img_idx}{ext}",
+                data=image.data,
+                mime_type=mime,
+                page=page_num,
+                index=img_idx,
+            ))
+    return _filter_and_dedup(images)
+
+
+def _extract_docx_images(
+    path: Path | None, data: bytes | None, config_dir: str | None = None,
+) -> list[ExtractedImage]:
+    """Extract embedded and linked images from a DOCX."""
+    from docx import Document
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+
+    doc = Document(path or io.BytesIO(data))
+    images: list[ExtractedImage] = []
+    idx = 0
+    for rel in doc.part.rels.values():
+        if rel.reltype != RT.IMAGE:
+            continue
+        idx += 1
+        if rel.is_external:
+            img_data = _fetch_linked_image(rel.target_ref, config_dir)
+            if img_data is None:
+                continue
+            mime = _guess_mime(img_data)
+            ext = _ext_from_mime(mime)
+            images.append(ExtractedImage(
+                name=f"linked_{idx}{ext}",
+                data=img_data,
+                mime_type=mime,
+                page=None,
+                index=idx,
+            ))
+        else:
+            image_part = rel.target_part
+            filename = image_part.partname.split("/")[-1]
+            images.append(ExtractedImage(
+                name=filename,
+                data=image_part.blob,
+                mime_type=image_part.content_type,
+                page=None,
+                index=idx,
+            ))
+    return _filter_and_dedup(images)
+
+
+def _extract_pptx_images(
+    path: Path | None, data: bytes | None, config_dir: str | None = None,
+) -> list[ExtractedImage]:
+    """Extract embedded images from a PPTX."""
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    prs = Presentation(path or io.BytesIO(data))
+    images: list[ExtractedImage] = []
+    for slide_num, slide in enumerate(prs.slides, 1):
+        img_idx = 0
+        for shape in slide.shapes:
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                img_idx += 1
+                image = shape.image
+                ext = "." + image.content_type.split("/")[-1]
+                if ext == ".jpeg":
+                    ext = ".jpg"
+                images.append(ExtractedImage(
+                    name=f"slide_{slide_num}_img_{img_idx}{ext}",
+                    data=image.blob,
+                    mime_type=image.content_type,
+                    page=slide_num,
+                    index=img_idx,
+                ))
+    return _filter_and_dedup(images)
+
+
+def _extract_xlsx_images(
+    path: Path | None, data: bytes | None, config_dir: str | None = None,
+) -> list[ExtractedImage]:
+    """Extract embedded images from an XLSX."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path or io.BytesIO(data), data_only=True)
+    images: list[ExtractedImage] = []
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        for img_idx, image in enumerate(ws._images, 1):
+            img_data = image._data()
+            mime = _guess_mime(img_data)
+            ext = _ext_from_mime(mime)
+            images.append(ExtractedImage(
+                name=f"sheet_{sheet_name}_img_{img_idx}{ext}",
+                data=img_data,
+                mime_type=mime,
+                page=None,
+                index=img_idx,
+            ))
+    return _filter_and_dedup(images)
+
+
+def _extract_images_from_document(
+    path: Path | None,
+    data: bytes | None,
+    doc_type: str,
+    config_dir: str | None = None,
+) -> list[ExtractedImage]:
+    """Dispatch to format-specific image extractor."""
+    try:
+        if doc_type == "pdf":
+            return _extract_pdf_images(path, data)
+        elif doc_type == "docx":
+            return _extract_docx_images(path, data, config_dir)
+        elif doc_type == "pptx":
+            return _extract_pptx_images(path, data, config_dir)
+        elif doc_type == "xlsx":
+            return _extract_xlsx_images(path, data, config_dir)
+    except Exception as e:
+        logger.warning("Image extraction failed for %s: %s", doc_type, e)
+    return []
+
 
 def _is_structured_data_format(doc_format: str) -> bool:
     """Check if format is structured data that shouldn't be semantically indexed."""

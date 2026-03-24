@@ -221,9 +221,14 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
             if guidance:
                 # Guidance provided — extract facts and re-solve with context
                 self.fact_resolver.add_user_facts_from_text(guidance)
-                session_mode = self.datastore.get_session_meta("mode") if self.datastore else "exploratory"
-                if session_mode == "auditable":
-                    return self.prove_conversation(guidance=guidance)
+                # Append redo to objectives log before re-solve
+                import json as _json_redo_fp
+                from datetime import datetime as _dt_redo_fp, timezone as _tz_redo_fp
+                _redo_log_json = self.datastore.get_session_meta("objectives_log") if self.datastore else None
+                _redo_log = _json_redo_fp.loads(_redo_log_json) if _redo_log_json else []
+                _redo_log.append({"type": "redo", "mode": "exploratory", "guidance": guidance, "ts": _dt_redo_fp.now(_tz_redo_fp.utc).isoformat()})
+                if self.datastore:
+                    self.datastore.set_session_meta("objectives_log", _json_redo_fp.dumps(_redo_log))
                 original_problem = self.datastore.get_session_meta("problem") if self.datastore else guidance
                 return self.solve(original_problem, force_plan=True)
             return self._handle_redo()
@@ -1219,6 +1224,11 @@ Prove all of the above claims and provide a complete audit trail."""
             self.session_config.auto_approve = original_auto_approve
             # noinspection PyAttributeOutsideInit
             self._proof_step_hints = []
+            # Reset mode back to exploratory — /reason is a temporary verification pass,
+            # not a permanent mode switch. This prevents /redo from incorrectly routing
+            # to prove_conversation after the user returns to exploratory mode.
+            if self.datastore:
+                self.datastore.set_session_meta("mode", "exploratory")
 
     def replay(self, problem: str, objective_index: int | None = None) -> dict:
         """

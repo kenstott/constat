@@ -27,6 +27,13 @@ MIME_TO_SHORT: dict[str, str] = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "image/png": "image",
+    "image/jpeg": "image",
+    "image/tiff": "image",
+    "image/webp": "image",
+    "image/bmp": "image",
+    "image/gif": "image",
+    "image/svg+xml": "image",
 }
 
 # File extension -> short alias
@@ -47,19 +54,28 @@ EXTENSION_TO_SHORT: dict[str, str] = {
     ".docx": "docx",
     ".xlsx": "xlsx",
     ".pptx": "pptx",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".tiff": "image",
+    ".tif": "image",
+    ".webp": "image",
+    ".bmp": "image",
+    ".gif": "image",
+    ".svg": "image",
 }
 
 # All known short aliases
 _KNOWN_SHORT: set[str] = {
     "auto", "pdf", "html", "markdown", "text", "csv", "json", "jsonl",
-    "yaml", "xml", "docx", "xlsx", "pptx",
+    "yaml", "xml", "docx", "xlsx", "pptx", "image",
 }
 
 # Legacy transport types — treated as "auto" (transport is now inferred from fields)
 _LEGACY_TRANSPORT_TYPES: set[str] = {"file", "http", "inline", "confluence", "notion"}
 
 # Binary types that need special extraction (not decodable as UTF-8)
-_BINARY_TYPES: set[str] = {"pdf", "docx", "xlsx", "pptx"}
+_BINARY_TYPES: set[str] = {"pdf", "docx", "xlsx", "pptx", "image"}
 
 
 def normalize_type(user_type: str) -> str:
@@ -139,7 +155,8 @@ _LOADABLE_MIME_PREFIXES = ("text/", "application/json", "application/xml",
                            "application/msword",
                            "application/vnd.ms-excel",
                            "application/vnd.ms-powerpoint",
-                           "application/octet-stream")  # unknown binary — let downstream decide
+                           "application/octet-stream",
+                           "image/")  # unknown binary — let downstream decide
 
 
 def is_loadable_mime(mime: str | None) -> bool:

@@ -1,0 +1,6 @@
+Analyze this image and provide:
+1. A detailed text description (2-4 sentences) suitable for search indexing.
+2. A subcategory: one of "photograph", "diagram", "chart", "screenshot", "illustration", "art", "map", "form", "other".
+3. A list of classification labels (3-8 tags) describing key subjects, objects, themes.
+
+Respond as JSON: {"description": "...", "subcategory": "...", "labels": ["...", ...]}

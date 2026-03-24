@@ -651,7 +651,8 @@ async def upload_documents(
         raise HTTPException(status_code=404, detail="Session not found")
 
     # Document extensions (indexed for search)
-    doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm', '.pptx', '.xlsx'}
+    doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm', '.pptx', '.xlsx',
+                      '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.webp', '.bmp', '.gif', '.svg'}
     # Data file extensions (added as databases) - xlsx excluded due to multi-sheet complexity
     data_extensions = {'.csv', '.tsv', '.parquet', '.json'}
 

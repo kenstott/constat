@@ -96,17 +96,17 @@ class CoreMixin:
         self._load_preloaded_context()
         logger.debug(f"Session init: MetadataPreloadCache took {time.time() - t0:.2f}s")
 
+        # Task router for model routing with escalation
+        self.router = TaskRouter(config.llm)
+
         # Document discovery tools (for reference documents)
         t0 = time.time()
-        self.doc_tools = DocumentDiscoveryTools(config)
+        self.doc_tools = DocumentDiscoveryTools(config, router=self.router)
         logger.debug(f"Session init: DocumentDiscoveryTools took {time.time() - t0:.2f}s")
 
         # Entity extraction is handled by session_manager.refresh_entities_async()
         # after session creation — not during __init__ to avoid dual extraction race
         self._entities_extracted = False
-
-        # Task router for model routing with escalation
-        self.router = TaskRouter(config.llm)
 
         constat.llm.set_backend(self.router)
         # noinspection PyUnresolvedReferences

@@ -123,6 +123,11 @@ databases_description: |
   - web_metrics: Daily web analytics CSV (use file_web_metrics path)
   - events: Clickstream events JSON (use file_events path)
 
+documents:
+  images:
+    path: data/images/
+    description: Sample images for testing the image ingestion pipeline
+
 entity_resolution:
   - entity_type: COUNTRY
     source: countries

@@ -38,12 +38,14 @@ def _expand_file_paths(path: str) -> list[tuple[str, Path]]:
         matches = sorted(glob_module.glob(path, recursive=True))
         return [(Path(m).name, Path(m)) for m in matches if Path(m).is_file()]
 
-    # Case 2: Directory - list all files
+    # Case 2: Directory - list all files recursively
     if p.is_dir():
         files = []
-        for f in sorted(p.iterdir()):
+        for f in sorted(p.rglob("*")):
             if f.is_file() and not f.name.startswith("."):
-                files.append((f.name, f))
+                # Use path relative to directory as display name
+                rel = f.relative_to(p)
+                files.append((str(rel), f))
         return files
 
     # Case 3: Single file

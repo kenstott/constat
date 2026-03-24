@@ -195,8 +195,12 @@ def _warmup_vector_store(config: Config) -> None:
     from constat.catalog.schema_manager import SchemaManager
     from constat.catalog.api_schema_manager import APISchemaManager
 
+    # Create LLM router for vision descriptions on image documents
+    from constat.providers.router import TaskRouter
+    router = TaskRouter(config.llm)
+
     # Create doc_tools early to access vector_store for hash checks
-    doc_tools = DocumentDiscoveryTools(config, skip_auto_index=True)
+    doc_tools = DocumentDiscoveryTools(config, skip_auto_index=True, router=router)
     vector_store = doc_tools._vector_store
 
     # === BASE CONFIG ===
@@ -308,19 +312,56 @@ def _warmup_vector_store(config: Config) -> None:
                             doc_path = (config_dir / doc_config.path).resolve()
 
                         if doc_path.exists():
-                            success, msg = doc_tools.add_document_from_file(
-                                str(doc_path),
-                                name=doc_name,
-                                description=doc_config.description or "",
-                                domain_id="__base__",
-                                skip_entity_extraction=True,  # NER done at session creation
-                            )
-                            if success:
-                                vector_store.set_resource_hash("__base__", "document", doc_name, resource_hash)
-                                indexed_count += 1
-                                logger.info(f"  Base: vectorized {doc_name}")
+                            if doc_path.is_dir():
+                                # Expand directory to individual files
+                                from constat.discovery.doc_tools._schema_inference import _expand_file_paths
+                                expanded = _expand_file_paths(str(doc_path))
+                                for filename_e, filepath_e in expanded:
+                                    child_name = f"{doc_name}:{filename_e}"
+                                    success, msg = doc_tools.add_document_from_file(
+                                        str(filepath_e),
+                                        name=child_name,
+                                        description=doc_config.description or "",
+                                        domain_id="__base__",
+                                        skip_entity_extraction=True,
+                                    )
+                                    if success:
+                                        indexed_count += 1
+                                        logger.info(f"  Base: vectorized {child_name}")
+                                    else:
+                                        logger.warning(f"  Base: failed to vectorize {child_name}: {msg}")
+                                dir_success = False
+                                for filename_e, filepath_e in expanded:
+                                    child_name = f"{doc_name}:{filename_e}"
+                                    success, msg = doc_tools.add_document_from_file(
+                                        str(filepath_e),
+                                        name=child_name,
+                                        description=doc_config.description or "",
+                                        domain_id="__base__",
+                                        skip_entity_extraction=True,
+                                    )
+                                    if success:
+                                        indexed_count += 1
+                                        dir_success = True
+                                        logger.info(f"  Base: vectorized {child_name}")
+                                    else:
+                                        logger.warning(f"  Base: failed to vectorize {child_name}: {msg}")
+                                if dir_success:
+                                    vector_store.set_resource_hash("__base__", "document", doc_name, resource_hash)
                             else:
-                                logger.warning(f"  Base: failed to vectorize {doc_name}: {msg}")
+                                success, msg = doc_tools.add_document_from_file(
+                                    str(doc_path),
+                                    name=doc_name,
+                                    description=doc_config.description or "",
+                                    domain_id="__base__",
+                                    skip_entity_extraction=True,  # NER done at session creation
+                                )
+                                if success:
+                                    vector_store.set_resource_hash("__base__", "document", doc_name, resource_hash)
+                                    indexed_count += 1
+                                    logger.info(f"  Base: vectorized {doc_name}")
+                                else:
+                                    logger.warning(f"  Base: failed to vectorize {doc_name}: {msg}")
                         else:
                             logger.warning(f"  Base: file not found: {doc_path}")
                 except Exception as e:
@@ -333,7 +374,8 @@ def _warmup_vector_store(config: Config) -> None:
                     vector_store.delete_resource_hash("__base__", "document", old_doc_name)
                     logger.info(f"  Base: removed deleted document {old_doc_name}")
 
-            vector_store.set_source_hash("__base__", 'doc', doc_hash)
+            if indexed_count > 0:
+                vector_store.set_source_hash("__base__", 'doc', doc_hash)
             logger.info(f"  Base documents: {indexed_count} indexed, {skipped_count} unchanged")
     else:
         logger.info(f"  Base documents: 0 configured")
@@ -380,19 +422,38 @@ def _warmup_vector_store(config: Config) -> None:
                         doc_path = (config_dir / doc_config.path).resolve()
 
                     if doc_path.exists():
-                        success, msg = doc_tools.add_document_from_file(
-                            str(doc_path),
-                            name=doc_name,
-                            description=doc_config.description or "",
-                            domain_id=filename,
-                            skip_entity_extraction=True,  # NER done at session creation
-                        )
-                        if success:
+                        if doc_path.is_dir():
+                            from constat.discovery.doc_tools._schema_inference import _expand_file_paths
+                            expanded = _expand_file_paths(str(doc_path))
+                            for filename_e, filepath_e in expanded:
+                                child_name = f"{doc_name}:{filename_e}"
+                                success, msg = doc_tools.add_document_from_file(
+                                    str(filepath_e),
+                                    name=child_name,
+                                    description=doc_config.description or "",
+                                    domain_id=filename,
+                                    skip_entity_extraction=True,
+                                )
+                                if success:
+                                    indexed_count += 1
+                                    logger.info(f"  Domain {filename}: vectorized {child_name}")
+                                else:
+                                    logger.warning(f"  Domain {filename}: failed to vectorize {child_name}: {msg}")
                             vector_store.set_resource_hash(filename, "document", doc_name, resource_hash)
-                            indexed_count += 1
-                            logger.info(f"  Domain {filename}: vectorized {doc_name}")
                         else:
-                            logger.warning(f"  Domain {filename}: failed to vectorize {doc_name}: {msg}")
+                            success, msg = doc_tools.add_document_from_file(
+                                str(doc_path),
+                                name=doc_name,
+                                description=doc_config.description or "",
+                                domain_id=filename,
+                                skip_entity_extraction=True,  # NER done at session creation
+                            )
+                            if success:
+                                vector_store.set_resource_hash(filename, "document", doc_name, resource_hash)
+                                indexed_count += 1
+                                logger.info(f"  Domain {filename}: vectorized {doc_name}")
+                            else:
+                                logger.warning(f"  Domain {filename}: failed to vectorize {doc_name}: {msg}")
                     else:
                         logger.warning(f"  Domain {filename}: file not found: {doc_path}")
                 elif doc_config.url:

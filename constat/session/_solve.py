@@ -336,10 +336,12 @@ class SolveMixin:
         self.datastore.set_session_meta("problem", problem)
         self.datastore.set_session_meta("status", "planning")
 
-        # Initialize objectives log with the original question and any clarifications
+        # Update objectives log — preserve existing entries (e.g. redo) and append new question
         import json as _json_obj
         from datetime import datetime as _dt_obj, timezone as _tz_obj
-        _obj_log = [{"type": "question", "text": original_question, "ts": _dt_obj.now(_tz_obj.utc).isoformat()}]
+        _existing_log_json = self.datastore.get_session_meta("objectives_log")
+        _obj_log = _json_obj.loads(_existing_log_json) if _existing_log_json else []
+        _obj_log.append({"type": "question", "text": original_question, "ts": _dt_obj.now(_tz_obj.utc).isoformat()})
         pending = getattr(self, '_pending_clarifications', None)
         if pending:
             for item in pending:

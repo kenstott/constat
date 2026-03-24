@@ -131,6 +131,7 @@ class _CoreMixin:
         schema_entities: Optional[list[str]] = None,
         allowed_documents: Optional[set[str]] = None,
         skip_auto_index: bool = False,
+        router: Optional[object] = None,
     ):
         """Initialize document discovery tools.
 
@@ -146,6 +147,7 @@ class _CoreMixin:
         self._skip_auto_index = skip_auto_index
         self.config = config
         self.allowed_documents = allowed_documents
+        self._router = router
         self._loaded_documents: dict[str, LoadedDocument] = {}
 
         # Use shared embedding model loader (may already be loading in background)
@@ -166,6 +168,9 @@ class _CoreMixin:
 
         # NER stop list (terms to filter during extraction)
         self._stop_list: set[str] = set()
+
+        # Image labels collected during document loading (fed to NER as business terms)
+        self._image_labels: list[str] = []
 
         # Cache directory for persisting document metadata
         if cache_dir:
@@ -597,6 +602,32 @@ class _CoreMixin:
             elif suffix in (".yaml", ".yml"):
                 content = path.read_text()
                 doc_format = "yaml"
+            elif suffix in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".bmp", ".gif"):
+                from ._image import _extract_image, _render_image_result, _describe_image_sync
+                _SUFFIX_TO_MIME = {
+                    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                    ".tiff": "image/tiff", ".tif": "image/tiff", ".webp": "image/webp",
+                    ".bmp": "image/bmp", ".gif": "image/gif",
+                }
+                image_result = _extract_image(path=path)
+                logger.info("Image %s: category=%s, ocr_words=%d, ocr_text=%r",
+                            path.name, image_result.category, image_result.ocr_word_count,
+                            image_result.ocr_text[:100] if image_result.ocr_text else "")
+                if image_result.category == "image-primary" and self._router:
+                    try:
+                        mime = _SUFFIX_TO_MIME.get(suffix, "image/png")
+                        desc = _describe_image_sync(self._router, path.read_bytes(), mime)
+                        image_result.description = desc.get("description")
+                        image_result.subcategory = desc.get("subcategory", image_result.subcategory)
+                        image_result.labels = desc.get("labels", image_result.labels)
+                        logger.info("Image %s: vision description=%r, labels=%s",
+                                    path.name, image_result.description or "", image_result.labels)
+                    except Exception as e:
+                        logger.warning("Image %s: vision description failed: %s", path.name, e)
+                if image_result.labels:
+                    self._image_labels.extend(image_result.labels)
+                content = _render_image_result(image_result, path.stem)
+                doc_format = "markdown"
             else:
                 content = path.read_text()
                 doc_format = "text"
@@ -1045,6 +1076,25 @@ class _CoreMixin:
             return _extract_xlsx_text_from_bytes(result.data), "text"
         elif doc_type == "pptx":
             return _extract_pptx_text_from_bytes(result.data), "text"
+        elif doc_type == "image":
+            from ._image import _extract_image, _render_image_result, _describe_image_sync
+            image_result = _extract_image(
+                path=Path(result.source_path) if result.source_path else None,
+                data=result.data,
+            )
+            if image_result.category == "image-primary" and self._router:
+                try:
+                    desc = _describe_image_sync(
+                        self._router, result.data,
+                        result.detected_mime or "image/png",
+                    )
+                    image_result.description = desc.get("description")
+                    image_result.subcategory = desc.get("subcategory", image_result.subcategory)
+                    image_result.labels = desc.get("labels", image_result.labels)
+                except Exception:
+                    pass  # fall back to OCR-only
+            img_name = Path(result.source_path).stem if result.source_path else "image"
+            return _render_image_result(image_result, img_name), "markdown"
         else:
             return result.data.decode("utf-8"), doc_type
 
@@ -1137,6 +1187,48 @@ class _CoreMixin:
             sections=_extract_markdown_sections(content, doc_format),
             loaded_at=datetime.now().isoformat(),
         )
+
+        # Extract embedded images if enabled
+        if doc_config.extract_images and doc_type in ("pdf", "docx", "pptx", "xlsx"):
+            from ._file_extractors import _extract_images_from_document
+            from ._image import _extract_image, _render_image_result, _describe_image_sync
+
+            embedded_images = _extract_images_from_document(
+                path=Path(result.source_path) if result.source_path else None,
+                data=result.data,
+                doc_type=doc_type,
+                config_dir=self.config.config_dir,
+            )
+            logger.info("Document %s: extracted %d embedded images", name, len(embedded_images))
+            vision_calls = 0
+            for img in embedded_images:
+                img_name = f"{name}:{img.name}"
+                image_result = _extract_image(path=None, data=img.data)
+                logger.info("Embedded image %s: category=%s, ocr_words=%d, ocr_text=%r",
+                             img_name, image_result.category, image_result.ocr_word_count,
+                             image_result.ocr_text[:100] if image_result.ocr_text else "")
+                if image_result.category == "image-primary" and self._router and vision_calls < 50:
+                    try:
+                        desc = _describe_image_sync(self._router, img.data, img.mime_type)
+                        image_result.description = desc.get("description")
+                        image_result.subcategory = desc.get("subcategory", image_result.subcategory)
+                        image_result.labels = desc.get("labels", image_result.labels)
+                        vision_calls += 1
+                        logger.info("Embedded image %s: vision description=%r, labels=%s",
+                                     img_name, image_result.description or "", image_result.labels)
+                    except Exception as e:
+                        logger.warning("Embedded image %s: vision description failed: %s", img_name, e)
+                if image_result.labels:
+                    self._image_labels.extend(image_result.labels)
+                img_content = _render_image_result(image_result, img.name)
+                self._loaded_documents[img_name] = LoadedDocument(
+                    name=img_name,
+                    config=doc_config,
+                    content=img_content,
+                    format="markdown",
+                    sections=[],
+                    loaded_at=datetime.now().isoformat(),
+                )
 
     def add_document_from_config(
         self,

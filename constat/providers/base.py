@@ -95,6 +95,30 @@ class BaseLLMProvider(ABC):
         """
         pass
 
+    def generate_vision(
+        self,
+        system: str,
+        image_bytes: bytes,
+        mime_type: str,
+        text_prompt: str,
+        max_tokens: int = 1024,
+        model: str | None = None,
+    ) -> str:
+        """Generate a response from an image using vision capabilities.
+
+        Args:
+            system: System prompt
+            image_bytes: Raw image bytes
+            mime_type: Image MIME type (e.g., "image/png")
+            text_prompt: Text prompt to accompany the image
+            max_tokens: Maximum tokens to generate
+            model: Override model for this call
+
+        Returns:
+            Generated text response
+        """
+        raise NotImplementedError("Vision not supported by this provider")
+
     def generate_code(
         self,
         system: str,

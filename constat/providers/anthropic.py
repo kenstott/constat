@@ -53,6 +53,48 @@ class AnthropicProvider(BaseLLMProvider):
                 return limit
         return 16384  # Default for newer models
 
+    def generate_vision(
+        self,
+        system: str,
+        image_bytes: bytes,
+        mime_type: str,
+        text_prompt: str,
+        max_tokens: int = 1024,
+        model: str | None = None,
+    ) -> str:
+        import base64
+        use_model = model or self.model
+        image_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+
+        response = self.client.messages.create(
+            model=use_model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type,
+                            "data": image_b64,
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": text_prompt,
+                    },
+                ],
+            }],
+        )
+
+        text_parts = []
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+        return "\n".join(text_parts)
+
     def generate(
         self,
         system: str,

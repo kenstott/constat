@@ -990,7 +990,54 @@ permissions: null
 | `active` | `bool` | no | `true` | Whether domain is active |
 | `order` | `int` | no | `0` | Sort order |
 | `domains` | `list[string]` | no | `[]` | Child domain names (DAG composition) |
-| `golden_questions` | `list[dict]` | no | `[]` | Regression test questions |
+| `golden_questions` | `list[GoldenQuestion]` | no | `[]` | Regression test questions |
+
+**`golden_questions` entry:**
+
+```yaml
+golden_questions:
+  - question: "What are the top 5 customers by revenue?"
+    tags: [smoke, revenue]
+    objectives:                        # Original question + follow-ups
+      - "What are the top 5 customers by revenue?"
+      - "Break down by quarter"
+    system_prompt: |                   # Captured at test creation time
+      You are a business analyst assistant analyzing company data.
+    step_hints:                        # Reference code from exploratory session
+      - step_number: 1
+        code: "df = store.query('SELECT ...')"
+    expect:
+      terms:
+        - name: revenue
+          has_definition: true
+      grounding:
+        - entity: customers
+          resolves_to: [sales.customers]
+      relationships:
+        - subject: customer
+          verb: PLACES
+          object: order
+      expected_outputs:
+        - name: top_customers
+          type: table
+          columns: [customer_name, total_revenue]
+      end_to_end:
+        result_contains: ["revenue"]
+        judge_prompt: "..."            # Custom or default LLM judge prompt
+        validator_code: |              # Python code; raise AssertionError to fail
+          assert len(tables['top_customers']) == 5
+        plan_min_steps: 2
+        expect_success: true
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `question` | `string` | yes | — | The test question |
+| `tags` | `list[string]` | no | `[]` | Tags for filtering (e.g., `smoke`, `e2e`) |
+| `objectives` | `list[string]` | no | `[]` | Original question + follow-ups for multi-turn tests |
+| `system_prompt` | `string` | no | `""` | Domain context captured at test creation time |
+| `step_hints` | `list[dict]` | no | `[]` | Reference code from exploratory session for reproducibility |
+| `expect` | `GoldenExpectations` | no | `{}` | Assertion layers (terms, grounding, relationships, expected_outputs, end_to_end) |
 
 ---
 

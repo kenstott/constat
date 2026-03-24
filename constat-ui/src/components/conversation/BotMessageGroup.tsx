@@ -106,6 +106,12 @@ export function BotMessageGroup({
   // Detect clarification message in group
   const clarificationMsg = stepMessages.find((m) => m.type === 'system' && m.content?.startsWith('Please clarify'))
 
+  // Standalone output group (e.g., /reason result) — collapsible when complete
+  const isStandaloneOutput = stepMessages.length === 0 && outputMessages.length > 0 && !isInProgress
+  const outputSummary = isStandaloneOutput
+    ? (outputMessages[0].content.split(/[.\n]/)[0] || 'Complete')
+    : ''
+
   const timestamp = messages[0]?.timestamp
 
   return (
@@ -246,7 +252,23 @@ export function BotMessageGroup({
       )}
 
       {/* Output messages render as regular content below the step summary */}
-      {outputMessages.map((message) => {
+      {isStandaloneOutput && (
+        <div className="ml-11 mb-2">
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+          >
+            <CheckCircleIcon className="w-4 h-4 text-green-500 flex-shrink-0" />
+            <span className="text-left">{outputSummary}</span>
+            {expanded ? (
+              <ChevronUpIcon className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronDownIcon className="w-3.5 h-3.5" />
+            )}
+          </button>
+        </div>
+      )}
+      {(!isStandaloneOutput || expanded) && outputMessages.map((message) => {
         // Extract "Next Steps" items from final insight to render as pills
         const nextStepsMatch = message.isFinalInsight
           ? message.content.match(/\n+\*{0,2}Next Steps[:\s]*\*{0,2}[:\s]*\n([\s\S]*)$/i)
