@@ -10,6 +10,7 @@
 """Access mixin for DocumentDiscoveryTools — list, get, search, load."""
 
 import logging
+from pathlib import Path
 
 from ._mime import detect_type_from_source
 from ._schema_inference import _expand_file_paths
