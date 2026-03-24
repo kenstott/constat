@@ -153,22 +153,13 @@ class _EntityMixin:
         all_links: list[ChunkEntity] = []
         all_entities = []
 
-        # Retrieve persisted image labels from vector store and merge into business terms
-        merged_business_terms = list(business_terms or [])
-        if hasattr(self._vector_store, 'get_entity_resolution_names'):
-            image_label_terms = self._vector_store.get_entity_resolution_names(["__image_labels__"])
-            image_labels = image_label_terms.get("LABEL", [])
-            if image_labels:
-                merged_business_terms.extend(image_labels)
-                logger.info(f"extract_entities_for_session({session_id}): added {len(image_labels)} persisted image labels as business terms")
-
         for domain_id, domain_chunks in chunks_by_domain.items():
             extractor = EntityExtractor(
                 session_id=session_id,
                 domain_id=domain_id,
                 schema_terms=self._schema_entities,
                 api_terms=self._collect_api_terms(),
-                business_terms=merged_business_terms or None,
+                business_terms=business_terms,
                 stop_list=self._stop_list,
                 entity_terms=entity_terms,
             )

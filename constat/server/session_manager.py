@@ -693,8 +693,13 @@ class SessionManager:
         entity_details: dict[str, list[str]] = {}
         vector_store = session.doc_tools._vector_store if hasattr(session.doc_tools, '_vector_store') else None
         if vector_store and hasattr(vector_store, 'get_entity_resolution_names'):
-            er_source_ids = ["__base__"] + domain_ids
+            er_source_ids = ["__base__", "__image_labels__"] + domain_ids
             entity_terms = vector_store.get_entity_resolution_names(er_source_ids)
+            # Image labels flow as business_terms (TERM patterns), not entity_terms (data patterns)
+            image_labels = entity_terms.pop("LABEL", [])
+            if image_labels:
+                business_terms.extend(image_labels)
+                logger.info(f"Session {session_id}: loaded {len(image_labels)} image labels as business terms")
             if entity_terms:
                 logger.info(f"Session {session_id}: loaded cached entity resolution: "
                             f"{', '.join(f'{k}={len(v)}' for k, v in entity_terms.items())}")
