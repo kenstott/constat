@@ -479,6 +479,8 @@ class DocumentChunk:
         chunk_index: Index of this chunk within the document
         source: Resource type - 'schema', 'api', or 'document'
         chunk_type: Granular type from ChunkType enum
+        source_offset: Byte offset in the original source document
+        source_length: Length in bytes of the original source span
     """
     document_name: str
     content: str
@@ -487,6 +489,8 @@ class DocumentChunk:
     source: str = "document"
     chunk_type: ChunkType = ChunkType.DOCUMENT
     domain_id: Optional[str] = None
+    source_offset: Optional[int] = None
+    source_length: Optional[int] = None
 
 
 @dataclass

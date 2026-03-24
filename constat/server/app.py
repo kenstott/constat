@@ -316,20 +316,6 @@ def _warmup_vector_store(config: Config) -> None:
                                 # Expand directory to individual files
                                 from constat.discovery.doc_tools._schema_inference import _expand_file_paths
                                 expanded = _expand_file_paths(str(doc_path))
-                                for filename_e, filepath_e in expanded:
-                                    child_name = f"{doc_name}:{filename_e}"
-                                    success, msg = doc_tools.add_document_from_file(
-                                        str(filepath_e),
-                                        name=child_name,
-                                        description=doc_config.description or "",
-                                        domain_id="__base__",
-                                        skip_entity_extraction=True,
-                                    )
-                                    if success:
-                                        indexed_count += 1
-                                        logger.info(f"  Base: vectorized {child_name}")
-                                    else:
-                                        logger.warning(f"  Base: failed to vectorize {child_name}: {msg}")
                                 dir_success = False
                                 for filename_e, filepath_e in expanded:
                                     child_name = f"{doc_name}:{filename_e}"

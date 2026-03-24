@@ -847,11 +847,15 @@ export function ArtifactPanel() {
 
       // For content types (markdown, text), show in modal
       setIframeBlocked(false)
+      const imageUrl = doc.image_path && session
+        ? `/api/sessions/${session.session_id}/file?path=${encodeURIComponent(doc.image_path)}`
+        : undefined
       setViewingDocument({
         name: doc.name || documentName,
         content: doc.content || '',
         format: doc.format,
         url: doc.url,
+        imageUrl,
       })
     } catch (err) {
       console.error('Failed to load document:', err)
@@ -1665,17 +1669,28 @@ ${skill.body}`
                   }}
                 />
               ) : viewingDocument?.content ? (
-                viewingDocument.format === 'markdown' ? (
-                  <div className="prose prose-sm dark:prose-invert max-w-none">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <div>
+                  {viewingDocument.imageUrl && (
+                    <div className="mb-4 flex justify-center">
+                      <img
+                        src={viewingDocument.imageUrl}
+                        alt={viewingDocument.name}
+                        className="max-w-full max-h-[40vh] object-contain rounded border border-gray-200 dark:border-gray-700"
+                      />
+                    </div>
+                  )}
+                  {viewingDocument.format === 'markdown' ? (
+                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {viewingDocument.content}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <pre className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap font-mono">
                       {viewingDocument.content}
-                    </ReactMarkdown>
-                  </div>
-                ) : (
-                  <pre className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap font-mono">
-                    {viewingDocument.content}
-                  </pre>
-                )
+                    </pre>
+                  )}
+                </div>
               ) : (
                 <p className="text-sm text-gray-500 dark:text-gray-400">No content available</p>
               )}

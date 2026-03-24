@@ -203,15 +203,17 @@ export const useProofStore = create<ProofState>((set, get) => ({
     for (const fact of facts) {
       factsMap.set(fact.id, fact)
     }
+    // Only open proof panel if currently in reason-chain mode.
+    // In exploratory mode, user can click "View Proof" to open it.
+    // Opening the panel in exploratory mode renders it as a modal, which is wrong.
+    const currentMode = useUIStore.getState().uiMode
     set({
       facts: factsMap,
       isProving: false,
-      isPanelOpen: true,
+      isPanelOpen: currentMode === 'reason-chain',
       isPlanningComplete: true,  // Restored proofs are already complete
       proofSummary: summary ?? null,
       hasCompletedProof: facts.length > 0,
     })
-    // Respect persisted uiMode from localStorage — don't force reason-chain on restore.
-    // Live proof execution enters reason-chain via dag_execution_start event.
   },
 }))

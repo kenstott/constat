@@ -133,13 +133,15 @@ class DuckDBVectorBackend(VectorBackend):
                 session_id,
                 domain_id,
                 entity_class,
+                getattr(chunk, 'source_offset', None),
+                getattr(chunk, 'source_length', None),
             ))
 
         self._conn.executemany(
             """
             INSERT INTO embeddings
-            (chunk_id, document_name, source, chunk_type, section, chunk_index, content, embedding, session_id, domain_id, entity_class)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (chunk_id, document_name, source, chunk_type, section, chunk_index, content, embedding, session_id, domain_id, entity_class, source_offset, source_length)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             records,
         )

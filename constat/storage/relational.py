@@ -95,29 +95,22 @@ class RelationalStore:
                     entity.entity_class or "metadata",
                 ))
 
+        # Delete-then-insert: ON CONFLICT executemany fails intermittently
+        # under hot-reload / WAL recovery, causing silent data loss.
+        ids = [r[0] for r in records]
+        batch_size = 500
         conn = self._conn
-        try:
-            conn.executemany(
-                """
-                INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at, entity_class)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id, entity_class = excluded.entity_class
-                """,
-                records,
-            )
-        except Exception:
-            for record in records:
-                try:
-                    conn.execute(
-                        """
-                        INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at, entity_class)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id, entity_class = excluded.entity_class
-                        """,
-                        record,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to insert entity {record[0]}: {e}")
+        for i in range(0, len(ids), batch_size):
+            batch_ids = ids[i:i + batch_size]
+            placeholders = ",".join(["?" for _ in batch_ids])
+            conn.execute(f"DELETE FROM entities WHERE id IN ({placeholders})", batch_ids)
+        conn.executemany(
+            """
+            INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at, entity_class)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            records,
+        )
         logger.debug(f"add_entities: inserted {len(records)} records for session {session_id}")
         self._clusters_dirty = True
 
@@ -1565,31 +1558,31 @@ class RelationalStore:
         return True
 
     def restore_ner_scope_cache(self, fingerprint: str, session_id: str) -> int:
-        self._conn.execute(
-            """
-            DELETE FROM chunk_entities WHERE entity_id IN (
-                SELECT id FROM ner_cached_entities WHERE fingerprint = ?
-            )
-            """,
-            [fingerprint],
-        )
-        self._conn.execute(
-            """
-            DELETE FROM entities WHERE id IN (
-                SELECT id FROM ner_cached_entities WHERE fingerprint = ?
-            )
-            """,
-            [fingerprint],
-        )
+        conn = self._conn
 
-        self._conn.execute(
+        # Clear any existing entities/links for both this cache fingerprint and session.
+        # Use fetchall() on DELETEs to ensure each statement completes before the next.
+        conn.execute(
+            "DELETE FROM chunk_entities WHERE entity_id IN ("
+            "  SELECT id FROM ner_cached_entities WHERE fingerprint = ?"
+            ")",
+            [fingerprint],
+        ).fetchall()
+        conn.execute(
+            "DELETE FROM entities WHERE id IN ("
+            "  SELECT id FROM ner_cached_entities WHERE fingerprint = ?"
+            ")",
+            [fingerprint],
+        ).fetchall()
+        conn.execute(
             "DELETE FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)",
             [session_id],
-        )
-        self._conn.execute("DELETE FROM entities WHERE session_id = ?", [session_id])
-        self._conn.execute("DELETE FROM glossary_clusters WHERE session_id = ?", [session_id])
+        ).fetchall()
+        conn.execute("DELETE FROM entities WHERE session_id = ?", [session_id]).fetchall()
+        conn.execute("DELETE FROM glossary_clusters WHERE session_id = ?", [session_id]).fetchall()
 
-        self._conn.execute(
+        # Insert from cache — no ON CONFLICT needed since we just deleted all matches.
+        conn.execute(
             """
             INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at, entity_class)
             SELECT id, name, display_name, semantic_type, ner_type, ?, domain_id, created_at, entity_class
@@ -1597,16 +1590,15 @@ class RelationalStore:
                 SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
                 FROM ner_cached_entities WHERE fingerprint = ?
             ) sub WHERE rn = 1
-            ON CONFLICT (id) DO UPDATE SET session_id = excluded.session_id, entity_class = excluded.entity_class
             """,
             [session_id, fingerprint],
         )
-        entity_count = self._conn.execute(
+        entity_count = conn.execute(
             "SELECT COUNT(DISTINCT id) FROM ner_cached_entities WHERE fingerprint = ?",
             [fingerprint],
         ).fetchone()[0]
 
-        self._conn.execute(
+        conn.execute(
             """
             INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
             SELECT DISTINCT chunk_id, entity_id, confidence
@@ -1616,7 +1608,7 @@ class RelationalStore:
             [fingerprint],
         )
 
-        self._conn.execute(
+        conn.execute(
             """
             INSERT INTO glossary_clusters (term_name, cluster_id, session_id)
             SELECT DISTINCT term_name, cluster_id, ?

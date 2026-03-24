@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _IMAGE_SUFFIXES = frozenset({'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'})
 
 
-def _loaded_doc_to_result(doc) -> dict:
+def _loaded_doc_to_result(doc, config_dir: str | None = None) -> dict:
     """Build a result dict from a LoadedDocument."""
     result = {
         "name": doc.name,
@@ -32,9 +32,11 @@ def _loaded_doc_to_result(doc) -> dict:
     }
     if hasattr(doc.config, 'path') and doc.config.path:
         result["path"] = doc.config.path
-        # For image files, include resolved path for inline preview
+        # For image files, include resolved absolute path for inline preview
         p = Path(doc.config.path)
-        if p.suffix.lower() in _IMAGE_SUFFIXES and p.is_absolute() and p.exists():
+        if not p.is_absolute() and config_dir:
+            p = (Path(config_dir) / doc.config.path).resolve()
+        if p.suffix.lower() in _IMAGE_SUFFIXES and p.exists():
             result["image_path"] = str(p)
     if hasattr(doc, 'source_url') and doc.source_url:
         result["url"] = doc.source_url
@@ -138,7 +140,7 @@ class _AccessMixin:
         """
         # Check if already loaded
         if name in self._loaded_documents:
-            return _loaded_doc_to_result(self._loaded_documents[name])
+            return _loaded_doc_to_result(self._loaded_documents[name], self.config.config_dir)
 
         # Handle expanded names from glob/directory (format: "parent:filename")
         # But skip API-style document names (api:*, Database:*, Table:*, etc.)
@@ -181,7 +183,17 @@ class _AccessMixin:
 
             _, filepath = matching[0]
 
-            # Load this specific file
+            # Prefer vector store chunks (preserves warmup-generated vision descriptions/labels)
+            reconstructed = self._reconstruct_from_chunks(name)
+            if "error" not in reconstructed:
+                # Attach config metadata (path, image_path) to the reconstructed result
+                reconstructed["path"] = doc_config.path
+                p = Path(str(filepath))
+                if p.suffix.lower() in _IMAGE_SUFFIXES and p.exists():
+                    reconstructed["image_path"] = str(p)
+                return reconstructed
+
+            # Fallback: load from disk (first-time view before warmup indexed)
             try:
                 self._load_file_directly(name, filepath, doc_config)
             except Exception as e:
@@ -224,7 +236,7 @@ class _AccessMixin:
         if not doc:
             return {"error": f"Document not loaded: {name}"}
 
-        return _loaded_doc_to_result(doc)
+        return _loaded_doc_to_result(doc, self.config.config_dir)
 
     def _reconstruct_from_chunks(self, name: str) -> dict:
         """Reconstruct document content from vector store chunks.
@@ -254,10 +266,13 @@ class _AccessMixin:
                 if section and section not in sections:
                     sections.append(section)
 
+            joined = "\n\n".join(content_parts)
+            # Detect markdown content (image results, docs stored as markdown)
+            fmt = "markdown" if joined.lstrip().startswith("#") else "text"
             return {
                 "name": name,
-                "content": "\n\n".join(content_parts),
-                "format": "text",  # Assume plain text for reconstructed docs
+                "content": joined,
+                "format": fmt,
                 "sections": sections,
                 "loaded_at": None,
                 "reconstructed": True,

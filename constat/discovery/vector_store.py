@@ -321,7 +321,9 @@ class DuckDBVectorStore(VectorStoreBackend):
                 embedding FLOAT[{self.EMBEDDING_DIM}] NOT NULL,
                 session_id VARCHAR,
                 domain_id VARCHAR,
-                entity_class VARCHAR DEFAULT 'mixed'
+                entity_class VARCHAR DEFAULT 'mixed',
+                source_offset INTEGER,
+                source_length INTEGER
             )
         """)
 

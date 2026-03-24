@@ -603,19 +603,29 @@ class _CoreMixin:
                 content = path.read_text()
                 doc_format = "yaml"
             elif suffix in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".bmp", ".gif"):
-                from ._image import _extract_image, _render_image_result, _describe_image_sync
+                from ._image import _extract_image, _render_image_result, _describe_image_sync, _ocr_via_vision
                 _SUFFIX_TO_MIME = {
                     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                     ".tiff": "image/tiff", ".tif": "image/tiff", ".webp": "image/webp",
                     ".bmp": "image/bmp", ".gif": "image/gif",
                 }
                 image_result = _extract_image(path=path)
+                mime = _SUFFIX_TO_MIME.get(suffix, "image/png")
+                # Fallback to LLM vision OCR if tesseract failed
+                if not image_result.ocr_text and self._router:
+                    logger.warning("Image %s: Tesseract OCR returned no text, falling back to LLM vision OCR", path.name)
+                    vision_ocr = _ocr_via_vision(self._router, path.read_bytes(), mime)
+                    if vision_ocr.text:
+                        image_result.ocr_text = vision_ocr.text
+                        image_result.ocr_confidence = vision_ocr.mean_confidence
+                        image_result.ocr_word_count = vision_ocr.word_count
+                        from ._image import _classify_image
+                        image_result.category = _classify_image(vision_ocr)
                 logger.info("Image %s: category=%s, ocr_words=%d, ocr_text=%r",
                             path.name, image_result.category, image_result.ocr_word_count,
                             image_result.ocr_text[:100] if image_result.ocr_text else "")
-                if image_result.category == "image-primary" and self._router:
+                if self._router and image_result.category == "image-primary":
                     try:
-                        mime = _SUFFIX_TO_MIME.get(suffix, "image/png")
                         desc = _describe_image_sync(self._router, path.read_bytes(), mime)
                         image_result.description = desc.get("description")
                         image_result.subcategory = desc.get("subcategory", image_result.subcategory)
@@ -933,19 +943,51 @@ class _CoreMixin:
             paragraphs = content.split("\n")
             separator = "\n"
 
+        # Build paragraph-to-offset map before merging
+        content_bytes = content.encode("utf-8")
+        para_offsets: list[int] = []
+        pos = 0
+        for para in paragraphs:
+            idx = content.find(para, pos)
+            para_offsets.append(len(content[:idx].encode("utf-8")) if idx >= 0 else -1)
+            pos = idx + len(para) if idx >= 0 else pos
+
         # Merge consecutive table/list paragraphs into atomic blocks
         paragraphs = _merge_blocks(paragraphs, separator)
 
         chunk_index = 0
         current_chunk = ""
         current_section: str | None = None
+        current_offset: int | None = None  # byte offset of first para in current chunk
+        chunk_start_offset: int | None = None
 
         prev_heading_level: int | None = None
+        # Track paragraph index across merged blocks
+        raw_para_idx = 0
+
+        def _make_chunk(text: str, section: str | None, idx: int, offset: int | None) -> DocumentChunk:
+            src_len = len(text.encode("utf-8")) if text else 0
+            return DocumentChunk(
+                document_name=name,
+                content=text,
+                section=section,
+                chunk_index=idx,
+                source_offset=offset,
+                source_length=src_len,
+            )
 
         for para in paragraphs:
             para = para.strip()
             if not para:
+                raw_para_idx += 1
                 continue
+
+            # Find this paragraph's byte offset in the original content
+            para_byte_offset = content.find(para)
+            if para_byte_offset >= 0:
+                para_byte_offset = len(content[:para_byte_offset].encode("utf-8"))
+            else:
+                para_byte_offset = None
 
             # Detect heading level changes that should force a chunk break
             force_break = False
@@ -972,31 +1014,24 @@ class _CoreMixin:
                 prev_heading_level = 0
 
             if force_break:
-                chunks.append(DocumentChunk(
-                    document_name=name,
-                    content=current_chunk,
-                    section=prev_section,
-                    chunk_index=chunk_index,
-                ))
+                chunks.append(_make_chunk(current_chunk, prev_section, chunk_index, chunk_start_offset))
                 chunk_index += 1
                 current_chunk = ""
+                chunk_start_offset = None
 
             # Check if adding this paragraph would exceed chunk size
             potential_chunk = (current_chunk + separator + para).strip() if current_chunk else para
 
             if len(potential_chunk) <= self.CHUNK_SIZE:
                 # Fits in current chunk - add it
+                if not current_chunk:
+                    chunk_start_offset = para_byte_offset
                 current_chunk = potential_chunk
             else:
                 # Would exceed chunk size
                 if current_chunk:
                     # Save current chunk first
-                    chunks.append(DocumentChunk(
-                        document_name=name,
-                        content=current_chunk,
-                        section=current_section,
-                        chunk_index=chunk_index,
-                    ))
+                    chunks.append(_make_chunk(current_chunk, current_section, chunk_index, chunk_start_offset))
                     chunk_index += 1
                 # If oversized table block exceeds TABLE_CHUNK_LIMIT, split at row
                 # boundaries with continuation markers for reassembly
@@ -1005,6 +1040,7 @@ class _CoreMixin:
                     is_table = any(_is_table_line(l) for l in lines if l.strip())
                     sub_chunk = ""
                     first_sub = True
+                    sub_start_offset = para_byte_offset
                     for line in lines:
                         candidate = (sub_chunk + "\n" + line).strip() if sub_chunk else line
                         if len(candidate) <= self.CHUNK_SIZE and sub_chunk:
@@ -1015,13 +1051,11 @@ class _CoreMixin:
                                 marker = "[TABLE:start]" if first_sub else "[TABLE:cont]"
                                 sub_chunk = f"{marker}\n{sub_chunk}\n[TABLE:cont]"
                                 first_sub = False
-                            chunks.append(DocumentChunk(
-                                document_name=name,
-                                content=sub_chunk,
-                                section=current_section,
-                                chunk_index=chunk_index,
-                            ))
+                            chunks.append(_make_chunk(sub_chunk, current_section, chunk_index, sub_start_offset))
                             chunk_index += 1
+                            # Advance offset past emitted sub_chunk
+                            if sub_start_offset is not None:
+                                sub_start_offset += len(sub_chunk.encode("utf-8"))
                             sub_chunk = line
                         else:
                             sub_chunk = line
@@ -1030,18 +1064,17 @@ class _CoreMixin:
                         marker = "[TABLE:start]" if first_sub else "[TABLE:cont]"
                         sub_chunk = f"{marker}\n{sub_chunk}\n[TABLE:end]"
                     current_chunk = sub_chunk
+                    chunk_start_offset = sub_start_offset
                 else:
                     # Start new chunk with this paragraph (even if it exceeds CHUNK_SIZE)
                     current_chunk = para
+                    chunk_start_offset = para_byte_offset
+
+            raw_para_idx += 1
 
         # Save final chunk
         if current_chunk:
-            chunks.append(DocumentChunk(
-                document_name=name,
-                content=current_chunk,
-                section=current_section,
-                chunk_index=chunk_index,
-            ))
+            chunks.append(_make_chunk(current_chunk, current_section, chunk_index, chunk_start_offset))
 
         return chunks
 
@@ -1077,17 +1110,26 @@ class _CoreMixin:
         elif doc_type == "pptx":
             return _extract_pptx_text_from_bytes(result.data), "text"
         elif doc_type == "image":
-            from ._image import _extract_image, _render_image_result, _describe_image_sync
+            from ._image import _extract_image, _render_image_result, _describe_image_sync, _ocr_via_vision
             image_result = _extract_image(
                 path=Path(result.source_path) if result.source_path else None,
                 data=result.data,
             )
-            if image_result.category == "image-primary" and self._router:
+            mime = result.detected_mime or "image/png"
+            # Fallback to LLM vision OCR if tesseract failed
+            if not image_result.ocr_text and self._router:
+                logger.warning("Image %s: Tesseract OCR returned no text, falling back to LLM vision OCR",
+                               result.source_path or "<bytes>")
+                vision_ocr = _ocr_via_vision(self._router, result.data, mime)
+                if vision_ocr.text:
+                    image_result.ocr_text = vision_ocr.text
+                    image_result.ocr_confidence = vision_ocr.mean_confidence
+                    image_result.ocr_word_count = vision_ocr.word_count
+                    from ._image import _classify_image
+                    image_result.category = _classify_image(vision_ocr)
+            if self._router and image_result.category == "image-primary":
                 try:
-                    desc = _describe_image_sync(
-                        self._router, result.data,
-                        result.detected_mime or "image/png",
-                    )
+                    desc = _describe_image_sync(self._router, result.data, mime)
                     image_result.description = desc.get("description")
                     image_result.subcategory = desc.get("subcategory", image_result.subcategory)
                     image_result.labels = desc.get("labels", image_result.labels)

@@ -52,20 +52,49 @@ def _ocr_extract(image: PILImage.Image) -> OcrResult:
     try:
         import pytesseract
     except ImportError:
+        logger.warning("pytesseract not installed — OCR disabled")
         return OcrResult(text="", mean_confidence=0.0, word_count=0)
 
     try:
         data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
-    except (pytesseract.TesseractNotFoundError, OSError):
+    except pytesseract.TesseractNotFoundError:
+        logger.warning("Tesseract binary not found — OCR disabled. Install with: brew install tesseract")
+        return OcrResult(text="", mean_confidence=0.0, word_count=0)
+    except OSError as e:
+        logger.warning("Tesseract OCR failed: %s", e)
         return OcrResult(text="", mean_confidence=0.0, word_count=0)
 
     confidences = [c for c in data["conf"] if c >= 0]
     mean_confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
-    words = [t for t in data["text"] if t.strip()]
-    text = " ".join(words)
+    # Reconstruct text with line/paragraph breaks from Tesseract layout
+    parts = []
+    prev_block, prev_par, prev_line = -1, -1, -1
+    word_count = 0
+    for i, raw_word in enumerate(data["text"]):
+        word = raw_word.strip()
+        if not word:
+            continue
+        # Strip stray OCR artifacts (leading quotes/parens that confuse NER)
+        word = word.lstrip("'\"'\"\u2018\u2019\u201c\u201d")
+        if not word:
+            continue
+        block = data["block_num"][i]
+        par = data["par_num"][i]
+        line = data["line_num"][i]
+        if prev_block >= 0:
+            if block != prev_block or par != prev_par:
+                parts.append("\n\n")
+            elif line != prev_line:
+                parts.append("\n")
+            else:
+                parts.append(" ")
+        prev_block, prev_par, prev_line = block, par, line
+        parts.append(word)
+        word_count += 1
+    text = "".join(parts)
 
-    return OcrResult(text=text, mean_confidence=mean_confidence, word_count=len(words))
+    return OcrResult(text=text, mean_confidence=mean_confidence, word_count=word_count)
 
 
 def _classify_image(ocr: OcrResult) -> Literal["text-primary", "image-primary"]:
@@ -123,19 +152,33 @@ def _extract_image(
 
 
 def _render_image_result(result: ImageResult, name: str) -> str:
-    """Render an ImageResult as markdown text."""
+    """Render an ImageResult as markdown text.
+
+    For text-primary images, renders OCR text directly (minimal metadata
+    to avoid polluting NER context). For image-primary, renders description
+    and labels with full metadata.
+    """
+    if result.category == "text-primary" and result.ocr_text:
+        # Minimal preamble — OCR text is the primary content for indexing/NER
+        ocr_lines = result.ocr_text.split("\n")
+        formatted = "\n".join(line + "  " if line.strip() else "" for line in ocr_lines)
+        parts = [
+            f"# {name}",
+            "",
+            formatted,
+        ]
+        if result.labels:
+            parts.append("")
+            parts.append("**Labels:** " + ", ".join(result.labels))
+        return "\n".join(parts)
+
+    # image-primary: full metadata + description
     parts = [
         f"# Image: {name}",
         "",
         f"**Type:** {result.category} | **Subcategory:** {result.subcategory}",
         f"**Dimensions:** {result.dimensions[0]}x{result.dimensions[1]}",
     ]
-
-    if result.ocr_text:
-        parts.append("")
-        parts.append("## Extracted Text")
-        parts.append("")
-        parts.append(result.ocr_text)
 
     if result.description:
         parts.append("")
@@ -150,6 +193,26 @@ def _render_image_result(result: ImageResult, name: str) -> str:
         parts.append(", ".join(result.labels))
 
     return "\n".join(parts)
+
+
+def _ocr_via_vision(provider, image_bytes: bytes, mime_type: str) -> OcrResult:
+    """Fallback OCR using LLM vision when Tesseract is unavailable or fails."""
+    prompt = (
+        "Extract ALL text visible in this image exactly as written. "
+        "Return ONLY the raw text, preserving line breaks. No commentary."
+    )
+    try:
+        text = provider.generate_vision(
+            system="You are an OCR text extractor.",
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            text_prompt=prompt,
+        ).strip()
+        words = text.split()
+        return OcrResult(text=text, mean_confidence=85.0, word_count=len(words))
+    except Exception as e:
+        logger.warning("LLM vision OCR fallback failed: %s", e)
+        return OcrResult(text="", mean_confidence=0.0, word_count=0)
 
 
 def _describe_image_sync(provider, image_bytes: bytes, mime_type: str) -> dict:

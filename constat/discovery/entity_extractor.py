@@ -44,7 +44,7 @@ def get_nlp() -> Language:
     """Get or load the spaCy model."""
     global _nlp
     if _nlp is None:
-        _nlp = spacy.load("en_core_web_sm")
+        _nlp = spacy.load("en_core_web_lg")
     return _nlp
 
 
@@ -60,8 +60,8 @@ class EntityExtractor:
     - Custom: SCHEMA (tables/columns), API (endpoints), TERM (business terms)
     """
 
-    # spaCy entity types to keep from built-in NER
-    KEEP_SPACY_TYPES = {'ORG', 'PRODUCT', 'GPE', 'EVENT', 'LAW', 'PERSON'}
+    # spaCy entity types to skip (purely numeric/temporal — not useful as business entities)
+    SKIP_SPACY_TYPES = {'DATE', 'TIME', 'PERCENT', 'MONEY', 'QUANTITY', 'ORDINAL', 'CARDINAL'}
 
     # Noise patterns to filter out
     NOISE_PATTERN = re.compile(r'^[\s#*_\-=`~\[\](){}|\\/<>@!$%^&+]+$')
@@ -227,6 +227,8 @@ class EntityExtractor:
     @staticmethod
     def _clean_for_ner(text: str) -> str:
         """Strip markdown/wiki syntax from text before NER processing."""
+        # Strip trailing whitespace per line (markdown line-break spaces confuse NER)
+        text = re.sub(r'[ \t]+$', '', text, flags=re.MULTILINE)
         # Remove wiki templates: {{...}}
         text = re.sub(r'\{\{[^}]*\}\}', '', text)
         # Remove HTML tags: <ref>...</ref>, <sup>, etc.
@@ -465,8 +467,8 @@ class EntityExtractor:
             if self._is_noise(text):
                 continue
 
-            # Only keep relevant entity types
-            if ent.label_ not in self.KEEP_SPACY_TYPES and ent.label_ not in {'SCHEMA', 'API', 'TERM'} and ent.label_ not in self._entity_resolution_labels:
+            # Skip numeric/temporal types (not useful as business entities)
+            if ent.label_ in self.SKIP_SPACY_TYPES and ent.label_ not in {'SCHEMA', 'API', 'TERM'} and ent.label_ not in self._entity_resolution_labels:
                 continue
 
             # Single-word PERSON entities are almost always noise (first name only)

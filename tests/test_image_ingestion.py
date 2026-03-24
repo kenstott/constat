@@ -37,6 +37,9 @@ class TestOcrExtract:
         mock_data = {
             "conf": [95, 90, -1, 85, 80],
             "text": ["Hello", "world", "", "foo", "bar"],
+            "block_num": [1, 1, 1, 1, 1],
+            "par_num": [1, 1, 1, 1, 1],
+            "line_num": [1, 1, 1, 1, 1],
         }
         mock_tess = _make_pytesseract_mock(mock_data)
         with patch.dict("sys.modules", {"pytesseract": mock_tess}):
@@ -48,7 +51,7 @@ class TestOcrExtract:
 
     def test_ocr_extract_all_negative_conf(self):
         mock_image = MagicMock()
-        mock_data = {"conf": [-1, -1], "text": ["", ""]}
+        mock_data = {"conf": [-1, -1], "text": ["", ""], "block_num": [1, 1], "par_num": [1, 1], "line_num": [1, 1]}
         mock_tess = _make_pytesseract_mock(mock_data)
         with patch.dict("sys.modules", {"pytesseract": mock_tess}):
             result = _ocr_extract(mock_image)
@@ -93,11 +96,10 @@ class TestRenderImageResult:
             dimensions=(800, 600),
         )
         md = _render_image_result(result, "test.png")
-        assert "# Image: test.png" in md
-        assert "**Type:** text-primary" in md
-        assert "**Dimensions:** 800x600" in md
-        assert "## Extracted Text" in md
+        assert "# test.png" in md
         assert "Extracted content here" in md
+        # text-primary rendering is minimal (no Type/Dimensions metadata)
+        assert "**Type:**" not in md
 
     def test_render_image_primary_with_description(self):
         result = ImageResult(
