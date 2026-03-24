@@ -211,7 +211,7 @@ export const useProofStore = create<ProofState>((set, get) => ({
       proofSummary: summary ?? null,
       hasCompletedProof: facts.length > 0,
     })
-    // Enter reason-chain mode so the DAG panel renders embedded
-    useUIStore.getState().enterReasonChainMode()
+    // Respect persisted uiMode from localStorage — don't force reason-chain on restore.
+    // Live proof execution enters reason-chain via dag_execution_start event.
   },
 }))

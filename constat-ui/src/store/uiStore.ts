@@ -327,6 +327,7 @@ export const useUIStore = create<UIState>()(
       partialize: (state) => ({
         theme: state.theme,
         briefMode: state.briefMode,
+        uiMode: state.uiMode,
         conversationPanelHidden: state.conversationPanelHidden,
         artifactPanelHidden: state.artifactPanelHidden,
         artifactPanelWidth: state.artifactPanelWidth,
