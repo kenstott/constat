@@ -377,6 +377,14 @@ def _warmup_vector_store(config: Config) -> None:
             if indexed_count > 0:
                 vector_store.set_source_hash("__base__", 'doc', doc_hash)
             logger.info(f"  Base documents: {indexed_count} indexed, {skipped_count} unchanged")
+
+        # Persist image labels for NER (survives across doc_tools instances)
+        # Merge with existing labels (from cached/unchanged images)
+        if doc_tools._image_labels:
+            existing = vector_store.get_entity_resolution_names(["__image_labels__"]).get("LABEL", [])
+            all_labels = list(set(existing + doc_tools._image_labels))
+            vector_store.store_entity_resolution_names("__image_labels__", {"LABEL": all_labels})
+            logger.info(f"  Base: persisted {len(all_labels)} image labels for NER")
     else:
         logger.info(f"  Base documents: 0 configured")
 
@@ -480,6 +488,14 @@ def _warmup_vector_store(config: Config) -> None:
 
         vector_store.set_source_hash(filename, 'doc', doc_hash)
         logger.info(f"  Domain {filename} documents: {indexed_count} indexed, {skipped_count} unchanged")
+
+    # Persist any additional image labels from domain documents
+    if doc_tools._image_labels:
+        existing = vector_store.get_entity_resolution_names(["__image_labels__"]).get("LABEL", [])
+        all_labels = list(set(existing + doc_tools._image_labels))
+        if len(all_labels) > len(existing):
+            vector_store.store_entity_resolution_names("__image_labels__", {"LABEL": all_labels})
+            logger.info(f"  Persisted {len(all_labels)} total image labels for NER")
 
     # === ENTITY RESOLUTION ===
     # Base entity resolution

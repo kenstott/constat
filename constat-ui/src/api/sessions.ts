@@ -774,6 +774,7 @@ export interface DocumentContent {
   url?: string
   sections?: string[]
   path?: string  // For type='file', the local file path
+  image_path?: string  // Resolved path for inline image preview
   metadata?: Record<string, unknown>
 }
 

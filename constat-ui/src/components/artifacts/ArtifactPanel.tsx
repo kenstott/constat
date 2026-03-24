@@ -497,7 +497,7 @@ export function ArtifactPanel() {
   const [docContentType, setDocContentType] = useState('auto')
   const [docShowAdvanced, setDocShowAdvanced] = useState(false)
   // Document viewer state
-  const [viewingDocument, setViewingDocument] = useState<{ name: string; content: string; format?: string; url?: string } | null>(null)
+  const [viewingDocument, setViewingDocument] = useState<{ name: string; content: string; format?: string; url?: string; imageUrl?: string } | null>(null)
   const [iframeBlocked, setIframeBlocked] = useState(false)
   const [loadingDocument, setLoadingDocument] = useState(false)
   // Results filter - persisted in localStorage

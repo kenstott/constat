@@ -18,6 +18,9 @@ from ._schema_inference import _expand_file_paths
 logger = logging.getLogger(__name__)
 
 
+_IMAGE_SUFFIXES = frozenset({'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'})
+
+
 def _loaded_doc_to_result(doc) -> dict:
     """Build a result dict from a LoadedDocument."""
     result = {
@@ -29,6 +32,10 @@ def _loaded_doc_to_result(doc) -> dict:
     }
     if hasattr(doc.config, 'path') and doc.config.path:
         result["path"] = doc.config.path
+        # For image files, include resolved path for inline preview
+        p = Path(doc.config.path)
+        if p.suffix.lower() in _IMAGE_SUFFIXES and p.is_absolute() and p.exists():
+            result["image_path"] = str(p)
     if hasattr(doc, 'source_url') and doc.source_url:
         result["url"] = doc.source_url
     elif hasattr(doc.config, 'url') and doc.config.url:
