@@ -157,8 +157,15 @@ class _AccessMixin:
             if not doc_config.path:
                 return {"error": f"Document {parent_name} is not a file type"}
 
+            # Resolve path relative to config directory
+            resolved_path = doc_config.path
+            if self.config.config_dir and not Path(doc_config.path).is_absolute():
+                candidate = (Path(self.config.config_dir) / doc_config.path).resolve()
+                if candidate.exists():
+                    resolved_path = str(candidate)
+
             # Find the specific file in the expanded paths
-            expanded = _expand_file_paths(doc_config.path)
+            expanded = _expand_file_paths(resolved_path)
             matching = [(fn, fp) for fn, fp in expanded if fn == filename]
 
             if not matching:

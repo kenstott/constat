@@ -134,16 +134,19 @@ def _render_image_result(result: ImageResult, name: str) -> str:
     if result.ocr_text:
         parts.append("")
         parts.append("## Extracted Text")
+        parts.append("")
         parts.append(result.ocr_text)
 
     if result.description:
         parts.append("")
         parts.append("## Description")
+        parts.append("")
         parts.append(result.description)
 
     if result.labels:
         parts.append("")
         parts.append("## Labels")
+        parts.append("")
         parts.append(", ".join(result.labels))
 
     return "\n".join(parts)
