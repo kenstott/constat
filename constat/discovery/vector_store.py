@@ -763,6 +763,15 @@ class DuckDBVectorStore(VectorStoreBackend):
     def clear_domain_session_entities(self, *a, **kw):
         return self._relational.clear_domain_session_entities(*a, **kw)
 
+    def get_entity_ids_for_session(self, *a, **kw):
+        return self._relational.get_entity_ids_for_session(*a, **kw)
+
+    def remove_entities_by_ids(self, *a, **kw):
+        return self._relational.remove_entities_by_ids(*a, **kw)
+
+    def clear_chunk_entity_links_for_ids(self, *a, **kw):
+        return self._relational.clear_chunk_entity_links_for_ids(*a, **kw)
+
     def get_entity_names(self, *a, **kw):
         return self._relational.get_entity_names(*a, **kw)
 

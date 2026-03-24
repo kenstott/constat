@@ -863,9 +863,15 @@ async def websocket_endpoint(
     # Get session manager from app state
     session_manager: SessionManager = websocket.app.state.session_manager
 
-    try:
-        managed = session_manager.get_session(session_id)
-    except KeyError:
+    # Wait for session to be registered (background init may still be running)
+    managed = None
+    for _ in range(30):  # up to 15s
+        try:
+            managed = session_manager.get_session(session_id)
+            break
+        except KeyError:
+            await asyncio.sleep(0.5)
+    if managed is None:
         _active_websockets.discard(websocket)
         await websocket.close(code=4404, reason="Session not found")
         return
@@ -889,6 +895,12 @@ async def websocket_endpoint(
                 managed.event_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+
+    # Register active connection
+    remote_addr = ""
+    if websocket.client:
+        remote_addr = f"{websocket.client.host}:{websocket.client.port}"
+    session_manager.register_connection(session_id, managed.user_id, remote_addr)
 
     # Send welcome message on connection
     welcome = WelcomeMessage.create()
@@ -1252,6 +1264,19 @@ async def websocket_endpoint(
                             "payload": {"action": "replan_from", "status": "ok"},
                         })
 
+                    elif action == "heartbeat":
+                        since = data.get("data", {}).get("since") if data.get("data") else None
+                        server_time = session_manager.process_heartbeat(session_id, since)
+                        await websocket.send_json({
+                            "type": "event",
+                            "payload": {
+                                "event_type": "heartbeat_ack",
+                                "session_id": session_id,
+                                "step_number": 0,
+                                "data": {"server_time": server_time},
+                            },
+                        })
+
                     else:
                         await websocket.send_json({
                             "type": "error",
@@ -1283,6 +1308,7 @@ async def websocket_endpoint(
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
+        session_manager.unregister_connection(session_id)
         _active_websockets.discard(websocket)
         try:
             await websocket.close()

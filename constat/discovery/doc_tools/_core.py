@@ -923,6 +923,33 @@ class _CoreMixin:
 
     TABLE_CHUNK_LIMIT = CHUNK_SIZE * 4  # 6000 chars — allow oversized but not unbounded
 
+    def _index_loaded_doc(
+        self, doc_name: str, domain_id: str | None, session_id: str | None,
+        skip_entity_extraction: bool,
+    ) -> int:
+        """Chunk, embed, and store a single loaded document. Returns chunk count."""
+        doc = self._loaded_documents.get(doc_name)
+        if not doc:
+            return 0
+        chunks = self._chunk_document(doc_name, doc.content)
+        if not chunks:
+            return 0
+        texts = [c.content for c in chunks]
+        with self._model_lock:
+            embeddings = self._model.encode(texts, convert_to_numpy=True)
+        self._vector_store.add_chunks(
+            chunks, embeddings, source="document",
+            domain_id=domain_id, session_id=session_id,
+        )
+        if not skip_entity_extraction:
+            if domain_id:
+                self._extract_and_store_entities_domain(chunks, domain_id)
+            elif session_id:
+                self._extract_and_store_entities_session(chunks, session_id)
+            else:
+                self._extract_and_store_entities(chunks, self._schema_entities)
+        return len(chunks)
+
     def _chunk_document(self, name: str, content: str) -> list[DocumentChunk]:
         """Split a document into chunks for embedding.
 
@@ -1154,6 +1181,123 @@ class _CoreMixin:
         user_type = normalize_type(doc_config.type)
         transport = infer_transport(doc_config)
 
+        # IMAP: fetch messages, chunk/embed each incrementally
+        if transport == "imap":
+            from ._imap import IMAPFetcher, _render_email
+
+            logger.info("[IMAP] Connecting to %s mailbox=%s (auth=%s, since=%s)",
+                        doc_config.url, doc_config.mailbox, doc_config.auth_type, doc_config.since)
+            fetcher = IMAPFetcher(doc_config, config_dir=Path(self.config.config_dir) if self.config.config_dir else None)
+            messages = fetcher.fetch_messages()
+            logger.info("[IMAP] Fetched %d messages from %s/%s", len(messages), name, doc_config.mailbox)
+
+            # _imap_context is set by add_document_from_config to enable
+            # incremental chunking per message (instead of batch after all loaded).
+            imap_ctx = getattr(self, '_imap_context', None)
+
+            total_attachments = 0
+            total_chunks = 0
+            for i, msg in enumerate(messages):
+                msg_name = f"{name}:{msg.message_id}"
+
+                # Email body → LoadedDocument
+                body_text = _render_email(msg, doc_config.include_headers)
+                self._loaded_documents[msg_name] = LoadedDocument(
+                    name=msg_name,
+                    config=doc_config,
+                    content=body_text,
+                    format="markdown",
+                    sections=_extract_markdown_sections(body_text, "markdown"),
+                    loaded_at=datetime.now().isoformat(),
+                )
+
+                # Chunk/embed this message immediately
+                if imap_ctx:
+                    total_chunks += self._index_loaded_doc(
+                        msg_name, imap_ctx["domain_id"], imap_ctx["session_id"],
+                        imap_ctx["skip_entity_extraction"],
+                    )
+
+                # Attachments
+                if doc_config.extract_attachments:
+                    for att in msg.attachments:
+                        att_name = f"{msg_name}:{att.filename}"
+                        att_type = detect_type_from_source(att.filename, att.content_type)
+                        total_attachments += 1
+                        try:
+                            if att_type == "image":
+                                from ._image import _extract_image, _render_image_result, _describe_image_sync
+                                img_result = _extract_image(data=att.data)
+                                if img_result.category == "image-primary" and self._router:
+                                    desc = _describe_image_sync(self._router, att.data, att.content_type)
+                                    img_result.description = desc.get("description")
+                                    img_result.subcategory = desc.get("subcategory", "other")
+                                    img_result.labels = desc.get("labels", [])
+                                content = _render_image_result(img_result, att.filename)
+                                fmt = "markdown"
+                            else:
+                                fetch_result = FetchResult(data=att.data, detected_mime=att.content_type, source_path=att.filename)
+                                content, fmt = self._extract_content(fetch_result, att_type)
+                        except Exception as att_err:
+                            logger.warning("[IMAP]   Skipping attachment %s: %s", att.filename, att_err)
+                            continue
+                        self._loaded_documents[att_name] = LoadedDocument(
+                            name=att_name, config=doc_config, content=content, format=fmt,
+                            sections=[], loaded_at=datetime.now().isoformat(),
+                        )
+                        if imap_ctx:
+                            total_chunks += self._index_loaded_doc(
+                                att_name, imap_ctx["domain_id"], imap_ctx["session_id"],
+                                imap_ctx["skip_entity_extraction"],
+                            )
+
+                if (i + 1) % 50 == 0:
+                    logger.info("[IMAP] Progress: %d/%d messages, %d chunks",
+                                i + 1, len(messages), total_chunks)
+
+            logger.info("[IMAP] Done: %s — %d messages, %d attachments, %d chunks",
+                        name, len(messages), total_attachments, total_chunks)
+            # Return chunk count so add_document_from_config knows work was done inline
+            return {"imap_chunks": total_chunks, "imap_docs": len(messages)}
+
+        # Directory: iterate files and load each as a sub-document
+        if transport == "file":
+            dir_path = Path(doc_config.path)
+            if not dir_path.is_absolute() and self.config.config_dir:
+                dir_path = (Path(self.config.config_dir) / doc_config.path).resolve()
+            if dir_path.is_dir():
+                loaded = 0
+                for file_path in sorted(dir_path.rglob("*")):
+                    if not file_path.is_file():
+                        continue
+                    sub_name = f"{name}:{file_path.name}"
+                    sub_config = doc_config.model_copy() if hasattr(doc_config, 'model_copy') else doc_config
+                    sub_result = FetchResult(
+                        data=file_path.read_bytes(),
+                        detected_mime=None,
+                        source_path=str(file_path),
+                    )
+                    sub_type = detect_type_from_source(str(file_path), None)
+                    try:
+                        sub_content, sub_format = self._extract_content(sub_result, sub_type)
+                    except Exception as e:
+                        logger.debug(f"Skipping {file_path}: {e}")
+                        continue
+                    if sub_format == "html":
+                        sub_content = _convert_html_to_markdown(sub_content)
+                        sub_format = "markdown"
+                    self._loaded_documents[sub_name] = LoadedDocument(
+                        name=sub_name,
+                        config=doc_config,
+                        content=sub_content,
+                        format=sub_format,
+                        sections=_extract_markdown_sections(sub_content, sub_format),
+                        loaded_at=datetime.now().isoformat(),
+                    )
+                    loaded += 1
+                logger.info(f"[DOC_INIT] Loaded {loaded} files from directory {dir_path}")
+                return None
+
         # Fetch via transport (or crawl if follow_links)
         if doc_config.follow_links and doc_config.url:
             results = _crawl_document(doc_config, self.config.config_dir, fetch_document)
@@ -1303,9 +1447,21 @@ class _CoreMixin:
         self.config.documents[name] = doc_config
 
         try:
-            self._load_document(name)
+            # For IMAP, set context so _load_document can chunk/embed per message
+            self._imap_context = {
+                "domain_id": domain_id, "session_id": session_id,
+                "skip_entity_extraction": skip_entity_extraction,
+            }
 
-            # Collect all loaded docs (root + crawled sub-docs)
+            result = self._load_document(name)
+
+            self._imap_context = None
+
+            # IMAP handles chunking inline per message — already done
+            if isinstance(result, dict) and "imap_chunks" in result:
+                return True, f"Added {result['imap_docs']} email(s) ({result['imap_chunks']} chunks)"
+
+            # Non-IMAP: collect loaded docs and chunk/embed in batch
             loaded_names = [
                 n for n in self._loaded_documents
                 if n == name or n.startswith(f"{name}:")
@@ -1313,38 +1469,18 @@ class _CoreMixin:
 
             total_chunks = 0
             for doc_name in loaded_names:
-                doc = self._loaded_documents[doc_name]
-                chunks = self._chunk_document(doc_name, doc.content)
-                if not chunks:
-                    continue
-
-                texts = [c.content for c in chunks]
-                with self._model_lock:
-                    embeddings = self._model.encode(texts, convert_to_numpy=True)
-
-                self._vector_store.add_chunks(
-                    chunks, embeddings, source="document",
-                    domain_id=domain_id, session_id=session_id,
+                total_chunks += self._index_loaded_doc(
+                    doc_name, domain_id, session_id, skip_entity_extraction,
                 )
-                total_chunks += len(chunks)
-
-                # Persist source_url for crawled sub-documents
-                if getattr(doc, 'source_url', None) and hasattr(self._vector_store, 'store_document_url'):
+                doc = self._loaded_documents.get(doc_name)
+                if doc and getattr(doc, 'source_url', None) and hasattr(self._vector_store, 'store_document_url'):
                     self._vector_store.store_document_url(doc_name, doc.source_url)
-
-                if not skip_entity_extraction:
-                    if domain_id:
-                        self._extract_and_store_entities_domain(chunks, domain_id)
-                    elif session_id:
-                        self._extract_and_store_entities_session(chunks, session_id)
-                    else:
-                        self._extract_and_store_entities(chunks, self._schema_entities)
 
             return True, f"Added {len(loaded_names)} document(s) from '{name}' ({total_chunks} chunks)"
         except Exception as e:
             return False, f"Failed to load document from config: {e}"
         finally:
-            # Clean up temp config entry (doc_config is preserved in LoadedDocument)
+            self._imap_context = None
             self.config.documents.pop(name, None)
 
     def _load_file_directly(self, name: str, filepath: Path, doc_config: DocumentConfig) -> None:

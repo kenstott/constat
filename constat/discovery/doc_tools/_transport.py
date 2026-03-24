@@ -54,6 +54,8 @@ def infer_transport(config: "DocumentConfig") -> str:
             return "ftp"
         if scheme == "sftp":
             return "sftp"
+        if scheme in ("imap", "imaps"):
+            return "imap"
         return "http"  # default for URL
     raise ValueError("DocumentConfig has no content, path, or url")
 

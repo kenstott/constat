@@ -101,7 +101,7 @@ class CoreMixin:
 
         # Document discovery tools (for reference documents)
         t0 = time.time()
-        self.doc_tools = DocumentDiscoveryTools(config, router=self.router)
+        self.doc_tools = DocumentDiscoveryTools(config, router=self.router, skip_auto_index=True)
         logger.debug(f"Session init: DocumentDiscoveryTools took {time.time() - t0:.2f}s")
 
         # Entity extraction is handled by session_manager.refresh_entities_async()

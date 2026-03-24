@@ -51,3 +51,11 @@ Untitled*.ipynb
 demo/vector_store.duckdb
 demo/notebook_demo.ipynb
 demo/raise_emails.csv
+
+# Data files
+data/
+*.duckdb
+*.duckdb.wal
+
+# Screenshots
+Screenshot*

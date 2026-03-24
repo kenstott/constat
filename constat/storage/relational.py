@@ -15,6 +15,7 @@ All queries use raw SQL through the shared connection.
 """
 
 import logging
+import threading
 from typing import Optional
 
 import numpy as np
@@ -37,6 +38,7 @@ class RelationalStore:
         self._cluster_min_terms = cluster_min_terms
         self._cluster_divisor = cluster_divisor
         self._cluster_max_k = cluster_max_k
+        self._entity_write_lock = threading.Lock()
 
     @property
     def _conn(self):
@@ -95,22 +97,24 @@ class RelationalStore:
                     entity.entity_class or "metadata",
                 ))
 
-        # Delete-then-insert: ON CONFLICT executemany fails intermittently
-        # under hot-reload / WAL recovery, causing silent data loss.
-        ids = [r[0] for r in records]
-        batch_size = 500
         conn = self._conn
-        for i in range(0, len(ids), batch_size):
-            batch_ids = ids[i:i + batch_size]
-            placeholders = ",".join(["?" for _ in batch_ids])
-            conn.execute(f"DELETE FROM entities WHERE id IN ({placeholders})", batch_ids)
-        conn.executemany(
-            """
-            INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at, entity_class)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            records,
-        )
+        with self._entity_write_lock:
+            for record in records:
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at, entity_class)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (id) DO UPDATE SET
+                            display_name = excluded.display_name,
+                            semantic_type = excluded.semantic_type,
+                            session_id = excluded.session_id,
+                            domain_id = excluded.domain_id
+                        """,
+                        record,
+                    )
+                except Exception:
+                    pass
         logger.debug(f"add_entities: inserted {len(records)} records for session {session_id}")
         self._clusters_dirty = True
 
@@ -189,6 +193,35 @@ class RelationalStore:
     def count_entities(self) -> int:
         result = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
         return result[0] if result else 0
+
+    def get_entity_ids_for_session(self, session_id: str) -> set[str]:
+        rows = self._conn.execute(
+            "SELECT id FROM entities WHERE session_id = ?", [session_id]
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def remove_entities_by_ids(self, ids: set[str]) -> None:
+        if not ids:
+            return
+        id_list = list(ids)
+        batch_size = 500
+        for i in range(0, len(id_list), batch_size):
+            batch = id_list[i:i + batch_size]
+            placeholders = ",".join(["?" for _ in batch])
+            self._conn.execute(f"DELETE FROM chunk_entities WHERE entity_id IN ({placeholders})", batch)
+            self._conn.execute(f"DELETE FROM entities WHERE id IN ({placeholders})", batch)
+        self._clusters_dirty = True
+        logger.info(f"remove_entities_by_ids: removed {len(ids)} entities")
+
+    def clear_chunk_entity_links_for_ids(self, entity_ids: set[str]) -> None:
+        if not entity_ids:
+            return
+        id_list = list(entity_ids)
+        batch_size = 500
+        for i in range(0, len(id_list), batch_size):
+            batch = id_list[i:i + batch_size]
+            placeholders = ",".join(["?" for _ in batch])
+            self._conn.execute(f"DELETE FROM chunk_entities WHERE entity_id IN ({placeholders})", batch)
 
     def clear_session_entities(self, session_id: str) -> tuple[int, int]:
         link_count = self._conn.execute(
@@ -1558,33 +1591,19 @@ class RelationalStore:
         return True
 
     def restore_ner_scope_cache(self, fingerprint: str, session_id: str) -> int:
+        """Merge cached entities into current session state (additive only).
+
+        Never deletes existing entities — cache restore only adds missing
+        entities and updates overlapping ones.
+        """
         conn = self._conn
 
-        # Clear any existing entities/links for both this cache fingerprint and session.
-        # Use fetchall() on DELETEs to ensure each statement completes before the next.
-        conn.execute(
-            "DELETE FROM chunk_entities WHERE entity_id IN ("
-            "  SELECT id FROM ner_cached_entities WHERE fingerprint = ?"
-            ")",
-            [fingerprint],
-        ).fetchall()
-        conn.execute(
-            "DELETE FROM entities WHERE id IN ("
-            "  SELECT id FROM ner_cached_entities WHERE fingerprint = ?"
-            ")",
-            [fingerprint],
-        ).fetchall()
-        conn.execute(
-            "DELETE FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)",
-            [session_id],
-        ).fetchall()
-        conn.execute("DELETE FROM entities WHERE session_id = ?", [session_id]).fetchall()
-        conn.execute("DELETE FROM glossary_clusters WHERE session_id = ?", [session_id]).fetchall()
-
-        # Insert from cache — no ON CONFLICT needed since we just deleted all matches.
+        # Stage cached entities (deduped)
+        conn.execute("CREATE TEMPORARY TABLE IF NOT EXISTS _ner_desired AS SELECT * FROM entities LIMIT 0")
+        conn.execute("DELETE FROM _ner_desired")
         conn.execute(
             """
-            INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at, entity_class)
+            INSERT INTO _ner_desired
             SELECT id, name, display_name, semantic_type, ner_type, ?, domain_id, created_at, entity_class
             FROM (
                 SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
@@ -1593,34 +1612,83 @@ class RelationalStore:
             """,
             [session_id, fingerprint],
         )
-        entity_count = conn.execute(
-            "SELECT COUNT(DISTINCT id) FROM ner_cached_entities WHERE fingerprint = ?",
-            [fingerprint],
-        ).fetchone()[0]
 
+        cached_count = conn.execute("SELECT COUNT(*) FROM _ner_desired").fetchone()[0]
+
+        # Current entity IDs for this session
+        current_ids = {r[0] for r in conn.execute(
+            "SELECT id FROM entities WHERE session_id = ?", [session_id]
+        ).fetchall()}
+        cached_ids = {r[0] for r in conn.execute("SELECT id FROM _ner_desired").fetchall()}
+
+        # INSERT: in cache but not current
+        new_ids = cached_ids - current_ids
+        if new_ids:
+            conn.execute(
+                """
+                INSERT INTO entities
+                SELECT d.* FROM _ner_desired d
+                WHERE d.id IN (SELECT UNNEST(?::VARCHAR[]))
+                AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = d.id)
+                """,
+                [list(new_ids)],
+            )
+
+        # UPDATE: in both — refresh fields from cache
+        overlap_ids = current_ids & cached_ids
+        if overlap_ids:
+            conn.execute(
+                """
+                UPDATE entities SET
+                    display_name = d.display_name,
+                    semantic_type = d.semantic_type,
+                    ner_type = d.ner_type,
+                    domain_id = d.domain_id,
+                    entity_class = d.entity_class
+                FROM _ner_desired d
+                WHERE entities.id = d.id AND entities.session_id = ?
+                """,
+                [session_id],
+            )
+
+        # Merge chunk-entity links (additive)
         conn.execute(
             """
             INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
-            SELECT DISTINCT chunk_id, entity_id, confidence
-            FROM ner_cached_chunk_entities WHERE fingerprint = ?
-            ON CONFLICT DO NOTHING
+            SELECT DISTINCT c.chunk_id, c.entity_id, c.confidence
+            FROM ner_cached_chunk_entities c
+            WHERE c.fingerprint = ?
+            AND NOT EXISTS (
+                SELECT 1 FROM chunk_entities ce
+                WHERE ce.chunk_id = c.chunk_id AND ce.entity_id = c.entity_id
+            )
             """,
             [fingerprint],
         )
 
+        # Merge clusters (additive)
         conn.execute(
             """
             INSERT INTO glossary_clusters (term_name, cluster_id, session_id)
-            SELECT DISTINCT term_name, cluster_id, ?
-            FROM ner_cached_clusters WHERE fingerprint = ?
-            ON CONFLICT DO NOTHING
+            SELECT DISTINCT c.term_name, c.cluster_id, ?
+            FROM ner_cached_clusters c
+            WHERE c.fingerprint = ?
+            AND NOT EXISTS (
+                SELECT 1 FROM glossary_clusters gc
+                WHERE gc.term_name = c.term_name AND gc.session_id = ?
+            )
             """,
-            [session_id, fingerprint],
+            [session_id, fingerprint, session_id],
         )
 
+        conn.execute("DROP TABLE IF EXISTS _ner_desired")
+
+        added = len(new_ids) if new_ids else 0
+        updated = len(overlap_ids) if overlap_ids else 0
+        total = len(current_ids) + added
         self._clusters_dirty = False
-        logger.info(f"Restored NER scope cache: {entity_count} entities for fingerprint {fingerprint[:12]}...")
-        return entity_count
+        logger.info(f"Restored NER scope cache: +{added} new, ~{updated} updated, {total} total (fingerprint {fingerprint[:12]}...)")
+        return total
 
     def store_ner_scope_cache(self, fingerprint: str, session_id: str) -> None:
         entity_count = self._conn.execute(
@@ -1631,8 +1699,6 @@ class RelationalStore:
         if entity_count == 0:
             logger.warning(f"Not caching NER scope with 0 entities for fingerprint {fingerprint[:12]}...")
             return
-
-        self._evict_ner_scope_fingerprint(fingerprint)
 
         self._conn.execute(
             "INSERT INTO ner_scope_cache (fingerprint, entity_count) VALUES (?, ?) ON CONFLICT (fingerprint) DO UPDATE SET entity_count = excluded.entity_count",

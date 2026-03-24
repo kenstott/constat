@@ -167,6 +167,17 @@ class ServerConfig(BaseModel):
         default_factory=dict,
         description="Local users for server-local auth (keyed by username)",
     )
+
+    # OAuth2 credentials for email (IMAP) browser flow
+    google_email_client_id: Optional[str] = None
+    google_email_client_secret: Optional[str] = None
+    microsoft_email_client_id: Optional[str] = None
+    microsoft_email_client_secret: Optional[str] = None
+    microsoft_email_tenant_id: str = "common"
+    source_refresh_interval_seconds: int = Field(
+        default=900,
+        description="Background source refresh interval in seconds",
+    )
     runtime_dir: str = Field(
         default=".",
         description="Base directory for runtime data. Data is stored in {runtime_dir}/.constat/",
@@ -203,6 +214,31 @@ class ServerConfig(BaseModel):
         admin_token_env = os.environ.get("CONSTAT_ADMIN_TOKEN")
         if admin_token_env is not None:
             self.admin_token = admin_token_env
+
+        # OAuth2 email credentials env var overrides
+        google_email_client_id_env = os.environ.get("GOOGLE_EMAIL_CLIENT_ID")
+        if google_email_client_id_env is not None:
+            self.google_email_client_id = google_email_client_id_env
+
+        google_email_client_secret_env = os.environ.get("GOOGLE_EMAIL_CLIENT_SECRET")
+        if google_email_client_secret_env is not None:
+            self.google_email_client_secret = google_email_client_secret_env
+
+        microsoft_email_client_id_env = os.environ.get("MICROSOFT_EMAIL_CLIENT_ID")
+        if microsoft_email_client_id_env is not None:
+            self.microsoft_email_client_id = microsoft_email_client_id_env
+
+        microsoft_email_client_secret_env = os.environ.get("MICROSOFT_EMAIL_CLIENT_SECRET")
+        if microsoft_email_client_secret_env is not None:
+            self.microsoft_email_client_secret = microsoft_email_client_secret_env
+
+        microsoft_email_tenant_id_env = os.environ.get("MICROSOFT_EMAIL_TENANT_ID")
+        if microsoft_email_tenant_id_env is not None:
+            self.microsoft_email_tenant_id = microsoft_email_tenant_id_env
+
+        source_refresh_env = os.environ.get("CONSTAT_SOURCE_REFRESH_INTERVAL")
+        if source_refresh_env is not None:
+            self.source_refresh_interval_seconds = int(source_refresh_env)
 
         return self
 

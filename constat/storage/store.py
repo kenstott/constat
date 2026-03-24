@@ -71,8 +71,6 @@ class Store:
     ) -> int:
         from constat.discovery.entity_extractor import EntityExtractor
 
-        self.relational.clear_session_entities(session_id)
-
         chunks = self.vector.get_all_chunks(domain_ids)
         if not chunks:
             logger.debug(f"No chunks found for session {session_id}")
@@ -95,10 +93,21 @@ class Store:
                 all_links.append(link)
 
         entities = extractor.get_all_entities()
+        new_ids = {e.id for e in entities}
+
+        # Remove stale entities (exist in DB but not in new extraction)
+        old_ids = self.relational.get_entity_ids_for_session(session_id)
+        stale_ids = old_ids - new_ids
+        if stale_ids:
+            self.relational.remove_entities_by_ids(stale_ids)
+            logger.info(f"Removed {len(stale_ids)} stale entities for session {session_id}")
+
         if entities:
             self.relational.add_entities(entities, session_id)
+            # Re-link all chunk-entity relationships (links are cheap, ensures correctness)
+            self.relational.clear_chunk_entity_links_for_ids(new_ids)
             self.relational.link_chunk_entities(all_links)
-            logger.info(f"Extracted {len(entities)} entities from {len(chunks)} chunks")
+            logger.info(f"Extracted {len(entities)} entities ({len(new_ids - old_ids)} new, {len(stale_ids)} removed) from {len(chunks)} chunks")
 
         return len(entities)
 

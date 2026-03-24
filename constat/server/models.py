@@ -36,8 +36,12 @@ class SessionStatus(str, Enum):
 class EventType(str, Enum):
     """Types of events emitted via WebSocket."""
 
+    # Heartbeat
+    HEARTBEAT_ACK = "heartbeat_ack"
+
     # Session events
     SESSION_CREATED = "session_created"
+    SESSION_READY = "session_ready"
     SESSION_CLOSED = "session_closed"
 
     # Planning events
@@ -105,6 +109,15 @@ class EventType(str, Enum):
     GLOSSARY_TERMS_ADDED = "glossary_terms_added"
     GLOSSARY_REBUILD_COMPLETE = "glossary_rebuild_complete"
     GLOSSARY_GENERATION_PROGRESS = "glossary_generation_progress"
+
+    # Source ingestion events
+    SOURCE_INGEST_START = "source_ingest_start"
+    SOURCE_INGEST_COMPLETE = "source_ingest_complete"
+    SOURCE_INGEST_ERROR = "source_ingest_error"
+
+    # Source refresh events
+    SOURCE_REFRESH_COMPLETE = "source_refresh_complete"
+    SOURCE_REFRESH_ERROR = "source_refresh_error"
 
     # Relationship extraction events
     RELATIONSHIPS_EXTRACTED = "relationships_extracted"

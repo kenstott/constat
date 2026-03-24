@@ -170,13 +170,29 @@ class _EntityMixin:
             all_entities.extend(extractor.get_all_entities())
             logger.info(f"extract_entities_for_session({session_id}): domain={domain_id} -> {len(domain_chunks)} chunks, {len(links)} links, {len(extractor.get_all_entities())} unique entities")
 
+        # Snapshot existing entity IDs for diff
+        old_ids: set[str] = set()
+        if hasattr(self._vector_store, 'get_entity_ids_for_session'):
+            old_ids = self._vector_store.get_entity_ids_for_session(session_id)
+
+        new_ids = {e.id for e in all_entities}
+
+        # Remove stale entities no longer extracted
+        stale_ids = old_ids - new_ids
+        if stale_ids and hasattr(self._vector_store, 'remove_entities_by_ids'):
+            self._vector_store.remove_entities_by_ids(stale_ids)
+            logger.info(f"extract_entities_for_session({session_id}): removed {len(stale_ids)} stale entities")
+
         if all_entities:
             self._vector_store.add_entities(all_entities, session_id=session_id)
 
         if all_links:
             deduped = _deduplicate_chunk_links(all_links)
+            # Clear and re-link for entities we're keeping/adding
+            if new_ids and hasattr(self._vector_store, 'clear_chunk_entity_links_for_ids'):
+                self._vector_store.clear_chunk_entity_links_for_ids(new_ids)
             self._vector_store.link_chunk_entities(deduped)
-            logger.info(f"extract_entities_for_session({session_id}): created {len(deduped)} links")
+            logger.info(f"extract_entities_for_session({session_id}): {len(new_ids - old_ids)} new, {len(stale_ids)} removed, {len(deduped)} links")
 
             # Reconcile glossary term domains — move terms to follow
             # their entity when a data source changed domains.

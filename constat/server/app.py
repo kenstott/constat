@@ -569,18 +569,9 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     async def lifespan(_fastapi_app: FastAPI):
         """Manage application lifecycle."""
         try:
-            # Startup: Pre-load embedding model (blocking - we need it for vectorization)
+            # Startup: Kick off embedding model load (non-blocking — loads in background thread)
             from constat.embedding_loader import EmbeddingModelLoader
-            logger.info("Loading embedding model...")
             EmbeddingModelLoader.get_instance().start_loading()
-            EmbeddingModelLoader.get_instance().get_model()  # Wait for completion
-            logger.info("Embedding model loaded")
-
-            # Startup: Pre-index all documents from config and domains
-            # This warms up the vector store so first session doesn't pay the cost
-            logger.info("Pre-indexing documents from config and domains...")
-            _warmup_vector_store(config)
-            logger.info("Document pre-indexing complete")
 
             # Startup: Initialize fine-tune manager
             from constat.learning.fine_tune_registry import FineTuneRegistry
@@ -594,6 +585,21 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
 
             # Startup: Start cleanup task
             await session_manager.start_cleanup_task()
+
+            # Startup: Warmup (embedding model + document pre-indexing) runs in background
+            # so the server accepts connections immediately
+            async def _warmup_task():
+                try:
+                    logger.info("Background warmup: loading embedding model...")
+                    await asyncio.to_thread(EmbeddingModelLoader.get_instance().get_model)
+                    logger.info("Background warmup: embedding model loaded")
+                    logger.info("Background warmup: pre-indexing documents...")
+                    await asyncio.to_thread(_warmup_vector_store, config)
+                    logger.info("Background warmup: document pre-indexing complete")
+                except Exception as e:
+                    logger.error(f"Background warmup failed: {e}")
+
+            warmup_task = asyncio.create_task(_warmup_task())
 
             # Startup: Start fine-tune polling task
             async def _fine_tune_poll_loop():
@@ -611,7 +617,14 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
 
             ft_poll_task = asyncio.create_task(_fine_tune_poll_loop())
 
-            logger.info("Constat API server started")
+            # Startup: Start source refresh loop
+            from constat.server.source_refresher import source_refresh_loop
+            refresh_interval = server_config.source_refresh_interval_seconds
+            source_refresh_task = asyncio.create_task(
+                source_refresh_loop(session_manager, refresh_interval)
+            )
+
+            logger.info("Constat API server started (warmup running in background)")
         except Exception as e:
             logger.error(f"FATAL: Server startup failed: {e}")
             logger.exception("Full traceback:")
@@ -619,9 +632,11 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
 
         yield
 
-        # Shutdown: Stop fine-tune poll task and cleanup sessions
+        # Shutdown: Stop background tasks and cleanup sessions
         try:
+            warmup_task.cancel()
             ft_poll_task.cancel()
+            source_refresh_task.cancel()
             logger.info("Shutting down Constat API server...")
             await asyncio.wait_for(_shutdown_tasks(session_manager), timeout=5.0)
             logger.info("Constat API server stopped cleanly")
@@ -763,6 +778,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.public import router as public_router
 
     from constat.server.routes.auth_routes import router as auth_router
+    from constat.server.routes.oauth_email import router as oauth_email_router
 
     # IMPORTANT: Register routers with specific paths BEFORE routers with /{session_id} wildcards
     # Otherwise the wildcard routes will match paths like /agents, /skills, etc.
@@ -770,6 +786,11 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         auth_router,
         prefix="/api/auth",
         tags=["auth"],
+    )
+    fastapi_app.include_router(
+        oauth_email_router,
+        prefix="/api/oauth/email",
+        tags=["oauth-email"],
     )
     fastapi_app.include_router(
         public_router,

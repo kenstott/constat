@@ -458,8 +458,10 @@ export interface WidgetResponse<T = unknown> {
 
 // WebSocket Events
 export type EventType =
+  | 'heartbeat_ack'
   | 'welcome'
   | 'session_created'
+  | 'session_ready'
   | 'session_closed'
   | 'planning_start'
   | 'proof_start'
@@ -509,6 +511,9 @@ export type EventType =
   | 'glossary_terms_added'
   | 'glossary_generation_progress'
   | 'relationships_extracted'
+  | 'source_ingest_start'
+  | 'source_ingest_complete'
+  | 'source_ingest_error'
 
 export interface WSEvent {
   event_type: EventType

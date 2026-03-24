@@ -20,6 +20,8 @@ export class WebSocketManager {
   private autocompleteRequestId = 0
   private reconnectAttempts = 0
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null
+  private lastHeartbeatTime: string | null = null
   private options: Required<WSManagerOptions>
 
   constructor(options: WSManagerOptions = {}) {
@@ -46,6 +48,7 @@ export class WebSocketManager {
     this.ws.onopen = () => {
       this.reconnectAttempts = 0
       this.notifyStatus(true)
+      this.startHeartbeat()
     }
 
     this.ws.onclose = () => {
@@ -83,6 +86,8 @@ export class WebSocketManager {
   }
 
   disconnect(): void {
+    this.stopHeartbeat()
+
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout)
       this.reconnectTimeout = null
@@ -95,6 +100,7 @@ export class WebSocketManager {
 
     this.sessionId = null
     this.reconnectAttempts = 0
+    this.lastHeartbeatTime = null
     // Clear all handlers to prevent duplicates on reconnect
     this.eventHandlers.clear()
     this.statusHandlers.clear()
@@ -179,6 +185,26 @@ export class WebSocketManager {
         callback([])
       }
     }, 5000)
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat()
+    // Immediate first heartbeat with since=null
+    this.send('heartbeat', { since: this.lastHeartbeatTime })
+    this.heartbeatInterval = setInterval(() => {
+      this.send('heartbeat', { since: this.lastHeartbeatTime })
+    }, 30_000)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval)
+      this.heartbeatInterval = null
+    }
+  }
+
+  setLastHeartbeatTime(time: string): void {
+    this.lastHeartbeatTime = time
   }
 
   onEvent(handler: WSEventHandler): () => void {

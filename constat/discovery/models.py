@@ -50,9 +50,7 @@ class ChunkType(str, Enum):
 
 
 def singularize(word: str) -> str:
-    """Convert a word to its singular form.
-
-    Simple heuristic-based singularization for common English patterns.
+    """Convert a word to its singular form using lemminflect dictionary lookup.
 
     Args:
         word: Word to singularize (e.g., "orders", "employees", "categories")
@@ -63,56 +61,17 @@ def singularize(word: str) -> str:
     if not word or len(word) < 3:
         return word
 
-    lower = word.lower()
+    from lemminflect import getLemma
 
-    # Handle common irregular plurals
-    irregulars = {
-        'people': 'person',
-        'children': 'child',
-        'men': 'man',
-        'women': 'woman',
-        'mice': 'mouse',
-        'geese': 'goose',
-        'teeth': 'tooth',
-        'feet': 'foot',
-        'data': 'datum',
-        'criteria': 'criterion',
-        'indices': 'index',
-        'vertices': 'vertex',
-        'matrices': 'matrix',
-    }
-    if lower in irregulars:
-        # Preserve original case pattern
-        if word[0].isupper():
-            return irregulars[lower].capitalize()
-        return irregulars[lower]
-
-    # Don't singularize words ending in 'ss', 'us', 'is'
-    if lower.endswith(('ss', 'us', 'is')):
+    lemmas = getLemma(word.lower(), upos='NOUN')
+    if not lemmas:
         return word
 
-    # Handle -ies -> -y (categories -> category)
-    if lower.endswith('ies') and len(word) > 3:
-        return word[:-3] + 'y'
-
-    # Handle -es -> remove (boxes -> box, watches -> watch)
-    if lower.endswith('es') and len(word) > 2:
-        # Check for -ches, -shes, -xes, -zes, -ses
-        if lower.endswith(('ches', 'shes', 'xes', 'zes', 'ses')):
-            return word[:-2]
-        # Check for -oes (heroes -> hero, but not shoes)
-        if lower.endswith('oes') and lower not in ('shoes', 'toes'):
-            return word[:-2]
-        # Default: try removing -es, fall back to -s
-        if lower.endswith('ves'):
-            return word[:-3] + 'f'  # leaves -> leaf
-        return word[:-1]  # Just remove the 's'
-
-    # Handle simple -s -> remove
-    if lower.endswith('s') and not lower.endswith('ss'):
-        return word[:-1]
-
-    return word
+    result = lemmas[0]
+    # Preserve original case
+    if word[0].isupper():
+        result = result[0].upper() + result[1:]
+    return result
 
 
 def is_camel_case(name: str) -> bool:

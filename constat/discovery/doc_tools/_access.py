@@ -162,10 +162,13 @@ class _AccessMixin:
                         break
 
             if not doc_config:
-                return {"error": f"Document config not found: {parent_name}"}
+                # Parent not in config — try reconstructing from indexed chunks
+                # (covers user-added IMAP/HTTP sources not in YAML config)
+                return self._reconstruct_from_chunks(name)
 
             if not doc_config.path:
-                return {"error": f"Document {parent_name} is not a file type"}
+                # URL-based source (IMAP, HTTP) — reconstruct from chunks
+                return self._reconstruct_from_chunks(name)
 
             # Resolve path relative to config directory
             resolved_path = doc_config.path

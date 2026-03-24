@@ -149,6 +149,7 @@ interface ArtifactState {
   updateRule: (ruleId: string, summary: string, tags?: string[]) => Promise<void>
   deleteRule: (ruleId: string) => Promise<void>
   deleteLearning: (learningId: string) => Promise<void>
+  patchEntities: (diff: { added: Array<{name: string, type: string}>, removed: Array<{name: string, type: string}> }) => void
   addInferenceCode: (ic: InferenceCode) => void
   supersededStepNumbers: Set<number>
   markStepsSuperseded: () => void  // Mark all current step numbers as superseded (on redo)
@@ -809,6 +810,23 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
         superseded.add(sc.step_number)
       }
       return { supersededStepNumbers: superseded }
+    }),
+
+  patchEntities: (diff) =>
+    set((state) => {
+      let entities = state.entities
+      if (diff.removed.length > 0) {
+        const removeSet = new Set(diff.removed.map(e => `${e.name}::${e.type}`))
+        entities = entities.filter(e => !removeSet.has(`${e.name}::${e.type}`))
+      }
+      if (diff.added.length > 0) {
+        const existing = new Set(entities.map(e => `${e.name}::${e.type}`))
+        const newEntities = diff.added
+          .filter(e => !existing.has(`${e.name}::${e.type}`))
+          .map(e => ({ name: e.name, type: e.type } as Entity))
+        entities = [...entities, ...newEntities]
+      }
+      return { entities }
     }),
 
   addInferenceCode: (ic) =>

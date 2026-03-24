@@ -32,6 +32,7 @@ import {
   ChevronRightIcon,
   CpuChipIcon,
   QuestionMarkCircleIcon,
+  EnvelopeIcon,
 } from '@heroicons/react/24/outline'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
@@ -50,7 +51,7 @@ import * as sessionsApi from '@/api/sessions'
 import type { ObjectivesEntry } from '@/api/sessions'
 import * as agentsApi from '@/api/agents'
 
-type ModalType = 'database' | 'api' | 'document' | 'fact' | 'rule' | null
+type ModalType = 'database' | 'api' | 'document' | 'email' | 'fact' | 'rule' | null
 
 // Helper to parse YAML front-matter from markdown content
 function parseFrontMatter(content: string): { frontMatter: Record<string, unknown> | null; body: string } {
@@ -366,7 +367,7 @@ function ScratchpadList({ entries, supersededStepNumbers, tables }: {
 }
 
 export function ArtifactPanel() {
-  const { session, messages } = useSessionStore()
+  const { session, messages, sessionReady } = useSessionStore()
   const { expandedArtifactSections, expandArtifactSection, pendingDeepLink, consumeDeepLink } = useUIStore()
   const {
     artifacts,
@@ -496,6 +497,23 @@ export function ArtifactPanel() {
   const [docSameDomainOnly, setDocSameDomainOnly] = useState(true)
   const [docContentType, setDocContentType] = useState('auto')
   const [docShowAdvanced, setDocShowAdvanced] = useState(false)
+  // Email (IMAP) modal state
+  const [emailProvider, setEmailProvider] = useState<'google' | 'microsoft' | 'other' | null>(null)
+  const [emailHost, setEmailHost] = useState('')
+  const [emailUsername, setEmailUsername] = useState('')
+  const [emailPassword, setEmailPassword] = useState('')
+  const [emailAuthType, setEmailAuthType] = useState<'basic' | 'oauth2'>('basic')
+  const [emailMailbox, setEmailMailbox] = useState('INBOX')
+  const [emailSince, setEmailSince] = useState('')
+  const [emailMaxMessages, setEmailMaxMessages] = useState(500)
+  const [emailIncludeHeaders, setEmailIncludeHeaders] = useState(true)
+  const [emailExtractAttachments, setEmailExtractAttachments] = useState(true)
+  const [emailOAuth2ClientId, setEmailOAuth2ClientId] = useState('')
+  const [emailOAuth2ClientSecret, setEmailOAuth2ClientSecret] = useState('')
+  const [emailOAuth2TenantId, setEmailOAuth2TenantId] = useState('')
+  const [emailOAuthProviders, setEmailOAuthProviders] = useState<{ google: boolean; microsoft: boolean } | null>(null)
+  const [emailOAuthToken, setEmailOAuthToken] = useState<{ provider: string; email: string; refresh_token: string } | null>(null)
+  const [emailShowAdvanced, setEmailShowAdvanced] = useState(false)
   // Document viewer state
   const [viewingDocument, setViewingDocument] = useState<{ name: string; content: string; format?: string; url?: string; imageUrl?: string } | null>(null)
   const [iframeBlocked, setIframeBlocked] = useState(false)
@@ -635,16 +653,19 @@ export function ArtifactPanel() {
     loadData()
   }, [pendingDeepLink])
 
-  // Fetch data when session changes
+  // Fetch data when session is ready (domains loaded)
+  // For reconnect: sessionReady is true immediately
+  // For new session: sessionReady becomes true on session_ready WS event
   // NOTE: fetchTables and fetchArtifacts are already called in createSession (sessionStore)
   useEffect(() => {
-    if (session) {
-      // Critical data — fetch immediately
-      fetchFacts(session.session_id)
-      fetchEntities(session.session_id)
-      fetchDataSources(session.session_id)
+    if (session && sessionReady) {
+      const sid = session.session_id
+      // Domain-dependent data
+      fetchFacts(sid)
+      fetchEntities(sid)
+      fetchDataSources(sid)
       fetchAllSkills()
-      fetchAllAgents(session.session_id)
+      fetchAllAgents(sid)
       fetchLearnings()
       sessionsApi.getDomainTree().then((nodes) => {
         const collect = (ns: sessionsApi.DomainTreeNode[]): { filename: string; name: string }[] =>
@@ -652,7 +673,6 @@ export function ArtifactPanel() {
         setDomainList(collect(nodes))
       }).catch(() => {})
       // Deferred data — not needed for initial render
-      const sid = session.session_id
       const timer = setTimeout(() => {
         fetchPromptContext(sid)
         fetchTaskRouting(sid)
@@ -662,7 +682,7 @@ export function ArtifactPanel() {
       }, 500)
       return () => clearTimeout(timer)
     }
-  }, [session, fetchFacts, fetchEntities, fetchDataSources, fetchAllSkills, fetchAllAgents, fetchLearnings, fetchPromptContext, fetchTaskRouting, fetchScratchpad, fetchDDL])
+  }, [session, sessionReady, fetchFacts, fetchEntities, fetchDataSources, fetchAllSkills, fetchAllAgents, fetchLearnings, fetchPromptContext, fetchTaskRouting, fetchScratchpad, fetchDDL])
 
   // Auto-refresh fine-tune jobs when any are training
   useEffect(() => {
@@ -673,6 +693,36 @@ export function ArtifactPanel() {
     }, 30000)
     return () => clearInterval(interval)
   }, [ftJobs, learningsTab])
+
+  // Fetch OAuth providers when email modal opens
+  useEffect(() => {
+    if (showModal === 'email') {
+      sessionsApi.getEmailOAuthProviders()
+        .then(setEmailOAuthProviders)
+        .catch(() => setEmailOAuthProviders(null))
+    }
+  }, [showModal])
+
+  // Listen for OAuth email popup completion
+  useEffect(() => {
+    const handleOAuthMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'oauth-email-complete') {
+        const { provider, email, refresh_token } = event.data
+        setEmailOAuthToken({ provider, email, refresh_token })
+        // Auto-fill username and host from provider
+        if (email) {
+          setEmailUsername(email)
+        }
+        if (provider === 'google') {
+          setEmailHost('imap.gmail.com')
+        } else if (provider === 'microsoft') {
+          setEmailHost('outlook.office365.com')
+        }
+      }
+    }
+    window.addEventListener('message', handleOAuthMessage)
+    return () => window.removeEventListener('message', handleOAuthMessage)
+  }, [])
 
   // Handlers
   const handleForgetFact = async (factName: string) => {
@@ -813,6 +863,46 @@ export function ArtifactPanel() {
       } finally {
         setUploading(false)
       }
+    }
+    setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
+  }
+
+  const handleAddEmail = async () => {
+    if (!session || !modalInput.name) return
+    // Derive host/username from provider for OAuth flows
+    const effectiveHost = emailOAuthToken
+      ? (emailOAuthToken.provider === 'google' ? 'imap.gmail.com' : 'outlook.office365.com')
+      : emailHost
+    const effectiveUsername = emailOAuthToken ? emailOAuthToken.email : emailUsername
+    if (!effectiveHost || !effectiveUsername) return
+    setUploading(true)
+    try {
+      const scheme = effectiveHost.includes('://') ? '' : 'imaps://'
+      await sessionsApi.addEmailSource(session.session_id, {
+        name: modalInput.name,
+        url: `${scheme}${effectiveHost}`,
+        username: effectiveUsername,
+        password: emailProvider === 'other' && emailAuthType === 'basic' ? emailPassword : undefined,
+        auth_type: emailOAuthToken ? 'oauth2_refresh' : emailAuthType,
+        mailbox: emailMailbox,
+        since: emailSince || undefined,
+        max_messages: emailMaxMessages,
+        include_headers: emailIncludeHeaders,
+        extract_attachments: emailExtractAttachments,
+        oauth2_client_id: emailProvider === 'other' && emailAuthType === 'oauth2' ? emailOAuth2ClientId : undefined,
+        oauth2_client_secret: emailProvider === 'other' && emailAuthType === 'oauth2' ? emailOAuth2ClientSecret : undefined,
+        oauth2_tenant_id: emailProvider === 'other' && emailAuthType === 'oauth2' ? emailOAuth2TenantId || undefined : undefined,
+        oauth2_refresh_token: emailOAuthToken?.refresh_token || undefined,
+      })
+      fetchDataSources(session.session_id)
+      setShowModal(null)
+      setEmailOAuthToken(null)
+      setEmailProvider(null)
+    } catch (err) {
+      console.error('Failed to add email source:', err)
+      alert(`Failed to add email source: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setUploading(false)
     }
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
   }
@@ -1376,10 +1466,225 @@ ${skill.body}`
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-80 shadow-xl">
             <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">
-              Add {showModal === 'fact' ? 'Fact' : showModal === 'database' ? 'Database' : showModal === 'api' ? 'API' : showModal === 'rule' ? 'Rule' : 'Document'}
+              Add {showModal === 'fact' ? 'Fact' : showModal === 'database' ? 'Database' : showModal === 'api' ? 'API' : showModal === 'rule' ? 'Rule' : showModal === 'email' ? 'Email Source' : 'Document'}
             </h3>
             <div className="space-y-3">
-              {showModal === 'rule' ? (
+              {showModal === 'email' ? (
+                <div className="space-y-3">
+                  {/* Step 1: Choose provider */}
+                  {!emailProvider && (
+                    <div className="space-y-2">
+                      <p className="text-sm text-gray-600 dark:text-gray-400">Choose your email provider:</p>
+                      <div className="space-y-2">
+                        <button
+                            type="button"
+                            onClick={() => setEmailProvider('google')}
+                            className="w-full flex items-center gap-3 px-3 py-2.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                          >
+                            <svg className="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24">
+                              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/>
+                              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                            </svg>
+                            Gmail
+                          </button>
+                        <button
+                            type="button"
+                            onClick={() => setEmailProvider('microsoft')}
+                            className="w-full flex items-center gap-3 px-3 py-2.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                          >
+                            <svg className="w-5 h-5 flex-shrink-0" viewBox="0 0 23 23">
+                              <path fill="#f35325" d="M1 1h10v10H1z"/>
+                              <path fill="#81bc06" d="M12 1h10v10H12z"/>
+                              <path fill="#05a6f0" d="M1 12h10v10H1z"/>
+                              <path fill="#ffba08" d="M12 12h10v10H12z"/>
+                            </svg>
+                            Microsoft 365 / Outlook
+                          </button>
+                        <button
+                          type="button"
+                          onClick={() => setEmailProvider('other')}
+                          className="w-full flex items-center gap-3 px-3 py-2.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                        >
+                          <EnvelopeIcon className="w-5 h-5 flex-shrink-0 text-gray-400" />
+                          Other (IMAP)
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 2: Provider-specific form */}
+                  {emailProvider && (
+                    <div className="space-y-2">
+                      {/* Back button */}
+                      <button
+                        type="button"
+                        onClick={() => { setEmailProvider(null); setEmailOAuthToken(null); setEmailHost(''); setEmailUsername(''); setEmailPassword('') }}
+                        className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                        Back
+                      </button>
+
+                      <input
+                        type="text"
+                        placeholder="Name (e.g., company_inbox)"
+                        value={modalInput.name || ''}
+                        onChange={(e) => setModalInput({ ...modalInput, name: e.target.value })}
+                        className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                      />
+
+                      {/* Google / Microsoft: OAuth sign-in */}
+                      {(emailProvider === 'google' || emailProvider === 'microsoft') && (
+                        <>
+                          {emailOAuthToken ? (
+                            <div className="flex items-center gap-2 p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md">
+                              <svg className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                              <span className="text-sm text-green-700 dark:text-green-300">
+                                {emailOAuthToken.email}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setEmailOAuthToken(null)}
+                                className="ml-auto text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                              >
+                                Change
+                              </button>
+                            </div>
+                          ) : emailOAuthProviders?.[emailProvider] ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const url = `/api/oauth/email/authorize?provider=${emailProvider}&session_id=${session?.session_id || ''}`
+                                window.open(url, 'oauth-email', 'width=500,height=600,scrollbars=yes')
+                              }}
+                              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 text-sm bg-primary-600 text-white rounded-md hover:bg-primary-700"
+                            >
+                              Sign in with {emailProvider === 'google' ? 'Google' : 'Microsoft'}
+                            </button>
+                          ) : (
+                            <p className="text-sm text-amber-600 dark:text-amber-400">
+                              {emailProvider === 'google' ? 'Google' : 'Microsoft'} OAuth not configured on server. Ask your administrator to set {emailProvider === 'google' ? 'GOOGLE_EMAIL_CLIENT_ID' : 'MICROSOFT_EMAIL_CLIENT_ID'}.
+                            </p>
+                          )}
+                        </>
+                      )}
+
+                      {/* Manual IMAP fields: shown for "other" or when OAuth is not configured for Google/Microsoft */}
+                      {(emailProvider === 'other' || ((emailProvider === 'google' || emailProvider === 'microsoft') && !emailOAuthProviders?.[emailProvider] && !emailOAuthToken)) && (
+                        <>
+                          <input
+                            type="text"
+                            placeholder="IMAP Host (e.g., imap.example.com)"
+                            value={emailHost}
+                            onChange={(e) => setEmailHost(e.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Email / Username"
+                            value={emailUsername}
+                            onChange={(e) => setEmailUsername(e.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                          />
+                          <div className="flex gap-4">
+                            <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer">
+                              <input type="radio" name="emailAuth" checked={emailAuthType === 'basic'} onChange={() => setEmailAuthType('basic')} className="text-primary-600" />
+                              Password
+                            </label>
+                            <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer">
+                              <input type="radio" name="emailAuth" checked={emailAuthType === 'oauth2'} onChange={() => setEmailAuthType('oauth2')} className="text-primary-600" />
+                              OAuth2
+                            </label>
+                          </div>
+                          {emailAuthType === 'basic' ? (
+                            <input
+                              type="password"
+                              placeholder="Password / App Password"
+                              value={emailPassword}
+                              onChange={(e) => setEmailPassword(e.target.value)}
+                              className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                            />
+                          ) : (
+                            <div className="space-y-2">
+                              <input
+                                type="text"
+                                placeholder="OAuth2 Client ID"
+                                value={emailOAuth2ClientId}
+                                onChange={(e) => setEmailOAuth2ClientId(e.target.value)}
+                                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                              />
+                              <input
+                                type="password"
+                                placeholder="OAuth2 Client Secret / Refresh Token"
+                                value={emailOAuth2ClientSecret}
+                                onChange={(e) => setEmailOAuth2ClientSecret(e.target.value)}
+                                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                              />
+                              <input
+                                type="text"
+                                placeholder="Tenant ID (Azure AD only)"
+                                value={emailOAuth2TenantId}
+                                onChange={(e) => setEmailOAuth2TenantId(e.target.value)}
+                                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                              />
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {/* Advanced options (shared across all providers) */}
+                      <button
+                        type="button"
+                        onClick={() => setEmailShowAdvanced(!emailShowAdvanced)}
+                        className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                      >
+                        {emailShowAdvanced ? 'Hide' : 'Show'} advanced options
+                      </button>
+
+                      {emailShowAdvanced && (
+                        <div className="space-y-2 pl-2 border-l-2 border-gray-200 dark:border-gray-600">
+                          <div className="flex items-center gap-2">
+                            <label className="text-xs text-gray-500 dark:text-gray-400 w-28">Mailbox</label>
+                            <input
+                              type="text"
+                              value={emailMailbox}
+                              onChange={(e) => setEmailMailbox(e.target.value)}
+                              className="flex-1 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                            />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <label className="text-xs text-gray-500 dark:text-gray-400 w-28">Since date</label>
+                            <input
+                              type="date"
+                              value={emailSince}
+                              onChange={(e) => setEmailSince(e.target.value)}
+                              className="flex-1 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                            />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <label className="text-xs text-gray-500 dark:text-gray-400 w-28">Max messages</label>
+                            <select value={emailMaxMessages} onChange={(e) => setEmailMaxMessages(Number(e.target.value))} className="text-sm px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
+                              {[50, 100, 200, 500, 1000].map(n => <option key={n} value={n}>{n}</option>)}
+                            </select>
+                          </div>
+                          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+                            <input type="checkbox" checked={emailIncludeHeaders} onChange={(e) => setEmailIncludeHeaders(e.target.checked)} className="rounded text-primary-600" />
+                            Include email headers
+                          </label>
+                          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+                            <input type="checkbox" checked={emailExtractAttachments} onChange={(e) => setEmailExtractAttachments(e.target.checked)} className="rounded text-primary-600" />
+                            Extract attachments
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : showModal === 'rule' ? (
                 <textarea
                   placeholder="Enter the rule text..."
                   value={modalInput.value || ''}
@@ -1583,7 +1888,7 @@ ${skill.body}`
             </div>
             <div className="flex justify-end gap-2 mt-4">
               <button
-                onClick={() => setShowModal(null)}
+                onClick={() => { setShowModal(null); setEmailOAuthToken(null); setEmailProvider(null) }}
                 className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md"
               >
                 Cancel
@@ -1593,10 +1898,11 @@ ${skill.body}`
                   if (showModal === 'fact') handleAddFact()
                   else if (showModal === 'database') handleAddDatabase()
                   else if (showModal === 'document') handleAddDocument()
+                  else if (showModal === 'email') handleAddEmail()
                   else if (showModal === 'rule') handleAddRule()
                   else if (showModal === 'api') handleAddApi()
                 }}
-                disabled={uploading || (showModal === 'document' && docSourceType === 'files' && selectedFiles.length === 0)}
+                disabled={uploading || (showModal === 'document' && docSourceType === 'files' && selectedFiles.length === 0) || (showModal === 'email' && (!emailProvider || !modalInput.name || (emailProvider === 'other' && (!emailHost || !emailUsername)) || ((emailProvider === 'google' || emailProvider === 'microsoft') && !emailOAuthToken && (emailOAuthProviders?.[emailProvider] || (!emailHost || !emailUsername)))))}
                 className="px-3 py-1.5 text-sm bg-primary-600 text-white rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {uploading && (
@@ -2216,13 +2522,22 @@ ${skill.body}`
         command="/docs"
         action={
           canWrite('sources') ? (
-            <button
-              onClick={() => openModal('document')}
-              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-              title="Add document"
-            >
-              <PlusIcon className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-0.5">
+              <button
+                onClick={() => openModal('document')}
+                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                title="Add document"
+              >
+                <PlusIcon className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => openModal('email')}
+                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                title="Add email source"
+              >
+                <EnvelopeIcon className="w-4 h-4" />
+              </button>
+            </div>
           ) : <div className="w-6 h-6" />
         }
       >

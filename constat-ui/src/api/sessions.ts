@@ -1000,6 +1000,36 @@ export async function addDocumentURI(
   )
 }
 
+// Email (IMAP) source addition
+export async function addEmailSource(
+  sessionId: string,
+  body: {
+    name: string
+    url: string
+    username: string
+    password?: string
+    auth_type?: string
+    mailbox?: string
+    since?: string
+    max_messages?: number
+    include_headers?: boolean
+    extract_attachments?: boolean
+    oauth2_client_id?: string
+    oauth2_client_secret?: string
+    oauth2_tenant_id?: string
+    oauth2_refresh_token?: string
+  }
+): Promise<{ status: string; name: string; message: string }> {
+  return post<{ status: string; name: string; message: string }>(
+    `/sessions/${sessionId}/documents/add-email`,
+    body
+  )
+}
+
+export async function getEmailOAuthProviders(): Promise<{ google: boolean; microsoft: boolean }> {
+  return get<{ google: boolean; microsoft: boolean }>('/oauth/email/providers')
+}
+
 // Messages (for session restoration)
 export interface StoredMessage {
   id: string

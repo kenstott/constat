@@ -404,40 +404,72 @@ async def create_session(
         existing.touch()
         return _session_to_response(existing)
 
-    # Run heavy session initialization in a thread to avoid blocking the event loop.
-    # Session creation involves database connections, schema loading, model init.
-    import asyncio
+    # Create session in background — return immediately so browser is never blocked
+    import threading
 
-    def _init_session():
+    def _create_and_init():
+        from constat.server.models import EventType
+
         _session_id = session_manager.create_session(session_id=client_session_id, user_id=effective_user_id)
         _managed = session_manager.get_session(_session_id)
 
-        from constat.server.routes.learnings import _ensure_user_domain_config
-        _ensure_user_domain_config(effective_user_id, _managed.session.config)
+        try:
+            from constat.server.routes.learnings import _ensure_user_domain_config
+            _ensure_user_domain_config(effective_user_id, _managed.session.config)
 
-        _managed.session_prompt = _managed.session.config.system_prompt
+            _managed.session_prompt = _managed.session.config.system_prompt
 
-        preferred_domains = get_selected_domains(effective_user_id)
-        logger.info(f"[create_session] preferred_domains: {preferred_domains}")
-        if preferred_domains:
-            loaded, conflicts = _load_domains_into_session(_managed, preferred_domains)
-            logger.info(f"[create_session] loaded={loaded}, conflicts={conflicts}")
-            if loaded:
-                resolved = session_manager.resolve_config(_session_id)
-                if resolved:
-                    _apply_resolved_source_overrides(_managed, resolved)
-                    if resolved.system_prompt:
-                        _managed.session.config.system_prompt = resolved.system_prompt
-                        _managed.session_prompt = resolved.system_prompt
+            preferred_domains = get_selected_domains(effective_user_id)
+            logger.info(f"[create_session] preferred_domains: {preferred_domains}")
+            if preferred_domains:
+                loaded, conflicts = _load_domains_into_session(_managed, preferred_domains)
+                logger.info(f"[create_session] loaded={loaded}, conflicts={conflicts}")
+                if loaded:
+                    resolved = session_manager.resolve_config(_session_id)
+                    if resolved:
+                        _apply_resolved_source_overrides(_managed, resolved)
+                        if resolved.system_prompt:
+                            _managed.session.config.system_prompt = resolved.system_prompt
+                            _managed.session_prompt = resolved.system_prompt
 
-        if 'user' not in _managed.active_domains:
-            _managed.active_domains.append('user')
+            if 'user' not in _managed.active_domains:
+                _managed.active_domains.append('user')
 
-        session_manager.refresh_entities_async(_session_id)
-        return _managed
+            # Try fast scope cache restore BEFORE session_ready so glossary
+            # has entities on first fetch (scope cache restore is <1s).
+            cache_hit = session_manager.try_restore_entities_from_cache(_session_id)
 
-    managed = await asyncio.to_thread(_init_session)
-    return _session_to_response(managed)
+            # Mark init complete — heartbeat NER can now run safely
+            _managed._init_complete = True
+
+            # Signal frontend: domains loaded, sources/glossary/agents available
+            session_manager._push_event(
+                _managed, EventType.SESSION_READY,
+                {"session_id": _session_id, "active_domains": _managed.active_domains},
+            )
+
+            # Full NER only if scope cache missed
+            if not cache_hit:
+                session_manager.refresh_entities_async(_session_id)
+        except Exception as e:
+            logger.exception(f"[create_session] init failed for {_session_id}: {e}")
+
+    threading.Thread(target=_create_and_init, name=f"session-init-{client_session_id[:8]}", daemon=True).start()
+
+    return SessionResponse(
+        session_id=client_session_id,
+        user_id=effective_user_id,
+        status="idle",
+        created_at=datetime.now(timezone.utc),
+        last_activity=datetime.now(timezone.utc),
+        current_query=None,
+        summary=None,
+        active_domains=[],
+        tables_count=0,
+        artifacts_count=0,
+        shared_with=[],
+        is_public=False,
+    )
 
 
 @router.get("", response_model=SessionListResponse)

@@ -696,6 +696,23 @@ class DocumentConfig(BaseModel):
     page_url: Optional[str] = None  # Notion page URL
     notion_token: Optional[str] = None  # Notion integration token
 
+    # IMAP
+    mailbox: str = "INBOX"
+    search_criteria: str = "ALL"
+    since: Optional[str] = None
+    max_messages: int = 500
+    include_headers: bool = True
+    attachment_types: Optional[list[str]] = None
+    extract_attachments: bool = True
+
+    # OAuth2 (IMAP)
+    auth_type: str = "basic"  # "basic" | "oauth2" | "oauth2_refresh"
+    oauth2_client_id: Optional[str] = None
+    oauth2_client_secret: Optional[str] = None
+    oauth2_tenant_id: Optional[str] = None  # Azure AD
+    oauth2_scopes: list[str] = Field(default_factory=list)
+    oauth2_token_cache: Optional[str] = None
+
     # Metadata
     description: str = ""  # What this document contains
     tags: list[str] = Field(default_factory=list)  # For categorization/search
@@ -719,6 +736,10 @@ class DocumentConfig(BaseModel):
 
     # Glossary generation gating
     generate_definitions: Union[bool, float, str] = "auto"  # True/False/float threshold/"auto" (0.5)
+
+    # Background refresh
+    auto_refresh: bool = True  # Whether this source is eligible for background refresh
+    refresh_interval: Optional[int] = None  # Override default refresh interval (seconds)
 
 
 class APIConfig(BaseModel):

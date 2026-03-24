@@ -33,6 +33,17 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ActiveConnectionInfo:
+    """Tracks an active WebSocket connection."""
+
+    session_id: str
+    user_id: str
+    remote_addr: str
+    connected_at: str  # ISO
+    last_heartbeat: str  # ISO
+
+
+@dataclass
 class ManagedSession:
     """A server-managed Session with metadata."""
 
@@ -76,6 +87,14 @@ class ManagedSession:
 
     # Cancellation flag for background NER / entity extraction
     _ner_cancelled: threading.Event = field(default_factory=threading.Event)
+
+    # Active NER thread (for checking if NER is in-flight)
+    _ner_thread: Optional[threading.Thread] = None
+
+
+    # Whether session initialization is complete (domains loaded, schema entities set)
+    # Prevents heartbeat from triggering NER before init finishes
+    _init_complete: bool = False
 
     # Whether glossary generation is currently in progress (for WS reconnect replay)
     _glossary_generating: bool = False
@@ -176,8 +195,9 @@ class ManagedSession:
         history.save_state(history_id, state)
         logger.debug(f"Saved session resources: {len(resources['dynamic_dbs'])} dbs, {len(resources['dynamic_apis'])} apis, {len(resources['file_refs'])} refs")
 
-        # Persist dynamic databases to user-level config
+        # Persist dynamic databases and documents to user-level config
         self._persist_dbs_to_user_config()
+        self._persist_docs_to_user_config()
 
     def _persist_dbs_to_user_config(self) -> None:
         """Write dynamic databases to .constat/{user_id}/config.yaml."""
@@ -212,6 +232,59 @@ class ManagedSession:
         existing["databases"] = databases
         config_path.write_text(yaml.dump(existing, default_flow_style=False, sort_keys=False))
         logger.debug(f"Persisted {len(self._dynamic_dbs)} dynamic databases to user config")
+
+    def _persist_docs_to_user_config(self) -> None:
+        """Write dynamic documents (file_refs) to .constat/{user_id}/config.yaml."""
+        import yaml
+        from pathlib import Path
+
+        config_path = Path(".constat") / self.user_id / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing = {}
+        if config_path.exists():
+            existing = yaml.safe_load(config_path.read_text()) or {}
+
+        documents = existing.get("documents", {})
+
+        # Remove stale session-sourced entries not in current file_refs
+        ref_names = {ref["name"] for ref in self._file_refs}
+        documents = {
+            name: cfg for name, cfg in documents.items()
+            if cfg.get("source") != "session" or name in ref_names
+        }
+
+        # Upsert current file_refs as DocumentConfig entries
+        for ref in self._file_refs:
+            doc_entry = ref.get("document_config", {})
+            if not doc_entry:
+                doc_entry = {"url": ref.get("uri", "")}
+            doc_entry["source"] = "session"
+            if ref.get("description"):
+                doc_entry["description"] = ref["description"]
+            documents[ref["name"]] = doc_entry
+
+        existing["documents"] = documents
+        config_path.write_text(yaml.dump(existing, default_flow_style=False, sort_keys=False))
+        logger.debug(f"Persisted {len(self._file_refs)} documents to user config")
+
+    @staticmethod
+    def _remove_doc_from_user_config(user_id: str, doc_name: str) -> None:
+        """Remove a document entry from the user-level config."""
+        import yaml
+        from pathlib import Path
+
+        config_path = Path(".constat") / user_id / "config.yaml"
+        if not config_path.exists():
+            return
+
+        existing = yaml.safe_load(config_path.read_text()) or {}
+        documents = existing.get("documents", {})
+        if doc_name in documents:
+            del documents[doc_name]
+            existing["documents"] = documents
+            config_path.write_text(yaml.dump(existing, default_flow_style=False, sort_keys=False))
+            logger.debug(f"Removed document '{doc_name}' from user config")
 
     @staticmethod
     def _remove_db_from_user_config(user_id: str, db_name: str) -> None:
@@ -283,19 +356,47 @@ class ManagedSession:
                 except Exception as e:
                     logger.warning(f"Failed to restore API {api['name']}: {e}")
 
-        # Re-index URI documents
+        # Re-index URI documents (IMAP deferred to background thread)
+        deferred_imap: list[dict] = []
         if self._file_refs and self.session and hasattr(self.session, "doc_tools") and self.session.doc_tools:
             from constat.core.config import DocumentConfig
+            from constat.discovery.doc_tools._transport import infer_transport
             for ref in self._file_refs:
                 if "document_config" in ref:
                     try:
                         doc_config = DocumentConfig(**ref["document_config"])
+                        transport = infer_transport(doc_config)
+                        if transport == "imap":
+                            deferred_imap.append(ref)
+                            continue
                         self.session.doc_tools.add_document_from_config(
                             ref["name"], doc_config, session_id=self.session_id,
                         )
                         logger.debug(f"Restored URI document: {ref['name']}")
                     except Exception as e:
                         logger.warning(f"Failed to restore URI document {ref['name']}: {e}")
+
+        # Ingest IMAP sources in background (don't block session creation)
+        if deferred_imap:
+            import threading
+            def _ingest_imap():
+                from constat.core.config import DocumentConfig
+                for ref in deferred_imap:
+                    try:
+                        doc_config = DocumentConfig(**ref["document_config"])
+                        logger.info(f"Background IMAP ingest: {ref['name']}")
+                        success, msg = self.session.doc_tools.add_document_from_config(
+                            ref["name"], doc_config, session_id=self.session_id,
+                        )
+                        from datetime import datetime, timezone
+                        ref["last_refreshed"] = datetime.now(timezone.utc).isoformat()
+                        if success:
+                            logger.info(f"Background IMAP ingest complete: {ref['name']} — {msg}")
+                        else:
+                            logger.error(f"Background IMAP ingest returned failure: {ref['name']} — {msg}")
+                    except Exception as e:
+                        logger.error(f"Background IMAP ingest failed for {ref['name']}: {e}")
+            threading.Thread(target=_ingest_imap, name=f"imap-ingest-{self.session_id[:8]}", daemon=True).start()
 
 
 class SessionManager:
@@ -323,6 +424,70 @@ class SessionManager:
         self._sessions: dict[str, ManagedSession] = {}
         self._lock = Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
+
+        # Active WebSocket connection tracking
+        self._active_connections: dict[str, ActiveConnectionInfo] = {}
+
+        # Diff generator registry (heartbeat-triggered)
+        from constat.server.diff_generators import EntityDiffGenerator
+        self._diff_generators = [EntityDiffGenerator()]
+
+    # ------------------------------------------------------------------
+    # Active connection tracking
+    # ------------------------------------------------------------------
+
+    def register_connection(self, session_id: str, user_id: str, remote_addr: str) -> None:
+        """Register an active WebSocket connection."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._active_connections[session_id] = ActiveConnectionInfo(
+            session_id=session_id,
+            user_id=user_id,
+            remote_addr=remote_addr,
+            connected_at=now,
+            last_heartbeat=now,
+        )
+
+    def unregister_connection(self, session_id: str) -> None:
+        """Remove an active connection on WS disconnect."""
+        self._active_connections.pop(session_id, None)
+
+    def update_heartbeat(self, session_id: str) -> None:
+        """Update last heartbeat timestamp for a connection."""
+        conn = self._active_connections.get(session_id)
+        if conn:
+            conn.last_heartbeat = datetime.now(timezone.utc).isoformat()
+
+    def get_active_connections(self) -> list[dict]:
+        """Return list of active connections as dicts."""
+        return [
+            {
+                "session_id": c.session_id,
+                "user_id": c.user_id,
+                "remote_addr": c.remote_addr,
+                "connected_at": c.connected_at,
+                "last_heartbeat": c.last_heartbeat,
+            }
+            for c in self._active_connections.values()
+        ]
+
+    # ------------------------------------------------------------------
+    # Heartbeat processing
+    # ------------------------------------------------------------------
+
+    def process_heartbeat(self, session_id: str, since: str | None) -> str:
+        """Process a heartbeat: run eligible diff generators, return server_time."""
+        managed = self._sessions.get(session_id)
+        if not managed:
+            return datetime.now(timezone.utc).isoformat()
+        managed.touch()
+        self.update_heartbeat(session_id)
+        for gen in self._diff_generators:
+            try:
+                if gen.should_run(managed, since):
+                    gen.run(managed, self, since)
+            except Exception as e:
+                logger.warning(f"Diff generator '{gen.name}' error: {e}")
+        return datetime.now(timezone.utc).isoformat()
 
     def create_session(self, session_id: str, user_id: str = "default") -> str:
         """Create or restore a Session instance.
@@ -631,7 +796,7 @@ class SessionManager:
             if routes:
                 router.set_user_routing(TaskRoutingConfig(routes=routes))
 
-    def _run_entity_extraction(self, session_id: str, session: Session) -> None:
+    def _run_entity_extraction(self, session_id: str, session: Session) -> dict | None:
         """Run NER for session's visible documents.
 
         Creates chunk-entity links scoped to this session's entity catalog.
@@ -639,6 +804,9 @@ class SessionManager:
         Args:
             session_id: Server session ID for storing links
             session: Session with doc_tools and schema/api entity info
+
+        Returns:
+            Entity diff dict with added/removed lists, or None
         """
         if not session.doc_tools:
             logger.debug(f"Session {session_id}: no doc_tools, skipping entity extraction")
@@ -748,15 +916,18 @@ class SessionManager:
 
         # Run entity extraction
         try:
-            # Clear existing entity links before re-extraction (handles db add/remove)
+            # Snapshot old entities for diff
+            old_entities: dict[str, tuple[str, str]] = {}  # name -> (display_name, semantic_type)
             if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
-                logger.info(f"Session {session_id}: clearing existing entities and links")
-                session.doc_tools._vector_store.clear_session_entities(session_id)
-                logger.info(f"Session {session_id}: cleared existing entity links")
-            else:
-                logger.warning(f"Session {session_id}: no vector_store to clear entities from")
-
-            # Entity resolution chunks are embedded during warmup (no per-session embedding needed)
+                vs = session.doc_tools._vector_store
+                try:
+                    rows = vs._conn.execute(
+                        "SELECT name, display_name, semantic_type FROM entities WHERE session_id = ?",
+                        [session_id],
+                    ).fetchall()
+                    old_entities = {r[0]: (r[1], r[2]) for r in rows}
+                except Exception:
+                    pass
 
             logger.info(f"Session {session_id}: running extract_entities_for_session with domain_ids={domain_ids}, {len(schema_entities)} schema entities")
             if schema_entities:
@@ -792,8 +963,39 @@ class SessionManager:
                         vs.evict_ner_scope_cache()
                     except Exception as cache_err:
                         logger.warning(f"Session {session_id}: failed to store NER scope cache: {cache_err}")
+
+            # Compute entity diff
+            new_entities: dict[str, tuple[str, str]] = {}
+            if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
+                try:
+                    rows = session.doc_tools._vector_store._conn.execute(
+                        "SELECT name, display_name, semantic_type FROM entities WHERE session_id = ?",
+                        [session_id],
+                    ).fetchall()
+                    new_entities = {r[0]: (r[1], r[2]) for r in rows}
+                except Exception:
+                    pass
+
+            added_names = set(new_entities.keys()) - set(old_entities.keys())
+            removed_names = set(old_entities.keys()) - set(new_entities.keys())
+
+            return {
+                "entities_added": len(added_names),
+                "entities_removed": len(removed_names),
+                "diff": {
+                    "added": [
+                        {"name": new_entities[n][0], "type": new_entities[n][1]}
+                        for n in sorted(added_names)[:50]
+                    ],
+                    "removed": [
+                        {"name": old_entities[n][0], "type": old_entities[n][1]}
+                        for n in sorted(removed_names)[:50]
+                    ],
+                },
+            }
         except Exception as e:
             logger.exception(f"Session {session_id}: entity extraction failed: {e}")
+            return None
 
     def refresh_entities(self, session_id: str) -> None:
         """Refresh entity extraction for a session (synchronous).
@@ -815,12 +1017,86 @@ class SessionManager:
         self._run_entity_extraction(session_id, managed.session)
         logger.info(f"refresh_entities({session_id}): complete")
 
+    def try_restore_entities_from_cache(self, session_id: str) -> bool:
+        """Try to restore entities from NER scope cache (synchronous, fast).
+
+        Returns True if entities were restored from cache, False if full NER needed.
+        Call this BEFORE session_ready so glossary has data on first fetch.
+        """
+        managed = self._sessions.get(session_id)
+        if not managed or not managed.session or not managed.session.doc_tools:
+            return False
+
+        session = managed.session
+        if not hasattr(session.doc_tools, '_vector_store') or not session.doc_tools._vector_store:
+            return False
+
+        try:
+            from constat.discovery.ner_fingerprint import compute_ner_fingerprint, update_ner_fingerprint
+            from constat.catalog.glossary_builder import get_glossary_terms_for_ner, get_relationship_terms_for_ner
+
+            # Build the same inputs as _run_entity_extraction
+            domain_ids = list(session.config.domains.keys()) if session.config.domains else []
+            for p in (managed.active_domains or []):
+                if p not in domain_ids:
+                    domain_ids.append(p)
+            session_db_names = [db["name"] for db in managed._dynamic_dbs]
+
+            schema_entities = list(session.schema_manager.get_entity_names(
+                include_columns_for_dbs=session_db_names
+            ))
+            api_entities = list(session._get_api_entity_names())
+
+            business_terms: list[str] = []
+            resolved = managed.resolved_config
+            if resolved and resolved.glossary:
+                business_terms.extend(get_glossary_terms_for_ner(resolved.glossary))
+            elif session.config.glossary:
+                business_terms.extend(get_glossary_terms_for_ner(session.config.glossary))
+            if resolved and resolved.relationships:
+                business_terms.extend(get_relationship_terms_for_ner(resolved.relationships))
+            elif session.config.relationships:
+                business_terms.extend(get_relationship_terms_for_ner(session.config.relationships))
+
+            entity_terms: dict[str, list[str]] = {}
+            vs = session.doc_tools._vector_store
+            if hasattr(vs, 'get_entity_resolution_names'):
+                er_source_ids = ["__base__", "__image_labels__"] + domain_ids
+                entity_terms = vs.get_entity_resolution_names(er_source_ids)
+                image_labels = entity_terms.pop("LABEL", [])
+                if image_labels:
+                    business_terms.extend(image_labels)
+
+            chunk_ids = []
+            try:
+                chunk_ids = vs.get_all_chunk_ids(global_only=True)
+            except Exception:
+                pass
+
+            fingerprint = compute_ner_fingerprint(
+                chunk_ids, schema_entities, api_entities, business_terms, entity_terms=entity_terms,
+            )
+
+            if hasattr(vs, 'has_ner_scope_cache') and vs.has_ner_scope_cache(fingerprint):
+                count = vs.restore_ner_scope_cache(fingerprint, session_id)
+                update_ner_fingerprint(session_id, fingerprint)
+                if hasattr(vs, '_rebuild_clusters'):
+                    vs._clusters_dirty = True
+                    vs._rebuild_clusters(session_id)
+                logger.info(f"Session {session_id}: scope cache hit — restored {count} entities before session_ready")
+                return True
+
+        except Exception as e:
+            logger.warning(f"Session {session_id}: scope cache restore attempt failed: {e}")
+
+        return False
+
     def refresh_entities_async(self, session_id: str) -> None:
         """Refresh entity extraction in a background thread.
 
         Non-blocking — returns immediately and pushes ENTITY_REBUILD_START
         and ENTITY_REBUILD_COMPLETE events via the session's WebSocket queue.
-        Cancels any previous NER thread for this session before starting.
+        Skips if NER is already running for this session.
 
         Args:
             session_id: Session ID to refresh
@@ -831,8 +1107,16 @@ class SessionManager:
                 return
             managed = self._sessions[session_id]
 
-        # Cancel any previously running NER for this session
-        managed._ner_cancelled.set()
+        # Skip if session init hasn't completed (domains not loaded yet)
+        if not managed._init_complete:
+            logger.debug(f"refresh_entities_async({session_id}): init not complete, skipping")
+            return
+
+        # Skip if NER is already in-flight — don't cancel and restart
+        if managed._ner_thread and managed._ner_thread.is_alive():
+            logger.debug(f"refresh_entities_async({session_id}): NER already running, skipping")
+            return
+
         # Create a fresh cancellation flag for this run
         cancel_event = threading.Event()
         managed._ner_cancelled = cancel_event
@@ -847,15 +1131,18 @@ class SessionManager:
                 self._push_event(managed, EventType.ENTITY_REBUILD_START, {
                     "session_id": session_id,
                 })
-                self._run_entity_extraction(session_id, managed.session)
+                diff = self._run_entity_extraction(session_id, managed.session)
                 if cancel_event.is_set():
                     logger.info(f"refresh_entities_async({session_id}): cancelled during extraction")
                     return
                 duration_ms = int((time.time() - t0) * 1000)
-                self._push_event(managed, EventType.ENTITY_REBUILD_COMPLETE, {
+                event_data = {
                     "session_id": session_id,
                     "duration_ms": duration_ms,
-                })
+                }
+                if diff:
+                    event_data.update(diff)
+                self._push_event(managed, EventType.ENTITY_REBUILD_COMPLETE, event_data)
                 logger.info(f"refresh_entities_async({session_id}): complete in {duration_ms}ms")
             except Exception as e:
                 if cancel_event.is_set():
@@ -868,8 +1155,11 @@ class SessionManager:
                     "duration_ms": duration_ms,
                     "error": str(e),
                 })
+            finally:
+                managed._ner_thread = None
 
         thread = threading.Thread(target=_run, name=f"entity-rebuild-{session_id}", daemon=True)
+        managed._ner_thread = thread
         thread.start()
 
     def _run_glossary_generation(
@@ -1315,21 +1605,17 @@ class SessionManager:
     def get_session(self, session_id: str) -> ManagedSession:
         """Get a managed session by ID.
 
-        Args:
-            session_id: Session ID to retrieve
-
-        Returns:
-            ManagedSession instance
+        Lock-free read — dict access is GIL-atomic in CPython.
+        Avoids blocking the asyncio event loop when create_session holds _lock.
 
         Raises:
             KeyError: If session not found
         """
-        with self._lock:
-            if session_id not in self._sessions:
-                raise KeyError(f"Session not found: {session_id}")
-            managed = self._sessions[session_id]
-            managed.touch()
-            return managed
+        managed = self._sessions.get(session_id)
+        if managed is None:
+            raise KeyError(f"Session not found: {session_id}")
+        managed.touch()
+        return managed
 
     def get_session_or_none(self, session_id: str) -> Optional[ManagedSession]:
         """Get a managed session by ID, returning None if not found.

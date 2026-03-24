@@ -144,7 +144,8 @@ class EntityExtractor:
             if use_lemma:
                 # LEMMA handles singular/plural but preserves case, so we also need LOWER
                 # Using both: LEMMA for normalization, but match on lowercased lemma
-                return [{"LEMMA": {"IN": [w.lower(), w.lower().rstrip('s')]}} for w in words if w]
+                from constat.discovery.models import singularize
+                return [{"LEMMA": {"IN": [w.lower(), singularize(w).lower()]}} for w in words if w]
             else:
                 return [{"LOWER": w.lower()} for w in words if w]
 

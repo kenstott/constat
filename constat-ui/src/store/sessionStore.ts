@@ -134,8 +134,8 @@ interface SessionState {
   // Session creation state (for disabling input during new query)
   isCreatingSession: boolean
 
-  // Glossary timeout (cleared on entity_rebuild_complete)
-  _glossaryTimeout: ReturnType<typeof setTimeout> | null
+  // Whether background session init is complete (domains loaded, sources available)
+  sessionReady: boolean
 
   // Actions
   createSession: (userId?: string, forceNew?: boolean) => Promise<void>
@@ -190,7 +190,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   queryContext: null,
   isRedo: false,
   isCreatingSession: false,
-  _glossaryTimeout: null,
+  sessionReady: false,
 
   createSession: async (userId = 'default', forceNew = false) => {
     // Mark session as being created (disables input)
@@ -264,6 +264,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     }
 
+    // Reconnect: active_domains populated → session already initialized
+    // New session: active_domains empty → wait for session_ready event
+    const isReconnect = (session.active_domains?.length ?? 0) > 0
+
     // Initialize with restored messages (or empty for new session)
     set({
       session,
@@ -280,9 +284,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       liveMessageId: null,
       thinkingMessageId: null,
       lastQueryStartStep: 0,
-  querySubmittedAt: null,
+      querySubmittedAt: null,
       queryContext: null,
       isCreatingSession: false,
+      sessionReady: isReconnect,
     })
 
     // Connect WebSocket - server will send welcome message on connect
@@ -290,22 +295,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     wsManager.onStatus((connected) => set({ wsConnected: connected }))
     wsManager.onEvent((event) => get().handleWSEvent(event))
 
-    // Glossary safety timeout — fetch glossary if entity_rebuild_complete never arrives
-    const prevTimeout = get()._glossaryTimeout
-    if (prevTimeout) clearTimeout(prevTimeout)
-    const glossaryTimeout = setTimeout(() => {
-      const { session: s } = get()
-      if (s) {
-        console.log('[createSession] Glossary timeout — fetching glossary as fallback')
-        import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-          const store = useGlossaryStore.getState()
-          if (!store.terms || store.terms.length === 0) {
-            store.fetchTerms(s.session_id)
-          }
-        })
-      }
-    }, 90_000)
-    set({ _glossaryTimeout: glossaryTimeout })
+    // On reconnect, fetch glossary immediately (session already initialized)
+    // On new session, session_ready event will trigger the fetch
+    if (isReconnect) {
+      import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
+        useGlossaryStore.getState().fetchTerms(session.session_id)
+      })
+    }
   },
 
   setSession: (session, options?: { preserveMessages?: boolean }) => {
@@ -779,6 +775,35 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     switch (event.event_type) {
+      case 'heartbeat_ack': {
+        const data = event.data as { server_time: string }
+        wsManager.setLastHeartbeatTime(data.server_time)
+        break
+      }
+
+      case 'session_ready': {
+        // Background init complete — domains loaded, sources/glossary/agents available
+        const { session: s } = get()
+        if (s) {
+          const sid = s.session_id
+          const readyData = event.data as { active_domains?: string[] }
+          if (readyData.active_domains) {
+            set({ session: { ...s, active_domains: readyData.active_domains }, sessionReady: true })
+          } else {
+            set({ sessionReady: true })
+          }
+          // Fetch all domain-dependent data
+          useArtifactStore.getState().fetchEntities(sid)
+          useArtifactStore.getState().fetchDataSources(sid)
+          useArtifactStore.getState().fetchAllSkills()
+          useArtifactStore.getState().fetchAllAgents(sid)
+          import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
+            useGlossaryStore.getState().fetchTerms(sid)
+          })
+        }
+        break
+      }
+
       case 'welcome': {
         // Centered greeting is rendered by ConversationPanel when messages is empty.
         const data = event.data as { suggestions: string[]; tagline?: string; reliable_adjective?: string; honest_adjective?: string }
@@ -1576,15 +1601,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
 
       case 'entity_rebuild_complete': {
-        // Entity extraction finished in background — refresh entities + glossary
-        const glossaryTimer = get()._glossaryTimeout
-        if (glossaryTimer) {
-          clearTimeout(glossaryTimer)
-          set({ _glossaryTimeout: null })
-        }
+        // Entity extraction finished — apply diff to entities, refresh glossary
         const { session: s } = get()
         if (s) {
-          useArtifactStore.getState().fetchEntities(s.session_id)
+          const data = event.data as { diff?: { added: Array<{name: string, type: string}>, removed: Array<{name: string, type: string}> } }
+          if (data.diff) {
+            useArtifactStore.getState().patchEntities(data.diff)
+          }
           import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
             const store = useGlossaryStore.getState()
             store.setEntityRebuilding(false)
@@ -1598,6 +1621,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
           useGlossaryStore.getState().setEntityRebuilding(true)
         })
+        break
+
+      case 'source_ingest_complete': {
+        // Refresh data sources panel when a source finishes ingesting
+        const { session: s } = get()
+        if (s) {
+          useArtifactStore.getState().fetchDataSources(s.session_id)
+        }
+        break
+      }
+
+      case 'source_ingest_error': {
+        const errData = event.data as { name?: string; error?: string }
+        console.error(`[source_ingest_error] ${errData.name}: ${errData.error}`)
+        break
+      }
+
+      case 'source_ingest_start':
         break
 
       case 'glossary_terms_added': {

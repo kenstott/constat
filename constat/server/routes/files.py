@@ -519,8 +519,9 @@ async def delete_file_reference(
     # Refresh entities to remove references to the deleted file
     session_manager.refresh_entities_async(session_id)
 
-    # Persist resources for session restoration
+    # Persist resources and remove from user config
     managed.save_resources()
+    managed._remove_doc_from_user_config(managed.user_id, name)
 
     return {
         "status": "deleted",
@@ -534,7 +535,66 @@ async def delete_file_reference(
 # ============================================================================
 
 
+import threading
+
 from pydantic import BaseModel as _BaseModel
+
+
+def _ingest_source_async(
+    session_manager: SessionManager,
+    managed: ManagedSession,
+    name: str,
+    doc_config: "DocumentConfig",
+    session_id: str,
+) -> None:
+    """Run document ingestion in a background thread, pushing WS events."""
+    from constat.server.models import EventType
+
+    def _run():
+        import time
+        t0 = time.time()
+        session_manager._push_event(managed, EventType.SOURCE_INGEST_START, {
+            "session_id": session_id,
+            "name": name,
+        })
+        try:
+            success, msg = managed.session.doc_tools.add_document_from_config(
+                name, doc_config, session_id=session_id,
+            )
+            duration_ms = int((time.time() - t0) * 1000)
+            if success:
+                # Update last_refreshed on the file ref
+                for ref in managed._file_refs:
+                    if ref.get("name") == name:
+                        ref["last_refreshed"] = datetime.now(timezone.utc).isoformat()
+                        break
+                managed.save_resources()
+                session_manager._push_event(managed, EventType.SOURCE_INGEST_COMPLETE, {
+                    "session_id": session_id,
+                    "name": name,
+                    "message": msg,
+                    "duration_ms": duration_ms,
+                })
+                session_manager.refresh_entities_async(session_id)
+            else:
+                session_manager._push_event(managed, EventType.SOURCE_INGEST_ERROR, {
+                    "session_id": session_id,
+                    "name": name,
+                    "error": msg,
+                    "duration_ms": duration_ms,
+                })
+        except Exception as e:
+            duration_ms = int((time.time() - t0) * 1000)
+            logger.exception(f"Source ingestion failed for {name}: {e}")
+            session_manager._push_event(managed, EventType.SOURCE_INGEST_ERROR, {
+                "session_id": session_id,
+                "name": name,
+                "error": str(e),
+                "duration_ms": duration_ms,
+            })
+
+    thread = threading.Thread(target=_run, name=f"ingest-{name}-{session_id[:8]}", daemon=True)
+    thread.start()
 
 
 class AddDocumentURIRequest(_BaseModel):
@@ -557,18 +617,10 @@ async def add_document_uri(
     body: AddDocumentURIRequest,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict:
-    """Add and index a document from a URL.
+    """Add and index a document from a URL (async).
 
-    Fetches content from the URL, extracts text, chunks, embeds, and indexes
-    for search. Supports HTML, PDF, markdown, and other document types.
-
-    Args:
-        session_id: Session ID
-        body: Document URI configuration
-        session_manager: Injected session manager
-
-    Returns:
-        Status dict with name and message
+    Returns immediately after registering the source. Ingestion runs in a
+    background thread and pushes source_ingest_start/complete/error via WS.
     """
     managed = session_manager.get_session_or_none(session_id)
     if not managed:
@@ -592,16 +644,7 @@ async def add_document_uri(
         type=body.type,
     )
 
-    success, msg = session.doc_tools.add_document_from_config(
-        body.name,
-        doc_config,
-        session_id=session_id,
-    )
-
-    if not success:
-        raise HTTPException(status_code=400, detail=msg)
-
-    # Track as file reference for persistence/restore
+    # Track as file reference immediately
     managed._file_refs.append({
         "name": body.name,
         "uri": body.url,
@@ -611,9 +654,95 @@ async def add_document_uri(
         "document_config": doc_config.model_dump(exclude_defaults=True),
     })
     managed.save_resources()
-    session_manager.refresh_entities_async(session_id)
 
-    return {"status": "ok", "name": body.name, "message": msg}
+    _ingest_source_async(session_manager, managed, body.name, doc_config, session_id)
+
+    return {"status": "accepted", "name": body.name}
+
+
+class AddEmailSourceRequest(_BaseModel):
+    """Request to add an IMAP email source."""
+    name: str
+    url: str
+    username: str
+    password: str | None = None
+    auth_type: str = "basic"
+    mailbox: str = "INBOX"
+    since: str | None = None
+    max_messages: int = 500
+    include_headers: bool = True
+    extract_attachments: bool = True
+    oauth2_client_id: str | None = None
+    oauth2_client_secret: str | None = None
+    oauth2_tenant_id: str | None = None
+    oauth2_refresh_token: str | None = None
+
+
+@router.post("/{session_id}/documents/add-email")
+async def add_email_source(
+    session_id: str,
+    body: AddEmailSourceRequest,
+    request: Request,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Add and index an IMAP email source (async).
+
+    Returns immediately. Pushes source_ingest_start, source_ingest_complete,
+    or source_ingest_error via WebSocket.
+    """
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    session = managed.session
+    if not hasattr(session, "doc_tools") or not session.doc_tools:
+        raise HTTPException(status_code=503, detail="Document tools not available")
+
+    from constat.core.config import DocumentConfig
+
+    doc_config = DocumentConfig(
+        url=body.url,
+        username=body.username,
+        password=body.password,
+        auth_type=body.auth_type,
+        mailbox=body.mailbox,
+        since=body.since,
+        max_messages=body.max_messages,
+        include_headers=body.include_headers,
+        extract_attachments=body.extract_attachments,
+        extract_images=True,
+        oauth2_client_id=body.oauth2_client_id,
+        oauth2_client_secret=body.oauth2_client_secret,
+        oauth2_tenant_id=body.oauth2_tenant_id,
+    )
+
+    # Browser OAuth2 flow: use server-configured client credentials with user's refresh token
+    if body.oauth2_refresh_token:
+        server_config = request.app.state.server_config
+        if body.oauth2_tenant_id or (body.url and any(k in body.url.lower() for k in ('outlook', 'office365', 'microsoft'))):
+            doc_config.oauth2_client_id = server_config.microsoft_email_client_id
+            doc_config.oauth2_client_secret = body.oauth2_refresh_token
+            doc_config.oauth2_tenant_id = body.oauth2_tenant_id or server_config.microsoft_email_tenant_id
+        else:
+            doc_config.oauth2_client_id = server_config.google_email_client_id
+            doc_config.oauth2_client_secret = body.oauth2_refresh_token
+            doc_config.password = server_config.google_email_client_secret
+        doc_config.auth_type = "oauth2_refresh"
+
+    # Track as file reference immediately (before ingestion completes)
+    managed._file_refs.append({
+        "name": body.name,
+        "uri": body.url,
+        "has_auth": True,
+        "description": f"IMAP email source ({body.mailbox})",
+        "added_at": datetime.now(timezone.utc).isoformat(),
+        "document_config": doc_config.model_dump(exclude_defaults=True),
+    })
+    managed.save_resources()
+
+    _ingest_source_async(session_manager, managed, body.name, doc_config, session_id)
+
+    return {"status": "accepted", "name": body.name}
 
 
 @router.post("/{session_id}/documents/upload")
@@ -773,16 +902,8 @@ async def upload_documents(
                     "path": str(file_path),
                 })
             else:
-                # Index as a document (triggers entity extraction)
-                managed.session.add_file(
-                    name=name,
-                    uri=uri,
-                    description=f"Uploaded document: {file.filename}",
-                )
-
-                # Track as a file reference
-                file_refs = managed._file_refs
-                file_refs.append({
+                # Track as a file reference immediately
+                managed._file_refs.append({
                     "name": name,
                     "uri": uri,
                     "has_auth": False,
@@ -790,10 +911,15 @@ async def upload_documents(
                     "added_at": now.isoformat(),
                 })
 
+                # Index document async (add_file does chunking/embedding)
+                from constat.core.config import DocumentConfig
+                doc_config = DocumentConfig(url=uri, description=f"Uploaded: {file.filename}")
+                _ingest_source_async(session_manager, managed, name, doc_config, session_id)
+
                 results.append({
                     "filename": file.filename,
                     "name": name,
-                    "status": "indexed",
+                    "status": "accepted",
                     "path": str(file_path),
                 })
 
@@ -808,20 +934,17 @@ async def upload_documents(
     if not results:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    # If any databases or documents were added, refresh entities for the session
     database_count = sum(1 for r in results if r.get("status") == "database")
-    indexed_count = sum(1 for r in results if r.get("status") == "indexed")
+    accepted_count = sum(1 for r in results if r.get("status") == "accepted")
 
-    if database_count > 0 or indexed_count > 0:
-        session_manager.refresh_entities_async(session_id)
-
-    # Persist resources for session restoration
-    if database_count > 0 or indexed_count > 0:
+    # Databases are registered synchronously — refresh entities + persist for those
+    if database_count > 0:
         managed.save_resources()
+        session_manager.refresh_entities_async(session_id)
 
     return {
         "status": "success",
-        "indexed_count": indexed_count,
+        "accepted_count": accepted_count,
         "database_count": database_count,
         "total_files": len(files),
         "results": results,
@@ -933,3 +1056,41 @@ async def serve_file(
         media_type=media_type,
         filename=file_path.name,
     )
+
+
+# ---------------------------------------------------------------------------
+# Immediate document source refresh (bypasses interval)
+# ---------------------------------------------------------------------------
+
+@router.post("/{session_id}/documents/refresh")
+async def refresh_documents(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Trigger immediate source refresh for all eligible sources.
+
+    Bypasses the interval check. Pushes SOURCE_REFRESH_COMPLETE when done.
+    """
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if not managed._file_refs:
+        return {"status": "skipped", "reason": "no_sources"}
+
+    import asyncio
+    from constat.server.source_refresher import refresh_session_sources
+
+    # Force refresh by clearing last_refreshed on all refs
+    for ref in managed._file_refs:
+        ref.pop("last_refreshed", None)
+
+    asyncio.get_event_loop().run_in_executor(
+        None,
+        refresh_session_sources,
+        managed,
+        session_manager,
+        0,  # interval=0 forces all to refresh
+    )
+
+    return {"status": "started"}
