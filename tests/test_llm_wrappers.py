@@ -31,7 +31,7 @@ class TestLlmMap:
         mock.return_value = {"a": "X", "b": "Y"}
         from constat.llm.wrappers import llm_map
         assert llm_map(["a", "b", "a"], ["X", "Y"], "s", "t") == ["X", "Y", "X"]
-        mock.assert_called_once_with(["a", "b"], ["X", "Y"], "s", "t")
+        mock.assert_called_once_with(["a", "b"], ["X", "Y"], "s", "t", reason=False)
 
     @patch("constat.llm.wrappers._raw_llm_map")
     def test_single_str_returns_scalar(self, mock):
@@ -72,13 +72,23 @@ class TestLlmMap:
         mock.assert_not_called()
 
     @patch("constat.llm.wrappers._raw_llm_map")
-    def test_reason_kwarg_ignored(self, mock):
-        """reason=True is silently ignored — always returns str."""
-        mock.return_value = {"a": "X"}
+    def test_reason_returns_tuples(self, mock):
+        """reason=True returns (value, reason) tuples."""
+        mock.return_value = {
+            "a": {"value": "X", "reason": "obvious match"},
+            "b": {"value": "Y", "reason": "close enough"},
+        }
         from constat.llm.wrappers import llm_map
-        result = llm_map(["a", "a"], ["X"], reason=True)
-        assert result == ["X", "X"]
-        assert all(isinstance(v, str) for v in result)
+        result = llm_map(["a", "b", "a"], ["X", "Y"], reason=True)
+        assert result == [("X", "obvious match"), ("Y", "close enough"), ("X", "obvious match")]
+        mock.assert_called_once_with(["a", "b"], ["X", "Y"], "values", "", reason=True)
+
+    @patch("constat.llm.wrappers._raw_llm_map")
+    def test_reason_scalar(self, mock):
+        """reason=True with single value returns scalar tuple."""
+        mock.return_value = {"hello": {"value": "world", "reason": "greeting"}}
+        from constat.llm.wrappers import llm_map
+        assert llm_map("hello", ["world"], reason=True) == ("world", "greeting")
 
     @patch("constat.llm.wrappers._raw_llm_classify")
     def test_allow_none_routes_to_classify(self, mock):
@@ -145,11 +155,23 @@ class TestLlmClassify:
         mock.assert_not_called()
 
     @patch("constat.llm.wrappers._raw_llm_classify")
-    def test_reason_kwarg_ignored(self, mock):
-        mock.return_value = {"a": "pos"}
+    def test_reason_returns_tuples(self, mock):
+        mock.return_value = {
+            "a": {"value": "pos", "reason": "positive tone"},
+        }
         from constat.llm.wrappers import llm_classify
-        result = llm_classify(["a", "a"], ["pos"], reason=True, score=True)
-        assert result == ["pos", "pos"]
+        result = llm_classify(["a", "a"], ["pos"], reason=True)
+        assert result == [("pos", "positive tone"), ("pos", "positive tone")]
+
+    @patch("constat.llm.wrappers._raw_llm_classify")
+    def test_reason_none_value(self, mock):
+        mock.return_value = {
+            "x": {"value": "bug", "reason": "looks like a bug"},
+            "y": {"value": None, "reason": None},
+        }
+        from constat.llm.wrappers import llm_classify
+        result = llm_classify(["x", "y"], ["bug"], reason=True)
+        assert result == [("bug", "looks like a bug"), (None, None)]
 
 
 # ---------------------------------------------------------------------------

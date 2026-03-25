@@ -1066,9 +1066,9 @@ function GlossaryItem({
   sessionId: string
   depth?: number
 }) {
-  const { terms: allTerms, selectedName, updateTerm, refineTerm, deleteTerm, renameTerm } = useGlossaryStore()
+  const { terms: allTerms, selectedName, updateTerm, refineTerm, deleteTerm, renameTerm, toggleExpanded } = useGlossaryStore()
+  const isOpen = useGlossaryStore((s) => s.expandedItems[term.name] ?? false)
   const isSelected = selectedName?.toLowerCase() === term.name.toLowerCase()
-  const [isOpen, setIsOpen] = useState(false)
   const [isDefining, setIsDefining] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editDef, setEditDef] = useState('')
@@ -1092,7 +1092,7 @@ function GlossaryItem({
   // Auto-open when deep-linked via selectTerm
   useEffect(() => {
     if (isSelected && !isOpen) {
-      setIsOpen(true)
+      toggleExpanded(term.name, false)
     }
   }, [isSelected])
 
@@ -1135,7 +1135,7 @@ function GlossaryItem({
     <div id={`glossary-term-${term.name}`} className="border-b border-gray-100 dark:border-gray-700 last:border-b-0">
       <div
         role="button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => toggleExpanded(term.name, false)}
         className="group w-full flex items-center gap-2 py-2 px-1 text-left hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors cursor-pointer"
         style={{ paddingLeft: `${depth * 16 + 4}px` }}
       >
@@ -1341,7 +1341,9 @@ function TreeNodeView({
   sessionId: string
   depth?: number
 }) {
-  const [expanded, setExpanded] = useState(depth < 2)
+  const treeKey = `tree:${node.term.name}`
+  const expanded = useGlossaryStore((s) => s.expandedItems[treeKey] ?? depth < 2)
+  const toggleExpanded = useGlossaryStore((s) => s.toggleExpanded)
   const isDomainFolder = node.term.name.startsWith('__domain__')
 
   return (
@@ -1349,7 +1351,7 @@ function TreeNodeView({
       <div className="flex items-center">
         {node.children.length > 0 && (
           <button
-            onClick={() => setExpanded(!expanded)}
+            onClick={() => toggleExpanded(treeKey, depth < 2)}
             className="p-0.5"
             style={{ marginLeft: `${depth * 12}px` }}
           >
@@ -1546,11 +1548,13 @@ function buildTagGroups(terms: GlossaryTerm[]): Map<string, GlossaryTerm[]> {
 }
 
 function TagGroupSection({ tag, terms, sessionId }: { tag: string; terms: GlossaryTerm[]; sessionId: string }) {
-  const [collapsed, setCollapsed] = useState(false)
+  const tagKey = `tag:${tag}`
+  const collapsed = useGlossaryStore((s) => !(s.expandedItems[tagKey] ?? true))
+  const toggleExpanded = useGlossaryStore((s) => s.toggleExpanded)
   return (
     <div className="mb-1">
       <button
-        onClick={() => setCollapsed(!collapsed)}
+        onClick={() => toggleExpanded(tagKey, true)}
         className="w-full flex items-center gap-1.5 py-1.5 px-1 text-left hover:bg-gray-50 dark:hover:bg-gray-700/50"
       >
         <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
@@ -3367,7 +3371,8 @@ function DomainFilterTree({
 function GlossarySuggestionsSection({ sessionId }: { sessionId: string }) {
   const canWrite = useAuthStore((s) => s.canWrite)
   const [suggestions, setSuggestions] = useState<GlossarySuggestion[]>([])
-  const [expanded, setExpanded] = useState(false)
+  const expanded = useGlossaryStore((s) => s.expandedItems['suggestions'] ?? false)
+  const toggleExpanded = useGlossaryStore((s) => s.toggleExpanded)
   const [loading, setLoading] = useState(false)
 
   // Only show for users who can write glossary
@@ -3404,7 +3409,7 @@ function GlossarySuggestionsSection({ sessionId }: { sessionId: string }) {
   return (
     <div className="border-t border-gray-200 dark:border-gray-700 pt-2 mt-2">
       <button
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => toggleExpanded('suggestions', false)}
         className="flex items-center gap-2 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 w-full"
       >
         <ChevronRightIcon
@@ -3759,7 +3764,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
       ) : (
         <div className={`overflow-y-auto ${fullscreen ? 'flex-1' : 'max-h-[calc(100vh-20rem)]'}`}>
           {displayTerms.map((term) => (
-            <GlossaryItem key={`${term.name}-${term.domain || ''}`} term={term} sessionId={sessionId} />
+            <GlossaryItem key={term.name} term={term} sessionId={sessionId} />
           ))}
         </div>
       )}

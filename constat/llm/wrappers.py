@@ -14,8 +14,7 @@ return the simplest possible type based on how they were called:
   - Single value in  → scalar out  (str / float / None)
   - Multiple values  → list out    (list[str] / list[float|None])
 
-No reason/score kwargs — reasoning is captured in the event stream.
-Generated code gets exactly one way to call each function.
+With reason=True, returns (value, reason) tuples instead of bare values.
 """
 
 from __future__ import annotations
@@ -45,11 +44,12 @@ def _to_str_list(values) -> tuple[list[str], bool]:
     return [str(values)], True
 
 
-def llm_map(values, allowed, source_desc="values", target_desc="", allow_none=False, **_kw):
+def llm_map(values, allowed, source_desc="values", target_desc="", allow_none=False, reason=False, **_kw):
     """Map values to an allowed set.
 
-    With allow_none=False (default): every value gets a best-effort match. Returns str (scalar) or list[str].
-    With allow_none=True: unclassifiable values return None. Returns str|None (scalar) or list[str|None].
+    With allow_none=False (default): every value gets a best-effort match.
+    With allow_none=True: unclassifiable values return None.
+    With reason=True: returns (value, reason) tuples instead of bare values.
     """
     str_values, scalar = _to_str_list(values)
     if not str_values:
@@ -57,18 +57,27 @@ def llm_map(values, allowed, source_desc="values", target_desc="", allow_none=Fa
     unique = list(dict.fromkeys(str_values))
     if allow_none:
         context = target_desc or source_desc
-        raw = _raw_llm_classify(unique, allowed, context)
+        raw = _raw_llm_classify(unique, allowed, context, reason=reason)
     else:
-        raw = _raw_llm_map(unique, allowed, source_desc, target_desc)
-    result = [raw.get(v) for v in str_values]
+        raw = _raw_llm_map(unique, allowed, source_desc, target_desc, reason=reason)
+    if reason:
+        result = []
+        for v in str_values:
+            entry = raw.get(v, {})
+            if isinstance(entry, dict):
+                result.append((entry.get("value"), entry.get("reason", "")))
+            else:
+                result.append((entry, ""))
+    else:
+        result = [raw.get(v) for v in str_values]
     if scalar:
         return result[0]
     return result
 
 
-def llm_classify(values, categories, context="", **_kw):
+def llm_classify(values, categories, context="", reason=False, **_kw):
     """Alias for llm_map(..., allow_none=True). Kept for backwards compatibility."""
-    return llm_map(values, categories, source_desc=context, target_desc=context, allow_none=True, **_kw)
+    return llm_map(values, categories, source_desc=context, target_desc=context, allow_none=True, reason=reason, **_kw)
 
 
 def llm_score(texts, min_val=0.0, max_val=1.0, instruction="Rate each text", explain=False, **_kw):

@@ -78,11 +78,18 @@ Source databases (SQLite, DuckDB) are automatically attached to the session stor
 <!-- @llm_tools -->
 ## LLM Functions
 - `llm_ask(question) -> int | float | str`: ask the LLM a SINGLE factual question, returns a SINGLE scalar value. Use for one-off facts (e.g., "What is the GDP of France?" → 2780000000000). NEVER use llm_ask for per-row enrichment — use llm_map/llm_score/llm_extract instead.
-- `llm_map(values, allowed, source_desc, target_desc, allow_none=False)`: assign each value to one of the `allowed` labels. Accepts anything: list, Series, ndarray, or a single string. Deduplicates internally.
+- `llm_map(values, allowed, source_desc, target_desc, allow_none=False, reason=False)`: assign each value to one of the `allowed` labels. Accepts anything: list, Series, ndarray, or a single string. Deduplicates internally.
   - `allow_none=False` (default): every value gets a best-effort match. Returns `str` (scalar) or `list[str]`.
   - `allow_none=True`: unclassifiable values return `None`. Returns `str|None` (scalar) or `list[str|None]`.
+  - `reason=True`: returns `(value, reason)` tuples instead of bare values. Returns `tuple[str, str]` (scalar) or `list[tuple[str, str]]`.
   - Mapping to a domain list: `df['breed'] = llm_map(df['item'].tolist(), breed_names, "items", "breeds")`
   - Classifying into categories: `df['priority'] = llm_map(df['desc'].tolist(), ["high", "medium", "low"], "tickets", "priority levels", allow_none=True)`
+  - With reasoning:
+    ```python
+    results = llm_map(df['item'].tolist(), breed_names, "items", "breeds", reason=True)
+    df['breed'] = [r[0] for r in results]
+    df['reasoning'] = [r[1] for r in results]
+    ```
 - `llm_classify(values, categories, context)`: alias for `llm_map(values, categories, allow_none=True)`. Works identically — use whichever reads better.
 - `llm_extract(texts, fields, context)`: extract structured fields from free text using LLM. `fields` is a `list[str]`. Returns a dict if one text is passed, list of dicts if multiple. Best for: parsing addresses, extracting entities from descriptions.
 - `llm_summarize(texts, instruction)`: summarize texts using LLM. Pass ALL texts at once.
@@ -107,7 +114,7 @@ Source databases (SQLite, DuckDB) are automatically attached to the session stor
 
 <!-- @llm_guide -->
 ## LLM Primitive Selection Guide
-- **Assign labels from a set** (product→breed, city→country, sentiment→high/med/low): `llm_map`. Use `allow_none=True` when some items may not fit any label.
+- **Assign labels from a set** (product→breed, city→country, sentiment→high/med/low): `llm_map`. Use `allow_none=True` when some items may not fit any label. Use `reason=True` when you need an explanation for each assignment.
 - **Score on a numeric scale** (quality, sentiment 0-1, rating 1-5): `llm_score`. Use `explain=True` when you also need reasoning.
 - **Extract structured fields from text** (parse addresses, entities, score + explanation): `llm_extract`
 - **Extract a table from a document** (rating scales, guidelines): `llm_extract_table`

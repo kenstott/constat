@@ -58,6 +58,9 @@ interface GlossaryState {
   setProgress: (stage: string, percent: number) => void
   setEntityRebuilding: (rebuilding: boolean) => void
   loadFromCache: (sessionId: string) => Promise<void>
+  // Expansion state survives term updates (key = term.name, tree:name, tag:name)
+  expandedItems: Record<string, boolean>
+  toggleExpanded: (key: string, defaultOpen: boolean) => void
 }
 
 export const useGlossaryStore = create<GlossaryState>((set, get) => ({
@@ -248,4 +251,13 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
     const { terms, totalDefined, totalSelfDescribing } = inflateToGlossaryTerms(entry.state)
     set({ terms, totalDefined, totalSelfDescribing, loading: false })
   },
+
+  expandedItems: {},
+  toggleExpanded: (key, defaultOpen) =>
+    set((state) => ({
+      expandedItems: {
+        ...state.expandedItems,
+        [key]: !(state.expandedItems[key] ?? defaultOpen),
+      },
+    })),
 }))
