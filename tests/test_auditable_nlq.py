@@ -189,7 +189,7 @@ class TestAuditableBasicQueries:
     def test_simple_sum(self, auditable_session):
         """Test simple sum query in auditable mode."""
         result = auditable_session.solve(
-            "Prove the total revenue from all orders."
+            "Verify: What is the total sum of all order amounts?"
         )
 
         assert result.get("success"), f"Query failed: {result.get('error')}"

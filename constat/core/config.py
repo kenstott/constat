@@ -737,6 +737,12 @@ class DocumentConfig(BaseModel):
     # Glossary generation gating
     generate_definitions: Union[bool, float, str] = "auto"  # True/False/float threshold/"auto" (0.5)
 
+    # Audio transcription
+    whisper_model: str = "large-v3"  # faster-whisper model size
+    diarize: bool = False  # Enable WhisperX speaker diarization
+    language: Optional[str] = None  # Language code (None = auto-detect)
+    hf_token: Optional[str] = None  # HuggingFace token for diarization (${HF_TOKEN})
+
     # Background refresh
     auto_refresh: bool = True  # Whether this source is eligible for background refresh
     refresh_interval: Optional[int] = None  # Override default refresh interval (seconds)

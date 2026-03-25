@@ -85,6 +85,9 @@ openai = ["openai>=2.17.0"]
 # Email formatting
 email = ["markdown>=3.10.1"]
 
+# Audio/video transcription
+audio = ["faster-whisper>=1.1.0", "whisperx>=3.3.0"]
+
 # Extended data processing and document generation
 extras = [
     "polars>=1.38.1",        # Fast DataFrame library
@@ -112,6 +115,7 @@ all = [
     "constat[s3,sftp]",
     "constat[openai]",
     "constat[email]",
+    "constat[audio]",
     "constat[extras]",
 ]
 

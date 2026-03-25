@@ -1165,6 +1165,33 @@ def elasticsearch_url(elasticsearch_container) -> str:
     return elasticsearch_container["url"]
 
 
+# =============================================================================
+# Audio Fixtures
+# =============================================================================
+
+@pytest.fixture
+def audio_fixtures(tmp_path):
+    """Generate test audio files using stdlib wave module."""
+    import wave, struct, math
+
+    def make_wav(filename, duration_sec=2, sample_rate=16000, frequency=440):
+        path = tmp_path / filename
+        with wave.open(str(path), 'wb') as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)  # 16-bit
+            f.setframerate(sample_rate)
+            for i in range(int(sample_rate * duration_sec)):
+                sample = int(16000 * math.sin(2 * math.pi * frequency * i / sample_rate))
+                f.writeframes(struct.pack('<h', sample))
+        return path
+
+    return {
+        "short_wav": make_wav("short.wav", duration_sec=1),
+        "medium_wav": make_wav("medium.wav", duration_sec=5),
+        "silence_wav": make_wav("silence.wav", duration_sec=2, frequency=0),
+    }
+
+
 # Auto-skip tests based on markers
 def pytest_collection_modifyitems(config, items):
     """Skip tests that require Docker if it's not available."""

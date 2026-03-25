@@ -34,6 +34,16 @@ MIME_TO_SHORT: dict[str, str] = {
     "image/bmp": "image",
     "image/gif": "image",
     "image/svg+xml": "image",
+    "audio/mpeg": "audio",
+    "audio/mp4": "audio",
+    "audio/wav": "audio",
+    "audio/x-wav": "audio",
+    "audio/ogg": "audio",
+    "audio/flac": "audio",
+    "audio/webm": "audio",
+    "video/mp4": "audio",
+    "video/webm": "audio",
+    "video/x-matroska": "audio",
 }
 
 # File extension -> short alias
@@ -63,19 +73,28 @@ EXTENSION_TO_SHORT: dict[str, str] = {
     ".bmp": "image",
     ".gif": "image",
     ".svg": "image",
+    ".mp3": "audio",
+    ".mp4": "audio",
+    ".m4a": "audio",
+    ".wav": "audio",
+    ".ogg": "audio",
+    ".flac": "audio",
+    ".webm": "audio",
+    ".mkv": "audio",
+    ".aac": "audio",
 }
 
 # All known short aliases
 _KNOWN_SHORT: set[str] = {
     "auto", "pdf", "html", "markdown", "text", "csv", "json", "jsonl",
-    "yaml", "xml", "docx", "xlsx", "pptx", "image",
+    "yaml", "xml", "docx", "xlsx", "pptx", "image", "audio",
 }
 
 # Legacy transport types — treated as "auto" (transport is now inferred from fields)
 _LEGACY_TRANSPORT_TYPES: set[str] = {"file", "http", "inline", "confluence", "notion"}
 
 # Binary types that need special extraction (not decodable as UTF-8)
-_BINARY_TYPES: set[str] = {"pdf", "docx", "xlsx", "pptx", "image"}
+_BINARY_TYPES: set[str] = {"pdf", "docx", "xlsx", "pptx", "image", "audio"}
 
 
 def normalize_type(user_type: str) -> str:
@@ -156,7 +175,9 @@ _LOADABLE_MIME_PREFIXES = ("text/", "application/json", "application/xml",
                            "application/vnd.ms-excel",
                            "application/vnd.ms-powerpoint",
                            "application/octet-stream",
-                           "image/")  # unknown binary — let downstream decide
+                           "image/",  # unknown binary — let downstream decide
+                           "audio/",
+                           "video/")
 
 
 def is_loadable_mime(mime: str | None) -> bool:

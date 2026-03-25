@@ -598,6 +598,12 @@ class _CoreMixin:
             elif suffix in (".yaml", ".yml"):
                 content = path.read_text()
                 doc_format = "yaml"
+            elif suffix in (".mp3", ".mp4", ".m4a", ".wav", ".ogg", ".flac", ".webm", ".mkv", ".aac"):
+                from ._audio import transcribe_audio, render_transcript
+                doc_config = self._resolve_doc_config(name) if name in self.config.documents else DocumentConfig()
+                result = transcribe_audio(path, doc_config)
+                content = render_transcript(result, path.stem)
+                doc_format = "markdown"
             elif suffix in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".bmp", ".gif"):
                 from ._image import _extract_image, _render_image_result, _describe_image_sync, _ocr_via_vision
                 _SUFFIX_TO_MIME = {
@@ -1160,6 +1166,20 @@ class _CoreMixin:
                     pass  # fall back to OCR-only
             img_name = Path(result.source_path).stem if result.source_path else "image"
             return _render_image_result(image_result, img_name), "markdown"
+        elif doc_type == "audio":
+            from ._audio import transcribe_audio, render_transcript as _render_transcript
+            import tempfile
+            suffix = Path(result.source_path).suffix if result.source_path else ".wav"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                f.write(result.data)
+                temp_path = Path(f.name)
+            try:
+                doc_config = self._resolve_doc_config(name) if name in self.config.documents else DocumentConfig()
+                tr = transcribe_audio(temp_path, doc_config)
+                name_stem = Path(result.source_path).stem if result.source_path else "audio"
+                return _render_transcript(tr, name_stem), "markdown"
+            finally:
+                temp_path.unlink(missing_ok=True)
         else:
             return result.data.decode("utf-8"), doc_type
 
