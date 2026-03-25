@@ -260,6 +260,7 @@ Returns ranked results from:
 | `doc_tools/_crawler.py` | BFS link crawler for `follow_links` documents |
 | `doc_tools/_file_extractors.py` | PDF, DOCX, XLSX, PPTX, HTML extraction (including embedded image extraction) |
 | `doc_tools/_image.py` | Image ingestion pipeline: OCR (Tesseract) → classification → LLM vision summary |
+| `doc_tools/_audio.py` | Audio/video transcription pipeline: faster-whisper → optional WhisperX diarization |
 | `doc_tools/_access.py` | Document access control and resolution |
 | `api_tools.py` | `search_operations` for API discovery |
 | `vector_store.py` | DuckDB VSS backend for embedding storage/search |
@@ -736,9 +737,29 @@ quarterly_deck:slide_4_img_1.png      # PPTX embedded image
 
 Extracted images are routed through the image pipeline above. Filtering removes tiny images (below minimum dimensions/bytes) and deduplicates via SHA-256 hashing.
 
-### Email Inbox Source (Planned)
+### Audio/Video Transcription
 
-IMAP email inboxes as a document source — not yet implemented. See `docs/arch/email.md` for the design spec covering addressing, OAuth2 authentication, incremental sync, and attachment filtering.
+Constat transcribes audio and video files into searchable documents using faster-whisper, with optional speaker diarization via WhisperX.
+
+Supported formats: MP3, MP4, M4A, WAV, OGG, FLAC, WebM, MKV, AAC.
+
+```
+audio/video file → MIME detect → faster-whisper transcribe → [WhisperX align + diarize] → render markdown → chunk → embed
+```
+
+**Processing stages:**
+1. **Transcription** — faster-whisper generates timestamped segments with language detection
+2. **Alignment + diarization** (optional) — WhisperX aligns words and assigns speaker labels (`SPEAKER_00`, etc.)
+3. **Rendering** — Segments are rendered as markdown with timestamps and speaker headings
+4. **Chunking** — Speaker turns become natural section boundaries for the chunker
+
+**Config fields:** `whisper_model` (model size), `diarize` (enable speaker ID), `hf_token` (HuggingFace token for diarization), `language` (or auto-detect).
+
+Dependencies: `pip install 'constat[audio]'` (faster-whisper, whisperx). Optional — graceful ImportError like pytesseract.
+
+### Email Inbox Source
+
+IMAP email inboxes as a document source. See `docs/arch/email.md` for the design spec covering addressing, OAuth2 authentication, incremental sync, and attachment filtering.
 
 ## Bug Queue
 

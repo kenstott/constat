@@ -128,6 +128,14 @@ documents:
     path: data/images/
     description: Sample images for testing the image ingestion pipeline
 
+#   Audio/video transcription example (requires pip install 'constat[audio]')
+  meeting_recording:
+    path: data/audio
+    whisper_model: large-v3        # faster-whisper model (tiny/base/small/medium/large-v3)
+    diarize: true                  # Enable speaker diarization via WhisperX
+    hf_token: ${HF_TOKEN}          # HuggingFace token (required for diarization)
+    language: en                   # Language code (null = auto-detect)
+
 entity_resolution:
   - entity_type: COUNTRY
     source: countries

@@ -428,6 +428,23 @@ documents:
     aws_region: us-east-1
 ```
 
+#### Audio/video transcription
+
+Supported formats: MP3, MP4, M4A, WAV, OGG, FLAC, WebM, MKV, AAC. Requires `pip install 'constat[audio]'`.
+
+```yaml
+documents:
+  meeting_recording:
+    path: data/audio/quarterly_review.mp3
+    whisper_model: large-v3
+    diarize: true
+    hf_token: ${HF_TOKEN}
+    language: en
+    description: Q1 quarterly review meeting
+```
+
+Transcripts are rendered as markdown with timestamps and optional speaker labels, then chunked and embedded like any other document. Speaker turns become natural section boundaries.
+
 #### Inline content
 
 ```yaml
@@ -444,7 +461,7 @@ documents:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `type` | `string` | no | `"auto"` | Content type: `auto`, `pdf`, `html`, `markdown`, `text`, `docx`, `xlsx`, `pptx` |
+| `type` | `string` | no | `"auto"` | Content type: `auto`, `pdf`, `html`, `markdown`, `text`, `docx`, `xlsx`, `pptx`, `audio` |
 | `path` | `string` | no | `null` | Local file path (supports glob: `./docs/*.md`) |
 | `url` | `string` | no | `null` | URL (http, https, s3, ftp, sftp) |
 | `content` | `string` | no | `null` | Inline content |
@@ -463,6 +480,15 @@ documents:
 | `same_domain_only` | `bool` | no | `true` | Only follow same-domain links |
 | `exclude_patterns` | `list[string]` | no | `null` | URL regex patterns to skip |
 | `generate_definitions` | `bool\|float\|string` | no | `"auto"` | Glossary generation gating |
+
+**Audio transcription fields (requires `pip install 'constat[audio]'`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `whisper_model` | `string` | `"large-v3"` | faster-whisper model size (`tiny`, `base`, `small`, `medium`, `large-v3`) |
+| `diarize` | `bool` | `false` | Enable WhisperX speaker diarization |
+| `language` | `string` | `null` | Language code (e.g., `"en"`, `"fr"`). `null` = auto-detect |
+| `hf_token` | `string` | `null` | HuggingFace token (required for diarization) |
 
 **Credential fields (transport-specific):**
 

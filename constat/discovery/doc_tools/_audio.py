@@ -55,7 +55,11 @@ def transcribe_audio(audio_path: Path, doc_config: DocumentConfig) -> Transcript
             "Install with: pip install 'constat[audio]'"
         )
 
+    logger.info("[audio] Loading whisper model %s for %s", doc_config.whisper_model, audio_path.name)
     model = WhisperModel(doc_config.whisper_model, device="auto", compute_type="default")
+
+    logger.info("[audio] Transcribing %s (language=%s, diarize=%s)",
+                audio_path.name, doc_config.language or "auto", doc_config.diarize)
     raw_segments, info = model.transcribe(
         str(audio_path),
         language=doc_config.language,
@@ -64,6 +68,8 @@ def transcribe_audio(audio_path: Path, doc_config: DocumentConfig) -> Transcript
 
     # Consume the generator
     seg_list = list(raw_segments)
+    logger.info("[audio] Transcription complete: %d segments, language=%s, duration=%s",
+                len(seg_list), info.language, _fmt_timestamp(info.duration))
 
     segments = [
         TranscriptionSegment(start=s.start, end=s.end, text=s.text.strip())
@@ -86,11 +92,13 @@ def transcribe_audio(audio_path: Path, doc_config: DocumentConfig) -> Transcript
             )
 
         device = "cuda" if _cuda_available() else "cpu"
+        logger.info("[audio] Diarization: loading audio on device=%s", device)
         audio = whisperx.load_audio(str(audio_path))
 
         # Build segment dicts for whisperx alignment
         whisperx_segments = [{"start": s.start, "end": s.end, "text": s.text} for s in seg_list]
 
+        logger.info("[audio] Diarization: aligning %d segments", len(whisperx_segments))
         align_model, metadata = whisperx.load_align_model(
             language_code=info.language, device=device
         )
@@ -98,6 +106,7 @@ def transcribe_audio(audio_path: Path, doc_config: DocumentConfig) -> Transcript
             whisperx_segments, align_model, metadata, audio, device
         )
 
+        logger.info("[audio] Diarization: running speaker identification")
         diarize_model = whisperx.DiarizationPipeline(
             use_auth_token=doc_config.hf_token, device=device
         )
@@ -113,6 +122,9 @@ def transcribe_audio(audio_path: Path, doc_config: DocumentConfig) -> Transcript
                 text=s["text"].strip(),
                 speaker=s.get("speaker"),
             ))
+
+        speakers = {s.speaker for s in segments if s.speaker}
+        logger.info("[audio] Diarization complete: %d segments, %d speakers", len(segments), len(speakers))
 
     return TranscriptionResult(
         segments=segments,

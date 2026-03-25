@@ -116,7 +116,7 @@ Constat bridges metadata (schemas, APIs) and data values (actual records):
 Constat connects to multiple data source types:
 - **Databases** — PostgreSQL, MySQL, SQLite, DuckDB, and more
 - **Structured files** — CSV, Excel, Parquet, JSON (loaded as queryable tables)
-- **Documents** — PDF, Word, PowerPoint for reference and context
+- **Documents** — PDF, Word, PowerPoint, audio/video (transcribed via Whisper) for reference and context
 - **APIs** — REST and GraphQL endpoints for live data
 - **Progressive discovery** — metadata is fetched on-demand, not preloaded, allowing connection to large data estates
 

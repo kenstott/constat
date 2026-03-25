@@ -919,6 +919,15 @@ documents:
       - MRR: Monthly Recurring Revenue
     description: "Business glossary"
 
+  # Audio/video transcription (requires pip install 'constat[audio]')
+  meeting_recording:
+    path: data/audio/quarterly_review.mp3
+    whisper_model: large-v3            # tiny/base/small/medium/large-v3
+    diarize: true                      # Speaker diarization via WhisperX
+    hf_token: ${HF_TOKEN}             # Required for diarization
+    language: en                       # null = auto-detect
+    description: "Quarterly review meeting recording"
+
 #==============================================================================
 # DOMAIN CONTEXT (SYSTEM PROMPT)
 #==============================================================================
@@ -1289,6 +1298,7 @@ pip install constat[cosmosdb]     # Azure Cosmos DB
 pip install constat[firestore]    # Google Firestore
 pip install constat[openai]       # OpenAI provider
 pip install constat[extras]       # Polars, Excel, PDF generation
+pip install constat[audio]       # Audio/video transcription (faster-whisper, WhisperX)
 pip install constat[all]          # Everything
 ```
 
