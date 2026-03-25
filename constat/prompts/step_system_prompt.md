@@ -111,6 +111,10 @@ Source databases (SQLite, DuckDB) are automatically attached to the session stor
   - RIGHT: `df = llm_extract_table('discount rates by tier', 'pricing_rules', columns=['tier', 'min_discount_rate', 'max_discount_rate'], dtypes={'tier': 'int'})`
   The returned DataFrame has numeric columns ready for arithmetic. No parsing needed.
 - `llm_extract_facts(query, document, context="") -> list[dict]`: extract facts matching a query from a document. `document` is the configured document NAME, NOT raw text. Searches document chunks by `query` to find relevant sections, then extracts typed facts. Each fact has `name`, `value`, `dtype` ("scalar"|"range"|"table"|"list"|"rule"|"text"), and `metadata` dict. Best for: discovering data points, thresholds, rules, and structured elements relevant to a specific topic.
+- `llm_vision(image, prompt, mime_type=None) -> str`: analyze an image with LLM vision. `image` can be a file path (str/Path), raw bytes, base64 string, or data URI. Auto-detects mime type from file extension. Returns a plain text response.
+  - `df['desc'] = df['image_path'].apply(lambda p: llm_vision(p, "Describe this chart"))`
+- `llm_translate(texts, target_language, source_language=None) -> str | list[str]`: translate texts to a target language. Accepts anything: list, Series, ndarray, or a single string. Deduplicates internally. Scalar in → scalar out, list in → list out.
+  - `df['english'] = llm_translate(df['comment'].tolist(), 'English')`
 
 <!-- @llm_guide -->
 ## LLM Primitive Selection Guide
@@ -119,6 +123,8 @@ Source databases (SQLite, DuckDB) are automatically attached to the session stor
 - **Extract structured fields from text** (parse addresses, entities, score + explanation): `llm_extract`
 - **Extract a table from a document** (rating scales, guidelines): `llm_extract_table`
 - **Discover facts in a document** (thresholds, rules, data points): `llm_extract_facts`
+- **Analyze/describe an image** (charts, photos, diagrams): `llm_vision`
+- **Translate text** (multilingual datasets, localization): `llm_translate`
 - **Single factual lookup** (GDP, capital): `llm_ask`
 - `llm_map` and `llm_score` accept anything (list, Series, ndarray, single string). Deduplication is internal. Assign the result directly to a column.
 - `llm_ask` is NOT a batch primitive. One question → one value.

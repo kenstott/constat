@@ -514,6 +514,8 @@ class ExecutionMixin:
             "llm_extract": constat.llm.llm_extract,
             "llm_summarize": constat.llm.llm_summarize,
             "llm_score": constat.llm.wrappers.llm_score,
+            "llm_vision": constat.llm.wrappers.llm_vision,
+            "llm_translate": constat.llm.wrappers.llm_translate,
             "llm_extract_table": self._create_extract_table_helper(),
             "llm_extract_facts": self._create_extract_facts_helper(),
             "doc_read": self._create_doc_read_helper(),
@@ -779,7 +781,7 @@ class ExecutionMixin:
         import pandas as pd
 
         # Skip internal/injected variables
-        skip_vars = {"store", "db", "pd", "np", "llm_ask", "send_email", "facts", "viz", "publish", "__builtins__"}
+        skip_vars = {"store", "db", "pd", "np", "llm_ask", "send_email", "facts", "viz", "publish", "llm_vision", "llm_translate", "__builtins__"}
         skip_prefixes = ("db_", "_")
 
         # Already-saved tables (don't duplicate by name OR by data content)

@@ -16,11 +16,13 @@ standalone use; call set_backend(router) for in-session use.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 logger = logging.getLogger(__name__)
@@ -135,6 +137,69 @@ class _DirectProvider:
 
         raise RuntimeError(f"Unsupported provider: {self.provider}")
 
+    def generate_vision(
+        self,
+        system: str,
+        image_bytes: bytes,
+        mime_type: str,
+        text_prompt: str,
+        max_tokens: int = 1024,
+    ) -> str:
+        """Vision generation for standalone mode."""
+        image_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+
+        if self.provider == "anthropic":
+            import anthropic
+            client = anthropic.Anthropic(api_key=self.api_key)
+            resp = client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime_type,
+                                "data": image_b64,
+                            },
+                        },
+                        {"type": "text", "text": text_prompt},
+                    ],
+                }],
+            )
+            return resp.content[0].text
+
+        if self.provider in ("openai", "grok", "together", "groq", "mistral"):
+            import openai
+            base_urls = {
+                "grok": "https://api.x.ai/v1",
+                "together": "https://api.together.xyz/v1",
+                "groq": "https://api.groq.com/openai/v1",
+                "mistral": "https://api.mistral.ai/v1",
+            }
+            kwargs = {}
+            if self.provider in base_urls:
+                kwargs["base_url"] = base_urls[self.provider]
+            client = openai.OpenAI(api_key=self.api_key, **kwargs)
+            data_uri = f"data:{mime_type};base64,{image_b64}"
+            resp = client.chat.completions.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": [
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                        {"type": "text", "text": text_prompt},
+                    ]},
+                ],
+            )
+            return resp.choices[0].message.content
+
+        raise RuntimeError(f"Vision not supported for provider: {self.provider}")
+
 
 def _auto_detect_backend() -> _DirectProvider:
     """Create a lightweight direct provider from the first matching env var.
@@ -213,6 +278,34 @@ def _execute(system: str, user_message: str, *, task_type=None) -> tuple[str, st
         getattr(backend, "model", "unknown"),
         type(backend).__name__,
     )
+
+
+def _execute_vision(
+    system: str, image_bytes: bytes, mime_type: str, text_prompt: str,
+) -> tuple[str, str, str]:
+    """Call the backend with a vision request and return (content, model_used, provider_used)."""
+    backend = _get_backend()
+
+    if isinstance(backend, _DirectProvider):
+        content = backend.generate_vision(
+            system=system, image_bytes=image_bytes,
+            mime_type=mime_type, text_prompt=text_prompt,
+        )
+        return content.strip(), backend.model, backend.provider
+
+    # TaskRouter / BaseLLMProvider — has generate_vision()
+    if hasattr(backend, "generate_vision"):
+        content = backend.generate_vision(
+            system=system, image_bytes=image_bytes,
+            mime_type=mime_type, text_prompt=text_prompt,
+        )
+        return (
+            content.strip(),
+            getattr(backend, "model", "unknown"),
+            type(backend).__name__,
+        )
+
+    raise RuntimeError("Backend does not support vision")
 
 
 def _parse_json(response: str) -> str:
@@ -1217,3 +1310,98 @@ YOUR JSON RESPONSE:"""
     ))
 
     return facts
+
+
+def llm_vision(
+    image_bytes: bytes,
+    mime_type: str,
+    prompt: str,
+    system: str | None = None,
+) -> str:
+    """Analyze an image using LLM vision capabilities.
+
+    Args:
+        image_bytes: Raw image bytes.
+        mime_type: Image MIME type (e.g., "image/png", "image/jpeg").
+        prompt: Text prompt describing what to analyze.
+        system: Optional system prompt.
+
+    Returns:
+        Plain text response from the LLM.
+    """
+    sys_msg = system or "You analyze images. Describe what you see accurately and concisely."
+
+    content, model_used, provider_used = _execute_vision(
+        system=sys_msg,
+        image_bytes=image_bytes,
+        mime_type=mime_type,
+        text_prompt=prompt,
+    )
+
+    _notify(LLMCallEvent(
+        primitive="llm_vision",
+        input_count=1,
+        null_count=0 if content else 1,
+        model_used=model_used,
+        provider_used=provider_used,
+    ))
+
+    return content
+
+
+def llm_translate(
+    texts: list[str],
+    target_language: str,
+    source_language: str | None = None,
+) -> list[str]:
+    """Translate texts to a target language using LLM.
+
+    Args:
+        texts: List of texts to translate.
+        target_language: Language to translate into (e.g., "English", "French").
+        source_language: Optional source language hint.
+
+    Returns:
+        List of translated strings, one per input text.
+    """
+    texts_str = "\n---\n".join(f"[{i+1}] {t}" for i, t in enumerate(texts))
+    source_hint = f" from {source_language}" if source_language else ""
+
+    prompt = f"""Translate each of the following {len(texts)} texts{source_hint} to {target_language}.
+
+{texts_str}
+
+Respond with ONLY valid JSON: an array of strings, one translation per input text.
+Preserve the original meaning. Do not add explanations.
+
+Example format: ["translation1", "translation2", ...]
+
+YOUR JSON RESPONSE:"""
+
+    from constat.core.models import TaskType
+    content, model_used, provider_used = _execute(
+        system=f"You translate text to {target_language}. Output ONLY a valid JSON array of strings.",
+        user_message=prompt,
+        task_type=TaskType.SUMMARIZATION,
+    )
+
+    content = _parse_json(content)
+
+    if not content.startswith("["):
+        logger.warning(f"[LLM_TRANSLATE] Could not parse response: {content[:200]}")
+        results = ["" for _ in texts]
+    else:
+        results = json.loads(content)
+
+    null_count = sum(1 for s in results if not s)
+    logger.info(f"[LLM_TRANSLATE] Translated {len(texts)} texts to {target_language}")
+
+    _notify(LLMCallEvent(
+        primitive="llm_translate",
+        input_count=len(texts),
+        null_count=null_count,
+        model_used=model_used,
+        provider_used=provider_used,
+    ))
+
+    return results

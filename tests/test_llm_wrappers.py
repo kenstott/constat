@@ -13,6 +13,9 @@ Each wrapper must handle: str, list, Series, ndarray, single value, empty,
 duplicates, int/float coercion — and always return the simplest type.
 """
 
+import base64
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -278,3 +281,105 @@ class TestLlmScore:
         from constat.llm.wrappers import llm_score
         assert llm_score([], explain=True) == []
         mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# llm_vision
+# ---------------------------------------------------------------------------
+
+class TestLlmVision:
+
+    @patch("constat.llm.wrappers._raw_llm_vision")
+    def test_path_input(self, mock):
+        mock.return_value = "A cat sitting on a mat"
+        from constat.llm.wrappers import llm_vision
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            f.flush()
+            result = llm_vision(f.name, "Describe this image")
+        assert result == "A cat sitting on a mat"
+        args = mock.call_args
+        assert args[0][1] == "image/png"
+        assert args[0][2] == "Describe this image"
+
+    @patch("constat.llm.wrappers._raw_llm_vision")
+    def test_bytes_input(self, mock):
+        mock.return_value = "chart description"
+        from constat.llm.wrappers import llm_vision
+        result = llm_vision(b"\x89PNG\r\n", "Describe", mime_type="image/png")
+        assert result == "chart description"
+        assert mock.call_args[0][0] == b"\x89PNG\r\n"
+        assert mock.call_args[0][1] == "image/png"
+
+    @patch("constat.llm.wrappers._raw_llm_vision")
+    def test_base64_input(self, mock):
+        mock.return_value = "decoded image"
+        from constat.llm.wrappers import llm_vision
+        raw = b"fake image data"
+        b64 = base64.b64encode(raw).decode()
+        result = llm_vision(b64, "Describe", mime_type="image/jpeg")
+        assert result == "decoded image"
+        assert mock.call_args[0][0] == raw
+
+    @patch("constat.llm.wrappers._raw_llm_vision")
+    def test_data_uri_input(self, mock):
+        mock.return_value = "from data uri"
+        from constat.llm.wrappers import llm_vision
+        raw = b"fake image"
+        b64 = base64.b64encode(raw).decode()
+        data_uri = f"data:image/webp;base64,{b64}"
+        result = llm_vision(data_uri, "Describe")
+        assert result == "from data uri"
+        assert mock.call_args[0][0] == raw
+        assert mock.call_args[0][1] == "image/webp"
+
+    @patch("constat.llm.wrappers._raw_llm_vision")
+    def test_mime_detection(self, mock):
+        mock.return_value = "jpeg image"
+        from constat.llm.wrappers import llm_vision
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            f.write(b"\xff\xd8\xff" + b"\x00" * 100)
+            f.flush()
+            llm_vision(f.name, "Describe")
+        assert mock.call_args[0][1] == "image/jpeg"
+
+
+# ---------------------------------------------------------------------------
+# llm_translate
+# ---------------------------------------------------------------------------
+
+class TestLlmTranslate:
+
+    @patch("constat.llm.wrappers._raw_llm_translate")
+    def test_list_dedup_expand(self, mock):
+        mock.return_value = ["bonjour", "monde"]
+        from constat.llm.wrappers import llm_translate
+        result = llm_translate(["hello", "world", "hello"], "French")
+        assert result == ["bonjour", "monde", "bonjour"]
+        mock.assert_called_once_with(["hello", "world"], "French", None)
+
+    @patch("constat.llm.wrappers._raw_llm_translate")
+    def test_single_str_returns_scalar(self, mock):
+        mock.return_value = ["hola"]
+        from constat.llm.wrappers import llm_translate
+        assert llm_translate("hello", "Spanish") == "hola"
+
+    @patch("constat.llm.wrappers._raw_llm_translate")
+    def test_series_input(self, mock):
+        mock.return_value = ["bonjour", "monde"]
+        from constat.llm.wrappers import llm_translate
+        s = pd.Series(["hello", "world", "hello"])
+        assert llm_translate(s, "French") == ["bonjour", "monde", "bonjour"]
+
+    @patch("constat.llm.wrappers._raw_llm_translate")
+    def test_empty(self, mock):
+        from constat.llm.wrappers import llm_translate
+        assert llm_translate([], "French") == []
+        mock.assert_not_called()
+
+    @patch("constat.llm.wrappers._raw_llm_translate")
+    def test_source_language(self, mock):
+        mock.return_value = ["hello"]
+        from constat.llm.wrappers import llm_translate
+        llm_translate(["bonjour"], "English", source_language="French")
+        mock.assert_called_once_with(["bonjour"], "English", "French")

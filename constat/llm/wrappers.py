@@ -21,10 +21,14 @@ from __future__ import annotations
 
 import logging
 
+from pathlib import Path
+
 from constat.llm import (
     llm_map as _raw_llm_map,
     llm_classify as _raw_llm_classify,
     llm_score as _raw_llm_score,
+    llm_vision as _raw_llm_vision,
+    llm_translate as _raw_llm_translate,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,6 +103,76 @@ def llm_score(texts, min_val=0.0, max_val=1.0, instruction="Rate each text", exp
             return result[0]
         return result
     result = [score_map[v][0] for v in str_values]
+    if scalar:
+        return result[0]
+    return result
+
+
+_MIME_FROM_EXT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+    ".svg": "image/svg+xml",
+}
+
+
+def llm_vision(image, prompt, mime_type=None, **_kw) -> str:
+    """Analyze an image with LLM vision.
+
+    Accepts: file path (str/Path), raw bytes, base64 string, or data URI string.
+    Auto-detects mime type from file extension when not provided.
+    """
+    import base64 as b64
+
+    image_bytes: bytes
+    detected_mime: str | None = mime_type
+
+    if isinstance(image, (str, Path)):
+        s = str(image)
+        # data URI: "data:image/png;base64,..."
+        if s.startswith("data:"):
+            header, data = s.split(",", 1)
+            # header = "data:image/png;base64"
+            detected_mime = detected_mime or header.split(";")[0].split(":")[1]
+            image_bytes = b64.b64decode(data)
+        elif Path(s).exists():
+            # File path
+            p = Path(s)
+            if detected_mime is None:
+                detected_mime = _MIME_FROM_EXT.get(p.suffix.lower())
+            image_bytes = p.read_bytes()
+        else:
+            # Assume base64 string
+            image_bytes = b64.b64decode(s)
+    elif isinstance(image, bytes):
+        image_bytes = image
+    else:
+        raise TypeError(f"Unsupported image type: {type(image)}")
+
+    if detected_mime is None:
+        detected_mime = "image/png"
+
+    return _raw_llm_vision(image_bytes, detected_mime, prompt)
+
+
+def llm_translate(texts, target_language, source_language=None, **_kw):
+    """Translate texts to a target language.
+
+    Accepts anything: str, list, Series, ndarray.
+    Scalar in -> scalar out, list in -> list out.
+    """
+    str_values, scalar = _to_str_list(texts)
+    if not str_values:
+        return []
+    unique = list(dict.fromkeys(str_values))
+    raw = _raw_llm_translate(unique, target_language, source_language)
+    translate_map = dict(zip(unique, raw))
+    result = [translate_map[v] for v in str_values]
     if scalar:
         return result[0]
     return result
