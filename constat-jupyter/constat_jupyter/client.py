@@ -10,6 +10,7 @@ import httpx
 import polars
 
 from .config import ConstatConfig
+from .entity_cache import _cache as _entity_cache, inflate_glossary
 from .models import Artifact, ConstatError, SolveResult, StepInfo
 from .progress import PrintProgress
 
@@ -300,6 +301,12 @@ class Session:
             return {"Authorization": f"Bearer {self._client._token}"}
         return {}
 
+    async def _ws_send_entity_seed(self, ws) -> None:
+        """Send entity_seed with cached version so server can push deltas."""
+        entry = _entity_cache.get(self.session_id)
+        version = entry.version if entry else None
+        await ws.send(json.dumps({"action": "entity_seed", "data": {"version": version}}))
+
     async def _ws_event_loop(self, ws, auto_approve: bool, timeout: float) -> SolveResult:
         """Shared WS event processing loop."""
         result = SolveResult(success=False, answer="")
@@ -363,6 +370,16 @@ class Session:
                 else:
                     await ws.send(json.dumps({"action": "skip_clarification"}))
 
+            elif event_type == "entity_state":
+                state = data.get("state", {})
+                version = data.get("version", 0)
+                _entity_cache.set(self.session_id, state, version)
+
+            elif event_type == "entity_patch":
+                patch_ops = data.get("patch", [])
+                version = data.get("version", 0)
+                _entity_cache.apply_patch(self.session_id, patch_ops, version)
+
             elif event_type == "query_complete":
                 result.success = True
                 raw_output = data.get("output", "")
@@ -417,6 +434,7 @@ class Session:
 
         async with websockets.connect(self._ws_url(), additional_headers=self._ws_headers(), ping_interval=30, ping_timeout=120) as ws:
             await asyncio.wait_for(ws.recv(), timeout=10)
+            await self._ws_send_entity_seed(ws)
 
             body: dict[str, Any] = {"problem": question, "is_followup": is_followup}
             if require_approval is not None:
@@ -470,6 +488,7 @@ class Session:
 
         async with websockets.connect(self._ws_url(), additional_headers=self._ws_headers(), ping_interval=30, ping_timeout=120) as ws:
             await asyncio.wait_for(ws.recv(), timeout=10)
+            await self._ws_send_entity_seed(ws)
 
             msg: dict[str, Any] = {"action": action}
             if data:
@@ -610,7 +629,18 @@ class Session:
 
     # -- Glossary --
 
-    def glossary(self) -> list[dict]:
+    def glossary(self, cached: bool = False) -> list[dict]:
+        """Return glossary terms.
+
+        Args:
+            cached: If True, return terms from the WS entity cache
+                    (avoids an HTTP round-trip). Falls back to HTTP
+                    if no cached state exists.
+        """
+        if cached:
+            entry = _entity_cache.get(self.session_id)
+            if entry:
+                return inflate_glossary(entry.state)
         resp = self._client._http.get(f"/api/sessions/{self.session_id}/glossary")
         resp.raise_for_status()
         return resp.json().get("terms", [])

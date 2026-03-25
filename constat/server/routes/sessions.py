@@ -404,13 +404,15 @@ async def create_session(
         existing.touch()
         return _session_to_response(existing)
 
-    # Create session in background — return immediately so browser is never blocked
+    # Create session synchronously so it exists for subsequent API calls,
+    # then do heavy init (domain loading, NER) in a background thread.
+    _session_id = session_manager.create_session(session_id=client_session_id, user_id=effective_user_id)
+
     import threading
 
-    def _create_and_init():
+    def _init_session():
         from constat.server.models import EventType
 
-        _session_id = session_manager.create_session(session_id=client_session_id, user_id=effective_user_id)
         _managed = session_manager.get_session(_session_id)
 
         try:
@@ -435,10 +437,6 @@ async def create_session(
             if 'user' not in _managed.active_domains:
                 _managed.active_domains.append('user')
 
-            # Try fast scope cache restore BEFORE session_ready so glossary
-            # has entities on first fetch (scope cache restore is <1s).
-            cache_hit = session_manager.try_restore_entities_from_cache(_session_id)
-
             # Mark init complete — heartbeat NER can now run safely
             _managed._init_complete = True
 
@@ -448,13 +446,11 @@ async def create_session(
                 {"session_id": _session_id, "active_domains": _managed.active_domains},
             )
 
-            # Full NER only if scope cache missed
-            if not cache_hit:
-                session_manager.refresh_entities_async(_session_id)
+            session_manager.refresh_entities_async(_session_id)
         except Exception as e:
             logger.exception(f"[create_session] init failed for {_session_id}: {e}")
 
-    threading.Thread(target=_create_and_init, name=f"session-init-{client_session_id[:8]}", daemon=True).start()
+    threading.Thread(target=_init_session, name=f"session-init-{client_session_id[:8]}", daemon=True).start()
 
     return SessionResponse(
         session_id=client_session_id,

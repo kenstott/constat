@@ -421,7 +421,6 @@ class DuckDBVectorStore(VectorStoreBackend):
             "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS parent_verb VARCHAR DEFAULT 'HAS_KIND'",
             "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'mixed'",
             "ALTER TABLE entities ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'metadata'",
-            "ALTER TABLE ner_cached_entities ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'metadata'",
             "ALTER TABLE source_hashes ADD COLUMN IF NOT EXISTS er_hash VARCHAR",
         ]
         schema_changed = False
@@ -561,67 +560,6 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         """)
 
-        self._create_ner_scope_cache_tables()
-
-    def _create_ner_scope_cache_tables(self) -> None:
-        """Create NER scope cache tables for cross-session entity caching."""
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS ner_scope_cache (
-                fingerprint VARCHAR PRIMARY KEY,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                entity_count INTEGER DEFAULT 0
-            )
-        """)
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS ner_cached_entities (
-                fingerprint VARCHAR NOT NULL,
-                id VARCHAR NOT NULL,
-                name VARCHAR NOT NULL,
-                display_name VARCHAR NOT NULL,
-                semantic_type VARCHAR NOT NULL,
-                ner_type VARCHAR,
-                domain_id VARCHAR,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                entity_class VARCHAR DEFAULT 'metadata',
-                PRIMARY KEY (fingerprint, id)
-            )
-        """)
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS ner_cached_chunk_entities (
-                fingerprint VARCHAR NOT NULL,
-                chunk_id VARCHAR NOT NULL,
-                entity_id VARCHAR NOT NULL,
-                confidence FLOAT DEFAULT 1.0,
-                PRIMARY KEY (fingerprint, chunk_id, entity_id)
-            )
-        """)
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS ner_cached_clusters (
-                fingerprint VARCHAR NOT NULL,
-                term_name VARCHAR NOT NULL,
-                cluster_id INTEGER NOT NULL,
-                PRIMARY KEY (fingerprint, term_name)
-            )
-        """)
-        try:
-            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_ner_cache_ent_fp ON ner_cached_entities(fingerprint)")
-            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_ner_cache_ce_fp ON ner_cached_chunk_entities(fingerprint)")
-            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_ner_cache_cl_fp ON ner_cached_clusters(fingerprint)")
-        except Exception:
-            pass
-        # Legacy migration: add unique indexes for pre-PK tables.
-        # Tables now have PKs so this is a no-op for fresh installs.
-        # Only attempt index creation — never clear cached data.
-        for tbl, cols, idx in [
-            ("ner_cached_entities", "fingerprint, id", "idx_ner_ent_pk"),
-            ("ner_cached_chunk_entities", "fingerprint, chunk_id, entity_id", "idx_ner_ce_pk"),
-            ("ner_cached_clusters", "fingerprint, term_name", "idx_ner_cl_pk"),
-        ]:
-            try:
-                self._conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {tbl}({cols})")
-            except Exception as e:
-                logger.debug(f"NER cache index {idx} already exists or cannot be created: {e}")
-
     def _ensure_incremental_schema(self) -> None:
         """Create tables added after initial schema, for pre-existing databases."""
         self._conn.execute("""
@@ -647,7 +585,6 @@ class DuckDBVectorStore(VectorStoreBackend):
                 PRIMARY KEY (source_id, entity_type)
             )
         """)
-        self._create_ner_scope_cache_tables()
         try:
             self._conn.execute("ALTER TABLE entity_relationships ADD COLUMN user_edited BOOLEAN DEFAULT FALSE")
         except Exception:
@@ -904,18 +841,6 @@ class DuckDBVectorStore(VectorStoreBackend):
 
     def find_matching_clusters(self, *a, **kw):
         return self._relational.find_matching_clusters(*a, **kw)
-
-    def has_ner_scope_cache(self, *a, **kw):
-        return self._relational.has_ner_scope_cache(*a, **kw)
-
-    def restore_ner_scope_cache(self, *a, **kw):
-        return self._relational.restore_ner_scope_cache(*a, **kw)
-
-    def store_ner_scope_cache(self, *a, **kw):
-        return self._relational.store_ner_scope_cache(*a, **kw)
-
-    def evict_ner_scope_cache(self, *a, **kw):
-        return self._relational.evict_ner_scope_cache(*a, **kw)
 
     # Phase 2 relational delegations
 

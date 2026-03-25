@@ -133,7 +133,7 @@ Server -> Client: patch response
 - Server-side in-memory diff baseline in `ManagedSession` -> client seed is the baseline
 - Glossary loading spinner on reconnect -> instant render from local cache
 
-Server-side NER scope cache (`ner_cached_entities`, etc.) is retained for NER skip optimization (fingerprint matching) but no longer used as a diff baseline.
+Server-side NER scope cache (`ner_cached_entities`, etc.) is removed entirely. The client seed is the sole diff baseline.
 
 ## File Changes
 
@@ -142,15 +142,11 @@ Server-side NER scope cache (`ner_cached_entities`, etc.) is retained for NER sk
 | `constat-ui/src/store/entityCache.ts` | **New** — IndexedDB read/write, JSON Patch apply, version tracking |
 | `constat-ui/src/api/websocket.ts` | Send `entity_seed` on connect, handle `entity_patch` events |
 | `constat-ui/src/store/glossaryStore.ts` | Load from local cache on init before WS connect |
-| `constat/server/diff_generators.py` | `EntityDiffGenerator`: accept client seed, compute JSON Patch, track version per connection |
+| `constat/server/entity_state.py` | Key maps, `build_compact_state`, `compute_entity_patch`: accept client seed, compute JSON Patch |
 | `constat/server/routes/queries.py` | WS handler for `entity_seed` command |
 | `constat/server/models.py` | `ENTITY_PATCH` event type |
 | `package.json` | Add `fast-json-patch` dependency |
 | `pyproject.toml` | Add `jsonpatch` dependency |
-
-## Future
-
-Once proven reliable, the server-side NER scope cache tables (`ner_cached_entities`, `ner_cached_chunk_entities`, `ner_cached_clusters`) can be removed entirely. The client seed becomes the sole diff baseline.
 
 ## Status
 

@@ -33,6 +33,7 @@ from constat.server.models import (
 
 class GenerateGlossaryRequest(BaseModel):
     phases: dict[str, bool] | None = None
+from constat.server.entity_state import _build_domain_maps, _resolve_entity_domains, _resolve_entity_domain
 from constat.server.routes.data import get_session_manager
 from constat.server.session_manager import SessionManager
 
@@ -56,104 +57,6 @@ def _get_vector_store(managed):
 def _make_term_id(name: str, scope_id: str, domain: str | None = None) -> str:
     key = f"{name}:{scope_id}:{domain or ''}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
-
-
-def _build_domain_maps(config, session=None) -> tuple[dict[str, str], dict[str, str]]:
-    """Build domain_path_map and source_to_domain from config + session resources.
-
-    Uses SessionResources as the authoritative source for resource→domain mappings,
-    since databases may be defined in domain YAMLs but promoted to the root config
-    during loading.
-
-    Returns:
-        (domain_path_map, source_to_domain)
-    """
-    domain_path_map: dict[str, str] = {}
-    source_to_domain: dict[str, str] = {}
-
-    # Build domain path map from config
-    for fname, dcfg in config.domains.items():
-        if dcfg.path:
-            domain_path_map[fname] = dcfg.path
-            domain_path_map[fname.removesuffix(".yaml")] = dcfg.path
-        # Also map from domain config's own databases/apis/documents
-        for db_name in dcfg.databases:
-            source_to_domain[db_name] = fname
-        for api_name in dcfg.apis:
-            source_to_domain[api_name] = fname
-        for doc_name in dcfg.documents:
-            source_to_domain[doc_name] = fname
-
-    # Root config resources belong to __base__ (system domain)
-    for db_name in config.databases:
-        source_to_domain[db_name] = "__base__"
-    if config.apis:
-        for api_name in config.apis:
-            source_to_domain[api_name] = "__base__"
-    if config.documents:
-        for doc_name in config.documents:
-            source_to_domain[doc_name] = "__base__"
-
-    # Authoritative mapping from SessionResources (tracks source for each resource)
-    resources = getattr(session, "resources", None) if session else None
-    if resources:
-        for db_name, db_info in resources.databases.items():
-            if db_info.source and db_info.source.startswith("domain:"):
-                domain_fname = db_info.source.removeprefix("domain:")
-                source_to_domain[db_name] = domain_fname
-        for api_name, api_info in resources.apis.items():
-            if api_info.source and api_info.source.startswith("domain:"):
-                domain_fname = api_info.source.removeprefix("domain:")
-                source_to_domain[api_name] = domain_fname
-        for doc_name, doc_info in resources.documents.items():
-            if doc_info.source and doc_info.source.startswith("domain:"):
-                domain_fname = doc_info.source.removeprefix("domain:")
-                source_to_domain[doc_name] = domain_fname
-
-    return domain_path_map, source_to_domain
-
-
-def _resolve_entity_domains(entity_id: str | None, vs, source_to_domain: dict[str, str]) -> list[str]:
-    """Resolve all domains for an entity by tracing its chunk document sources.
-
-    Returns a deduplicated list of domain names the entity's chunks map to.
-    """
-    if not entity_id:
-        return []
-    try:
-        doc_names = vs.get_entity_document_names(entity_id, limit=20)
-    except Exception:
-        return []
-    domains: list[str] = []
-    seen: set[str] = set()
-    for doc_name in doc_names:
-        matched: str | None = None
-        if doc_name.startswith("schema:"):
-            db_name = doc_name.split(":")[1].split(".")[0]
-            matched = source_to_domain.get(db_name)
-        elif doc_name.startswith("api:"):
-            api_name = doc_name.split(":")[1].split(".")[0]
-            matched = source_to_domain.get(api_name)
-        if not matched:
-            matched = source_to_domain.get(doc_name)
-        # Crawled sub-documents: "hr_management:crawled_8" → try "hr_management"
-        if not matched and ":" in doc_name:
-            base_name = doc_name.split(":")[0]
-            matched = source_to_domain.get(base_name)
-        if matched and matched not in seen:
-            seen.add(matched)
-            domains.append(matched)
-    return domains
-
-
-def _resolve_entity_domain(entity_id: str | None, vs, source_to_domain: dict[str, str]) -> str | None:
-    """Resolve effective domain for an entity. Returns 'cross-domain' when it spans multiple."""
-    domains = _resolve_entity_domains(entity_id, vs, source_to_domain)
-    if len(domains) > 1:
-        return "cross-domain"
-    if len(domains) == 1:
-        return domains[0]
-    return None
 
 
 @router.get("/{session_id}/glossary", response_model=GlossaryListResponse)

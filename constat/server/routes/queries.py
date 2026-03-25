@@ -896,6 +896,9 @@ async def websocket_endpoint(
             except asyncio.QueueEmpty:
                 break
 
+    # Store event loop reference so background threads can use call_soon_threadsafe
+    managed._event_loop = asyncio.get_running_loop()
+
     # Register active connection
     remote_addr = ""
     if websocket.client:
@@ -1263,6 +1266,13 @@ async def websocket_endpoint(
                             "type": "ack",
                             "payload": {"action": "replan_from", "status": "ok"},
                         })
+
+                    elif action == "entity_seed":
+                        seed_data = data.get("data", {})
+                        version = seed_data.get("version")
+                        managed._client_entity_version = version
+                        if version != managed._entity_state_version:
+                            session_manager.push_entity_state(session_id)
 
                     elif action == "heartbeat":
                         since = data.get("data", {}).get("since") if data.get("data") else None

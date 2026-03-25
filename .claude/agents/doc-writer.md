@@ -17,6 +17,10 @@ You write for the reader who wasn't in the room when decisions were made—the f
 
 Good documentation reduces support burden, speeds onboarding, and prevents mistakes. Bad documentation is worse than none—it wastes time and erodes trust.
 
+## Intellectual Honesty
+
+**Document what is true, not what you wish were true.** If behavior is undocumented or ambiguous, investigate before writing. If you haven't verified an example works, say so. Never document capabilities that don't exist. Inaccurate documentation is worse than no documentation.
+
 ## Writing Principles
 
 1. **Lead with what the reader needs most** - Answer "what is this?" in the first sentence, "why should I care?" in the first paragraph

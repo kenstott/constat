@@ -946,16 +946,23 @@ export function ArtifactPanel() {
       const imageUrl = doc.image_path && session
         ? `/api/sessions/${session.session_id}/file?path=${encodeURIComponent(doc.image_path)}`
         : undefined
+      // Only pass HTTP/HTTPS URLs for iframe rendering — skip imap://, file://, etc.
+      const httpUrl = doc.url && /^https?:\/\//i.test(doc.url) ? doc.url : undefined
       setViewingDocument({
         name: doc.name || documentName,
         content: doc.content || '',
         format: doc.format,
-        url: doc.url,
+        url: httpUrl,
         imageUrl,
       })
     } catch (err) {
       console.error('Failed to load document:', err)
-      alert('Failed to load document. Please try again.')
+      // Show error in modal instead of alert so user sees context
+      setViewingDocument({
+        name: documentName,
+        content: `Document not found or could not be loaded.\n\n${err instanceof Error ? err.message : String(err)}`,
+        format: 'text',
+      })
     } finally {
       setLoadingDocument(false)
     }
@@ -2114,7 +2121,7 @@ ${skill.body}`
         )
       })()}
 
-      {/* ═══════════════ SOURCES ═══════════════ */}
+      {/* ═══════════════ SOURCES & TOOLS ═══════════════ */}
       {sourcesVisible && (
       <button
         onClick={() => {
@@ -2125,7 +2132,7 @@ ${skill.body}`
         className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
       >
         <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
-          Sources ({databases.length + apis.length + documents.length + facts.length})
+          Sources & Tools ({databases.length + apis.length + documents.length + facts.length})
           {(sourcesLoading || factsLoading) && <span className="inline-block w-2.5 h-2.5 border-[1.5px] border-gray-400 border-t-transparent rounded-full animate-spin" />}
         </span>
         <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${sourcesCollapsed ? '' : 'rotate-90'}`} />

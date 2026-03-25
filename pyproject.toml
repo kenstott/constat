@@ -55,6 +55,8 @@ dependencies = [
     # NLP / Named Entity Recognition
     "spacy>=3.8.11",
     "lemminflect>=0.2.3",
+    # JSON Patch (RFC 6902) for entity cache diffs
+    "jsonpatch>=1.33",
 ]
 
 [project.optional-dependencies]

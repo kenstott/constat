@@ -78,9 +78,18 @@ class ManagedSession:
     # Event queue for WebSocket bridging (sync Session events -> async WebSocket)
     event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
 
+    # Reference to the main event loop — used by _push_event from background threads
+    # to call_soon_threadsafe and wake up await queue.get().
+    _event_loop: Optional[asyncio.AbstractEventLoop] = None
+
     # Last entity_rebuild_complete event — replayed on WS connect
     # (scope cache may finish before WS connects, losing the event)
     _entity_rebuild_event: Optional[dict] = None
+
+    # Entity state cache tracking for JSON Patch diffs
+    _entity_state_version: int = 0
+    _last_entity_state: Optional[dict] = None
+    _client_entity_version: Optional[int] = None
 
     # Cancellation flag for background glossary generation
     _glossary_cancelled: threading.Event = field(default_factory=threading.Event)
@@ -888,22 +897,6 @@ class SessionManager:
         fingerprint = compute_ner_fingerprint(chunk_ids, schema_entities, api_entities, business_terms, entity_terms=entity_terms)
         logger.info(f"Session {session_id}: NER fingerprint={fingerprint} ({len(chunk_ids)} chunks, {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business)")
 
-        # Try scope-level cache (cross-session, persisted in DuckDB)
-        vs = session.doc_tools._vector_store if hasattr(session.doc_tools, '_vector_store') else None
-        if vs and hasattr(vs, 'has_ner_scope_cache'):
-            has_cache = vs.has_ner_scope_cache(fingerprint)
-            logger.info(f"Session {session_id}: NER scope cache check: has_cache={has_cache} fingerprint={fingerprint}")
-            if has_cache:
-                try:
-                    count = vs.restore_ner_scope_cache(fingerprint, session_id)
-                    update_ner_fingerprint(session_id, fingerprint)
-                    logger.info(f"Session {session_id}: NER scope cache hit — restored {count} entities")
-                    return
-                except Exception as e:
-                    logger.warning(f"Session {session_id}: NER scope cache restore failed, running full NER: {e}")
-        else:
-            logger.warning(f"Session {session_id}: no vector store for NER scope cache check")
-
         if should_skip_ner(session_id, fingerprint):
             # Even when NER is skipped, always rebuild clusters (in-memory state lost on restart)
             if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
@@ -955,14 +948,6 @@ class SessionManager:
                     vs._clusters_dirty = True
                     vs._rebuild_clusters(session_id)
                     logger.info(f"Session {session_id}: rebuilt clusters after entity extraction")
-
-                # Store into scope cache for future sessions
-                if hasattr(vs, 'store_ner_scope_cache') and link_count and link_count > 0:
-                    try:
-                        vs.store_ner_scope_cache(fingerprint, session_id)
-                        vs.evict_ner_scope_cache()
-                    except Exception as cache_err:
-                        logger.warning(f"Session {session_id}: failed to store NER scope cache: {cache_err}")
 
             # Compute entity diff
             new_entities: dict[str, tuple[str, str]] = {}
@@ -1017,79 +1002,36 @@ class SessionManager:
         self._run_entity_extraction(session_id, managed.session)
         logger.info(f"refresh_entities({session_id}): complete")
 
-    def try_restore_entities_from_cache(self, session_id: str) -> bool:
-        """Try to restore entities from NER scope cache (synchronous, fast).
+    def push_entity_state(self, session_id: str) -> None:
+        """Build compact entity state and push as full state or JSON Patch delta."""
+        from constat.server.entity_state import build_compact_state, compute_entity_patch
 
-        Returns True if entities were restored from cache, False if full NER needed.
-        Call this BEFORE session_ready so glossary has data on first fetch.
-        """
         managed = self._sessions.get(session_id)
         if not managed or not managed.session or not managed.session.doc_tools:
-            return False
+            return
+        vs = getattr(managed.session.doc_tools, '_vector_store', None)
+        if not vs:
+            return
 
-        session = managed.session
-        if not hasattr(session.doc_tools, '_vector_store') or not session.doc_tools._vector_store:
-            return False
+        new_state = build_compact_state(session_id, managed)
+        managed._entity_state_version += 1
+        version = managed._entity_state_version
 
-        try:
-            from constat.discovery.ner_fingerprint import compute_ner_fingerprint, update_ner_fingerprint
-            from constat.catalog.glossary_builder import get_glossary_terms_for_ner, get_relationship_terms_for_ner
+        if managed._last_entity_state is not None:
+            patch_ops = compute_entity_patch(managed._last_entity_state, new_state)
+            if patch_ops:
+                self._push_event(managed, EventType.ENTITY_PATCH, {
+                    "patch": patch_ops,
+                    "version": version,
+                })
+            # No patch needed if states are identical
+        else:
+            self._push_event(managed, EventType.ENTITY_STATE, {
+                "state": new_state,
+                "version": version,
+            })
 
-            # Build the same inputs as _run_entity_extraction
-            domain_ids = list(session.config.domains.keys()) if session.config.domains else []
-            for p in (managed.active_domains or []):
-                if p not in domain_ids:
-                    domain_ids.append(p)
-            session_db_names = [db["name"] for db in managed._dynamic_dbs]
-
-            schema_entities = list(session.schema_manager.get_entity_names(
-                include_columns_for_dbs=session_db_names
-            ))
-            api_entities = list(session._get_api_entity_names())
-
-            business_terms: list[str] = []
-            resolved = managed.resolved_config
-            if resolved and resolved.glossary:
-                business_terms.extend(get_glossary_terms_for_ner(resolved.glossary))
-            elif session.config.glossary:
-                business_terms.extend(get_glossary_terms_for_ner(session.config.glossary))
-            if resolved and resolved.relationships:
-                business_terms.extend(get_relationship_terms_for_ner(resolved.relationships))
-            elif session.config.relationships:
-                business_terms.extend(get_relationship_terms_for_ner(session.config.relationships))
-
-            entity_terms: dict[str, list[str]] = {}
-            vs = session.doc_tools._vector_store
-            if hasattr(vs, 'get_entity_resolution_names'):
-                er_source_ids = ["__base__", "__image_labels__"] + domain_ids
-                entity_terms = vs.get_entity_resolution_names(er_source_ids)
-                image_labels = entity_terms.pop("LABEL", [])
-                if image_labels:
-                    business_terms.extend(image_labels)
-
-            chunk_ids = []
-            try:
-                chunk_ids = vs.get_all_chunk_ids(global_only=True)
-            except Exception:
-                pass
-
-            fingerprint = compute_ner_fingerprint(
-                chunk_ids, schema_entities, api_entities, business_terms, entity_terms=entity_terms,
-            )
-
-            if hasattr(vs, 'has_ner_scope_cache') and vs.has_ner_scope_cache(fingerprint):
-                count = vs.restore_ner_scope_cache(fingerprint, session_id)
-                update_ner_fingerprint(session_id, fingerprint)
-                if hasattr(vs, '_rebuild_clusters'):
-                    vs._clusters_dirty = True
-                    vs._rebuild_clusters(session_id)
-                logger.info(f"Session {session_id}: scope cache hit — restored {count} entities before session_ready")
-                return True
-
-        except Exception as e:
-            logger.warning(f"Session {session_id}: scope cache restore attempt failed: {e}")
-
-        return False
+        managed._last_entity_state = new_state
 
     def refresh_entities_async(self, session_id: str) -> None:
         """Refresh entity extraction in a background thread.
@@ -1143,6 +1085,7 @@ class SessionManager:
                 if diff:
                     event_data.update(diff)
                 self._push_event(managed, EventType.ENTITY_REBUILD_COMPLETE, event_data)
+                self.push_entity_state(session_id)
                 logger.info(f"refresh_entities_async({session_id}): complete in {duration_ms}ms")
             except Exception as e:
                 if cancel_event.is_set():
@@ -1316,6 +1259,7 @@ class SessionManager:
                 "duration_ms": duration_ms,
             })
             logger.info(f"Glossary generation for {session_id}: {len(terms)} terms in {duration_ms}ms")
+            self.push_entity_state(session_id)
         except Exception as e:
             logger.exception(f"Glossary generation for {session_id} failed: {e}")
             duration_ms = int((time.time() - t0) * 1000)
@@ -1584,20 +1528,21 @@ class SessionManager:
             elif event_type == EventType.ENTITY_REBUILD_START:
                 managed._entity_rebuild_event = None
 
-            # Use call_soon_threadsafe to wake the event loop — asyncio.Queue
-            # is not thread-safe and put_nowait from a background thread won't
-            # wake up await queue.get() on the event loop.
+            # asyncio.Queue is not thread-safe — put_nowait from a background
+            # thread won't wake await queue.get() on the event loop.
+            # Use call_soon_threadsafe via the stored loop reference.
             try:
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
                 # We're on the event loop thread — safe to put directly
                 managed.event_queue.put_nowait(event_dict)
             except RuntimeError:
-                # We're on a background thread — use call_soon_threadsafe
-                try:
-                    loop = asyncio.get_event_loop()
+                # Background thread — use stored event loop reference
+                loop = managed._event_loop
+                if loop and loop.is_running():
                     loop.call_soon_threadsafe(managed.event_queue.put_nowait, event_dict)
-                except RuntimeError:
-                    # No event loop available — direct put as fallback
+                else:
+                    # No loop yet (WS not connected) — direct put; will be
+                    # delivered when send_events starts draining the queue
                     managed.event_queue.put_nowait(event_dict)
         except asyncio.QueueFull:
             logger.warning(f"Event queue full for session {managed.session_id}, dropping {event_type}")

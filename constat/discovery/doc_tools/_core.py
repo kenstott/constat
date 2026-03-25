@@ -267,18 +267,15 @@ class _CoreMixin:
         Args:
             schema_entities: Optional list of known schema entity names for entity extraction
         """
-        print(f"[DOC_INDEX] _loaded_documents={list(self._loaded_documents.keys())}")
         chunks = []
         for name, doc in self._loaded_documents.items():
             doc_chunks = self._chunk_document(name, doc.content)
-            print(f"[DOC_INDEX] {name}: {len(doc_chunks)} chunks")
             chunks.extend(doc_chunks)
             # Persist source_url for crawled sub-documents
             if getattr(doc, 'source_url', None) and hasattr(self._vector_store, 'store_document_url'):
                 self._vector_store.store_document_url(name, doc.source_url)
 
         if not chunks:
-            print("[DOC_INDEX] No chunks to index!")
             return
 
         # Generate embeddings
@@ -287,7 +284,6 @@ class _CoreMixin:
             embeddings = self._model.encode(texts, convert_to_numpy=True)
 
         # Add to vector store
-        print(f"[DOC_INDEX] Adding {len(chunks)} chunks with source='document'")
         self._vector_store.add_chunks(chunks, embeddings, source="document")
 
         # Extract and store entities
@@ -1241,6 +1237,56 @@ class _CoreMixin:
                         except Exception as att_err:
                             logger.warning("[IMAP]   Skipping attachment %s: %s", att.filename, att_err)
                             continue
+                        # Extract embedded images from PDF/Office attachments
+                        if doc_config.extract_images and att_type in ("pdf", "docx", "pptx", "xlsx"):
+                            from ._file_extractors import _extract_images_from_document
+                            from ._image import _extract_image, _render_image_result, _describe_image_sync
+                            try:
+                                embedded_images = _extract_images_from_document(
+                                    path=None, data=att.data, doc_type=att_type,
+                                )
+                                ocr_parts = []
+                                for img in embedded_images:
+                                    img_doc_name = f"{att_name}:{img.name}"
+                                    image_result = _extract_image(path=None, data=img.data)
+                                    if image_result.category == "image-primary" and self._router:
+                                        try:
+                                            desc = _describe_image_sync(self._router, img.data, img.mime_type)
+                                            image_result.description = desc.get("description")
+                                            image_result.subcategory = desc.get("subcategory", image_result.subcategory)
+                                            image_result.labels = desc.get("labels", image_result.labels)
+                                        except Exception:
+                                            pass
+                                    if image_result.labels:
+                                        self._image_labels.extend(image_result.labels)
+                                    img_content = _render_image_result(image_result, img.name)
+                                    self._loaded_documents[img_doc_name] = LoadedDocument(
+                                        name=img_doc_name, config=doc_config, content=img_content,
+                                        format="markdown", sections=[], loaded_at=datetime.now().isoformat(),
+                                    )
+                                    if imap_ctx:
+                                        total_chunks += self._index_loaded_doc(
+                                            img_doc_name, imap_ctx["domain_id"], imap_ctx["session_id"],
+                                            imap_ctx["skip_entity_extraction"],
+                                        )
+                                    # Collect OCR text to enrich empty parent documents
+                                    if image_result.ocr_text and image_result.ocr_text.strip():
+                                        page_label = f"[Page {img.page}]" if img.page else f"[Image {img.index}]"
+                                        ocr_parts.append(f"{page_label}\n{image_result.ocr_text.strip()}")
+                                if embedded_images:
+                                    logger.info("[IMAP]   %s: extracted %d embedded images", att.filename, len(embedded_images))
+                                # If parent text extraction was empty, use OCR text from images
+                                if not content.strip() and ocr_parts:
+                                    content = "\n\n".join(ocr_parts)
+                                    fmt = "text"
+                                    logger.info("[IMAP]   %s: using OCR text from %d embedded images", att.filename, len(ocr_parts))
+                            except Exception as img_err:
+                                logger.warning("[IMAP]   Embedded image extraction failed for %s: %s", att.filename, img_err)
+
+                        # After image extraction, if content is still empty, store placeholder
+                        if not content.strip() and att_type in ("pdf", "docx", "xlsx", "pptx"):
+                            content = f"[{att_type.upper()} attachment: {att.filename} — no extractable text]"
+                            fmt = "text"
                         self._loaded_documents[att_name] = LoadedDocument(
                             name=att_name, config=doc_config, content=content, format=fmt,
                             sections=[], loaded_at=datetime.now().isoformat(),

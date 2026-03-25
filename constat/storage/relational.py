@@ -697,7 +697,8 @@ class RelationalStore:
                     ELSE 'self_describing'
                 END AS glossary_status,
                 e.domain_id AS entity_domain_id,
-                COALESCE(g.ignored, FALSE) AS ignored
+                COALESCE(g.ignored, FALSE) AS ignored,
+                g.canonical_source
             FROM entities e
             LEFT JOIN glossary_terms g
                 ON LOWER(e.name) = LOWER(g.name)
@@ -741,7 +742,8 @@ class RelationalStore:
                 g.provenance,
                 'defined' AS glossary_status,
                 NULL AS entity_domain_id,
-                COALESCE(g.ignored, FALSE) AS ignored
+                COALESCE(g.ignored, FALSE) AS ignored,
+                g.canonical_source
             FROM glossary_terms g
             WHERE g.{glossary_scope_col} = ?
             {scope_filter_2}
@@ -792,7 +794,7 @@ class RelationalStore:
              sess_id, glossary_id, domain, definition, parent_id,
              parent_verb, aliases_json, cardinality, plural,
              status, provenance, glossary_status, entity_domain_id,
-             ignored) = row
+             ignored, canonical_source) = row
             aliases = json.loads(aliases_json) if aliases_json else []
 
             if glossary_status == "self_describing" and name.lower() in alias_set:
@@ -818,6 +820,7 @@ class RelationalStore:
                 "provenance": provenance,
                 "glossary_status": glossary_status,
                 "ignored": bool(ignored),
+                "canonical_source": canonical_source,
             })
         return results
 
@@ -1572,195 +1575,6 @@ class RelationalStore:
                     break
 
         return results
-
-    # ------------------------------------------------------------------
-    # NER scope cache
-    # ------------------------------------------------------------------
-
-    def has_ner_scope_cache(self, fingerprint: str) -> bool:
-        try:
-            row = self._conn.execute(
-                "SELECT entity_count FROM ner_scope_cache WHERE fingerprint = ?",
-                [fingerprint],
-            ).fetchone()
-        except Exception as e:
-            logger.warning(f"has_ner_scope_cache query failed for {fingerprint[:12]}: {e}")
-            return False
-        if row is None:
-            logger.info(f"NER scope cache miss: no entry for fingerprint {fingerprint[:12]}")
-            return False
-        if row[0] == 0:
-            self._evict_ner_scope_fingerprint(fingerprint)
-            logger.info(f"Evicted empty NER scope cache for fingerprint {fingerprint[:12]}...")
-            return False
-        logger.info(f"NER scope cache hit: fingerprint {fingerprint[:12]}, {row[0]} entities")
-        return True
-
-    def restore_ner_scope_cache(self, fingerprint: str, session_id: str) -> int:
-        """Merge cached entities into current session state (additive only).
-
-        Never deletes existing entities — cache restore only adds missing
-        entities and updates overlapping ones.
-        """
-        conn = self._conn
-
-        # Stage cached entities (deduped)
-        conn.execute("CREATE TEMPORARY TABLE IF NOT EXISTS _ner_desired AS SELECT * FROM entities LIMIT 0")
-        conn.execute("DELETE FROM _ner_desired")
-        conn.execute(
-            """
-            INSERT INTO _ner_desired
-            SELECT id, name, display_name, semantic_type, ner_type, ?, domain_id, created_at, entity_class
-            FROM (
-                SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn
-                FROM ner_cached_entities WHERE fingerprint = ?
-            ) sub WHERE rn = 1
-            """,
-            [session_id, fingerprint],
-        )
-
-        cached_count = conn.execute("SELECT COUNT(*) FROM _ner_desired").fetchone()[0]
-
-        # Current entity IDs for this session
-        current_ids = {r[0] for r in conn.execute(
-            "SELECT id FROM entities WHERE session_id = ?", [session_id]
-        ).fetchall()}
-        cached_ids = {r[0] for r in conn.execute("SELECT id FROM _ner_desired").fetchall()}
-
-        # INSERT: in cache but not current
-        new_ids = cached_ids - current_ids
-        if new_ids:
-            conn.execute(
-                """
-                INSERT INTO entities
-                SELECT d.* FROM _ner_desired d
-                WHERE d.id IN (SELECT UNNEST(?::VARCHAR[]))
-                AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = d.id)
-                """,
-                [list(new_ids)],
-            )
-
-        # UPDATE: in both — refresh fields from cache
-        overlap_ids = current_ids & cached_ids
-        if overlap_ids:
-            conn.execute(
-                """
-                UPDATE entities SET
-                    display_name = d.display_name,
-                    semantic_type = d.semantic_type,
-                    ner_type = d.ner_type,
-                    domain_id = d.domain_id,
-                    entity_class = d.entity_class
-                FROM _ner_desired d
-                WHERE entities.id = d.id AND entities.session_id = ?
-                """,
-                [session_id],
-            )
-
-        # Merge chunk-entity links (additive)
-        conn.execute(
-            """
-            INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
-            SELECT DISTINCT c.chunk_id, c.entity_id, c.confidence
-            FROM ner_cached_chunk_entities c
-            WHERE c.fingerprint = ?
-            AND NOT EXISTS (
-                SELECT 1 FROM chunk_entities ce
-                WHERE ce.chunk_id = c.chunk_id AND ce.entity_id = c.entity_id
-            )
-            """,
-            [fingerprint],
-        )
-
-        # Merge clusters (additive)
-        conn.execute(
-            """
-            INSERT INTO glossary_clusters (term_name, cluster_id, session_id)
-            SELECT DISTINCT c.term_name, c.cluster_id, ?
-            FROM ner_cached_clusters c
-            WHERE c.fingerprint = ?
-            AND NOT EXISTS (
-                SELECT 1 FROM glossary_clusters gc
-                WHERE gc.term_name = c.term_name AND gc.session_id = ?
-            )
-            """,
-            [session_id, fingerprint, session_id],
-        )
-
-        conn.execute("DROP TABLE IF EXISTS _ner_desired")
-
-        added = len(new_ids) if new_ids else 0
-        updated = len(overlap_ids) if overlap_ids else 0
-        total = len(current_ids) + added
-        # Leave _clusters_dirty = True so next access rebuilds clusters
-        # with the full entity set (cached clusters may be incomplete if
-        # session-scoped chunks were added after the cache was stored).
-        self._clusters_dirty = True
-        logger.info(f"Restored NER scope cache: +{added} new, ~{updated} updated, {total} total (fingerprint {fingerprint[:12]}...)")
-        return total
-
-    def store_ner_scope_cache(self, fingerprint: str, session_id: str) -> None:
-        entity_count = self._conn.execute(
-            "SELECT COUNT(*) FROM entities WHERE session_id = ?",
-            [session_id],
-        ).fetchone()[0]
-
-        if entity_count == 0:
-            logger.warning(f"Not caching NER scope with 0 entities for fingerprint {fingerprint[:12]}...")
-            return
-
-        self._conn.execute(
-            "INSERT INTO ner_scope_cache (fingerprint, entity_count) VALUES (?, ?) ON CONFLICT (fingerprint) DO UPDATE SET entity_count = excluded.entity_count",
-            [fingerprint, entity_count],
-        )
-
-        self._conn.execute(
-            """
-            INSERT INTO ner_cached_entities (fingerprint, id, name, display_name, semantic_type, ner_type, domain_id, created_at, entity_class)
-            SELECT ?, id, name, display_name, semantic_type, ner_type, domain_id, created_at, entity_class
-            FROM entities WHERE session_id = ?
-            ON CONFLICT DO NOTHING
-            """,
-            [fingerprint, session_id],
-        )
-
-        self._conn.execute(
-            """
-            INSERT INTO ner_cached_chunk_entities (fingerprint, chunk_id, entity_id, confidence)
-            SELECT ?, ce.chunk_id, ce.entity_id, ce.confidence
-            FROM chunk_entities ce
-            JOIN entities e ON ce.entity_id = e.id
-            WHERE e.session_id = ?
-            ON CONFLICT DO NOTHING
-            """,
-            [fingerprint, session_id],
-        )
-
-        self._conn.execute(
-            """
-            INSERT INTO ner_cached_clusters (fingerprint, term_name, cluster_id)
-            SELECT ?, term_name, cluster_id
-            FROM glossary_clusters WHERE session_id = ?
-            ON CONFLICT DO NOTHING
-            """,
-            [fingerprint, session_id],
-        )
-
-        logger.info(f"Stored NER scope cache: {entity_count} entities for fingerprint {fingerprint[:12]}...")
-
-    def evict_ner_scope_cache(self, keep: int = 10) -> None:
-        rows = self._conn.execute(
-            "SELECT fingerprint FROM ner_scope_cache ORDER BY created_at DESC OFFSET ?",
-            [keep],
-        ).fetchall()
-        for (fp,) in rows:
-            self._evict_ner_scope_fingerprint(fp)
-
-    def _evict_ner_scope_fingerprint(self, fingerprint: str) -> None:
-        self._conn.execute("DELETE FROM ner_cached_clusters WHERE fingerprint = ?", [fingerprint])
-        self._conn.execute("DELETE FROM ner_cached_chunk_entities WHERE fingerprint = ?", [fingerprint])
-        self._conn.execute("DELETE FROM ner_cached_entities WHERE fingerprint = ?", [fingerprint])
-        self._conn.execute("DELETE FROM ner_scope_cache WHERE fingerprint = ?", [fingerprint])
 
     # ------------------------------------------------------------------
     # Session cleanup

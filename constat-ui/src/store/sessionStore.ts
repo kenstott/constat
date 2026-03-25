@@ -7,9 +7,13 @@ import { wsManager } from '@/api/websocket'
 import * as sessionsApi from '@/api/sessions'
 import { getOrCreateSessionId, createNewSessionId } from '@/api/sessions'
 import * as queriesApi from '@/api/queries'
+import { applyPatch, type Operation } from 'fast-json-patch'
 import { useArtifactStore } from './artifactStore'
 import { useProofStore } from './proofStore'
 import { useUIStore } from './uiStore'
+import { getCachedEntry, setCachedEntry } from './entityCache'
+import { type CompactState, inflateToGlossaryTerms } from './entityCacheKeys'
+import { useGlossaryStore } from './glossaryStore'
 
 interface Message {
   id: string
@@ -298,9 +302,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // On reconnect, fetch glossary immediately (session already initialized)
     // On new session, session_ready event will trigger the fetch
     if (isReconnect) {
-      import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-        useGlossaryStore.getState().fetchTerms(session.session_id)
-      })
+      useGlossaryStore.getState().fetchTerms(session.session_id)
     }
   },
 
@@ -310,6 +312,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (!options?.preserveMessages) {
         set({ messages: [], suggestions: [], plan: null })
       }
+      useGlossaryStore.getState().loadFromCache(session.session_id)
       wsManager.connect(session.session_id)
       wsManager.onStatus((connected) => set({ wsConnected: connected }))
       wsManager.onEvent((event) => get().handleWSEvent(event))
@@ -797,9 +800,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           useArtifactStore.getState().fetchDataSources(sid)
           useArtifactStore.getState().fetchAllSkills()
           useArtifactStore.getState().fetchAllAgents(sid)
-          import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-            useGlossaryStore.getState().fetchTerms(sid)
-          })
+          useGlossaryStore.getState().fetchTerms(sid)
         }
         break
       }
@@ -1601,27 +1602,48 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
 
       case 'entity_rebuild_complete': {
-        // Entity extraction finished — apply diff to entities, refresh glossary
+        // Entity extraction finished — apply diff to entities
         const { session: s } = get()
         if (s) {
           const data = event.data as { diff?: { added: Array<{name: string, type: string}>, removed: Array<{name: string, type: string}> } }
           if (data.diff) {
             useArtifactStore.getState().patchEntities(data.diff)
           }
-          import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-            const store = useGlossaryStore.getState()
-            store.setEntityRebuilding(false)
-            store.fetchTerms(s.session_id)
-          })
+          useGlossaryStore.getState().setEntityRebuilding(false)
         }
         break
       }
 
       case 'entity_rebuild_start':
-        import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-          useGlossaryStore.getState().setEntityRebuilding(true)
-        })
+        useGlossaryStore.getState().setEntityRebuilding(true)
         break
+
+      case 'entity_state': {
+        const { session: s } = get()
+        if (s) {
+          const { state, version } = event.data as { state: CompactState; version: number }
+          const { terms, totalDefined, totalSelfDescribing } = inflateToGlossaryTerms(state)
+          useGlossaryStore.getState().setTermsFromState(terms, totalDefined, totalSelfDescribing)
+          setCachedEntry(s.session_id, state, version)
+        }
+        break
+      }
+
+      case 'entity_patch': {
+        const { session: s } = get()
+        if (s) {
+          const { patch, version } = event.data as { patch: Operation[]; version: number }
+          getCachedEntry(s.session_id).then((entry) => {
+            const base: CompactState = entry?.state ?? { e: {}, g: {}, r: {}, k: {} }
+            const { newDocument } = applyPatch(base, patch, false, false)
+            const newState = newDocument as CompactState
+            const { terms, totalDefined, totalSelfDescribing } = inflateToGlossaryTerms(newState)
+            useGlossaryStore.getState().setTermsFromState(terms, totalDefined, totalSelfDescribing)
+            setCachedEntry(s.session_id, newState, version)
+          })
+        }
+        break
+      }
 
       case 'source_ingest_complete': {
         // Refresh data sources panel when a source finishes ingesting
@@ -1644,43 +1666,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'glossary_terms_added': {
         const termsData = event.data as { terms?: GlossaryTerm[] }
         if (termsData.terms && termsData.terms.length > 0) {
-          import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-            useGlossaryStore.getState().addTerms(termsData.terms!)
-          })
+          useGlossaryStore.getState().addTerms(termsData.terms!)
         }
         break
       }
 
       case 'glossary_rebuild_complete': {
-        const { session: s } = get()
-        if (s) {
-          import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-            const store = useGlossaryStore.getState()
-            store.setGenerating(false)
-            store.fetchTerms(s.session_id)
-          })
-        }
+        const gStore = useGlossaryStore.getState()
+        gStore.setGenerating(false)
         break
       }
 
       case 'glossary_rebuild_start':
-        import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-          useGlossaryStore.getState().setGenerating(true)
-        })
+        useGlossaryStore.getState().setGenerating(true)
         break
 
       case 'glossary_generation_progress': {
         const { stage, percent } = event.data as { stage: string; percent: number }
-        import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-          useGlossaryStore.getState().setProgress(stage, percent)
-        })
+        useGlossaryStore.getState().setProgress(stage, percent)
         break
       }
 
       case 'relationships_extracted': {
-        import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-          useGlossaryStore.setState((s) => ({ refreshKey: s.refreshKey + 1 }))
-        })
+        useGlossaryStore.setState((s) => ({ refreshKey: s.refreshKey + 1 }))
         break
       }
     }

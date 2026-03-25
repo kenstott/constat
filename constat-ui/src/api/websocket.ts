@@ -1,6 +1,7 @@
 // WebSocket Manager with reconnection logic
 
 import type { WSMessage, WSEvent, CompletionItem } from '@/types/api'
+import { getCachedEntry } from '@/store/entityCache'
 
 export type WSEventHandler = (event: WSEvent) => void
 export type WSStatusHandler = (connected: boolean) => void
@@ -48,6 +49,9 @@ export class WebSocketManager {
     this.ws.onopen = () => {
       this.reconnectAttempts = 0
       this.notifyStatus(true)
+      getCachedEntry(sessionId).then((entry) => {
+        this.send('entity_seed', { version: entry?.version ?? null })
+      })
       this.startHeartbeat()
     }
 

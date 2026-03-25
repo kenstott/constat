@@ -514,6 +514,8 @@ export type EventType =
   | 'source_ingest_start'
   | 'source_ingest_complete'
   | 'source_ingest_error'
+  | 'entity_state'
+  | 'entity_patch'
 
 export interface WSEvent {
   event_type: EventType

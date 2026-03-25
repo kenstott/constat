@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import type { GlossaryTerm, GlossaryFilter } from '@/types/api'
 import * as sessionsApi from '@/api/sessions'
+import { getCachedEntry } from './entityCache'
+import { inflateToGlossaryTerms } from './entityCacheKeys'
 
 interface TaxonomySuggestion {
   child: string
@@ -47,6 +49,7 @@ interface GlossaryState {
   renameTerm: (sessionId: string, name: string, newName: string) => Promise<void>
   reconnectTerm: (sessionId: string, name: string, updates: { parent_id?: string; domain?: string }) => Promise<void>
   addTerms: (terms: GlossaryTerm[]) => void
+  setTermsFromState: (terms: GlossaryTerm[], totalDefined: number, totalSelfDescribing: number) => void
   bulkUpdateStatus: (sessionId: string, names: string[], status: string) => Promise<void>
   selectTerm: (name: string | null) => void
   setFilter: (filter: Partial<GlossaryFilter>) => void
@@ -54,6 +57,7 @@ interface GlossaryState {
   setGenerating: (generating: boolean) => void
   setProgress: (stage: string, percent: number) => void
   setEntityRebuilding: (rebuilding: boolean) => void
+  loadFromCache: (sessionId: string) => Promise<void>
 }
 
 export const useGlossaryStore = create<GlossaryState>((set, get) => ({
@@ -174,6 +178,9 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
     })
   },
 
+  setTermsFromState: (terms, totalDefined, totalSelfDescribing) =>
+    set({ terms, totalDefined, totalSelfDescribing, loading: false }),
+
   suggestTaxonomy: async (sessionId) => {
     try {
       const result = await sessionsApi.suggestTaxonomy(sessionId)
@@ -234,4 +241,11 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   setProgress: (stage, percent) => set({ generationStage: stage, generationPercent: percent }),
 
   setEntityRebuilding: (rebuilding) => set({ entityRebuilding: rebuilding }),
+
+  loadFromCache: async (sessionId) => {
+    const entry = await getCachedEntry(sessionId)
+    if (!entry) return
+    const { terms, totalDefined, totalSelfDescribing } = inflateToGlossaryTerms(entry.state)
+    set({ terms, totalDefined, totalSelfDescribing, loading: false })
+  },
 }))

@@ -4,6 +4,82 @@
 
 Add IMAP email inboxes as a document data source. Each message becomes a document. Attachments and embedded images are extracted as child documents and routed through the existing vectorization pipeline (including the image pipeline from `images.md`).
 
+## Strategy: Custom for Gmail/Microsoft, MCP for Others
+
+Gmail and Microsoft already have **working custom integrations** in the codebase:
+
+- `AzureOAuth2Provider` — MSAL-based, client credentials flow, token caching (`_imap.py:330-373`)
+- `GoogleOAuth2Provider` — google-auth credentials refresh (`_imap.py:376-401`)
+- `_imap_oauth2_login()` — XOAUTH2 SASL mechanism (`_imap.py:279-282`)
+- Browser OAuth flow — `/api/oauth/email/authorize` + `/callback` (`oauth_email.py`)
+- Full MIME tree walking — attachment extraction, inline images, CID references
+- Incremental sync — `FETCH (ENVELOPE)` pre-check before full `FETCH (RFC822)`
+
+These are battle-tested and handle the hard parts. No reason to replace them with MCP.
+
+### Decision matrix
+
+| Provider | Approach | Reason |
+|---|---|---|
+| **Gmail** | Custom `IMAPFetcher` + `GoogleOAuth2Provider` | Already built, handles XOAUTH2, attachment extraction, image pipeline |
+| **Microsoft 365 / Outlook** | Custom `IMAPFetcher` + `AzureOAuth2Provider` | Already built, handles XOAUTH2, MSAL token caching |
+| **iCloud** | MCP ([email-mcp](https://github.com/marlinjai/email-mcp)) | No custom integration exists; MCP server supports iCloud IMAP |
+| **Yahoo / AOL** | MCP ([email-mcp](https://github.com/codefuturist/email-mcp)) | No custom integration; generic IMAP via MCP |
+| **Generic IMAP** | Custom `IMAPFetcher` (basic auth) | Already built; stdlib `imaplib` handles any IMAP server |
+| **On-premises Exchange** | Custom `IMAPFetcher` (NTLM/basic) | MCP servers don't support NTLM; direct IMAP required |
+| **Other providers** | MCP | Use ecosystem MCP servers; avoid building per-provider integrations |
+
+### MCP config (for non-Gmail/Microsoft providers)
+
+```yaml
+documents:
+  icloud-inbox:
+    type: mcp
+    url: https://mcp-email.example.com/sse
+    auth:
+      method: bearer
+      token_ref: icloud-mcp-token
+    description: "iCloud email"
+
+apis:
+  icloud-search:
+    type: mcp
+    url: https://mcp-email.example.com/sse
+    auth:
+      method: bearer
+      token_ref: icloud-mcp-token
+    allowed_tools:
+      - search_emails
+      - get_email
+      - list_folders
+    description: "iCloud email search"
+```
+
+MCP resources (messages) → document pipeline (vectorized). MCP tools (search, read, organize) → API operations for the query engine. See `mcp.md` for full MCP client architecture including `ChangeProbe` for incremental sync.
+
+### MCP email servers in the ecosystem
+
+- [email-mcp](https://github.com/codefuturist/email-mcp) — full IMAP + SMTP, 47 tools, 7 prompts, 6 resources
+- [Unified email-mcp](https://github.com/marlinjai/email-mcp) — Gmail, Outlook, iCloud, generic IMAP with OAuth2
+- [IMAP workflows](https://www.pulsemcp.com/servers/non-dirty-imap-email) — IMAP-specific operations
+
+### Gaps where MCP falls short (addressed by custom `IMAPFetcher`)
+
+| Gap | Custom solution |
+|---|---|
+| Attachment extraction + vectorization | `_extract_parts()` with MIME tree walking |
+| Inline image extraction (CID references) | `inline_images` extraction + image pipeline |
+| Arbitrary IMAP SEARCH strings | `_build_search_criteria()` with full IMAP syntax |
+| ENVELOPE pre-check (incremental sync) | `FETCH (ENVELOPE)` before full `FETCH (RFC822)` |
+| On-premises Exchange (NTLM) | Direct `imaplib.IMAP4_SSL` with NTLM auth |
+| XOAUTH2 SASL | `_imap_oauth2_login()` for Gmail/M365 |
+
+These gaps only matter for Gmail/Microsoft/on-prem — which use the custom path anyway. For iCloud/Yahoo/other providers via MCP, message text (without deep attachment extraction) may be sufficient.
+
+---
+
+The rest of this document specifies the custom implementation (used for Gmail, Microsoft, generic IMAP, and on-premises Exchange).
+
 ## Addressing Scheme
 
 All document names use colon-separated hierarchical addresses:

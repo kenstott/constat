@@ -24,6 +24,10 @@ model: inherit
 [Agent prompt content - aim for 2500-3000 tokens]
 ```
 
+## Intellectual Honesty
+
+**Every claim in an agent prompt must be verifiable.** Don't assert capabilities the agent doesn't have. Don't promise behaviors that depend on unverified assumptions. If a technique is unproven, frame it as experimental. Agent prompts that overstate capabilities produce unreliable agents.
+
 ## Prompt Architecture (U-Shaped Attention)
 
 Models attend best to **start** and **end**, weakest in **middle**.

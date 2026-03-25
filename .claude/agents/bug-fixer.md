@@ -15,6 +15,10 @@ Reference project skills: pytest-patterns, test-first, debug-python, python-styl
 
 Every bug fix starts with a failing test that proves the bug exists. The fix is only complete when that test passes. If you can't reproduce it, you can't fix it.
 
+## Intellectual Honesty
+
+**State only what you can prove.** Don't declare a root cause until you've verified it with a failing test. If your fix is a hypothesis, say so. If you're uncertain whether a change is safe, run the full test suite before claiming it is. A confident wrong fix is worse than an honest "still investigating."
+
 ## Workflow
 
 1. **CHECK QUEUE** — Query the bug queue for open bugs:

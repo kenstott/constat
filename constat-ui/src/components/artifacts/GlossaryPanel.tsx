@@ -664,76 +664,68 @@ function TagEditor({
 // Connected resources display
 function ConnectedResources({
   sessionId,
-  termName,
-  displayName,
+  term,
 }: {
   sessionId: string
-  termName: string
-  displayName: string
+  term: GlossaryTerm
 }) {
   const refreshKey = useGlossaryStore((s) => s.refreshKey)
   const updateTerm = useGlossaryStore((s) => s.updateTerm)
-  const [detail, setDetail] = useState<{
+  const termName = term.name
+  const displayName = term.display_name
+
+  // Local data from store (available immediately)
+  const parent = term.parent ?? null
+  const parent_verb = term.parent_verb || 'HAS_KIND'
+  const children = term.children ?? []
+  const relationships = term.relationships ?? []
+  const cluster_siblings = term.cluster_siblings ?? []
+  const tags = term.tags ?? {}
+  const domain = term.domain ?? null
+  const domain_path = term.domain_path ?? null
+
+  const canonical_source = term.canonical_source ?? null
+
+  // Server-side data (requires HTTP fetch — chunk lookups)
+  const [serverDetail, setServerDetail] = useState<{
     resources: Array<{
       entity_name: string
       entity_type: string
       sources: Array<{ document_name: string; source: string; section?: string; url?: string }>
     }>
-    parent: { name: string; display_name: string } | null
-    parent_verb: string
-    children: Array<{ name: string; display_name: string; parent_verb?: string }>
-    relationships: Array<{ id: string; subject: string; verb: string; object: string; confidence: number }>
-    cluster_siblings: string[]
-    tags: Record<string, unknown>
-    domain: string | null
-    domain_path: string | null
     spanning_domains: string[]
-    canonical_source: string | null
-  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [], cluster_siblings: [], tags: {}, domain: null, domain_path: null, spanning_domains: [], canonical_source: null })
-  const [loaded, setLoaded] = useState(false)
+  }>({ resources: [], spanning_domains: [] })
+  const [resourcesLoaded, setResourcesLoaded] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    setLoaded(false)
+    setResourcesLoaded(false)
     getGlossaryTerm(sessionId, termName).then((data) => {
       if (!cancelled) {
-        console.log(`[ConnectedResources] ${termName}: relationships=${(data.relationships || []).length}, parent=${!!data.parent}, children=${(data.children || []).length}, resources=${(data.connected_resources || []).length}`)
-        setDetail({
+        setServerDetail({
           resources: data.connected_resources || [],
-          parent: data.parent || null,
-          parent_verb: data.parent_verb || 'HAS_KIND',
-          children: data.children || [],
-          relationships: data.relationships || [],
-          cluster_siblings: data.cluster_siblings || [],
-          tags: data.tags || {},
-          domain: data.domain || null,
-          domain_path: data.domain_path || null,
           spanning_domains: data.spanning_domains || [],
-          canonical_source: data.canonical_source || null,
         })
-        setLoaded(true)
+        setResourcesLoaded(true)
       }
     }).catch((err) => {
       console.error(`[ConnectedResources] ${termName}: fetch failed`, err)
-      setLoaded(true)
+      setResourcesLoaded(true)
     })
     return () => { cancelled = true }
   }, [sessionId, termName, refreshKey])
 
-  if (!loaded) return <div className="text-xs text-gray-400">Loading resources...</div>
-
-  const { resources, parent, parent_verb, children, relationships, cluster_siblings, tags, domain, domain_path, spanning_domains, canonical_source } = detail
+  const { resources, spanning_domains } = serverDetail
   const hasConnections = !!(parent || children.length > 0 || relationships.length > 0 || cluster_siblings.length > 0)
-  const hasContent = resources.length > 0 || hasConnections || !!domain
-  if (!hasContent) return null
+  const hasContent = resources.length > 0 || hasConnections || !!domain || Object.keys(tags).length > 0
+  if (!hasContent && resourcesLoaded) return null
 
   return (
     <div className="mt-1.5 space-y-1.5">
       <TagEditor
         tags={tags}
         onChange={(newTags) => {
-          setDetail(prev => ({ ...prev, tags: newTags }))
           updateTerm(sessionId, termName, { tags: newTags })
         }}
         sessionId={sessionId}
@@ -770,18 +762,9 @@ function ConnectedResources({
               key={r.id}
               rel={r}
               sessionId={sessionId}
-              onDeleted={(id) => setDetail(prev => ({
-                ...prev,
-                relationships: prev.relationships.filter(x => x.id !== id),
-              }))}
-              onUpdated={(id, verb) => setDetail(prev => ({
-                ...prev,
-                relationships: prev.relationships.map(x => x.id === id ? { ...x, verb, user_edited: true } : x),
-              }))}
-              onApproved={(id) => setDetail(prev => ({
-                ...prev,
-                relationships: prev.relationships.map(x => x.id === id ? { ...x, user_edited: true } : x),
-              }))}
+              onDeleted={() => {}}
+              onUpdated={() => {}}
+              onApproved={() => {}}
             />
           ))}
         </div>
@@ -790,10 +773,7 @@ function ConnectedResources({
         sessionId={sessionId}
         termName={termName}
         displayName={displayName}
-        onCreated={(rel) => setDetail(prev => ({
-          ...prev,
-          relationships: [...prev.relationships, rel],
-        }))}
+        onCreated={() => {}}
       />
       {cluster_siblings.length > 0 && (
         <div>
@@ -824,7 +804,6 @@ function ConnectedResources({
                       <button
                         onClick={() => {
                           updateTerm(sessionId, termName, { canonical_source: null })
-                          setDetail(prev => ({ ...prev, canonical_source: null }))
                         }}
                         className="px-1 py-0 rounded text-[10px] font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800"
                         title="Click to remove canonical source"
@@ -835,7 +814,6 @@ function ConnectedResources({
                       <button
                         onClick={() => {
                           updateTerm(sessionId, termName, { canonical_source: s.document_name })
-                          setDetail(prev => ({ ...prev, canonical_source: s.document_name }))
                         }}
                         className="px-1 py-0 rounded text-[10px] text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 opacity-0 group-hover/res:opacity-100 transition-opacity"
                         title="Set as canonical source"
@@ -1310,7 +1288,7 @@ function GlossaryItem({
           )}
 
           {/* Connected resources */}
-          <ConnectedResources sessionId={sessionId} termName={term.name} displayName={term.display_name} />
+          <ConnectedResources sessionId={sessionId} term={term} />
 
           {/* Actions for defined terms */}
           {isDefined && (
@@ -3484,8 +3462,6 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     terms,
     filters,
     viewMode,
-    totalDefined,
-    totalSelfDescribing,
     loading,
     fetchTerms,
     fetchDeprecated,
@@ -3519,7 +3495,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
   useEffect(() => {
     fetchTerms(sessionId)
     fetchDeprecated(sessionId)
-  }, [sessionId, filters.scope, filters.domain, fetchTerms, fetchDeprecated])
+  }, [sessionId, fetchTerms, fetchDeprecated])
 
   const refreshDomainTree = useCallback(() => {
     getDomainTree()
@@ -3533,18 +3509,39 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     refreshDomainTree()
   }, [refreshDomainTree])
 
+  // Client-side scope and domain filtering
+  const scopedTerms = useMemo(() => {
+    let result = terms
+    if (filters.scope === 'defined') {
+      result = result.filter(t => t.glossary_status === 'defined')
+    } else if (filters.scope === 'self_describing') {
+      result = result.filter(t => t.glossary_status === 'self_describing')
+    }
+    if (filters.domain) {
+      const domainSet = new Set(filters.domain.split(','))
+      result = result.filter(t => {
+        const d = t.domain || 'system'
+        return domainSet.has(d)
+      })
+    }
+    return result
+  }, [terms, filters.scope, filters.domain])
+
+  const localTotalDefined = useMemo(() => terms.filter(t => t.glossary_status === 'defined').length, [terms])
+  const localTotalSelfDescribing = useMemo(() => terms.filter(t => t.glossary_status === 'self_describing').length, [terms])
+
   // Filter terms by search
   const filteredTerms = useMemo(() => {
-    if (!search) return terms
+    if (!search) return scopedTerms
     const q = search.toLowerCase()
-    return terms.filter(
+    return scopedTerms.filter(
       (t) =>
         t.name.toLowerCase().includes(q) ||
         t.display_name.toLowerCase().includes(q) ||
         (t.definition && t.definition.toLowerCase().includes(q)) ||
         t.aliases.some((a) => a.toLowerCase().includes(q))
     )
-  }, [terms, search])
+  }, [scopedTerms, search])
 
   // Filter by status and ignored
   const displayTerms = useMemo(() => {
@@ -3719,7 +3716,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
 
       {/* Stats */}
       <div className="text-xs text-gray-400 dark:text-gray-500">
-        {totalDefined} defined, {totalSelfDescribing} self-describing
+        {localTotalDefined} defined, {localTotalSelfDescribing} self-describing
       </div>
 
       {/* Taxonomy suggestions */}

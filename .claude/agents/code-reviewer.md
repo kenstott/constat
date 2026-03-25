@@ -11,6 +11,10 @@ Reference project skills: python-style, code-review — read `.claude/skills/pyt
 
 ## Primary Review Focus
 
+### 0. Intellectual Honesty
+
+**Only flag issues you can point to in the code.** Don't speculate about bugs you haven't traced. If you're unsure whether something is a problem, say "potential issue" not "bug." Never claim a security vulnerability without showing the attack path. Certainty requires evidence.
+
 ### 1. Type Safety and Modern Python (Python 3.9+)
 
 **Recommended:** Type hints on signatures, `list[str]` not `List[str]`, `X | None` not `Optional[X]`, dataclasses/Pydantic for data structures, context managers, Pathlib over os.path

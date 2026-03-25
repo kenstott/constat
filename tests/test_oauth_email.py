@@ -10,7 +10,12 @@ from constat.server.config import ServerConfig
 
 
 @pytest.fixture
-def server_config():
+def server_config(monkeypatch):
+    monkeypatch.delenv("GOOGLE_EMAIL_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_EMAIL_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("MICROSOFT_EMAIL_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MICROSOFT_EMAIL_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("MICROSOFT_EMAIL_TENANT_ID", raising=False)
     return ServerConfig(
         google_email_client_id="google-client-id",
         google_email_client_secret="google-client-secret",
@@ -46,7 +51,12 @@ def test_providers_returns_configured(client):
     assert data["microsoft"] is True
 
 
-def test_providers_none_configured():
+def test_providers_none_configured(monkeypatch):
+    monkeypatch.delenv("GOOGLE_EMAIL_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_EMAIL_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("MICROSOFT_EMAIL_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MICROSOFT_EMAIL_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("MICROSOFT_EMAIL_TENANT_ID", raising=False)
     from fastapi import FastAPI
     from fastapi.testclient import TestClient as TC
     from constat.server.routes.oauth_email import router

@@ -7,6 +7,7 @@
 
 import io
 import logging
+import logging.handlers
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -199,17 +200,22 @@ class TestFilterAndDedup:
         assert len(result) == 1
         assert result[0].name == "img_1.png"
 
-    def test_emf_wmf_skip(self, caplog):
+    def test_emf_wmf_skip(self):
         img_data = _make_png_bytes(100, 100)
         images = [
             ExtractedImage(name="chart.emf", data=img_data, mime_type="image/x-emf", page=None, index=1),
             ExtractedImage(name="ok.png", data=img_data, mime_type="image/png", page=None, index=2),
         ]
-        with caplog.at_level(logging.WARNING):
+        _logger = logging.getLogger("constat.discovery.doc_tools._file_extractors")
+        handler = logging.handlers.MemoryHandler(capacity=100)
+        _logger.addHandler(handler)
+        try:
             result = _filter_and_dedup(images)
+        finally:
+            _logger.removeHandler(handler)
         assert len(result) == 1
         assert result[0].name == "ok.png"
-        assert "Skipping EMF/WMF" in caplog.text
+        assert any("Skipping EMF/WMF" in r.getMessage() for r in handler.buffer)
 
     def test_size_filter(self):
         # Create a very small image (< MIN_IMAGE_BYTES)
@@ -371,27 +377,33 @@ class TestFetchLinkedImage:
         result = _fetch_linked_image(f"file://{img_path}")
         assert result == img_bytes
 
-    def test_fetch_not_found(self, caplog):
-        with caplog.at_level(logging.WARNING):
+    def test_fetch_not_found(self):
+        _logger = logging.getLogger("constat.discovery.doc_tools._file_extractors")
+        handler = logging.handlers.MemoryHandler(capacity=100)
+        _logger.addHandler(handler)
+        try:
             result = _fetch_linked_image("/nonexistent/path/img.png")
+        finally:
+            _logger.removeHandler(handler)
         assert result is None
-        assert "Failed to fetch" in caplog.text
+        assert any("Failed to fetch" in r.getMessage() for r in handler.buffer)
 
-    def test_fetch_http_error(self, caplog):
+    def test_fetch_http_error(self):
         mock_session = MagicMock()
         mock_session.get.side_effect = ConnectionError("fail")
-
-        with (
-            patch(
+        _logger = logging.getLogger("constat.discovery.doc_tools._file_extractors")
+        handler = logging.handlers.MemoryHandler(capacity=100)
+        _logger.addHandler(handler)
+        try:
+            with patch(
                 "constat.discovery.doc_tools._transport._get_http_session",
                 return_value=mock_session,
-            ),
-            caplog.at_level(logging.WARNING),
-        ):
-            result = _fetch_linked_image("https://bad.example.com/img.png")
-
+            ):
+                result = _fetch_linked_image("https://bad.example.com/img.png")
+        finally:
+            _logger.removeHandler(handler)
         assert result is None
-        assert "Failed to fetch" in caplog.text
+        assert any("Failed to fetch" in r.getMessage() for r in handler.buffer)
 
 
 # ---------------------------------------------------------------------------
@@ -549,10 +561,10 @@ class TestIntegrationLoadDocument:
         mixin.CHUNK_SIZE = 1500
         mixin.TABLE_CHUNK_LIMIT = 6000
 
-        ocr_text = "EXECUTIVE SUMMARY Regional Sales Report Q4 2025"
+        ocr_text = " ".join(f"word{i}" for i in range(50)) + " EXECUTIVE SUMMARY Regional Sales Report Q4 2025"
         with patch("constat.discovery.doc_tools._image._ocr_extract") as mock_ocr:
             mock_ocr.return_value = OcrResult(
-                text=ocr_text, mean_confidence=72.0, word_count=7,
+                text=ocr_text, mean_confidence=72.0, word_count=55,
             )
             success, msg = mixin.add_document_from_file(
                 str(img_path),
@@ -564,7 +576,7 @@ class TestIntegrationLoadDocument:
 
         assert success, msg
         doc = mixin._loaded_documents["images:scanned"]
-        assert "## Extracted Text" in doc.content
+        # text-primary images render OCR text directly under the name heading
         assert "EXECUTIVE SUMMARY" in doc.content
         assert "Regional Sales Report" in doc.content
 

@@ -103,6 +103,8 @@ class EventType(str, Enum):
     # Entity extraction events
     ENTITY_REBUILD_START = "entity_rebuild_start"
     ENTITY_REBUILD_COMPLETE = "entity_rebuild_complete"
+    ENTITY_STATE = "entity_state"
+    ENTITY_PATCH = "entity_patch"
 
     # Glossary generation events
     GLOSSARY_REBUILD_START = "glossary_rebuild_start"
