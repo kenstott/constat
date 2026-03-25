@@ -39,6 +39,7 @@ import { useArtifactStore } from '@/store/artifactStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { useGlossaryStore } from '@/store/glossaryStore'
+import { useTestStore } from '@/store/testStore'
 import { AccordionSection } from './ArtifactAccordion'
 import { TableAccordion } from './TableAccordion'
 import type { FineTuneJob, FineTuneProvider } from '@/types/api'
@@ -408,6 +409,11 @@ export function ArtifactPanel() {
     configLoading,
   } = useArtifactStore()
   const { totalDefined, totalSelfDescribing, loading: glossaryLoading } = useGlossaryStore()
+  const regressionQuestionCount = useTestStore(s => s.testableDomains.reduce((n, d) => n + d.question_count, 0))
+  const loadTestableDomains = useTestStore(s => s.loadTestableDomains)
+  useEffect(() => {
+    if (session?.session_id) loadTestableDomains(session.session_id)
+  }, [session?.session_id, loadTestableDomains])
   const authPermissions = useAuthStore(s => s.permissions)
   const canSeeSection = (key: string) => isAuthDisabled || (authPermissions?.visibility?.[key] ?? false)
   const canWrite = (key: string) => isAuthDisabled || (authPermissions?.writes?.[key] ?? false)
@@ -4312,6 +4318,7 @@ ${skill.body}`
           id="regression"
           title="Regression Tests"
           icon={<BeakerIcon className="w-4 h-4" />}
+          count={regressionQuestionCount}
         >
           <RegressionPanel sessionId={session.session_id} />
         </AccordionSection>

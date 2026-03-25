@@ -1433,7 +1433,7 @@ class RelationalStore:
             name_display.setdefault(key, ent_name)
         for key, vecs in accum.items():
             name_to_vec[name_display[key]] = np.mean(vecs, axis=0)
-        logger.debug(f"[_rebuild_clusters] {len(entity_rows)} entity-chunk rows -> {len(name_to_vec)} unique entity vectors")
+        logger.info(f"[_rebuild_clusters] {len(entity_rows)} entity-chunk rows -> {len(name_to_vec)} unique entity vectors")
 
         glossary_rows = self._conn.execute(
             """
@@ -1452,9 +1452,10 @@ class RelationalStore:
                 del name_to_vec[existing]
             name_to_vec[gt_name] = np.array(embedding, dtype=np.float32)
             lower_to_key[key] = gt_name
-        logger.debug(f"[_rebuild_clusters] {len(glossary_rows)} glossary rows, total vectors: {len(name_to_vec)}")
+        logger.info(f"[_rebuild_clusters] {len(glossary_rows)} glossary rows, total vectors: {len(name_to_vec)}")
 
         if len(name_to_vec) < self._cluster_min_terms:
+            logger.info(f"[_rebuild_clusters] only {len(name_to_vec)} vectors, need {self._cluster_min_terms} — skipping clustering")
             self._conn.execute(
                 "DELETE FROM glossary_clusters WHERE session_id = ?", [session_id]
             )
@@ -1503,6 +1504,7 @@ class RelationalStore:
                     except Exception:
                         pass
 
+        logger.info(f"[_rebuild_clusters] k={k}, {len(batch)} terms clustered into {len(set(lbl for _, lbl, _ in batch))} clusters")
         self._clusters_dirty = False
 
     def get_cluster_siblings(
@@ -1515,6 +1517,10 @@ class RelationalStore:
             [term_name, session_id],
         ).fetchone()
         if not row:
+            total = self._conn.execute(
+                "SELECT COUNT(*) FROM glossary_clusters WHERE session_id = ?", [session_id]
+            ).fetchone()[0]
+            logger.info(f"get_cluster_siblings({term_name!r}): not found in glossary_clusters ({total} total entries)")
             return []
 
         cluster_id = row[0]
@@ -1686,7 +1692,10 @@ class RelationalStore:
         added = len(new_ids) if new_ids else 0
         updated = len(overlap_ids) if overlap_ids else 0
         total = len(current_ids) + added
-        self._clusters_dirty = False
+        # Leave _clusters_dirty = True so next access rebuilds clusters
+        # with the full entity set (cached clusters may be incomplete if
+        # session-scoped chunks were added after the cache was stored).
+        self._clusters_dirty = True
         logger.info(f"Restored NER scope cache: +{added} new, ~{updated} updated, {total} total (fingerprint {fingerprint[:12]}...)")
         return total
 

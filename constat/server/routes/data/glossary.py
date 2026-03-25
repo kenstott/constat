@@ -339,14 +339,15 @@ async def get_glossary_term(
         }
         for r in rels
     ]
-    logger.debug(f"get_glossary_term({name}): {len(relationships)} relationships, parent={bool(parent_info)}, children={len(children)}")
+    logger.info(f"get_glossary_term({name}): {len(relationships)} relationships, parent={bool(parent_info)}, children={len(children)}")
 
     cluster_siblings: list[str] = []
     if hasattr(vs, "get_cluster_siblings"):
         try:
             cluster_siblings = vs.get_cluster_siblings(lookup_name, session_id)
+            logger.info(f"get_glossary_term({name}): lookup_name={lookup_name!r}, cluster_siblings={cluster_siblings[:5]}")
         except Exception:
-            logger.debug(f"get_glossary_term({name}): cluster siblings lookup failed", exc_info=True)
+            logger.warning(f"get_glossary_term({name}): cluster siblings lookup failed", exc_info=True)
 
     if term:
         effective_domain = (
