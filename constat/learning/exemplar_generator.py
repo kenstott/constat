@@ -61,7 +61,8 @@ class ExemplarGenerator:
         self.llm = llm
         self.session_id = session_id
         self.user_id = user_id
-        self.output_dir = Path(".constat") / user_id
+        from constat.core.paths import user_vault_dir
+        self.output_dir = user_vault_dir(Path(".constat"), user_id)
 
     def generate(self, coverage: str = "standard") -> ExemplarResult:
         """Generate exemplars at the given coverage level."""

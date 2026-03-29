@@ -13,7 +13,7 @@ import hashlib
 import logging
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from constat.core.config import Config, DocumentConfig
 from constat.discovery.entity_extractor import EntityExtractor
@@ -207,18 +207,16 @@ class _CoreMixin:
                 logger.info(f"[DOC_INIT] Indexing complete, count={self._vector_store.count()}")
 
         # Index glossary and relationship chunks from config if present
-        self._index_glossary_and_relationships()
+        self._index_relationship_chunks()
 
-    def _index_glossary_and_relationships(self) -> None:
-        """Index glossary and relationship chunks from config into vector store."""
-        from constat.catalog.glossary_builder import build_glossary_chunks, build_relationship_chunks
+    def _index_relationship_chunks(self) -> None:
+        """Index relationship chunks from config into vector store."""
+        from constat.catalog.glossary_builder import build_relationship_chunks
 
-        chunks: list[DocumentChunk] = []
-        if self.config.glossary:
-            chunks.extend(build_glossary_chunks(self.config.glossary))
-        if self.config.relationships:
-            chunks.extend(build_relationship_chunks(self.config.relationships))
+        if not self.config.relationships:
+            return
 
+        chunks: list[DocumentChunk] = build_relationship_chunks(self.config.relationships)
         if not chunks:
             return
 
@@ -227,7 +225,7 @@ class _CoreMixin:
             embeddings = self._model.encode(texts, normalize_embeddings=True)
 
         self._vector_store.add_chunks(chunks, embeddings, source="document")
-        logger.info(f"Indexed {len(chunks)} glossary/relationship chunks")
+        logger.info(f"Indexed {len(chunks)} relationship chunks")
 
     def _is_document_allowed(self, doc_name: str) -> bool:
         """Check if a document is allowed based on permissions."""
@@ -1320,6 +1318,8 @@ class _CoreMixin:
                 if (i + 1) % 50 == 0:
                     logger.info("[IMAP] Progress: %d/%d messages, %d chunks",
                                 i + 1, len(messages), total_chunks)
+                if imap_ctx and imap_ctx.get("progress_callback"):
+                    imap_ctx["progress_callback"](name, i + 1, len(messages))
 
             logger.info("[IMAP] Done: %s — %d messages, %d attachments, %d chunks",
                         name, len(messages), total_attachments, total_chunks)
@@ -1489,6 +1489,7 @@ class _CoreMixin:
         domain_id: str | None = None,
         session_id: str | None = None,
         skip_entity_extraction: bool = False,
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> tuple[bool, str]:
         """Add a document from a DocumentConfig (supports URL, inline, etc.).
 
@@ -1517,6 +1518,7 @@ class _CoreMixin:
             self._imap_context = {
                 "domain_id": domain_id, "session_id": session_id,
                 "skip_entity_extraction": skip_entity_extraction,
+                "progress_callback": progress_callback,
             }
 
             result = self._load_document(name)

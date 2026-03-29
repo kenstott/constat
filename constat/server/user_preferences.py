@@ -28,7 +28,8 @@ DEFAULT_PREFERENCES = {
 
 def _get_preferences_path(user_id: str) -> Path:
     """Get the path to the user's preferences file."""
-    return Path(".constat") / user_id / "preferences.yaml"
+    from constat.core.paths import user_vault_dir
+    return user_vault_dir(Path(".constat"), user_id) / "preferences.yaml"
 
 
 def load_user_preferences(user_id: str) -> dict[str, Any]:

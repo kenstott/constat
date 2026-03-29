@@ -239,14 +239,21 @@ class SchemaManager:
         self._generate_overview()
         self._progress_callback = None
 
-    def build_chunks(self) -> None:
+    def build_chunks(self, domain_id: str | None = None, vector_store=None) -> None:
         """Build chunks for search (called at server startup).
 
         Creates chunks in the embeddings table for semantic search.
         Does NOT create catalog entities - those are built per-session via initialize().
+
+        Args:
+            domain_id: Domain ID for these chunks (e.g. "hr-reporting")
+            vector_store: Optional shared vector store instance
         """
+        self._domain_id = domain_id
         # Initialize vector store
-        if self._vector_store is None:
+        if vector_store is not None:
+            self._vector_store = vector_store
+        elif self._vector_store is None:
             from constat.discovery.vector_store import DuckDBVectorStore
             self._vector_store = DuckDBVectorStore()
 
@@ -266,7 +273,7 @@ class SchemaManager:
         # Build chunks
         self._extract_entities_from_descriptions()
 
-    def add_database_dynamic(self, db_name: str, db_config: DatabaseConfig) -> bool:
+    def add_database_dynamic(self, db_name: str, db_config: DatabaseConfig, domain_id: str | None = None) -> bool:
         """Dynamically add and introspect a database after initialization.
 
         Thread-safe: metadata_cache mutations are protected by _metadata_lock
@@ -275,6 +282,7 @@ class SchemaManager:
         Args:
             db_name: Name for the database
             db_config: Database configuration
+            domain_id: Domain ID for chunk tagging (e.g. "hr-reporting")
 
         Returns:
             True if successfully added
@@ -353,6 +361,7 @@ class SchemaManager:
                     self._model = EmbeddingModelLoader.get_instance().get_model()
 
                 if self._model is not None and self._vector_store is not None:
+                    self._domain_id = domain_id
                     self._add_chunks_for_database(db_name)
                     logger.info(f"  Built chunks for database: {db_name}")
 
@@ -1036,7 +1045,7 @@ class SchemaManager:
             try:
                 texts = [c.content for c in chunks]
                 embeddings = self._model.encode(texts, convert_to_numpy=True)
-                self._vector_store.add_chunks(chunks, embeddings, source="schema")
+                self._vector_store.add_chunks(chunks, embeddings, source="schema", domain_id=getattr(self, '_domain_id', None))
                 logger.debug(f"Stored {len(chunks)} schema description chunks")
             except Exception as e:
                 logger.warning(f"Failed to store schema description chunks: {e}")
@@ -1065,7 +1074,7 @@ class SchemaManager:
             try:
                 texts = [c.content for c in chunks]
                 embeddings = self._model.encode(texts, convert_to_numpy=True)
-                self._vector_store.add_chunks(chunks, embeddings, source="schema")
+                self._vector_store.add_chunks(chunks, embeddings, source="schema", domain_id=getattr(self, '_domain_id', None))
                 logger.debug(f"Stored {len(chunks)} schema chunks for database {db_name}")
             except Exception as e:
                 logger.warning(f"Failed to store schema chunks for {db_name}: {e}")

@@ -30,7 +30,8 @@ class PlansMixin:
     @classmethod
     def _get_user_plans_file(cls, user_id: str) -> Path:
         """Get path to user-scoped saved plans file."""
-        return cls.CONSTAT_BASE_DIR / user_id / "saved_plans.json"
+        from constat.core.paths import user_vault_dir
+        return user_vault_dir(cls.CONSTAT_BASE_DIR, user_id) / "saved_plans.json"
 
     @classmethod
     def _get_shared_plans_file(cls) -> Path:

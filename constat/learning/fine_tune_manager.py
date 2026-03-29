@@ -77,7 +77,8 @@ class FineTuneManager:
                 manifest.yaml         — reproducibility metadata
         """
         user_id = self._exporter.store.user_id
-        artifact_dir = Path(".constat") / user_id / "fine_tune" / name
+        from constat.core.paths import user_vault_dir
+        artifact_dir = user_vault_dir(Path(".constat"), user_id) / "fine_tune" / name
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
         # Save training data

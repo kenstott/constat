@@ -12,7 +12,7 @@
 Merges configuration from 5 precedence tiers into a flat ResolvedConfig
 that represents a session's composite domain:
 
-    Tier 1: System        — base config.yaml (databases, apis, docs, skills, glossary, etc.)
+    Tier 1: System        — base config.yaml (databases, apis, docs, skills, etc.)
     Tier 2: System Domain — config_dir/domains/<name>/config.yaml (one or more)
     Tier 3: User          — .constat/<user_id>/config.yaml (user overrides)
     Tier 4: User Domain   — .constat/<user_id>/domains/<name>/config.yaml
@@ -70,7 +70,6 @@ class ResolvedConfig:
     rights: dict[str, Any] = field(default_factory=dict)
     facts: dict[str, Any] = field(default_factory=dict)
     learnings: dict[str, Any] = field(default_factory=dict)
-    glossary: dict[str, Any] = field(default_factory=dict)
     relationships: dict[str, Any] = field(default_factory=dict)
     skills: dict[str, Any] = field(default_factory=dict)
     llm: Optional[LLMConfig] = None
@@ -153,7 +152,7 @@ def _load_yaml_file(path: Path) -> dict:
 def _extract_mergeable_sections(data: dict) -> dict:
     """Extract sections that participate in tiered merging."""
     sections = {}
-    for key in ("databases", "apis", "documents", "glossary", "relationships",
+    for key in ("databases", "apis", "documents", "relationships",
                 "rights", "facts", "learnings", "skills", "system_prompt",
                 "databases_description", "task_routing", "ner_stop_list"):
         if key in data:
@@ -173,7 +172,6 @@ class TieredConfigLoader:
         )
         resolved = loader.resolve()
         # resolved.sources.databases has the merged flat set
-        # resolved.glossary has merged glossary terms
         # resolved.source_of("databases.main") → ConfigSource.SYSTEM
     """
 
@@ -285,8 +283,6 @@ class TieredConfigLoader:
         # First-class sections
         if self._config.facts:
             data["facts"] = dict(self._config.facts)
-        if self._config.glossary:
-            data["glossary"] = dict(self._config.glossary)
         if self._config.relationships:
             data["relationships"] = dict(self._config.relationships)
         if self._config.rights:
@@ -317,8 +313,6 @@ class TieredConfigLoader:
             data["documents"] = {
                 name: cfg.model_dump() for name, cfg in domain.documents.items()
             }
-        if domain.glossary:
-            data["glossary"] = dict(domain.glossary)
         if domain.relationships:
             data["relationships"] = dict(domain.relationships)
         if domain.rights:
@@ -336,8 +330,9 @@ class TieredConfigLoader:
         return data
 
     def _load_user_tier(self) -> dict:
-        """Load tier-3 user config from .constat/<user_id>/config.yaml."""
-        user_config_path = self._base_dir / self._user_id / "config.yaml"
+        """Load tier-3 user config from .constat/<user_id>.vault/config.yaml."""
+        from constat.core.paths import user_vault_dir
+        user_config_path = user_vault_dir(self._base_dir, self._user_id) / "config.yaml"
         if not user_config_path.exists():
             return {}
         data = _load_yaml_file(user_config_path)
@@ -345,7 +340,8 @@ class TieredConfigLoader:
 
     def _load_user_domain_tier(self, domain_name: str) -> dict:
         """Load tier-4 user domain config."""
-        domain_path = self._base_dir / self._user_id / "domains" / domain_name / "config.yaml"
+        from constat.core.paths import user_vault_dir
+        domain_path = user_vault_dir(self._base_dir, self._user_id) / "domains" / domain_name / "config.yaml"
         if not domain_path.exists():
             return {}
         data = _load_yaml_file(domain_path)
@@ -370,7 +366,6 @@ class TieredConfigLoader:
             rights=merged.get("rights", {}),
             facts=merged.get("facts", {}),
             learnings=merged.get("learnings", {}),
-            glossary=merged.get("glossary", {}),
             relationships=merged.get("relationships", {}),
             skills=merged.get("skills", {}),
             ner_stop_list=merged.get("ner_stop_list", []),

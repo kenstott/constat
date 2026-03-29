@@ -213,7 +213,8 @@ class ManagedSession:
         import yaml
         from pathlib import Path
 
-        config_path = Path(".constat") / self.user_id / "config.yaml"
+        from constat.core.paths import user_vault_dir
+        config_path = user_vault_dir(Path(".constat"), self.user_id) / "config.yaml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
         existing = {}
@@ -243,11 +244,12 @@ class ManagedSession:
         logger.debug(f"Persisted {len(self._dynamic_dbs)} dynamic databases to user config")
 
     def _persist_docs_to_user_config(self) -> None:
-        """Write dynamic documents (file_refs) to .constat/{user_id}/config.yaml."""
+        """Write dynamic documents (file_refs) to .constat/{user_id}.vault/config.yaml."""
         import yaml
         from pathlib import Path
+        from constat.core.paths import user_vault_dir
 
-        config_path = Path(".constat") / self.user_id / "config.yaml"
+        config_path = user_vault_dir(Path(".constat"), self.user_id) / "config.yaml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
         existing = {}
@@ -283,7 +285,8 @@ class ManagedSession:
         import yaml
         from pathlib import Path
 
-        config_path = Path(".constat") / user_id / "config.yaml"
+        from constat.core.paths import user_vault_dir
+        config_path = user_vault_dir(Path(".constat"), user_id) / "config.yaml"
         if not config_path.exists():
             return
 
@@ -300,8 +303,9 @@ class ManagedSession:
         """Remove a database entry from the user-level config."""
         import yaml
         from pathlib import Path
+        from constat.core.paths import user_vault_dir
 
-        config_path = Path(".constat") / user_id / "config.yaml"
+        config_path = user_vault_dir(Path(".constat"), user_id) / "config.yaml"
         if not config_path.exists():
             return
 
@@ -679,16 +683,6 @@ class SessionManager:
         # Wire domain task routing into the session's TaskRouter
         self._apply_domain_routing(managed.session, resolved)
 
-        # Materialize domain glossary defined terms into runtime store
-        if resolved.glossary and managed.session.doc_tools:
-            vs = managed.session.doc_tools._vector_store
-            relational = getattr(vs, '_relational', None) if vs else None
-            if relational:
-                _seed_domain_glossary(
-                    relational, resolved.glossary,
-                    managed.session.session_id, managed.user_id,
-                )
-
         # Materialize domain rules into LearningStore
         if resolved.learnings and managed.session.learning_store:
             _seed_domain_rules(managed.session.learning_store, resolved.learnings)
@@ -700,7 +694,6 @@ class SessionManager:
         logger.info(f"Resolved tiered config for session {session_id}: "
                      f"{len(resolved.sources.databases)} dbs, "
                      f"{len(resolved.sources.apis)} apis, "
-                     f"{len(resolved.glossary)} glossary, "
                      f"domains={resolved.active_domains}")
         return resolved
 
@@ -715,7 +708,7 @@ class SessionManager:
 
         Args:
             session_id: Session ID to look up resolved config
-            section: Config section (e.g. "glossary", "facts", "learnings")
+            section: Config section (e.g. "facts", "learnings", "relationships")
             key: Item key, may be dotted (e.g. "rules.my_rule")
 
         Returns:
@@ -729,8 +722,8 @@ class SessionManager:
             return False
 
         # Check attribution — only tombstone system-tier items.
-        # Walk up from the exact path (e.g. "glossary.revenue") to section
-        # root (e.g. "glossary") because _deep_merge may attribute the whole
+        # Walk up from the exact path (e.g. "facts.revenue") to section
+        # root (e.g. "facts") because _deep_merge may attribute the whole
         # section rather than individual keys when the base dict was empty.
         rc = managed.resolved_config
         attr_key = f"{section}.{key}"
@@ -747,7 +740,8 @@ class SessionManager:
             return False
 
         # Load user config YAML
-        config_path = self._server_config.data_dir / managed.user_id / "config.yaml"
+        from constat.core.paths import user_vault_dir
+        config_path = user_vault_dir(self._server_config.data_dir, managed.user_id) / "config.yaml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
         data: dict = {}
@@ -832,6 +826,9 @@ class SessionManager:
                     domain_ids.append(p)
             # Get names of dynamically added databases (include their columns in entities)
             session_db_names = [db["name"] for db in managed._dynamic_dbs]
+            # Include user-domain chunks in NER visibility
+            if managed.user_id and managed.user_id not in domain_ids:
+                domain_ids.append(managed.user_id)
 
         # Get session's entity catalog
         # Include columns only for session-added databases (their columns are meaningful)
@@ -841,14 +838,10 @@ class SessionManager:
         ))
         api_entities = list(session._get_api_entity_names())
 
-        # Collect glossary + relationship terms from resolved config (already merged from all tiers)
-        from constat.catalog.glossary_builder import get_glossary_terms_for_ner, get_relationship_terms_for_ner
+        # Collect relationship terms from resolved config (already merged from all tiers)
+        from constat.catalog.glossary_builder import get_relationship_terms_for_ner
         business_terms: list[str] = []
         resolved = self._sessions[session_id].resolved_config if session_id in self._sessions else None
-        if resolved and resolved.glossary:
-            business_terms.extend(get_glossary_terms_for_ner(resolved.glossary))
-        elif session.config.glossary:
-            business_terms.extend(get_glossary_terms_for_ner(session.config.glossary))
         if resolved and resolved.relationships:
             business_terms.extend(get_relationship_terms_for_ner(resolved.relationships))
         elif session.config.relationships:
@@ -1208,6 +1201,7 @@ class SessionManager:
                     session_id=session_id,
                     vector_store=vector_store,
                     router=session.router,
+                    domain=session_id,
                     active_domains=active_domains,
                     on_batch_complete=on_batch,
                     on_progress=on_progress,
@@ -1704,60 +1698,6 @@ class SessionManager:
                 "max_sessions": self._server_config.max_concurrent_sessions,
                 "by_status": by_status,
             }
-
-
-def _seed_domain_glossary(
-    relational: "RelationalStore",
-    glossary: dict,
-    session_id: str,
-    user_id: str,
-) -> None:
-    """Seed domain-config glossary terms into the relational glossary_terms table.
-
-    Only inserts terms that have a definition. Skips terms that already exist
-    with a non-system canonical_source (user-created terms take precedence).
-    """
-    from constat.discovery.models import GlossaryTerm
-    import uuid
-
-    for term_name, value in glossary.items():
-        if isinstance(value, str):
-            definition = value
-            aliases: list[str] = []
-            domain: str | None = None
-        elif isinstance(value, dict):
-            definition = value.get("definition", "")
-            aliases = value.get("aliases", [])
-            domain = value.get("domain")
-        else:
-            continue
-
-        if not definition:
-            continue
-
-        # Check if term already exists with a user-created source
-        existing = relational.get_glossary_term_by_name_or_alias(
-            term_name, session_id, user_id=user_id,
-        )
-        if existing and existing.canonical_source and existing.canonical_source != "domain_config":
-            continue
-
-        term = GlossaryTerm(
-            id=existing.id if existing else str(uuid.uuid4()),
-            name=term_name,
-            display_name=term_name.replace("_", " ").title(),
-            definition=definition,
-            domain=domain,
-            aliases=aliases,
-            status="published",
-            provenance="system",
-            canonical_source="domain_config",
-            session_id=session_id,
-            user_id=user_id,
-        )
-        relational.add_glossary_term(term)
-
-    logger.info(f"Seeded domain glossary terms for session {session_id}")
 
 
 def _seed_domain_rules(

@@ -33,15 +33,40 @@ class DuckDBVectorBackend(VectorBackend):
         db,
         reranker_model: str | None = None,
         store_chunk_text: bool = True,
+        split_mode: bool = False,
+        domain_tier_fn=None,
     ):
         self._db = db
         self._fts_dirty = True
         self._reranker_model = reranker_model
         self._store_chunk_text = store_chunk_text
+        self._split_mode = split_mode
+        self._domain_tier_fn = domain_tier_fn
 
     @property
     def _conn(self):
         return self._db.conn
+
+    # ------------------------------------------------------------------
+    # Split-mode helpers
+    # ------------------------------------------------------------------
+
+    def _schema_for_domain(self, domain_id: str | None) -> str:
+        if not self._split_mode or not self._domain_tier_fn:
+            return "main"
+        if domain_id is None:
+            return "main"
+        tier = self._domain_tier_fn(domain_id)
+        return "sys" if tier == "system" else "main"
+
+    def _table(self, name: str, domain_id: str | None = None) -> str:
+        schema = self._schema_for_domain(domain_id)
+        return f"{schema}.{name}"
+
+    def _view(self, name: str) -> str:
+        if self._split_mode:
+            return f"v_{name}"
+        return name
 
     # ------------------------------------------------------------------
     # Visibility filters
@@ -90,11 +115,12 @@ class DuckDBVectorBackend(VectorBackend):
             return
 
         doc_names = set(c.document_name for c in chunks)
+        target_table = self._table("embeddings", domain_id)
 
         existing_docs = set()
         for doc_name in doc_names:
             count = self._conn.execute(
-                "SELECT COUNT(*) FROM embeddings WHERE document_name = ? AND source = ?",
+                f"SELECT COUNT(*) FROM {target_table} WHERE document_name = ? AND source = ?",
                 [doc_name, source],
             ).fetchone()[0]
             if count > 0:
@@ -138,8 +164,8 @@ class DuckDBVectorBackend(VectorBackend):
             ))
 
         self._conn.executemany(
-            """
-            INSERT INTO embeddings
+            f"""
+            INSERT INTO {target_table}
             (chunk_id, document_name, source, chunk_type, section, chunk_index, content, embedding, session_id, domain_id, entity_class, source_offset, source_length)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -320,6 +346,7 @@ class DuckDBVectorBackend(VectorBackend):
         fetch_limit = limit * 3 if query_text else limit
         params.append(fetch_limit)
 
+        emb_view = self._view("embeddings")
         result = self._conn.execute(
             f"""
             SELECT
@@ -331,7 +358,7 @@ class DuckDBVectorBackend(VectorBackend):
                 chunk_index,
                 content,
                 array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
-            FROM embeddings
+            FROM {emb_view}
             WHERE {chunk_filter}{chunk_type_clause}
             ORDER BY similarity DESC
             LIMIT ?
@@ -390,6 +417,7 @@ class DuckDBVectorBackend(VectorBackend):
         query = query_embedding.flatten().tolist()
         fetch_limit = limit * 3 if query_text else limit
 
+        emb_view = self._view("embeddings")
         result = self._conn.execute(
             f"""
             SELECT
@@ -401,7 +429,7 @@ class DuckDBVectorBackend(VectorBackend):
                 chunk_index,
                 content,
                 array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
-            FROM embeddings
+            FROM {emb_view}
             WHERE source = ?
               AND array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) >= ?
             ORDER BY similarity DESC
@@ -459,6 +487,7 @@ class DuckDBVectorBackend(VectorBackend):
         query = query_embedding.flatten().tolist()
         fetch_limit = limit * 3 if query_text else limit
 
+        emb_view = self._view("embeddings")
         result = self._conn.execute(
             f"""
             SELECT
@@ -470,7 +499,7 @@ class DuckDBVectorBackend(VectorBackend):
                 chunk_index,
                 content,
                 array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
-            FROM embeddings
+            FROM {emb_view}
             WHERE document_name = ?
               AND array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) >= ?
             ORDER BY similarity DESC
@@ -520,7 +549,7 @@ class DuckDBVectorBackend(VectorBackend):
 
     def get_chunks(self) -> list[DocumentChunk]:
         result = self._conn.execute(
-            "SELECT document_name, content, section, chunk_index FROM embeddings"
+            f"SELECT document_name, content, section, chunk_index FROM {self._view('embeddings')}"
         ).fetchall()
         return [
             DocumentChunk(
@@ -533,17 +562,18 @@ class DuckDBVectorBackend(VectorBackend):
         ]
 
     def get_all_chunk_ids(self, session_id: str | None = None, global_only: bool = False) -> list[str]:
+        emb_view = self._view("embeddings")
         if global_only:
             result = self._conn.execute(
-                "SELECT chunk_id FROM embeddings WHERE session_id IS NULL",
+                f"SELECT chunk_id FROM {emb_view} WHERE session_id IS NULL",
             ).fetchall()
         elif session_id:
             result = self._conn.execute(
-                "SELECT chunk_id FROM embeddings WHERE session_id IS NULL OR session_id = ?",
+                f"SELECT chunk_id FROM {emb_view} WHERE session_id IS NULL OR session_id = ?",
                 [session_id],
             ).fetchall()
         else:
-            result = self._conn.execute("SELECT chunk_id FROM embeddings").fetchall()
+            result = self._conn.execute(f"SELECT chunk_id FROM {emb_view}").fetchall()
         return [row[0] for row in result]
 
     @staticmethod
@@ -568,9 +598,9 @@ class DuckDBVectorBackend(VectorBackend):
 
     def get_domain_chunks(self, domain_id: str) -> list[DocumentChunk]:
         result = self._conn.execute(
-            """
+            f"""
             SELECT document_name, content, section, chunk_index, source, chunk_type
-            FROM embeddings
+            FROM {self._view('embeddings')}
             WHERE domain_id = ?
             ORDER BY document_name, chunk_index
             """,
@@ -583,7 +613,7 @@ class DuckDBVectorBackend(VectorBackend):
         result = self._conn.execute(
             f"""
             SELECT document_name, content, section, chunk_index, source, chunk_type
-            FROM embeddings
+            FROM {self._view('embeddings')}
             WHERE {chunk_filter}
             ORDER BY document_name, chunk_index
             """,
@@ -669,12 +699,13 @@ class DuckDBVectorBackend(VectorBackend):
         return count
 
     def count(self, source: str | None = None) -> int:
+        emb_view = self._view("embeddings")
         if source:
             result = self._conn.execute(
-                "SELECT COUNT(*) FROM embeddings WHERE source = ?", [source]
+                f"SELECT COUNT(*) FROM {emb_view} WHERE source = ?", [source]
             ).fetchone()
         else:
-            result = self._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
+            result = self._conn.execute(f"SELECT COUNT(*) FROM {emb_view}").fetchone()
         return result[0] if result else 0
 
     # ------------------------------------------------------------------
@@ -699,14 +730,15 @@ class DuckDBVectorBackend(VectorBackend):
     # ------------------------------------------------------------------
 
     def get_indexed_document_names(self, source: str | None = None) -> list[str]:
+        emb_view = self._view("embeddings")
         if source:
             rows = self._conn.execute(
-                "SELECT DISTINCT document_name FROM embeddings WHERE source = ?",
+                f"SELECT DISTINCT document_name FROM {emb_view} WHERE source = ?",
                 [source],
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT DISTINCT document_name FROM embeddings"
+                f"SELECT DISTINCT document_name FROM {emb_view}"
             ).fetchall()
         return [r[0] for r in rows]
 
@@ -720,9 +752,9 @@ class DuckDBVectorBackend(VectorBackend):
 
     def get_chunks_by_document(self, document_name: str) -> list[tuple]:
         return self._conn.execute(
-            """
+            f"""
             SELECT content, section, chunk_index
-            FROM embeddings
+            FROM {self._view('embeddings')}
             WHERE document_name = ?
             ORDER BY chunk_index
             """,
@@ -731,7 +763,7 @@ class DuckDBVectorBackend(VectorBackend):
 
     def get_chunk_content(self, chunk_id: str) -> str | None:
         row = self._conn.execute(
-            "SELECT content FROM embeddings WHERE chunk_id = ?",
+            f"SELECT content FROM {self._view('embeddings')} WHERE chunk_id = ?",
             [chunk_id],
         ).fetchone()
         return row[0] if row else None
@@ -739,11 +771,13 @@ class DuckDBVectorBackend(VectorBackend):
     def get_shared_chunk_content(
         self, e1_id: str, e2_id: str, limit: int = 3,
     ) -> list[str]:
-        rows = self._conn.execute("""
+        ce_view = self._view("chunk_entities")
+        emb_view = self._view("embeddings")
+        rows = self._conn.execute(f"""
             SELECT DISTINCT e.content
-            FROM chunk_entities ce1
-            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
-            JOIN embeddings e ON ce1.chunk_id = e.chunk_id
+            FROM {ce_view} ce1
+            JOIN {ce_view} ce2 ON ce1.chunk_id = ce2.chunk_id
+            JOIN {emb_view} e ON ce1.chunk_id = e.chunk_id
             WHERE ce1.entity_id = ? AND ce2.entity_id = ?
             LIMIT ?
         """, [e1_id, e2_id, limit]).fetchall()
@@ -755,7 +789,7 @@ class DuckDBVectorBackend(VectorBackend):
         return self._conn.execute(
             f"""
             SELECT chunk_id, document_name, content, section, chunk_index, domain_id
-            FROM embeddings
+            FROM {self._view('embeddings')}
             WHERE {chunk_filter}
             """,
             params,
@@ -783,5 +817,5 @@ class DuckDBVectorBackend(VectorBackend):
 
     def count_by_domain(self) -> list[tuple]:
         return self._conn.execute(
-            "SELECT domain_id, COUNT(*) FROM embeddings GROUP BY domain_id"
+            f"SELECT domain_id, COUNT(*) FROM {self._view('embeddings')} GROUP BY domain_id"
         ).fetchall()

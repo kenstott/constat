@@ -54,6 +54,7 @@ def vs():
         name="cat fact",
         display_name="Cat Fact",
         definition="An interesting piece of information about cats.",
+        domain="test",
         aliases=["feline fact"],
         status="draft",
         provenance="llm",

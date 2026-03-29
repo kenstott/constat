@@ -1646,11 +1646,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
 
       case 'source_ingest_complete': {
-        // Refresh data sources panel when a source finishes ingesting
         const { session: s } = get()
         if (s) {
           useArtifactStore.getState().fetchDataSources(s.session_id)
         }
+        useArtifactStore.getState().setIngestingSource(null)
+        useArtifactStore.getState().setIngestProgress(null)
         break
       }
 
@@ -1660,8 +1661,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
       }
 
-      case 'source_ingest_start':
+      case 'source_ingest_progress': {
+        const progressData = event.data as { current: number; total: number }
+        useArtifactStore.getState().setIngestProgress({ current: progressData.current, total: progressData.total })
         break
+      }
+
+      case 'source_ingest_start': {
+        const startData = event.data as { name?: string }
+        useArtifactStore.getState().setIngestingSource(startData.name || null)
+        useArtifactStore.getState().setIngestProgress(null)
+        break
+      }
 
       case 'glossary_terms_added': {
         const termsData = event.data as { terms?: GlossaryTerm[] }

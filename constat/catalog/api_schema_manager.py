@@ -141,17 +141,24 @@ class APISchemaManager:
             from constat.discovery.vector_store import DuckDBVectorStore
             self._vector_store = DuckDBVectorStore()
 
-    def build_chunks(self) -> None:
+    def build_chunks(self, domain_id: str | None = None, vector_store=None) -> None:
         """Build chunks for search (called at server startup).
 
         Creates chunks in the embeddings table for semantic search.
         Does NOT create catalog entities - those are built per-session via initialize().
+
+        Args:
+            domain_id: Domain ID for these chunks (e.g. "hr-reporting")
+            vector_store: Optional shared vector store instance
         """
+        self._domain_id = domain_id
         if not self.config.apis:
             return
 
         # Initialize vector store
-        if self._vector_store is None:
+        if vector_store is not None:
+            self._vector_store = vector_store
+        elif self._vector_store is None:
             from constat.discovery.vector_store import DuckDBVectorStore
             self._vector_store = DuckDBVectorStore()
 
@@ -651,7 +658,7 @@ class APISchemaManager:
 
         return None
 
-    def add_api_dynamic(self, name: str, api_config: APIConfig) -> bool:
+    def add_api_dynamic(self, name: str, api_config: APIConfig, domain_id: str | None = None) -> bool:
         """Dynamically add and introspect an API after initialization.
 
         This allows adding APIs at runtime without reinitializing
@@ -660,6 +667,7 @@ class APISchemaManager:
         Args:
             name: Name for the API
             api_config: API configuration
+            domain_id: Domain ID for chunk tagging
 
         Returns:
             True if successfully added
@@ -679,6 +687,7 @@ class APISchemaManager:
                 self._model = EmbeddingModelLoader.get_instance().get_model()
 
             if self._model is not None and self._vector_store is not None:
+                self._domain_id = domain_id
                 self._add_chunks_for_api(name)
 
             logger.info(f"Dynamically added API: {name} ({api_config.type})")
@@ -792,7 +801,7 @@ class APISchemaManager:
             try:
                 texts = [c.content for c in chunks]
                 embeddings = self._model.encode(texts, convert_to_numpy=True)
-                self._vector_store.add_chunks(chunks, embeddings, source="api")
+                self._vector_store.add_chunks(chunks, embeddings, source="api", domain_id=getattr(self, '_domain_id', None))
                 logger.info(f"Stored {len(chunks)} chunks for API: {api_name}")
             except Exception as e:
                 logger.warning(f"Failed to store chunks for API {api_name}: {e}")
@@ -828,7 +837,7 @@ class APISchemaManager:
             try:
                 texts = [c.content for c in chunks]
                 embeddings = self._model.encode(texts, convert_to_numpy=True)
-                self._vector_store.add_chunks(chunks, embeddings, source="api")
+                self._vector_store.add_chunks(chunks, embeddings, source="api", domain_id=getattr(self, '_domain_id', None))
                 logger.debug(f"Stored {len(chunks)} API description chunks")
             except Exception as e:
                 logger.warning(f"Failed to store API description chunks: {e}")

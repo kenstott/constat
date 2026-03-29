@@ -34,7 +34,8 @@ class SessionStore:
         """
         self.user_id = user_id
         self.base_dir = base_dir or Path(".constat")
-        self._session_file = self.base_dir / user_id / "session_id"
+        from constat.core.paths import user_vault_dir
+        self._session_file = user_vault_dir(self.base_dir, user_id) / "session_id"
 
     def get_or_create(self) -> str:
         """Get existing session ID or create a new one.

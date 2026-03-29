@@ -116,6 +116,7 @@ class EventType(str, Enum):
     SOURCE_INGEST_START = "source_ingest_start"
     SOURCE_INGEST_COMPLETE = "source_ingest_complete"
     SOURCE_INGEST_ERROR = "source_ingest_error"
+    SOURCE_INGEST_PROGRESS = "source_ingest_progress"
 
     # Source refresh events
     SOURCE_REFRESH_COMPLETE = "source_refresh_complete"

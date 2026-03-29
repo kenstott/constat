@@ -21,6 +21,7 @@ def _make_term(**overrides) -> GlossaryTerm:
         name="customer",
         display_name="Customer",
         definition="A person who buys products",
+        domain="test",
         session_id="s1",
     )
     defaults.update(overrides)

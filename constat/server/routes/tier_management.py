@@ -10,7 +10,7 @@
 """Tier management REST endpoints.
 
 Provides promote, remove, and create actions for config items across tiers.
-Each config item (fact, glossary term, relationship, learning rule, right)
+Each config item (fact, relationship, learning rule, right)
 lives at a specific tier. These endpoints move items between tiers.
 
 Promotion rules:
@@ -44,7 +44,7 @@ router = APIRouter()
 
 # Sections that support tier management
 MANAGEABLE_SECTIONS = {
-    "facts", "glossary", "relationships", "learnings", "rights",
+    "facts", "relationships", "learnings", "rights",
 }
 
 # Promotion paths: source_tier → target_tier
@@ -67,7 +67,7 @@ def get_session_manager(request: Request) -> SessionManager:
 
 class TierItemRequest(BaseModel):
     """Request body for promote/remove/create operations."""
-    section: str = Field(description="Config section: facts, glossary, relationships, learnings, rights")
+    section: str = Field(description="Config section: facts, relationships, learnings, rights")
     key: str = Field(description="Item key within the section")
     value: Any = Field(default=None, description="Item value (required for create, optional for promote)")
     target_tier: Optional[str] = Field(default=None, description="Target tier for promote/create (system, system_domain, user, user_domain, session)")
@@ -113,12 +113,14 @@ def _get_tier_yaml_path(
         return Path(config_dir) / "domains" / domain_name / "config.yaml"
 
     elif tier == ConfigSource.USER:
-        return server_config.data_dir / user_id / "config.yaml"
+        from constat.core.paths import user_vault_dir
+        return user_vault_dir(server_config.data_dir, user_id) / "config.yaml"
 
     elif tier == ConfigSource.USER_DOMAIN:
         if not domain_name:
             raise HTTPException(status_code=400, detail="domain_name required for user_domain tier")
-        return server_config.data_dir / user_id / "domains" / domain_name / "config.yaml"
+        from constat.core.paths import user_vault_dir
+        return user_vault_dir(server_config.data_dir, user_id) / "domains" / domain_name / "config.yaml"
 
     elif tier == ConfigSource.SESSION:
         raise HTTPException(status_code=400, detail="Session tier items are in-memory only and cannot be persisted via tier management")
@@ -313,8 +315,8 @@ async def promote_item(
     # Re-resolve config
     session_manager.resolve_config(session_id)
 
-    # Trigger entity rebuild if glossary or relationships changed
-    if body.section in ("glossary", "relationships"):
+    # Trigger entity rebuild if relationships changed
+    if body.section == "relationships":
         session_manager.refresh_entities_async(session_id)
 
     return TierItemResponse(
@@ -395,8 +397,8 @@ async def remove_item(
     # Re-resolve config
     session_manager.resolve_config(session_id)
 
-    # Trigger entity rebuild if glossary or relationships changed
-    if body.section in ("glossary", "relationships"):
+    # Trigger entity rebuild if relationships changed
+    if body.section == "relationships":
         session_manager.refresh_entities_async(session_id)
 
     return TierItemResponse(
@@ -471,8 +473,8 @@ async def create_item(
     # Re-resolve config
     session_manager.resolve_config(session_id)
 
-    # Trigger entity rebuild if glossary or relationships changed
-    if body.section in ("glossary", "relationships"):
+    # Trigger entity rebuild if relationships changed
+    if body.section == "relationships":
         session_manager.refresh_entities_async(session_id)
 
     return TierItemResponse(

@@ -200,6 +200,7 @@ def _warmup_vector_store(config: Config) -> None:
     router = TaskRouter(config.llm)
 
     # Create doc_tools early to access vector_store for hash checks
+    # Warmup writes to .constat/vectors.duckdb (the system DB)
     doc_tools = DocumentDiscoveryTools(config, skip_auto_index=True, router=router)
     vector_store = doc_tools._vector_store
 
@@ -216,7 +217,7 @@ def _warmup_vector_store(config: Config) -> None:
         else:
             logger.info(f"  Base databases: building chunks...")
             schema_manager = SchemaManager(config)
-            schema_manager.build_chunks()
+            schema_manager.build_chunks(domain_id="__base__", vector_store=vector_store)
             vector_store.set_source_hash(source_id, 'db', db_hash)
             logger.info(f"  Base databases: {len(config.databases)} indexed")
 
@@ -230,7 +231,7 @@ def _warmup_vector_store(config: Config) -> None:
         else:
             logger.info(f"  Base APIs: building chunks...")
             api_manager = APISchemaManager(config)
-            api_manager.build_chunks()
+            api_manager.build_chunks(domain_id="__base__", vector_store=vector_store)
             vector_store.set_source_hash(source_id, 'api', api_hash)
             logger.info(f"  Base APIs: {len(config.apis)} indexed")
 
@@ -252,7 +253,7 @@ def _warmup_vector_store(config: Config) -> None:
                     databases=domain.databases,
                 )
                 domain_schema_manager = SchemaManager(domain_config)
-                domain_schema_manager.build_chunks()
+                domain_schema_manager.build_chunks(domain_id=domain_name, vector_store=vector_store)
                 vector_store.set_source_hash(source_id, 'db', db_hash)
                 logger.info(f"  Domain {domain_name} databases: {len(domain.databases)} indexed")
 
@@ -270,7 +271,7 @@ def _warmup_vector_store(config: Config) -> None:
                     apis=domain.apis,
                 )
                 domain_api_manager = APISchemaManager(domain_api_config)
-                domain_api_manager.build_chunks()
+                domain_api_manager.build_chunks(domain_id=domain_name, vector_store=vector_store)
                 vector_store.set_source_hash(source_id, 'api', api_hash)
                 logger.info(f"  Domain {domain_name} APIs: {len(domain.apis)} indexed")
 
@@ -588,6 +589,9 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
 
             # Startup: Warmup (embedding model + document pre-indexing) runs in background
             # so the server accepts connections immediately
+            _fastapi_app.state.warmup_complete = False
+            _fastapi_app.state.warmup_error = None
+
             async def _warmup_task():
                 try:
                     logger.info("Background warmup: loading embedding model...")
@@ -596,8 +600,10 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
                     logger.info("Background warmup: pre-indexing documents...")
                     await asyncio.to_thread(_warmup_vector_store, config)
                     logger.info("Background warmup: document pre-indexing complete")
+                    _fastapi_app.state.warmup_complete = True
                 except Exception as e:
                     logger.error(f"Background warmup failed: {e}")
+                    _fastapi_app.state.warmup_error = str(e)
 
             warmup_task = asyncio.create_task(_warmup_task())
 
@@ -725,6 +731,8 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         """
         return {
             "status": "ok",
+            "warmup_complete": getattr(fastapi_app.state, "warmup_complete", False),
+            "warmup_error": getattr(fastapi_app.state, "warmup_error", None),
             "sessions": session_manager.get_stats(),
             "auth": {
                 "auth_disabled": server_config.auth_disabled,

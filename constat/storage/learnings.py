@@ -101,7 +101,8 @@ class LearningStore:
         """
         self.base_dir = Path(base_dir) if base_dir else Path(".constat")
         self.user_id = user_id
-        self.file_path = self.base_dir / user_id / "learnings.yaml"
+        from constat.core.paths import user_vault_dir
+        self.file_path = user_vault_dir(self.base_dir, user_id) / "learnings.yaml"
         self._data: Optional[dict] = None
         self._lock = threading.RLock()  # Thread-safe file access (reentrant for _load -> _save)
 

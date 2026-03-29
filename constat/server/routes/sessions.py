@@ -228,19 +228,19 @@ def _load_domains_into_session(
     # Phase 1: Load all databases from all domains (parallel)
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    to_load: list[tuple[str, str, object]] = []  # (name, filename, db_config)
+    to_load: list[tuple[str, str, str, object]] = []  # (name, domain_name, filename, db_config)
     for filename, domain, dbs, apis, docs in valid_domains:
         for name, db_config in dbs.items():
             if name not in previously_loaded:
-                to_load.append((name, filename, db_config))
+                to_load.append((name, filename, filename, db_config))
             else:
                 newly_loaded.add(name)
 
     if to_load and managed.session.schema_manager:
         def _load_db(item: tuple) -> tuple[str, str, bool]:
-            name, filename, db_config = item
+            name, domain_name, filename, db_config = item
             try:
-                success = managed.session.schema_manager.add_database_dynamic(name, db_config)
+                success = managed.session.schema_manager.add_database_dynamic(name, db_config, domain_id=domain_name)
                 return name, filename, success
             except Exception as e:
                 logger.exception(f"Exception loading domain database {name}: {e}")
@@ -321,6 +321,7 @@ def _load_domains_into_session(
 def _apply_resolved_source_overrides(
     managed: ManagedSession,
     resolved: "ResolvedConfig",
+    skip_documents: bool = False,
 ) -> None:
     """Apply tiered source overrides that differ from what was loaded from raw domain configs.
 
@@ -341,7 +342,9 @@ def _apply_resolved_source_overrides(
             if managed.session.schema_manager and db_name not in (managed.session.schema_manager.connections or {}):
                 try:
                     db_config = DatabaseConfig(**resolved_db)
-                    managed.session.schema_manager.add_database_dynamic(db_name, db_config)
+                    # Base config databases get __base__ domain; user-tier gets user_id
+                    override_domain = "__base__" if db_name in (managed.session.config.databases or {}) else managed.user_id
+                    managed.session.schema_manager.add_database_dynamic(db_name, db_config, domain_id=override_domain)
                     logger.info(f"Loaded tiered-override database: {db_name}")
                 except Exception as e:
                     logger.warning(f"Failed to load tiered-override database {db_name}: {e}")
@@ -350,7 +353,8 @@ def _apply_resolved_source_overrides(
             if managed.session.schema_manager:
                 try:
                     db_config = DatabaseConfig(**resolved_db)
-                    managed.session.schema_manager.add_database_dynamic(db_name, db_config)
+                    override_domain = "__base__" if db_name in (managed.session.config.databases or {}) else managed.user_id
+                    managed.session.schema_manager.add_database_dynamic(db_name, db_config, domain_id=override_domain)
                     logger.info(f"Re-registered tiered-override database: {db_name}")
                 except Exception as e:
                     logger.warning(f"Failed to re-register tiered-override database {db_name}: {e}")
@@ -361,6 +365,105 @@ def _apply_resolved_source_overrides(
         if loaded is None or resolved_api != loaded:
             managed.session.add_domain_api(api_name, resolved_api)
             logger.info(f"{'Loaded' if loaded is None else 'Re-registered'} tiered-override API: {api_name}")
+
+    # Check documents — index user/session-tier documents not loaded from domains
+    if not skip_documents:
+        from constat.core.config import DocumentConfig
+        # Documents already registered from domain loading or base config
+        existing_doc_names = set(
+            managed.session.resources.document_names
+        ) if managed.session.resources else set()
+        # Also include base config documents (indexed during warmup)
+        if managed.session.config and managed.session.config.documents:
+            existing_doc_names.update(managed.session.config.documents.keys())
+
+        for doc_name, resolved_doc in resolved.sources.documents.items():
+            if doc_name in existing_doc_names:
+                continue
+            # New document from user/session tier — needs indexing
+            if managed.session.doc_tools:
+                try:
+                    doc_config = DocumentConfig(**resolved_doc) if isinstance(resolved_doc, dict) else resolved_doc
+                    success, msg = managed.session.doc_tools.add_document_from_config(
+                        doc_name, doc_config,
+                        domain_id=managed.user_id,
+                        session_id=managed.session_id,
+                        skip_entity_extraction=True,
+                    )
+                    if success:
+                        # Register in session resources
+                        managed.session.resources.add_document(
+                            name=doc_name,
+                            description=getattr(doc_config, 'description', '') or "",
+                            doc_type=getattr(doc_config, 'type', 'file') or "file",
+                            source=f"user:{managed.user_id}",
+                        )
+                        logger.info(f"Loaded tiered-override document: {doc_name}")
+                    else:
+                        logger.warning(f"Failed to load tiered-override document {doc_name}: {msg}")
+                except Exception as e:
+                    logger.warning(f"Failed to load tiered-override document {doc_name}: {e}")
+
+
+def _index_user_documents(
+    session_manager: SessionManager,
+    managed: ManagedSession,
+    resolved: "ResolvedConfig",
+) -> None:
+    """Index user/session-tier documents in background after SESSION_READY."""
+    from constat.core.config import DocumentConfig
+    from constat.server.models import EventType
+
+    existing_doc_names = set(
+        managed.session.resources.document_names
+    ) if managed.session.resources else set()
+    if managed.session.config and managed.session.config.documents:
+        existing_doc_names.update(managed.session.config.documents.keys())
+
+    indexed_any = False
+    for doc_name, resolved_doc in resolved.sources.documents.items():
+        if doc_name in existing_doc_names:
+            continue
+        if not managed.session.doc_tools:
+            continue
+
+        session_manager._push_event(managed, EventType.SOURCE_INGEST_START, {"name": doc_name})
+        try:
+            doc_config = DocumentConfig(**resolved_doc) if isinstance(resolved_doc, dict) else resolved_doc
+
+            def _progress_cb(name, current, total):
+                session_manager._push_event(managed, EventType.SOURCE_INGEST_PROGRESS, {
+                    "name": name, "current": current, "total": total,
+                })
+
+            success, msg = managed.session.doc_tools.add_document_from_config(
+                doc_name, doc_config,
+                domain_id=managed.user_id,
+                session_id=managed.session_id,
+                skip_entity_extraction=True,
+                progress_callback=_progress_cb,
+            )
+            if success:
+                managed.session.resources.add_document(
+                    name=doc_name,
+                    description=getattr(doc_config, 'description', '') or "",
+                    doc_type=getattr(doc_config, 'type', 'file') or "file",
+                    source=f"user:{managed.user_id}",
+                )
+                logger.info(f"Background-indexed document: {doc_name}")
+                indexed_any = True
+                session_manager._push_event(managed, EventType.SOURCE_INGEST_COMPLETE, {"name": doc_name})
+            else:
+                logger.warning(f"Failed to index document {doc_name}: {msg}")
+                session_manager._push_event(managed, EventType.SOURCE_INGEST_ERROR, {"name": doc_name, "error": msg})
+        except Exception as e:
+            logger.warning(f"Failed to index document {doc_name}: {e}")
+            session_manager._push_event(managed, EventType.SOURCE_INGEST_ERROR, {"name": doc_name, "error": str(e)})
+
+    if indexed_any:
+        from constat.discovery.ner_fingerprint import invalidate_ner_fingerprint
+        invalidate_ner_fingerprint(managed.session_id)
+        session_manager.refresh_entities_async(managed.session_id)
 
 
 @router.post("", response_model=SessionResponse)
@@ -422,6 +525,7 @@ async def create_session(
             _managed.session_prompt = _managed.session.config.system_prompt
 
             preferred_domains = get_selected_domains(effective_user_id)
+            resolved = None
             logger.info(f"[create_session] preferred_domains: {preferred_domains}")
             if preferred_domains:
                 loaded, conflicts = _load_domains_into_session(_managed, preferred_domains)
@@ -429,7 +533,7 @@ async def create_session(
                 if loaded:
                     resolved = session_manager.resolve_config(_session_id)
                     if resolved:
-                        _apply_resolved_source_overrides(_managed, resolved)
+                        _apply_resolved_source_overrides(_managed, resolved, skip_documents=True)
                         if resolved.system_prompt:
                             _managed.session.config.system_prompt = resolved.system_prompt
                             _managed.session_prompt = resolved.system_prompt
@@ -447,6 +551,15 @@ async def create_session(
             )
 
             session_manager.refresh_entities_async(_session_id)
+
+            # Index user/session-tier documents in background (non-blocking)
+            if preferred_domains and resolved and resolved.sources.documents:
+                threading.Thread(
+                    target=_index_user_documents,
+                    args=(session_manager, _managed, resolved),
+                    name=f"doc-index-{client_session_id[:8]}",
+                    daemon=True,
+                ).start()
         except Exception as e:
             logger.exception(f"[create_session] init failed for {_session_id}: {e}")
 

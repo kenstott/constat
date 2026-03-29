@@ -30,7 +30,8 @@ def get_agents_file(user_id: str, base_dir: Optional[Path] = None) -> Path:
     """
     if base_dir is None:
         base_dir = Path(".constat")
-    return base_dir / user_id / AGENTS_FILENAME
+    from constat.core.paths import user_vault_dir
+    return user_vault_dir(base_dir, user_id) / AGENTS_FILENAME
 
 
 @dataclass

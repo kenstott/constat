@@ -520,7 +520,8 @@ class ConstatInput(Input):
 
     def set_history_file(self, user_id: str) -> None:
         """Set the history file path for persistent storage."""
-        self._history_file = Path(".constat") / user_id / "prompt_history.json"
+        from constat.core.paths import user_vault_dir
+        self._history_file = user_vault_dir(Path(".constat"), user_id) / "prompt_history.json"
 
     def load_history(self) -> None:
         """Load command history from file."""

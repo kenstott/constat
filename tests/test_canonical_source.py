@@ -20,6 +20,7 @@ def _make_term(name: str = "revenue", **kwargs) -> GlossaryTerm:
         name=name,
         display_name=kwargs.pop("display_name", name.replace("_", " ").title()),
         definition=kwargs.pop("definition", f"Definition of {name}"),
+        domain=kwargs.pop("domain", "test"),
         session_id=kwargs.pop("session_id", SESSION_ID),
         user_id=kwargs.pop("user_id", USER_ID),
         **kwargs,

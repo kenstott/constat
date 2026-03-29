@@ -514,6 +514,7 @@ export type EventType =
   | 'source_ingest_start'
   | 'source_ingest_complete'
   | 'source_ingest_error'
+  | 'source_ingest_progress'
   | 'entity_state'
   | 'entity_patch'
 

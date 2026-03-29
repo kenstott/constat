@@ -120,7 +120,8 @@ class SessionHistory:
         self.user_id = user_id or "default"
 
         # User-scoped storage directory
-        self.storage_dir = self.base_dir / self.user_id / "sessions"
+        from constat.core.paths import user_vault_dir
+        self.storage_dir = user_vault_dir(self.base_dir, self.user_id) / "sessions"
 
     @staticmethod
     def _ensure_dir(path: Path) -> None:

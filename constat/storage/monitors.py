@@ -255,11 +255,13 @@ class MonitorStore:
 
     def _get_monitors_file(self) -> Path:
         """Get path to monitors file for this user."""
-        return self.base_path / self.user_id / "monitors.json"
+        from constat.core.paths import user_vault_dir
+        return user_vault_dir(self.base_path, self.user_id) / "monitors.json"
 
     def _get_runs_dir(self) -> Path:
         """Get path to monitor runs directory for this user."""
-        return self.base_path / self.user_id / "monitor_runs"
+        from constat.core.paths import user_vault_dir
+        return user_vault_dir(self.base_path, self.user_id) / "monitor_runs"
 
     def _get_run_file(self, monitor_id: str) -> Path:
         """Get path to run history file for a specific monitor."""

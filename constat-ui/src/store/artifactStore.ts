@@ -103,6 +103,8 @@ interface ArtifactState {
   learningsLoading: boolean
   configLoading: boolean
   error: string | null
+  ingestingSource: string | null
+  ingestProgress: { current: number; total: number } | null
 
   // Actions
   fetchArtifacts: (sessionId: string) => Promise<void>
@@ -153,6 +155,8 @@ interface ArtifactState {
   addInferenceCode: (ic: InferenceCode) => void
   supersededStepNumbers: Set<number>
   markStepsSuperseded: () => void  // Mark all current step numbers as superseded (on redo)
+  setIngestingSource: (name: string | null) => void
+  setIngestProgress: (progress: { current: number; total: number } | null) => void
   clear: () => void
   clearQueryResults: () => void  // Clear artifacts/tables/facts/stepCodes but keep data sources/entities/learnings
   clearInferenceCodes: () => void  // Clear inference codes on proof re-run
@@ -187,6 +191,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   learningsLoading: true,
   configLoading: true,
   error: null,
+  ingestingSource: null,
+  ingestProgress: null,
 
   fetchArtifacts: async (sessionId) => {
     set({ loading: true, error: null })
@@ -760,6 +766,9 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     }
   },
 
+  setIngestingSource: (name) => set({ ingestingSource: name, ingestProgress: name ? get().ingestProgress : null }),
+  setIngestProgress: (progress) => set({ ingestProgress: progress }),
+
   clear: () =>
     set({
       artifacts: [],
@@ -787,6 +796,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       learningsLoading: true,
       configLoading: true,
       error: null,
+      ingestingSource: null,
+      ingestProgress: null,
     }),
 
   // Clear only query-produced results, keep session context (data sources, entities, learnings)

@@ -1221,7 +1221,8 @@ If the original question had multiple goals or sub-questions, note whether all w
                 dfd_text = generate_proof_dfd(proof_steps, max_width=80, max_name_len=10)
                 if dfd_text and self.datastore:
                     from pathlib import Path
-                    artifacts_dir = Path(".constat") / self.user_id / "sessions" / self.session_id / "artifacts"
+                    from constat.core.paths import user_vault_dir
+                    artifacts_dir = user_vault_dir(Path(".constat"), self.user_id) / "sessions" / self.session_id / "artifacts"
                     artifacts_dir.mkdir(parents=True, exist_ok=True)
                     dfd_path = artifacts_dir / "data_flow.txt"
                     dfd_path.write_text(dfd_text)

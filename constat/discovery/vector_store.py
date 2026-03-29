@@ -268,6 +268,83 @@ class DuckDBVectorStore(VectorStoreBackend):
             vector=self._vector,
         )
 
+    @classmethod
+    def from_split(
+        cls,
+        split_store,
+        domain_tier_fn=None,
+        reranker_model: str | None = None,
+        cluster_min_terms: int = 2,
+        cluster_divisor: int = 5,
+        cluster_max_k: int = 500,
+        store_chunk_text: bool = True,
+    ) -> "DuckDBVectorStore":
+        """Create a DuckDBVectorStore backed by a SplitVectorStore.
+
+        The SplitVectorStore provides the ThreadLocalDuckDB (user DB with
+        system DB ATTACHed as 'sys'). Schema is initialised on the user DB,
+        then UNION views are created so reads span both databases.
+        """
+        from constat.storage.duckdb_backend import DuckDBVectorBackend
+        from constat.storage.relational import RelationalStore
+        from constat.storage.store import Store
+
+        inst = cls.__new__(cls)
+        inst._db = split_store.db
+        inst._db_path = split_store._user_db_path
+        inst._reranker_model = reranker_model
+        inst._store_chunk_text = store_chunk_text
+
+        if reranker_model:
+            from constat.reranker_loader import RerankerModelLoader
+            RerankerModelLoader.get_instance().start_loading(reranker_model)
+
+        # Initialise schema on user DB (main)
+        inst._init_schema()
+
+        # Ensure system DB has all tables (clone empty schema from main)
+        if not split_store.warmup:
+            inst._ensure_sys_tables()
+            split_store._create_union_views()
+
+        split_mode = not split_store.warmup
+
+        inst._vector = DuckDBVectorBackend(
+            inst._db,
+            reranker_model=reranker_model,
+            store_chunk_text=store_chunk_text,
+            split_mode=split_mode,
+            domain_tier_fn=domain_tier_fn,
+        )
+        inst._relational = RelationalStore(
+            inst._db,
+            cluster_min_terms=cluster_min_terms,
+            cluster_divisor=cluster_divisor,
+            cluster_max_k=cluster_max_k,
+            split_mode=split_mode,
+            domain_tier_fn=domain_tier_fn,
+        )
+        inst._store = Store(
+            relational=inst._relational,
+            vector=inst._vector,
+        )
+        return inst
+
+    def _ensure_sys_tables(self) -> None:
+        """Ensure all SPLIT_TABLES exist in the sys (attached system) schema.
+
+        Clones empty table structure from main for any missing tables.
+        """
+        from constat.storage.split_store import SPLIT_TABLES
+        conn = self._conn
+        for table in SPLIT_TABLES:
+            try:
+                conn.execute(f"SELECT 1 FROM sys.{table} LIMIT 0")
+            except Exception:
+                conn.execute(
+                    f"CREATE TABLE sys.{table} AS SELECT * FROM main.{table} WHERE false"
+                )
+
     @property
     def _conn(self):
         """Get the thread-local connection (backwards compatibility)."""
@@ -295,15 +372,6 @@ class DuckDBVectorStore(VectorStoreBackend):
 
     def _init_schema(self) -> None:
         """Initialize database schema if not exists."""
-        try:
-            exists = self._conn.execute(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'embeddings'"
-            ).fetchone()[0]
-            if exists:
-                self._ensure_incremental_schema()
-                return
-        except Exception:
-            pass
         try:
             self._conn.execute("CHECKPOINT")
         except Exception:
@@ -422,6 +490,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'mixed'",
             "ALTER TABLE entities ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'metadata'",
             "ALTER TABLE source_hashes ADD COLUMN IF NOT EXISTS er_hash VARCHAR",
+            "ALTER TABLE entity_relationships ADD COLUMN IF NOT EXISTS user_edited BOOLEAN DEFAULT FALSE",
         ]
         schema_changed = False
         for stmt in _alter_stmts:
@@ -559,40 +628,6 @@ class DuckDBVectorStore(VectorStoreBackend):
                 PRIMARY KEY (entity_name, source_pattern)
             )
         """)
-
-    def _ensure_incremental_schema(self) -> None:
-        """Create tables added after initial schema, for pre-existing databases."""
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS glossary_clusters (
-                term_name VARCHAR NOT NULL,
-                cluster_id INTEGER NOT NULL,
-                session_id VARCHAR NOT NULL,
-                PRIMARY KEY (term_name, session_id)
-            )
-        """)
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS proven_grounding (
-                entity_name TEXT NOT NULL,
-                source_pattern TEXT NOT NULL,
-                PRIMARY KEY (entity_name, source_pattern)
-            )
-        """)
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS entity_resolution_names (
-                source_id VARCHAR NOT NULL,
-                entity_type VARCHAR NOT NULL,
-                names TEXT NOT NULL,
-                PRIMARY KEY (source_id, entity_type)
-            )
-        """)
-        try:
-            self._conn.execute("ALTER TABLE entity_relationships ADD COLUMN user_edited BOOLEAN DEFAULT FALSE")
-        except Exception:
-            pass
-        try:
-            self._conn.execute("ALTER TABLE source_hashes ADD COLUMN IF NOT EXISTS er_hash VARCHAR")
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Vector operations — delegate to DuckDBVectorBackend

@@ -333,7 +333,7 @@ class GlossaryTerm:
         name: Singular canonical form (matches entity.name)
         display_name: Title case singular for UI
         definition: Business meaning
-        domain: Owning domain (None = system-level)
+        domain: Owning domain (required, never None). New terms use session_id.
         parent_id: Taxonomy parent (self-referential)
         aliases: Alternate names
         semantic_type: CONCEPT, ATTRIBUTE, ACTION, TERM
@@ -369,6 +369,8 @@ class GlossaryTerm:
     canonical_source: Optional[str] = None
 
     def __post_init__(self):
+        if self.domain is None:
+            raise ValueError("GlossaryTerm.domain is required — every term must have an explicit domain")
         now = datetime.now()
         if self.created_at is None:
             self.created_at = now

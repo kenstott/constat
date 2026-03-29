@@ -110,6 +110,9 @@ def _build_domain_maps(config, session=None) -> tuple[dict[str, str], dict[str, 
             if doc_info.source and doc_info.source.startswith("domain:"):
                 domain_fname = doc_info.source.removeprefix("domain:")
                 source_to_domain[doc_name] = domain_fname
+            elif doc_info.source and doc_info.source.startswith("user:"):
+                user_id = doc_info.source.removeprefix("user:")
+                source_to_domain[doc_name] = user_id
 
     return domain_path_map, source_to_domain
 

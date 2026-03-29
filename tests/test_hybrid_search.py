@@ -252,7 +252,7 @@ class TestClustering:
         for tid, name in [("term_a", "customer"), ("term_b", "order")]:
             store.add_glossary_term(GlossaryTerm(
                 id=tid, name=name, display_name=name.title(),
-                definition=f"A {name}", session_id=session_id,
+                definition=f"A {name}", domain="test", session_id=session_id,
             ))
         chunks = [
             DocumentChunk(
@@ -291,7 +291,7 @@ class TestClustering:
         store._clusters_dirty = False
         term = GlossaryTerm(
             id="t1", name="customer", display_name="Customer",
-            definition="A buyer", session_id="s1",
+            definition="A buyer", domain="test", session_id="s1",
         )
         store.add_glossary_term(term)
         assert store._clusters_dirty is True
@@ -305,7 +305,7 @@ class TestClustering:
         for tid, name in [("a", "alpha"), ("b", "beta"), ("c", "gamma"), ("d", "delta")]:
             store.add_glossary_term(GlossaryTerm(
                 id=tid, name=name, display_name=name.title(),
-                definition=f"Term {name}", session_id=session_id,
+                definition=f"Term {name}", domain="test", session_id=session_id,
             ))
 
         # Two similar pairs: (a, b) and (c, d)
@@ -348,7 +348,7 @@ class TestClustering:
         session_id = "cfg_test"
         for tid in ["x", "y"]:
             store.add_glossary_term(GlossaryTerm(
-                id=tid, name=tid, display_name=tid, definition=tid, session_id=session_id,
+                id=tid, name=tid, display_name=tid, definition=tid, domain="test", session_id=session_id,
             ))
         chunks = [
             DocumentChunk(document_name="glossary:x", content="X", section="glossary",
@@ -376,7 +376,7 @@ class TestClustering:
         for i in range(10):
             store2.add_glossary_term(GlossaryTerm(
                 id=f"t{i}", name=f"term{i}", display_name=f"Term {i}",
-                definition=f"Term {i}", session_id=session_id,
+                definition=f"Term {i}", domain="test", session_id=session_id,
             ))
         chunks2 = [
             DocumentChunk(document_name=f"glossary:t{i}", content=f"Term {i}", section="glossary",

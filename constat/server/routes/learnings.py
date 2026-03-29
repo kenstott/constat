@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from constat.core.paths import user_vault_dir
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from constat.server.persona_config import require_write
@@ -79,7 +81,7 @@ def _ensure_user_domain_config(user_id: str, config: Config) -> None:
     if filename in config.domains:
         return
 
-    user_dir = Path(".constat") / user_id
+    user_dir = user_vault_dir(Path(".constat"), user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
     yaml_path = user_dir / "config.yaml"
 
@@ -143,7 +145,7 @@ def _domain_data_dirs(domain_cfg, user_id: str) -> list[Path]:
         d = Path(domain_cfg.source_path).parent
         if d.is_dir():
             dirs.append(d)
-    user_domain_dir = Path(".constat") / user_id / "domains" / domain_cfg.filename
+    user_domain_dir = user_vault_dir(Path(".constat"), user_id) /"domains" / domain_cfg.filename
     if user_domain_dir.is_dir():
         dirs.append(user_domain_dir)
     return dirs
@@ -476,7 +478,7 @@ async def download_exemplars(
     if format not in filenames:
         raise HTTPException(status_code=400, detail="format must be 'messages' or 'alpaca'")
 
-    path = Path(".constat") / user_id / filenames[format]
+    path = user_vault_dir(Path(".constat"), user_id) /filenames[format]
     if not path.exists():
         raise HTTPException(status_code=404, detail="No exemplar file found. Generate exemplars first.")
 
@@ -759,7 +761,7 @@ async def get_domain_tree(
     _flat_scan(shared_domains_dir, tier="shared")
 
     # Scan user domains
-    user_domains_dir = Path(".constat") / user_id / "domains"
+    user_domains_dir = user_vault_dir(Path(".constat"), user_id) /"domains"
     _flat_scan(user_domains_dir, tier="user")
 
     def _resolve_ref(ref: str, parent_key: str = "") -> str | None:
@@ -823,12 +825,12 @@ async def get_domain_tree(
     user_agent_names: list[str] = []
     user_rule_ids: list[str] = []
     user_fact_names: list[str] = []
-    user_skills_dir = Path(".constat") / user_id / "skills"
+    user_skills_dir = user_vault_dir(Path(".constat"), user_id) /"skills"
     if user_skills_dir.is_dir():
         for sd in user_skills_dir.iterdir():
             if sd.is_dir() and (sd / "SKILL.md").exists():
                 user_skill_names.append(sd.name)
-    user_agents_file = Path(".constat") / user_id / "agents.yaml"
+    user_agents_file = user_vault_dir(Path(".constat"), user_id) /"agents.yaml"
     if user_agents_file.is_file():
         try:
             import yaml as _yaml
@@ -940,7 +942,7 @@ async def list_domains(
                 logger.warning(f"Failed to load shared domain {filename}: {e}")
 
     # Scan user-level sub-domains (.constat/{user_id}/domains/{slug}/config.yaml)
-    user_domains_dir = Path(".constat") / user_id / "domains"
+    user_domains_dir = user_vault_dir(Path(".constat"), user_id) /"domains"
     if user_domains_dir.is_dir():
         import yaml
         for domain_dir in sorted(user_domains_dir.iterdir()):
@@ -1014,7 +1016,7 @@ async def create_domain(
         raise HTTPException(status_code=409, detail=f"Domain '{filename}' already exists")
 
     # Write domain directory (slug/config.yaml)
-    user_domains_dir = Path(".constat") / user_id / "domains"
+    user_domains_dir = user_vault_dir(Path(".constat"), user_id) /"domains"
     domain_dir = user_domains_dir / slug
     domain_path = domain_dir / "config.yaml"
 
@@ -1251,9 +1253,9 @@ async def get_domain_content(
             raise HTTPException(status_code=404, detail=f"Root config not found: {domain_path}")
         return {"content": domain_path.read_text(), "path": str(domain_path), "filename": "root"}
 
-    # User = .constat/{user_id}/config.yaml — create default if missing
+    # User = .constat/{user_id}.vault/config.yaml — create default if missing
     if filename == "user":
-        user_dir = Path(".constat") / user_id
+        user_dir = user_vault_dir(Path(".constat"), user_id)
         user_dir.mkdir(parents=True, exist_ok=True)
         domain_path = user_dir / "config.yaml"
         if not domain_path.exists():
@@ -1325,9 +1327,9 @@ async def update_domain_content(
         domain_path.write_text(content)
         return {"status": "saved", "filename": "root", "path": str(domain_path)}
 
-    # User = .constat/{user_id}/config.yaml
+    # User = .constat/{user_id}.vault/config.yaml
     if filename == "user":
-        user_dir = Path(".constat") / user_id
+        user_dir = user_vault_dir(Path(".constat"), user_id)
         user_dir.mkdir(parents=True, exist_ok=True)
         domain_path = user_dir / "config.yaml"
         content = body.get("content")
@@ -1780,7 +1782,7 @@ async def move_domain_agent(
     def _agents_path(cfg: Optional[object]) -> Path:
         if cfg and getattr(cfg, "source_path", None):
             return Path(cfg.source_path).parent / "agents.yaml"
-        return Path(".constat") / user_id / "agents.yaml"
+        return user_vault_dir(Path(".constat"), user_id) /"agents.yaml"
 
     # Read source agents.yaml
     src_agents_file = _agents_path(from_cfg)

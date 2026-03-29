@@ -67,7 +67,8 @@ class ParquetDataStore:
         self.base_dir = Path(base_dir) if base_dir else Path(".constat")
 
         # Session directory structure
-        self.session_dir = self.base_dir / user_id / "sessions" / session_id
+        from constat.core.paths import user_vault_dir
+        self.session_dir = user_vault_dir(self.base_dir, user_id) / "sessions" / session_id
         self.tables_dir = self.session_dir / "tables"
         self.state_file = self.session_dir / "state.json"
 

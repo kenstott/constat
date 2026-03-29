@@ -1468,6 +1468,7 @@ class CommandsMixin:
                     name=name,
                     display_name=name.replace("_", " ").title(),
                     definition=definition,
+                    domain=self.session.session_id,
                     status="draft",
                     provenance="human",
                     session_id=self.session.session_id,

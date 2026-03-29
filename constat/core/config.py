@@ -991,7 +991,6 @@ class DomainConfig(BaseModel):
     documents: dict[str, DocumentConfig] = Field(default_factory=dict)
 
     # Domain-specific config sections
-    glossary: dict[str, Any] = Field(default_factory=dict)
     relationships: dict[str, Any] = Field(default_factory=dict)
     rights: dict[str, Any] = Field(default_factory=dict)
     facts: dict[str, Any] = Field(default_factory=dict)
@@ -1177,7 +1176,6 @@ class Config(BaseModel):
 
     # New first-class config sections
     rights: dict[str, Any] = Field(default_factory=dict)
-    glossary: dict[str, Any] = Field(default_factory=dict)
     relationships: dict[str, Any] = Field(default_factory=dict)
 
     # Entity resolution — system-level entity type mappings
@@ -1357,7 +1355,7 @@ class Config(BaseModel):
         merged = dict(engine)
 
         # Dict-keyed sections to deep merge
-        dict_sections = ["databases", "apis", "documents", "glossary", "relationships", "rights"]
+        dict_sections = ["databases", "apis", "documents", "relationships", "rights"]
 
         # Fields that user config cannot override (security protection)
         protected_fields = {"uri", "hosts", "endpoint", "endpoint_url"}

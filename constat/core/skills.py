@@ -61,7 +61,8 @@ def get_skills_dir(user_id: str, base_dir: Optional[Path] = None) -> Path:
     """
     if base_dir is None:
         base_dir = Path(".constat")
-    return base_dir / user_id / "skills"
+    from constat.core.paths import user_vault_dir
+    return user_vault_dir(base_dir, user_id) / "skills"
 
 
 def parse_frontmatter(content: str) -> tuple[dict, str]:

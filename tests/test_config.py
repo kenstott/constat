@@ -1766,7 +1766,6 @@ class TestTieredConfigNerStopList:
         config.apis = {}
         config.documents = {}
         config.facts = {}
-        config.glossary = {}
         config.relationships = {}
         config.rights = {}
         config.skills = None
@@ -1787,7 +1786,6 @@ class TestTieredConfigNerStopList:
         domain.databases = databases or {}
         domain.apis = apis or {}
         domain.documents = documents or {}
-        domain.glossary = {}
         domain.relationships = {}
         domain.rights = {}
         domain.facts = {}
@@ -1856,14 +1854,13 @@ class TestTieredConfigNerStopList:
 class TestConfigTombstones:
     """Tests for null-tombstone soft-delete of config-seeded elements."""
 
-    def _make_config(self, facts=None, glossary=None, learnings=None, domains=None):
+    def _make_config(self, facts=None, learnings=None, domains=None):
         from unittest.mock import Mock
         config = Mock(spec=Config)
         config.databases = {}
         config.apis = {}
         config.documents = {}
         config.facts = facts or {}
-        config.glossary = glossary or {}
         config.relationships = {}
         config.rights = {}
         config.skills = None
@@ -1878,13 +1875,12 @@ class TestConfigTombstones:
         config.load_domain = _load_domain
         return config
 
-    def _make_domain(self, facts=None, glossary=None, learnings=None):
+    def _make_domain(self, facts=None, learnings=None):
         from unittest.mock import Mock
         domain = Mock(spec=DomainConfig)
         domain.databases = {}
         domain.apis = {}
         domain.documents = {}
-        domain.glossary = glossary or {}
         domain.relationships = {}
         domain.rights = {}
         domain.facts = facts or {}
@@ -1925,7 +1921,7 @@ class TestConfigTombstones:
         import yaml
         from constat.core.tiered_config import TieredConfigLoader, ConfigSource
 
-        domain = self._make_domain(glossary={"revenue": "Total income"})
+        domain = self._make_domain(facts={"revenue": "Total income"})
         config = self._make_config(domains={"sales": domain})
 
         loader = TieredConfigLoader(
@@ -1933,18 +1929,18 @@ class TestConfigTombstones:
             domain_names=["sales"],
         )
         resolved = loader.resolve()
-        assert resolved.glossary["revenue"] == "Total income"
-        # Attribution may be at "glossary" level (whole section from domain)
-        assert resolved._attribution.get("glossary") == ConfigSource.SYSTEM_DOMAIN
+        assert resolved.facts["revenue"] == "Total income"
+        # Attribution may be at "facts" level (whole section from domain)
+        assert resolved._attribution.get("facts") == ConfigSource.SYSTEM_DOMAIN
 
         sm = self._make_session_manager(config, tmp_path)
         managed = self._make_managed_session("s1", "alice", resolved)
         sm._sessions["s1"] = managed
 
-        assert sm.write_config_tombstone("s1", "glossary", "revenue") is True
+        assert sm.write_config_tombstone("s1", "facts", "revenue") is True
 
-        user_yaml = yaml.safe_load((tmp_path / "alice" / "config.yaml").read_text())
-        assert user_yaml["glossary"]["revenue"] is None
+        user_yaml = yaml.safe_load((tmp_path / "alice.vault" / "config.yaml").read_text())
+        assert user_yaml["facts"]["revenue"] is None
 
     def test_tombstone_skips_user_created_items(self, tmp_path):
         """Tombstone is not written for USER-tier items."""
@@ -1954,7 +1950,7 @@ class TestConfigTombstones:
         # System-level fact so attribution exists at leaf, then user overrides
         config = self._make_config(facts={"my_fact": "system_val"})
         # Write a user-tier override
-        user_dir = tmp_path / "alice"
+        user_dir = tmp_path / "alice.vault"
         user_dir.mkdir(parents=True)
         (user_dir / "config.yaml").write_text(yaml.dump({"facts": {"my_fact": "hello"}}))
 
@@ -1997,7 +1993,7 @@ class TestConfigTombstones:
 
         assert sm.write_config_tombstone("s1", "learnings", "rules.my_rule") is True
 
-        user_yaml = yaml.safe_load((tmp_path / "alice" / "config.yaml").read_text())
+        user_yaml = yaml.safe_load((tmp_path / "alice.vault" / "config.yaml").read_text())
         assert user_yaml["learnings"]["rules"]["my_rule"] is None
 
     def test_tombstone_prevents_reseeding(self, tmp_path):
@@ -2009,7 +2005,7 @@ class TestConfigTombstones:
         config = self._make_config(domains={"sales": domain})
 
         # Write tombstone for fiscal_year
-        user_dir = tmp_path / "alice"
+        user_dir = tmp_path / "alice.vault"
         user_dir.mkdir(parents=True)
         (user_dir / "config.yaml").write_text(yaml.dump({"facts": {"fiscal_year": None}}))
 
@@ -2026,15 +2022,15 @@ class TestConfigTombstones:
         import yaml
         from constat.core.tiered_config import TieredConfigLoader, ConfigSource
 
-        domain = self._make_domain(glossary={"revenue": "Total income"})
+        domain = self._make_domain(facts={"revenue": "Total income"})
         config = self._make_config(domains={"sales": domain})
 
         # Pre-populate user config with other data
-        user_dir = tmp_path / "alice"
+        user_dir = tmp_path / "alice.vault"
         user_dir.mkdir(parents=True)
         (user_dir / "config.yaml").write_text(yaml.dump({
             "facts": {"my_fact": "hello"},
-            "glossary": {"custom_term": "My definition"},
+            "relationships": {"custom_rel": "My relationship"},
         }))
 
         loader = TieredConfigLoader(
@@ -2047,9 +2043,9 @@ class TestConfigTombstones:
         managed = self._make_managed_session("s1", "alice", resolved)
         sm._sessions["s1"] = managed
 
-        sm.write_config_tombstone("s1", "glossary", "revenue")
+        sm.write_config_tombstone("s1", "facts", "revenue")
 
         user_yaml = yaml.safe_load((user_dir / "config.yaml").read_text())
         assert user_yaml["facts"]["my_fact"] == "hello"
-        assert user_yaml["glossary"]["custom_term"] == "My definition"
-        assert user_yaml["glossary"]["revenue"] is None
+        assert user_yaml["relationships"]["custom_rel"] == "My relationship"
+        assert user_yaml["facts"]["revenue"] is None

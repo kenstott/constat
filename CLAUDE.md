@@ -2,6 +2,9 @@ CRITICAL: Never add fallback values or silent error handling. This has caused re
 CRITICAL: We are currently in version 1 development. Never add migrations.
 CRITICAL:  Maximum brevity. No pleasantries. No explanations unless asked. Code and facts only.
 
+# Requirements Tracking
+When the user states a new requirement, constraint, feature request, or design decision, spawn a general-purpose agent (model: haiku) in the background to append it to `docs/arch/requirements.md`. The agent should first read `.claude/agents/requirements-tracker.md` for format rules, then read the current requirements file, then append the new requirement(s). Do this silently — no confirmation needed. Do NOT spawn for implementation details, bug reports, or questions.
+
 # Architecture
 
 ## Backend (Python — `constat/`)

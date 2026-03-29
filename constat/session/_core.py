@@ -100,8 +100,39 @@ class CoreMixin:
         self.router = TaskRouter(config.llm)
 
         # Document discovery tools (for reference documents)
+        # Create split vector store: user DB (main) + system DB (ATTACHed as sys)
         t0 = time.time()
-        self.doc_tools = DocumentDiscoveryTools(config, router=self.router, skip_auto_index=True)
+        from constat.core.paths import user_vault_dir
+        from constat.storage.split_store import SplitVectorStore
+        from constat.discovery.vector_store import DuckDBVectorStore
+        from constat.core.domain_tiers import get_domain_tier
+
+        user_db = user_vault_dir(self.data_dir, self.user_id) / "vectors.duckdb"
+        system_db = self.data_dir / "vectors.duckdb"
+        user_db.parent.mkdir(parents=True, exist_ok=True)
+
+        domain_tier_fn = lambda d: get_domain_tier(d, config, self.user_id)
+
+        split_store = SplitVectorStore(
+            user_db_path=user_db,
+            system_db_path=system_db if system_db.exists() else None,
+            init_sql=["INSTALL vss", "LOAD vss", "INSTALL fts", "LOAD fts"],
+        )
+        self._split_store = split_store
+
+        vector_store = DuckDBVectorStore.from_split(
+            split_store,
+            domain_tier_fn=domain_tier_fn,
+        )
+
+        self.doc_tools = DocumentDiscoveryTools(
+            config, router=self.router, skip_auto_index=True,
+            vector_store=vector_store,
+        )
+        # Wire schema managers to use the same split store so domain loading
+        # writes chunks to the correct DB (not the default .constat/vectors.duckdb)
+        self.schema_manager._vector_store = vector_store
+        self.api_schema_manager._vector_store = vector_store
         logger.debug(f"Session init: DocumentDiscoveryTools took {time.time() - t0:.2f}s")
 
         # Entity extraction is handled by session_manager.refresh_entities_async()

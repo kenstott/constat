@@ -177,10 +177,11 @@ class VisualizationHelper:
         if output_dir is None:
             # Use session directory under user-scoped storage
             # "artifacts" = user-requested outputs (charts, files, visualizations)
+            from constat.core.paths import user_vault_dir
             if session_id:
-                output_dir = Path(".constat") / user_id / "sessions" / session_id / "artifacts"
+                output_dir = user_vault_dir(Path(".constat"), user_id) / "sessions" / session_id / "artifacts"
             else:
-                output_dir = Path(".constat") / user_id / "artifacts"
+                output_dir = user_vault_dir(Path(".constat"), user_id) / "artifacts"
 
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)

@@ -32,17 +32,67 @@ logger = logging.getLogger(__name__)
 class RelationalStore:
     """All non-vector relational operations."""
 
-    def __init__(self, db, cluster_min_terms: int = 2, cluster_divisor: int = 5, cluster_max_k: int = 500):
+    def __init__(self, db, cluster_min_terms: int = 2, cluster_divisor: int = 5, cluster_max_k: int = 500, split_mode=False, domain_tier_fn=None):
         self._db = db
         self._clusters_dirty = True
         self._cluster_min_terms = cluster_min_terms
         self._cluster_divisor = cluster_divisor
         self._cluster_max_k = cluster_max_k
         self._entity_write_lock = threading.Lock()
+        self._split_mode = split_mode
+        self._domain_tier_fn = domain_tier_fn
 
     @property
     def _conn(self):
         return self._db.conn
+
+    # ------------------------------------------------------------------
+    # Split-mode helpers
+    # ------------------------------------------------------------------
+
+    def _schema_for_domain(self, domain_id: str | None) -> str:
+        """Return 'sys' or 'main' based on domain tier."""
+        if not self._split_mode or not self._domain_tier_fn:
+            return "main"
+        if domain_id is None:
+            return "main"
+        tier = self._domain_tier_fn(domain_id)
+        return "sys" if tier == "system" else "main"
+
+    def _table(self, name: str, domain_id: str | None = None) -> str:
+        """Schema-qualified table name for writes."""
+        schema = self._schema_for_domain(domain_id)
+        return f"{schema}.{name}"
+
+    def _view(self, name: str) -> str:
+        """View or table name for reads. In split mode uses v_* union views."""
+        if self._split_mode:
+            return f"v_{name}"
+        return name
+
+    def _move_row(self, table: str, pk_col: str, pk_val, from_schema: str, to_schema: str, updates: dict | None = None) -> None:
+        """Move a row between schemas using SELECT->DELETE->INSERT."""
+        if from_schema == to_schema:
+            return
+        row = self._conn.execute(
+            f"SELECT * FROM {from_schema}.{table} WHERE {pk_col} = ?", [pk_val]
+        ).fetchone()
+        if row is None:
+            return
+        cols = [desc[0] for desc in self._conn.description]
+        values = list(row)
+        if updates:
+            for col, val in updates.items():
+                if col in cols:
+                    values[cols.index(col)] = val
+        placeholders = ", ".join(["?" for _ in cols])
+        col_list = ", ".join(cols)
+        self._conn.execute(
+            f"INSERT INTO {to_schema}.{table} ({col_list}) VALUES ({placeholders})", values
+        )
+        self._conn.execute(
+            f"DELETE FROM {from_schema}.{table} WHERE {pk_col} = ?", [pk_val]
+        )
 
     # ------------------------------------------------------------------
     # Visibility filters
@@ -143,14 +193,16 @@ class RelationalStore:
         else:
             where = "LOWER(name) = LOWER(?)"
 
+        entities_tbl = self._view('entities')
+        chunk_entities_tbl = self._view('chunk_entities')
         result = self._conn.execute(
             f"""
             SELECT id, name, display_name, semantic_type, ner_type,
                    session_id, domain_id, created_at
-            FROM entities e
+            FROM {entities_tbl} e
             WHERE {where}
             ORDER BY (
-                SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id
+                SELECT COUNT(*) FROM {chunk_entities_tbl} ce WHERE ce.entity_id = e.id
             ) DESC
             LIMIT 1
             """,
@@ -174,8 +226,8 @@ class RelationalStore:
 
     def get_entity_by_id(self, entity_id: str) -> Optional[Entity]:
         row = self._conn.execute(
-            "SELECT id, name, display_name, semantic_type, ner_type, "
-            "session_id, domain_id, created_at FROM entities WHERE id = ? LIMIT 1",
+            f"SELECT id, name, display_name, semantic_type, ner_type, "
+            f"session_id, domain_id, created_at FROM {self._view('entities')} WHERE id = ? LIMIT 1",
             [entity_id],
         ).fetchone()
         if not row:
@@ -191,12 +243,12 @@ class RelationalStore:
         self._conn.execute("DELETE FROM entities")
 
     def count_entities(self) -> int:
-        result = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
+        result = self._conn.execute(f"SELECT COUNT(*) FROM {self._view('entities')}").fetchone()
         return result[0] if result else 0
 
     def get_entity_ids_for_session(self, session_id: str) -> set[str]:
         rows = self._conn.execute(
-            "SELECT id FROM entities WHERE session_id = ?", [session_id]
+            f"SELECT id FROM {self._view('entities')} WHERE session_id = ?", [session_id]
         ).fetchall()
         return {r[0] for r in rows}
 
@@ -225,11 +277,11 @@ class RelationalStore:
 
     def clear_session_entities(self, session_id: str) -> tuple[int, int]:
         link_count = self._conn.execute(
-            "SELECT COUNT(*) FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)",
+            f"SELECT COUNT(*) FROM {self._view('chunk_entities')} WHERE entity_id IN (SELECT id FROM {self._view('entities')} WHERE session_id = ?)",
             [session_id]
         ).fetchone()[0]
         entity_count = self._conn.execute(
-            "SELECT COUNT(*) FROM entities WHERE session_id = ?",
+            f"SELECT COUNT(*) FROM {self._view('entities')} WHERE session_id = ?",
             [session_id]
         ).fetchone()[0]
 
@@ -242,7 +294,7 @@ class RelationalStore:
 
     def clear_domain_session_entities(self, session_id: str, domain_id: str) -> int:
         result = self._conn.execute(
-            "SELECT id FROM entities WHERE session_id = ? AND domain_id = ?",
+            f"SELECT id FROM {self._view('entities')} WHERE session_id = ? AND domain_id = ?",
             [session_id, domain_id]
         ).fetchall()
         entity_ids = [row[0] for row in result]
@@ -265,7 +317,7 @@ class RelationalStore:
 
     def get_entity_names(self, session_id: str) -> list[str]:
         result = self._conn.execute(
-            "SELECT DISTINCT name FROM entities WHERE session_id = ?",
+            f"SELECT DISTINCT name FROM {self._view('entities')} WHERE session_id = ?",
             [session_id],
         ).fetchall()
         return [row[0] for row in result]
@@ -345,11 +397,11 @@ class RelationalStore:
 
     def get_entities_for_chunk(self, chunk_id: str, session_id: str) -> list[Entity]:
         result = self._conn.execute(
-            """
+            f"""
             SELECT e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
                    e.session_id, e.domain_id, e.created_at
-            FROM entities e
-            JOIN chunk_entities ce ON e.id = ce.entity_id
+            FROM {self._view('entities')} e
+            JOIN {self._view('chunk_entities')} ce ON e.id = ce.entity_id
             WHERE ce.chunk_id = ? AND e.session_id = ?
             ORDER BY ce.confidence DESC
             """,
@@ -403,8 +455,8 @@ class RelationalStore:
                 em.chunk_index,
                 em.source,
                 ce.confidence
-            FROM chunk_entities ce
-            JOIN embeddings em ON ce.chunk_id = em.chunk_id
+            FROM {self._view('chunk_entities')} ce
+            JOIN {self._view('embeddings')} em ON ce.chunk_id = em.chunk_id
             WHERE ce.entity_id = ? AND {emb_where}
             ORDER BY ce.confidence DESC
             {limit_clause}
@@ -597,21 +649,22 @@ class RelationalStore:
         return deleted
 
     def get_glossary_term(self, name: str, session_id: str, *, user_id: str | None = None) -> GlossaryTerm | None:
+        tbl = self._view('glossary_terms')
         if user_id:
             row = self._conn.execute(
-                f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE LOWER(name) = LOWER(?) AND user_id = ?",
+                f"SELECT {self._GLOSSARY_COLUMNS} FROM {tbl} WHERE LOWER(name) = LOWER(?) AND user_id = ?",
                 [name, user_id],
             ).fetchone()
         else:
             row = self._conn.execute(
-                f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE LOWER(name) = LOWER(?) AND session_id = ?",
+                f"SELECT {self._GLOSSARY_COLUMNS} FROM {tbl} WHERE LOWER(name) = LOWER(?) AND session_id = ?",
                 [name, session_id],
             ).fetchone()
         return self._term_from_row(row) if row else None
 
     def get_glossary_term_by_id(self, term_id: str) -> GlossaryTerm | None:
         row = self._conn.execute(
-            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE id = ?",
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM {self._view('glossary_terms')} WHERE id = ?",
             [term_id],
         ).fetchone()
         return self._term_from_row(row) if row else None
@@ -635,7 +688,7 @@ class RelationalStore:
             params.append(domain)
         where = " AND ".join(conditions)
         rows = self._conn.execute(
-            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE {where} ORDER BY name",
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM {self._view('glossary_terms')} WHERE {where} ORDER BY name",
             params,
         ).fetchall()
         return [self._term_from_row(r) for r in rows]
@@ -699,8 +752,8 @@ class RelationalStore:
                 e.domain_id AS entity_domain_id,
                 COALESCE(g.ignored, FALSE) AS ignored,
                 g.canonical_source
-            FROM entities e
-            LEFT JOIN glossary_terms g
+            FROM {self._view('entities')} e
+            LEFT JOIN {self._view('glossary_terms')} g
                 ON LOWER(e.name) = LOWER(g.name)
                 AND g.{glossary_scope_col} = ?
             WHERE {entity_where}
@@ -708,14 +761,14 @@ class RelationalStore:
             AND (
                 g.id IS NOT NULL
                 OR EXISTS (
-                    SELECT 1 FROM chunk_entities ce
-                    JOIN embeddings em ON ce.chunk_id = em.chunk_id
+                    SELECT 1 FROM {self._view('chunk_entities')} ce
+                    JOIN {self._view('embeddings')} em ON ce.chunk_id = em.chunk_id
                     WHERE ce.entity_id = e.id
                       AND em.document_name NOT LIKE 'glossary:%'
                       AND em.document_name NOT LIKE 'relationship:%'
                 )
                 OR e.id IN (
-                    SELECT parent_id FROM glossary_terms
+                    SELECT parent_id FROM {self._view('glossary_terms')}
                     WHERE {glossary_scope_col} = ? AND parent_id IS NOT NULL
                 )
             )
@@ -744,17 +797,17 @@ class RelationalStore:
                 NULL AS entity_domain_id,
                 COALESCE(g.ignored, FALSE) AS ignored,
                 g.canonical_source
-            FROM glossary_terms g
+            FROM {self._view('glossary_terms')} g
             WHERE g.{glossary_scope_col} = ?
             {scope_filter_2}
             AND NOT EXISTS (
-                SELECT 1 FROM entities e2
+                SELECT 1 FROM {self._view('entities')} e2
                 WHERE LOWER(e2.name) = LOWER(g.name) AND {entity_where2}
             )
             AND (
                 g.provenance = 'learning'
                 OR EXISTS (
-                    SELECT 1 FROM glossary_terms g2
+                    SELECT 1 FROM {self._view('glossary_terms')} g2
                     WHERE g2.parent_id = g.id
                     AND g2.{glossary_scope_col} = ?
                 )
@@ -846,7 +899,7 @@ class RelationalStore:
         ref_to_term: dict[str, GlossaryTerm] = dict(by_id)
         for t in all_terms:
             row = self._conn.execute(
-                "SELECT id FROM entities WHERE LOWER(name) = LOWER(?) LIMIT 1",
+                f"SELECT id FROM {self._view('entities')} WHERE LOWER(name) = LOWER(?) LIMIT 1",
                 [t.name],
             ).fetchone()
             if row and row[0] not in ref_to_term:
@@ -862,7 +915,7 @@ class RelationalStore:
         grounded: set[str] = set()
         for t in all_terms:
             row = self._conn.execute(
-                f"SELECT 1 FROM entities e WHERE LOWER(e.name) = LOWER(?) AND {entity_vis} LIMIT 1",
+                f"SELECT 1 FROM {self._view('entities')} e WHERE LOWER(e.name) = LOWER(?) AND {entity_vis} LIMIT 1",
                 [t.name] + vis_params,
             ).fetchone()
             if row:
@@ -953,7 +1006,7 @@ class RelationalStore:
             raise ValueError(f"Term '{old_name}' not found")
 
         entity_row = self._conn.execute(
-            "SELECT 1 FROM entities WHERE LOWER(name) = LOWER(?) AND session_id = ? LIMIT 1",
+            f"SELECT 1 FROM {self._view('entities')} WHERE LOWER(name) = LOWER(?) AND session_id = ? LIMIT 1",
             [old_name, session_id],
         ).fetchone()
         if entity_row:
@@ -1044,7 +1097,7 @@ class RelationalStore:
             params = lower_names + [session_id]
             scope_clause = "session_id = ?"
         rows = self._conn.execute(
-            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE LOWER(name) IN ({placeholders}) AND {scope_clause}",
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM {self._view('glossary_terms')} WHERE LOWER(name) IN ({placeholders}) AND {scope_clause}",
             params,
         ).fetchall()
         return [self._term_from_row(r) for r in rows]
@@ -1058,7 +1111,7 @@ class RelationalStore:
         scope_val = user_id if user_id else session_id
 
         row = self._conn.execute(
-            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms "
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM {self._view('glossary_terms')} "
             f"WHERE LOWER(name) = LOWER(?) AND {scope_col} = ?",
             [name, scope_val],
         ).fetchone()
@@ -1066,7 +1119,7 @@ class RelationalStore:
             return self._term_from_row(row)
 
         rows = self._conn.execute(
-            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms "
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM {self._view('glossary_terms')} "
             f"WHERE LOWER(aliases) LIKE ? AND {scope_col} = ?",
             [f"%{name.lower()}%", scope_val],
         ).fetchall()
@@ -1081,7 +1134,7 @@ class RelationalStore:
         all_ids = [parent_id] + [i for i in extra_ids if i]
         placeholders = ", ".join("?" for _ in all_ids)
         rows = self._conn.execute(
-            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE parent_id IN ({placeholders})",
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM {self._view('glossary_terms')} WHERE parent_id IN ({placeholders})",
             all_ids,
         ).fetchall()
         return [self._term_from_row(r) for r in rows]
@@ -1090,10 +1143,13 @@ class RelationalStore:
         scope_col = "user_id" if user_id else "session_id"
         scope_val = user_id or session_id
 
+        gt = self._view("glossary_terms")
+        et = self._view("entities")
+
         rows = self._conn.execute(f"""
-            SELECT g.name, g.domain, e.domain_id
-            FROM glossary_terms g
-            JOIN entities e ON LOWER(g.name) = LOWER(e.name)
+            SELECT g.id, g.name, g.domain, e.domain_id
+            FROM {gt} g
+            JOIN {et} e ON LOWER(g.name) = LOWER(e.name)
             WHERE g.{scope_col} = ?
               AND e.domain_id IS NOT NULL
               AND e.domain_id != ''
@@ -1103,11 +1159,26 @@ class RelationalStore:
         """, [scope_val]).fetchall()
 
         moved = []
-        for name, old_domain, new_domain in rows:
-            self._conn.execute(
-                f"UPDATE glossary_terms SET domain = ? WHERE LOWER(name) = LOWER(?) AND {scope_col} = ?",
-                [new_domain, name, scope_val],
-            )
+        for term_id, name, old_domain, new_domain in rows:
+            if self._split_mode:
+                old_schema = self._schema_for_domain(old_domain)
+                new_schema = self._schema_for_domain(new_domain)
+                if old_schema != new_schema:
+                    self._move_row(
+                        "glossary_terms", "id", term_id,
+                        old_schema, new_schema,
+                        updates={"domain": new_domain},
+                    )
+                else:
+                    self._conn.execute(
+                        f"UPDATE {self._table('glossary_terms', new_domain)} SET domain = ? WHERE id = ?",
+                        [new_domain, term_id],
+                    )
+            else:
+                self._conn.execute(
+                    f"UPDATE glossary_terms SET domain = ? WHERE LOWER(name) = LOWER(?) AND {scope_col} = ?",
+                    [new_domain, name, scope_val],
+                )
             moved.append({"name": name, "from_domain": old_domain, "to_domain": new_domain})
 
         if moved:
@@ -1207,7 +1278,7 @@ class RelationalStore:
             raise ValueError(f"Invalid hash_type: {hash_type}")
         column = f"{hash_type}_hash"
         result = self._conn.execute(
-            f"SELECT {column} FROM source_hashes WHERE source_id = ?",
+            f"SELECT {column} FROM {self._view('source_hashes')} WHERE source_id = ?",
             [source_id],
         ).fetchone()
         hash_val = result[0] if result else None
@@ -1251,14 +1322,15 @@ class RelationalStore:
     def get_entity_resolution_names(self, source_ids: list[str] | None = None) -> dict[str, list[str]]:
         """Read cached entity names, merged across source_ids."""
         import json
+        tbl = self._view('entity_resolution_names')
         if source_ids:
             placeholders = ",".join(["?" for _ in source_ids])
             rows = self._conn.execute(
-                f"SELECT entity_type, names FROM entity_resolution_names WHERE source_id IN ({placeholders})",
+                f"SELECT entity_type, names FROM {tbl} WHERE source_id IN ({placeholders})",
                 source_ids,
             ).fetchall()
         else:
-            rows = self._conn.execute("SELECT entity_type, names FROM entity_resolution_names").fetchall()
+            rows = self._conn.execute(f"SELECT entity_type, names FROM {tbl}").fetchall()
         result: dict[str, list[str]] = {}
         for entity_type, names_json in rows:
             result.setdefault(entity_type, []).extend(json.loads(names_json))
@@ -1322,14 +1394,15 @@ class RelationalStore:
         source_id: str,
         resource_type: str | None = None,
     ) -> dict[str, str]:
+        tbl = self._view('resource_hashes')
         if resource_type:
             result = self._conn.execute(
-                "SELECT resource_name, content_hash FROM resource_hashes WHERE source_id = ? AND resource_type = ?",
+                f"SELECT resource_name, content_hash FROM {tbl} WHERE source_id = ? AND resource_type = ?",
                 [source_id, resource_type],
             ).fetchall()
         else:
             result = self._conn.execute(
-                "SELECT resource_name, content_hash FROM resource_hashes WHERE source_id = ?",
+                f"SELECT resource_name, content_hash FROM {tbl} WHERE source_id = ?",
                 [source_id],
             ).fetchall()
         return {row[0]: row[1] for row in result}
@@ -1349,8 +1422,8 @@ class RelationalStore:
 
         if source_id == '__base__':
             chunk_ids = self._conn.execute(
-                """
-                SELECT chunk_id FROM embeddings
+                f"""
+                SELECT chunk_id FROM {self._view('embeddings')}
                 WHERE document_name = ? AND source = ?
                 AND (domain_id IS NULL OR domain_id = '__base__')
                 """,
@@ -1358,8 +1431,8 @@ class RelationalStore:
             ).fetchall()
         else:
             chunk_ids = self._conn.execute(
-                """
-                SELECT chunk_id FROM embeddings
+                f"""
+                SELECT chunk_id FROM {self._view('embeddings')}
                 WHERE document_name = ? AND source = ? AND domain_id = ?
                 """,
                 [resource_name, source_type, source_id],
@@ -1418,11 +1491,11 @@ class RelationalStore:
         name_to_vec: dict[str, np.ndarray] = {}
 
         entity_rows = self._conn.execute(
-            """
+            f"""
             SELECT ent.name, e.embedding
-            FROM chunk_entities ce
-            JOIN entities ent ON ce.entity_id = ent.id
-            JOIN embeddings e ON ce.chunk_id = e.chunk_id
+            FROM {self._view('chunk_entities')} ce
+            JOIN {self._view('entities')} ent ON ce.entity_id = ent.id
+            JOIN {self._view('embeddings')} e ON ce.chunk_id = e.chunk_id
             WHERE ent.session_id = ?
             """,
             [session_id],
@@ -1439,10 +1512,10 @@ class RelationalStore:
         logger.info(f"[_rebuild_clusters] {len(entity_rows)} entity-chunk rows -> {len(name_to_vec)} unique entity vectors")
 
         glossary_rows = self._conn.execute(
-            """
+            f"""
             SELECT gt.name, e.embedding
-            FROM embeddings e
-            JOIN glossary_terms gt ON e.document_name = 'glossary:' || gt.id
+            FROM {self._view('embeddings')} e
+            JOIN {self._view('glossary_terms')} gt ON e.document_name = 'glossary:' || gt.id
             WHERE (e.session_id = ? OR e.session_id IS NULL)
             """,
             [session_id],
@@ -1582,13 +1655,13 @@ class RelationalStore:
 
     def clear_session_data(self, session_id: str, fts_dirty_callback=None) -> None:
         emb_count = self._conn.execute(
-            "SELECT COUNT(*) FROM embeddings WHERE session_id = ?", [session_id]
+            f"SELECT COUNT(*) FROM {self._view('embeddings')} WHERE session_id = ?", [session_id]
         ).fetchone()[0]
         ent_count = self._conn.execute(
-            "SELECT COUNT(*) FROM entities WHERE session_id = ?", [session_id]
+            f"SELECT COUNT(*) FROM {self._view('entities')} WHERE session_id = ?", [session_id]
         ).fetchone()[0]
         link_count = self._conn.execute(
-            "SELECT COUNT(*) FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)", [session_id]
+            f"SELECT COUNT(*) FROM {self._view('chunk_entities')} WHERE entity_id IN (SELECT id FROM {self._view('entities')} WHERE session_id = ?)", [session_id]
         ).fetchone()[0]
         logger.debug(f"clear_session_data({session_id}): found {emb_count} embeddings, {ent_count} entities, {link_count} links")
 
@@ -1607,12 +1680,12 @@ class RelationalStore:
     def delete_document(self, document_name: str, session_id: str | None = None, fts_dirty_callback=None) -> int:
         if session_id:
             chunk_ids = self._conn.execute(
-                "SELECT chunk_id FROM embeddings WHERE document_name = ? AND session_id = ?",
+                f"SELECT chunk_id FROM {self._view('embeddings')} WHERE document_name = ? AND session_id = ?",
                 [document_name, session_id]
             ).fetchall()
         else:
             chunk_ids = self._conn.execute(
-                "SELECT chunk_id FROM embeddings WHERE document_name = ?",
+                f"SELECT chunk_id FROM {self._view('embeddings')} WHERE document_name = ?",
                 [document_name]
             ).fetchall()
 
@@ -1656,9 +1729,9 @@ class RelationalStore:
 
     def get_entity_document_names(self, entity_id: str, limit: int = 20) -> list[str]:
         rows = self._conn.execute(
-            "SELECT DISTINCT em.document_name FROM chunk_entities ce "
-            "JOIN embeddings em ON ce.chunk_id = em.chunk_id "
-            "WHERE ce.entity_id = ? LIMIT ?",
+            f"SELECT DISTINCT em.document_name FROM {self._view('chunk_entities')} ce "
+            f"JOIN {self._view('embeddings')} em ON ce.chunk_id = em.chunk_id "
+            f"WHERE ce.entity_id = ? LIMIT ?",
             [entity_id, limit],
         ).fetchall()
         return [r[0] for r in rows]
@@ -1666,11 +1739,11 @@ class RelationalStore:
     def get_cooccurring_entities(
         self, entity_id: str, session_id: str, limit: int = 5,
     ) -> list[dict]:
-        rows = self._conn.execute("""
+        rows = self._conn.execute(f"""
             SELECT e2.name, e2.semantic_type, COUNT(*) as co_occurrences
-            FROM chunk_entities ce1
-            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
-            JOIN entities e2 ON ce2.entity_id = e2.id
+            FROM {self._view('chunk_entities')} ce1
+            JOIN {self._view('chunk_entities')} ce2 ON ce1.chunk_id = ce2.chunk_id
+            JOIN {self._view('entities')} e2 ON ce2.entity_id = e2.id
             WHERE ce1.entity_id = ?
               AND ce2.entity_id != ce1.entity_id
               AND (e2.session_id IS NULL OR e2.session_id = ?)
@@ -1691,26 +1764,26 @@ class RelationalStore:
         include_types: bool = False,
     ) -> list[tuple]:
         if include_types:
-            sql = """
+            sql = f"""
                 SELECT e1.id, e1.name, e1.semantic_type,
                        e2.id, e2.name, e2.semantic_type,
                        COUNT(*) as co_count
-                FROM chunk_entities ce1
-                JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
-                JOIN entities e1 ON ce1.entity_id = e1.id
-                JOIN entities e2 ON ce2.entity_id = e2.id
+                FROM {self._view('chunk_entities')} ce1
+                JOIN {self._view('chunk_entities')} ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
+                JOIN {self._view('entities')} e1 ON ce1.entity_id = e1.id
+                JOIN {self._view('entities')} e2 ON ce2.entity_id = e2.id
                 WHERE e1.session_id = ? AND e2.session_id = ?
                 GROUP BY e1.id, e1.name, e1.semantic_type, e2.id, e2.name, e2.semantic_type
                 HAVING COUNT(*) >= ?
                 ORDER BY co_count DESC
             """
         else:
-            sql = """
+            sql = f"""
                 SELECT e1.id, e1.name, e2.id, e2.name, COUNT(*) as co_count
-                FROM chunk_entities ce1
-                JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
-                JOIN entities e1 ON ce1.entity_id = e1.id
-                JOIN entities e2 ON ce2.entity_id = e2.id
+                FROM {self._view('chunk_entities')} ce1
+                JOIN {self._view('chunk_entities')} ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
+                JOIN {self._view('entities')} e1 ON ce1.entity_id = e1.id
+                JOIN {self._view('entities')} e2 ON ce2.entity_id = e2.id
                 WHERE e1.session_id = ? AND e2.session_id = ?
                 GROUP BY e1.id, e1.name, e2.id, e2.name
                 HAVING COUNT(*) >= ?
@@ -1727,12 +1800,12 @@ class RelationalStore:
         session_id: str,
         min_count: int = 3,
     ) -> list[tuple]:
-        return self._conn.execute("""
+        return self._conn.execute(f"""
             SELECT e1.name, e2.name, COUNT(*) as co_count
-            FROM chunk_entities ce1
-            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
-            JOIN entities e1 ON ce1.entity_id = e1.id
-            JOIN entities e2 ON ce2.entity_id = e2.id
+            FROM {self._view('chunk_entities')} ce1
+            JOIN {self._view('chunk_entities')} ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
+            JOIN {self._view('entities')} e1 ON ce1.entity_id = e1.id
+            JOIN {self._view('entities')} e2 ON ce2.entity_id = e2.id
             WHERE e1.session_id = ? AND e2.session_id = ?
             GROUP BY e1.name, e2.name
             HAVING COUNT(*) >= ?
@@ -1742,10 +1815,10 @@ class RelationalStore:
     def get_shared_chunk_ids(
         self, e1_id: str, e2_id: str, limit: int = 10,
     ) -> list[str]:
-        rows = self._conn.execute("""
+        rows = self._conn.execute(f"""
             SELECT DISTINCT ce1.chunk_id
-            FROM chunk_entities ce1
-            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
+            FROM {self._view('chunk_entities')} ce1
+            JOIN {self._view('chunk_entities')} ce2 ON ce1.chunk_id = ce2.chunk_id
             WHERE ce1.entity_id = ? AND ce2.entity_id = ?
             LIMIT ?
         """, [e1_id, e2_id, limit]).fetchall()
@@ -1761,8 +1834,8 @@ class RelationalStore:
                     COUNT(*) as ref_count,
                     COUNT(DISTINCT em.source) as source_count,
                     LIST(DISTINCT CASE WHEN em.source = 'document' THEN em.document_name END) as doc_names
-                FROM chunk_entities ce
-                JOIN embeddings em ON ce.chunk_id = em.chunk_id
+                FROM {self._view('chunk_entities')} ce
+                JOIN {self._view('embeddings')} em ON ce.chunk_id = em.chunk_id
                 GROUP BY ce.entity_id
             )
             SELECT
@@ -1770,7 +1843,7 @@ class RelationalStore:
                 COALESCE(es.ref_count, 0) as ref_count,
                 COALESCE(es.source_count, 0) as source_count,
                 es.doc_names
-            FROM entities e
+            FROM {self._view('entities')} e
             LEFT JOIN entity_stats es ON es.entity_id = e.id
             WHERE {vis_filter}
             ORDER BY e.name
@@ -1780,7 +1853,7 @@ class RelationalStore:
         self, vis_filter: str, vis_params: list,
     ) -> list[str]:
         rows = self._conn.execute(
-            f"SELECT LOWER(e.name) FROM entities e WHERE {vis_filter}",
+            f"SELECT LOWER(e.name) FROM {self._view('entities')} e WHERE {vis_filter}",
             vis_params,
         ).fetchall()
         return [r[0] for r in rows]
@@ -1833,10 +1906,10 @@ class RelationalStore:
 
     def get_glossary_parent_child_pairs(self, session_id: str) -> list[tuple[str, str]]:
         rows = self._conn.execute(
-            """
+            f"""
             SELECT child.name, parent.name
-            FROM glossary_terms child
-            JOIN glossary_terms parent ON child.parent_id = parent.id
+            FROM {self._view('glossary_terms')} child
+            JOIN {self._view('glossary_terms')} parent ON child.parent_id = parent.id
             WHERE child.session_id = ?
             """,
             [session_id],
@@ -1848,8 +1921,8 @@ class RelationalStore:
     ) -> list[tuple]:
         return self._conn.execute(f"""
             SELECT e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
-                   (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id) as ref_count
-            FROM entities e
+                   (SELECT COUNT(*) FROM {self._view('chunk_entities')} ce WHERE ce.entity_id = e.id) as ref_count
+            FROM {self._view('entities')} e
             WHERE {vis_filter}
             ORDER BY e.name
         """, vis_params).fetchall()
@@ -1857,10 +1930,10 @@ class RelationalStore:
     def get_entity_references(
         self, entity_id: str, limit: int = 10,
     ) -> list[tuple]:
-        return self._conn.execute("""
+        return self._conn.execute(f"""
             SELECT em.document_name, em.section, ce.confidence
-            FROM chunk_entities ce
-            JOIN embeddings em ON ce.chunk_id = em.chunk_id
+            FROM {self._view('chunk_entities')} ce
+            JOIN {self._view('embeddings')} em ON ce.chunk_id = em.chunk_id
             WHERE ce.entity_id = ?
             ORDER BY ce.confidence DESC
             LIMIT ?
@@ -1875,8 +1948,8 @@ class RelationalStore:
         placeholders = ",".join("?" * len(entity_ids))
         rows = self._conn.execute(f"""
             SELECT ce.entity_id, em.document_name, em.section, ce.confidence
-            FROM chunk_entities ce
-            JOIN embeddings em ON ce.chunk_id = em.chunk_id
+            FROM {self._view('chunk_entities')} ce
+            JOIN {self._view('embeddings')} em ON ce.chunk_id = em.chunk_id
             WHERE ce.entity_id IN ({placeholders})
             ORDER BY ce.entity_id, ce.confidence DESC
         """, entity_ids).fetchall()
@@ -1898,9 +1971,9 @@ class RelationalStore:
         rows = self._conn.execute(f"""
             SELECT ce1.entity_id AS source_id, e2.name, e2.semantic_type,
                    COUNT(*) AS co_occurrences
-            FROM chunk_entities ce1
-            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
-            JOIN entities e2 ON ce2.entity_id = e2.id
+            FROM {self._view('chunk_entities')} ce1
+            JOIN {self._view('chunk_entities')} ce2 ON ce1.chunk_id = ce2.chunk_id
+            JOIN {self._view('entities')} e2 ON ce2.entity_id = e2.id
             WHERE ce1.entity_id IN ({placeholders})
               AND ce2.entity_id != ce1.entity_id
               AND (e2.session_id IS NULL OR e2.session_id = ?)
@@ -1917,13 +1990,13 @@ class RelationalStore:
 
     def count_session_links(self, session_id: str) -> int:
         return self._conn.execute(
-            "SELECT COUNT(*) FROM chunk_entities ce JOIN entities e ON ce.entity_id = e.id WHERE e.session_id = ?",
+            f"SELECT COUNT(*) FROM {self._view('chunk_entities')} ce JOIN {self._view('entities')} e ON ce.entity_id = e.id WHERE e.session_id = ?",
             [session_id],
         ).fetchone()[0]
 
     def entity_exists(self, name: str, session_id: str) -> bool:
         row = self._conn.execute(
-            "SELECT 1 FROM entities WHERE LOWER(name) = LOWER(?) AND session_id = ? LIMIT 1",
+            f"SELECT 1 FROM {self._view('entities')} WHERE LOWER(name) = LOWER(?) AND session_id = ? LIMIT 1",
             [name, session_id],
         ).fetchone()
         return row is not None
@@ -1940,9 +2013,9 @@ class RelationalStore:
         return self._conn.execute(
             f"""
             SELECT e.id, e.name, e.semantic_type
-            FROM chunk_entities ce
-            JOIN entities e ON ce.entity_id = e.id
-            LEFT JOIN glossary_terms g ON g.entity_id = e.id
+            FROM {self._view('chunk_entities')} ce
+            JOIN {self._view('entities')} e ON ce.entity_id = e.id
+            LEFT JOIN {self._view('glossary_terms')} g ON g.entity_id = e.id
             WHERE {where}
               AND COALESCE(g.ignored, FALSE) = FALSE
             """,

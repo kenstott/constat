@@ -63,7 +63,8 @@ class FactStore:
         """
         self.base_dir = Path(base_dir) if base_dir else Path(".constat")
         self.user_id = user_id
-        self.file_path = self.base_dir / user_id / "facts.yaml"
+        from constat.core.paths import user_vault_dir
+        self.file_path = user_vault_dir(self.base_dir, user_id) / "facts.yaml"
         self._data: Optional[dict] = None
 
     def _load(self) -> dict:
