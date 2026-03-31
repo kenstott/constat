@@ -1,8 +1,20 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 8e77cac3-68b6-408d-8a54-55f2a6dae6d4
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Status Bar component
 
 import { useState } from 'react'
-import { useSessionStore } from '@/store/sessionStore'
-import { useUIStore } from '@/store/uiStore'
+import { useReactiveVar } from '@apollo/client'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useAuth } from '@/contexts/AuthContext'
+import { themeVar, setTheme, menuOpenVar } from '@/graphql/ui-state'
 import {
   Bars3Icon,
   PencilSquareIcon,
@@ -23,18 +35,17 @@ const statusColors: Record<string, string> = {
 }
 
 export function StatusBar() {
-  const { session, status, wsConnected, createSession } = useSessionStore()
-  const { theme, setTheme, toggleMenu } = useUIStore()
+  const { session, status, wsConnected, createSession, clearProofFacts } = useSessionContext()
+  const { userId } = useAuth()
+  const theme = useReactiveVar(themeVar)
+  const toggleMenu = () => menuOpenVar(!menuOpenVar())
   const [isCreating, setIsCreating] = useState(false)
 
   const handleNewConversation = async () => {
     if (isCreating) return
     setIsCreating(true)
     try {
-      const { useProofStore } = await import('@/store/proofStore')
-      useProofStore.getState().clearFacts()
-      const { useAuthStore } = await import('@/store/authStore')
-      const userId = useAuthStore.getState().userId
+      clearProofFacts()
       await createSession(userId, true)
     } finally {
       setIsCreating(false)

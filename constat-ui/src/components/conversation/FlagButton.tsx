@@ -1,10 +1,21 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 1ea6112e-a2bb-45dd-a567-275dcbf59a4f
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // FlagButton — flag an assistant answer as incorrect
 
 import { useState, useRef, useEffect } from 'react'
 import { FlagIcon } from '@heroicons/react/24/outline'
-import { useAuthStore } from '@/store/authStore'
-import { useSessionStore } from '@/store/sessionStore'
-import { flagAnswer } from '@/api/feedback'
+import { useAuth } from '@/contexts/AuthContext'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { apolloClient } from '@/graphql/client'
+import { FLAG_ANSWER } from '@/graphql/operations/feedback'
 
 interface FlagButtonProps {
   /** The user query that produced this answer */
@@ -14,8 +25,8 @@ interface FlagButtonProps {
 }
 
 export function FlagButton({ queryText, answerSummary }: FlagButtonProps) {
-  const permissions = useAuthStore((s) => s.permissions)
-  const sessionId = useSessionStore((s) => s.session?.session_id)
+  const { permissions } = useAuth()
+  const { sessionId } = useSessionContext()
 
   // Only show if user has flag_answers feedback permission
   if (!permissions?.feedback?.flag_answers) return null
@@ -59,12 +70,18 @@ function FlagButtonInner({
     if (!message.trim()) return
     setSubmitting(true)
     try {
-      await flagAnswer(sessionId, {
-        query_text: queryText,
-        answer_summary: answerSummary,
-        message: message.trim(),
-        glossary_term: glossaryTerm.trim() || undefined,
-        suggested_definition: suggestedDefinition.trim() || undefined,
+      await apolloClient.mutate({
+        mutation: FLAG_ANSWER,
+        variables: {
+          input: {
+            sessionId,
+            queryText,
+            answerSummary,
+            message: message.trim(),
+            glossaryTerm: glossaryTerm.trim() || undefined,
+            suggestedDefinition: suggestedDefinition.trim() || undefined,
+          },
+        },
       })
       setSubmitted(true)
       setTimeout(() => {

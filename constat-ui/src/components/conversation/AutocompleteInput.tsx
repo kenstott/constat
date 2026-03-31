@@ -1,14 +1,26 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 0f66d623-7041-45f3-9d3e-ccc963839489
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Autocomplete-enabled query input wrapper
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react'
 import { QueueListIcon, ArrowUpIcon } from '@heroicons/react/24/solid'
 import { XMarkIcon, AtSymbolIcon, PaperClipIcon, CheckBadgeIcon, BoltIcon, StopIcon } from '@heroicons/react/24/outline'
-import { useArtifactStore } from '@/store/artifactStore'
-import { useUIStore } from '@/store/uiStore'
-import { useProofStore } from '@/store/proofStore'
+import { useArtifactContext } from '@/contexts/ArtifactContext'
+import { useReactiveVar } from '@apollo/client'
+import { briefModeVar, toggleBriefMode, enterReasonChainMode } from '@/graphql/ui-state'
+// proofStore actions accessed via SessionContext
 import { AutocompleteDropdown, AutocompleteItem } from './AutocompleteDropdown'
-import { wsManager } from '@/api/websocket'
-import { useSessionStore } from '@/store/sessionStore'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { apolloClient } from '@/graphql/client'
+import { REQUEST_AUTOCOMPLETE } from '@/graphql/operations/execution'
 import {
   filterCommands,
   getCommandByName,
@@ -16,7 +28,7 @@ import {
   SUMMARIZE_TARGETS,
 } from '@/data/commands'
 import { listAllPermissions, type UserPermissions } from '@/api/users'
-import { useAuthStore } from '@/store/authStore'
+import { useAuth } from '@/contexts/AuthContext'
 
 interface AutocompleteInputProps {
   onSubmit: (query: string) => void
@@ -178,10 +190,9 @@ function InputToolbar({
   onSubmit: () => void
   onInsertAt: () => void
 }) {
-  const { status, cancelExecution, submitQuery } = useSessionStore()
-  const { stepCodes, tables } = useArtifactStore()
-  const { briefMode, toggleBriefMode, enterReasonChainMode } = useUIStore()
-  const { openPanel: openProofPanel, clearFacts } = useProofStore()
+  const { session, status, cancelExecution, submitQuery, openProofPanel, clearProofFacts: clearFacts } = useSessionContext()
+  const { stepCodes, tables } = useArtifactContext()
+  const briefMode = useReactiveVar(briefModeVar)
 
   const isExecuting = status === 'planning' || status === 'executing'
   const hasExecutedPlan = stepCodes.length > 0 || tables.length > 0
@@ -202,7 +213,6 @@ function InputToolbar({
   const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files || files.length === 0) return
-    const { session } = useSessionStore.getState()
     if (!session) return
     try {
       const { uploadDocuments } = await import('@/api/sessions')
@@ -304,6 +314,7 @@ function InputToolbar({
 }
 
 export function AutocompleteInput({ onSubmit, disabled, editValue }: AutocompleteInputProps) {
+  const { user: authUser } = useAuth()
   const [query, setQuery] = useState('')
   const [isOpen, setIsOpen] = useState(false)
   const [items, setItems] = useState<AutocompleteItem[]>([])
@@ -313,7 +324,6 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
   // Cached user list for @mention autocomplete
   const [mentionUsers, setMentionUsers] = useState<Pick<UserPermissions, 'user_id' | 'email'>[]>([])
   useEffect(() => {
-    const authUser = useAuthStore.getState().user
     listAllPermissions()
       .then((perms) => {
         const users = perms.map((p) => {
@@ -343,7 +353,7 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
   }, [editValue])
 
   // Check if session is busy (will queue instead of send)
-  const { status, executionPhase } = useSessionStore()
+  const { session, status, executionPhase } = useSessionContext()
   const isBusy = status === 'planning' || status === 'executing' || status === 'awaiting_approval' ||
     executionPhase !== 'idle'
 
@@ -408,19 +418,29 @@ export function AutocompleteInput({ onSubmit, disabled, editValue }: Autocomplet
         // Debounce server request
         setLoading(true)
         debounceRef.current = setTimeout(() => {
-          wsManager.requestAutocomplete(
-            parsed.context as 'table' | 'entity',
-            parsed.prefix,
-            (serverItems) => {
-              setLoading(false)
-              // Merge client items with server items
-              const merged = [...clientItems, ...serverItems]
-              setItems(merged)
-              setSelectedIndex(0)
-              setIsOpen(merged.length > 0)
+          if (!session) {
+            setLoading(false)
+            return
+          }
+          apolloClient.mutate({
+            mutation: REQUEST_AUTOCOMPLETE,
+            variables: {
+              sessionId: session.session_id,
+              context: parsed.context,
+              prefix: parsed.prefix,
+              parent: parsed.parent,
             },
-            parsed.parent
-          )
+          }).then(({ data }) => {
+            const serverItems: AutocompleteItem[] = data?.requestAutocomplete?.items ?? []
+            setLoading(false)
+            // Merge client items with server items
+            const merged = [...clientItems, ...serverItems]
+            setItems(merged)
+            setSelectedIndex(0)
+            setIsOpen(merged.length > 0)
+          }).catch(() => {
+            setLoading(false)
+          })
         }, 150)
       }
     },

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: d6ce0510-1451-48dc-964c-452ffad6c5e8
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -783,27 +784,21 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.feedback import router as feedback_router
     from constat.server.routes.testing import router as testing_router
     from constat.server.routes.fine_tune import router as fine_tune_router
-    from constat.server.routes.public import router as public_router
 
-    from constat.server.routes.auth_routes import router as auth_router
     from constat.server.routes.oauth_email import router as oauth_email_router
+    from constat.server.graphql import graphql_router
 
     # IMPORTANT: Register routers with specific paths BEFORE routers with /{session_id} wildcards
     # Otherwise the wildcard routes will match paths like /agents, /skills, etc.
-    fastapi_app.include_router(
-        auth_router,
-        prefix="/api/auth",
-        tags=["auth"],
-    )
     fastapi_app.include_router(
         oauth_email_router,
         prefix="/api/oauth/email",
         tags=["oauth-email"],
     )
     fastapi_app.include_router(
-        public_router,
-        prefix="/api/public",
-        tags=["public"],
+        graphql_router,
+        prefix="/api/graphql",
+        tags=["graphql"],
     )
     fastapi_app.include_router(
         agents_router,

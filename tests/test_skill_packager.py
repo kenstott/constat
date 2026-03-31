@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: d7045845-801d-4525-acc8-15dda20a34ae
 #
 # Tests for constat.core.skill_packager
 

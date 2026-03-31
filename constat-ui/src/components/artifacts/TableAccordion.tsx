@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: fd838aaa-dc68-4cb7-8f18-edfbbd9218aa
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Table Accordion - individual table with expandable details and fullscreen mode
 
 import { useState, useEffect, useRef, useCallback } from 'react'
@@ -16,9 +26,10 @@ import {
   TableCellsIcon,
 } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
-import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import * as sessionsApi from '@/api/sessions'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useTableMutations } from '@/hooks/useTables'
+import { apolloClient } from '@/graphql/client'
+import { TABLE_DATA_QUERY, TABLE_VERSIONS_QUERY, TABLE_VERSION_DATA_QUERY, toTableData, toTableVersions } from '@/graphql/operations/data'
 import type { TableData, TableInfo, TableVersionInfo } from '@/types/api'
 
 interface TableAccordionProps {
@@ -27,8 +38,8 @@ interface TableAccordionProps {
 }
 
 export function TableAccordion({ table, initiallyOpen = false }: TableAccordionProps) {
-  const { session } = useSessionStore()
-  const { toggleTableStar, removeTable } = useArtifactStore()
+  const { session } = useSessionContext()
+  const { toggleStar: toggleTableStar, deleteTable: removeTable } = useTableMutations()
   const [isOpen, setIsOpen] = useState(initiallyOpen)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [data, setData] = useState<TableData | null>(null)
@@ -56,12 +67,12 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
       setLoading(true)
       setError(null)
       try {
-        const tableData = await sessionsApi.getTableData(
-          session.session_id,
-          table.name,
-          page
-        )
-        setData(tableData)
+        const { data: result } = await apolloClient.query({
+          query: TABLE_DATA_QUERY,
+          variables: { sessionId: session.session_id, name: table.name, page },
+          fetchPolicy: 'network-only',
+        })
+        setData(toTableData(result.tableData))
       } catch (err) {
         setError(String(err))
       } finally {
@@ -108,7 +119,7 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
   const handleToggleStar = (e: React.MouseEvent) => {
     e.stopPropagation()
     if (session) {
-      toggleTableStar(session.session_id, table.name)
+      toggleTableStar(table.name)
     }
   }
 
@@ -116,7 +127,7 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
     e.stopPropagation()
     if (!session) return
     if (!confirm(`Remove table "${table.name}"?`)) return
-    removeTable(session.session_id, table.name)
+    removeTable(table.name)
   }
 
   const handleVersionBadgeClick = async (e: React.MouseEvent) => {
@@ -131,8 +142,13 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
     // Fetch versions if not loaded
     if (!versions) {
       try {
-        const resp = await sessionsApi.getTableVersions(session.session_id, table.name)
-        setVersions(resp.versions)
+        const { data: result } = await apolloClient.query({
+          query: TABLE_VERSIONS_QUERY,
+          variables: { sessionId: session.session_id, name: table.name },
+          fetchPolicy: 'network-only',
+        })
+        const mapped = toTableVersions(result.tableVersions)
+        setVersions(mapped.versions)
       } catch (err) {
         console.error('Failed to load table versions:', err)
         return
@@ -157,13 +173,12 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
     setLoading(true)
     setError(null)
     try {
-      const tableData = await sessionsApi.getTableVersionData(
-        session.session_id,
-        table.name,
-        version,
-        1 // reset to page 1
-      )
-      setData(tableData)
+      const { data: result } = await apolloClient.query({
+        query: TABLE_VERSION_DATA_QUERY,
+        variables: { sessionId: session.session_id, name: table.name, version, page: 1 },
+        fetchPolicy: 'network-only',
+      })
+      setData(toTableData(result.tableVersionData))
       setPage(1)
       setIsOpen(true)
     } catch (err) {

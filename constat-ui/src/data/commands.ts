@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 8a27dada-8c7f-4d1d-991b-8a3465a00f2e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Static command definitions for client-side autocomplete
 // Derived from HELP_COMMANDS in constat/commands/help.py
 

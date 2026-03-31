@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 1ad4490b-337e-44ae-9513-5cab74cc681c
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // WidgetRouter - Routes to the correct widget component based on question.widget?.type
 
 import { ChoiceWidget } from './ChoiceWidget'

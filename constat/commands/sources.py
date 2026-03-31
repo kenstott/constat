@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: fb85ac65-b127-42aa-b7f3-58b0d8244bb2
 #
 # Data source commands - databases, apis, documents, files.
 

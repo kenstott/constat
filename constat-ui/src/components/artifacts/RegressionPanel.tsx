@@ -1,4 +1,14 @@
-import React, { useEffect, useState, useRef } from 'react'
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 83a99fcb-ef21-44e2-bc42-a360c7f5a1ec
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
+import React, { useEffect, useState, useRef, useCallback } from 'react'
 import {
   CheckCircleIcon,
   XCircleIcon,
@@ -11,9 +21,12 @@ import {
   ArrowsPointingOutIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline'
-import { useTestStore } from '@/store/testStore'
+import { useTestableDomains, useTestingMutations } from '@/hooks/useTesting'
 import { SkeletonLoader } from '../common/SkeletonLoader'
-import type { ExpectedOutput, GoldenQuestionExpectations, GoldenQuestionRequest, GoldenQuestionResponse, TestQuestionResult } from '@/types/api'
+import type { ExpectedOutput, GoldenQuestionExpectations, GoldenQuestionRequest, GoldenQuestionResponse, TestQuestionResult, TestRunResponse } from '@/types/api'
+import { runTestsStreaming, type TestProgressEvent } from '@/api/testing'
+import { apolloClient } from '@/graphql/client'
+import { GOLDEN_QUESTIONS_QUERY, toGoldenQuestion } from '@/graphql/operations/testing'
 
 interface Props {
   sessionId: string
@@ -232,29 +245,93 @@ function QuestionForm({
 // Main panel
 // ---------------------------------------------------------------------------
 
+interface TestProgress {
+  domain: string
+  domainName: string
+  question: string
+  questionIndex: number
+  questionTotal: number
+  phase: string
+  detail: string
+}
+
 export default function RegressionPanel({ sessionId }: Props) {
+  // Apollo hooks for domain list and mutations
+  const { domains: testableDomains, loading: domainsLoading } = useTestableDomains()
   const {
-    testableDomains,
-    results,
-    loading,
-    domainsLoading,
-    error,
-    progress,
-    selectedTags,
-    goldenQuestions,
-    editingQuestion,
-    loadTestableDomains,
-    runTests,
-    toggleTag,
-    clearResults,
-    loadGoldenQuestions,
-    saveGoldenQuestion,
-    deleteGoldenQuestion,
-    moveGoldenQuestion,
-    setEditingQuestion,
-    clearEditing,
-    includeE2e,
-  } = useTestStore()
+    createGoldenQuestion: createGoldenQuestionMut,
+    updateGoldenQuestion: updateGoldenQuestionMut,
+    deleteGoldenQuestion: deleteGoldenQuestionMut,
+    moveGoldenQuestion: moveGoldenQuestionMut,
+  } = useTestingMutations()
+
+  // Local state (was in testStore)
+  const [results, setResults] = useState<TestRunResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [progress, setProgress] = useState<TestProgress | null>(null)
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set())
+  const [goldenQuestions, setGoldenQuestions] = useState<Record<string, GoldenQuestionResponse[]>>({})
+  const [editingQuestion, setEditingQuestion] = useState<{ domain: string; index: number | null } | null>(null)
+  const [includeE2e, setIncludeE2eState] = useState(false)
+
+  // Helpers matching old store API
+  const toggleTag = (tag: string) => {
+    setSelectedTags(prev => {
+      const next = new Set(prev)
+      if (next.has(tag)) next.delete(tag)
+      else next.add(tag)
+      return next
+    })
+  }
+  const clearResults = () => { setResults(null); setError(null); setProgress(null) }
+  const clearEditing = () => setEditingQuestion(null)
+
+  const loadGoldenQuestions = useCallback(async (sid: string, domain: string) => {
+    try {
+      const r = await apolloClient.query({ query: GOLDEN_QUESTIONS_QUERY, variables: { sessionId: sid, domain }, fetchPolicy: 'network-only' })
+      setGoldenQuestions(prev => ({ ...prev, [domain]: r.data.goldenQuestions.map(toGoldenQuestion) }))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
+  const saveGoldenQuestion = useCallback(async (sid: string, domain: string, index: number | null, body: GoldenQuestionRequest) => {
+    try {
+      if (index === null) {
+        await createGoldenQuestionMut(domain, body as unknown as Record<string, unknown>)
+      } else {
+        await updateGoldenQuestionMut(domain, index, body as unknown as Record<string, unknown>)
+      }
+      await loadGoldenQuestions(sid, domain)
+      setEditingQuestion(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [createGoldenQuestionMut, updateGoldenQuestionMut, loadGoldenQuestions])
+
+  const deleteGoldenQuestion = useCallback(async (sid: string, domain: string, index: number) => {
+    try {
+      await deleteGoldenQuestionMut(domain, index)
+      await loadGoldenQuestions(sid, domain)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [deleteGoldenQuestionMut, loadGoldenQuestions])
+
+  const moveGoldenQuestion = useCallback(async (sid: string, sourceDomain: string, index: number, targetDomain: string, validateOnly?: boolean): Promise<string[]> => {
+    try {
+      const result = await moveGoldenQuestionMut(sourceDomain, index, { targetDomain, validateOnly })
+      if (!validateOnly) {
+        await loadGoldenQuestions(sid, sourceDomain)
+        await loadGoldenQuestions(sid, targetDomain)
+      }
+      return (result as any)?.warnings ?? []
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      return []
+    }
+  }, [moveGoldenQuestionMut, loadGoldenQuestions])
 
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set())
   const [expandedQuestions, setExpandedQuestions] = useState<Set<string>>(new Set())
@@ -263,11 +340,6 @@ export default function RegressionPanel({ sessionId }: Props) {
   const [expanded, setExpanded] = useState(false)
   const domainsInitRef = useRef(false)
   const loadedDomainsRef = useRef<Set<string>>(new Set())
-
-  // Load domains on mount
-  useEffect(() => {
-    loadTestableDomains(sessionId)
-  }, [sessionId, loadTestableDomains])
 
   // Expand all domains on first load & load questions for each
   useEffect(() => {
@@ -284,7 +356,7 @@ export default function RegressionPanel({ sessionId }: Props) {
     }
   }, [testableDomains, sessionId, loadGoldenQuestions])
 
-  const allTags = Array.from(
+  const allTags: string[] = Array.from(
     new Set(testableDomains.flatMap(d => d.tags))
   ).sort()
 
@@ -344,13 +416,41 @@ export default function RegressionPanel({ sessionId }: Props) {
       }
     }
     if (domainsToRun.size === 0) return
-    useTestStore.setState({
-      selectedDomains: domainsToRun,
-      selectedTags: new Set(selectedTags),
-      includeE2e: e2e,
+    setIncludeE2eState(e2e)
+    setLoading(true)
+    setError(null)
+    setProgress(null)
+    setResults(null)
+    runTestsStreaming(
+      sessionId,
+      [...domainsToRun],
+      [...selectedTags],
+      e2e,
       excludeQuestions,
+      (evt: TestProgressEvent) => {
+        if (evt.event === 'domain_start' || evt.event === 'question_start') {
+          setProgress({
+            domain: evt.domain,
+            domainName: evt.domain_name,
+            question: evt.question,
+            questionIndex: evt.question_index,
+            questionTotal: evt.question_total,
+            phase: evt.phase,
+            detail: evt.detail ?? '',
+          })
+        } else if (evt.event === 'e2e_progress') {
+          setProgress(prev => prev ? { ...prev, detail: evt.detail ?? '' } : prev)
+        }
+      },
+    ).then(r => {
+      setResults(r)
+      setLoading(false)
+      setProgress(null)
+    }).catch(e => {
+      setError(e instanceof Error ? e.message : String(e))
+      setLoading(false)
+      setProgress(null)
     })
-    runTests(sessionId)
   }
 
   // Result lookup by domain + question text
@@ -460,7 +560,7 @@ export default function RegressionPanel({ sessionId }: Props) {
           const keys = questions.map(q => makeKey(d.filename, q.index))
           const allSel = keys.length > 0 && keys.every(k => !deselected.has(k))
           const someSel = keys.some(k => !deselected.has(k))
-          const isAdding = editingQuestion?.domain === d.filename && editingQuestion.index === null
+          const isAdding = editingQuestion !== null && editingQuestion.domain === d.filename && editingQuestion.index === null
 
           return (
             <div key={d.filename} className="border rounded dark:border-gray-700">
@@ -493,7 +593,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                 <div className="border-t dark:border-gray-700">
                   {questions.map(q => {
                     const key = makeKey(d.filename, q.index)
-                    const isEditing = editingQuestion?.domain === d.filename && editingQuestion.index === q.index
+                    const isEditing = editingQuestion !== null && editingQuestion.domain === d.filename && editingQuestion.index === q.index
                     const qResult = getQuestionResult(d.filename, q.question)
 
                     if (isEditing) {
@@ -555,7 +655,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                           )}
                           {/* Action icons — visible on hover */}
                           <button
-                            onClick={e => { e.stopPropagation(); setEditingQuestion(d.filename, q.index) }}
+                            onClick={e => { e.stopPropagation(); setEditingQuestion({ domain: d.filename, index: q.index }) }}
                             className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-opacity flex-shrink-0"
                           >
                             <PencilIcon className="w-3.5 h-3.5" />
@@ -564,7 +664,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                             onClick={e => {
                               e.stopPropagation()
                               setMovingQuestion(
-                                movingQuestion?.domain === d.filename && movingQuestion.index === q.index
+                                movingQuestion !== null && movingQuestion.domain === d.filename && movingQuestion.index === q.index
                                   ? null
                                   : { domain: d.filename, index: q.index }
                               )
@@ -586,7 +686,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                             <TrashIcon className="w-3.5 h-3.5" />
                           </button>
                           {/* Move dropdown */}
-                          {movingQuestion?.domain === d.filename && movingQuestion.index === q.index && (
+                          {movingQuestion !== null && movingQuestion.domain === d.filename && movingQuestion.index === q.index && (
                             <div className="absolute right-0 top-full z-10 mt-0.5 bg-white dark:bg-gray-800 border dark:border-gray-700 rounded shadow-lg py-1 min-w-[140px]">
                               <div className="px-2 py-0.5 text-[10px] text-gray-400 uppercase">Move to</div>
                               {testableDomains
@@ -765,7 +865,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                     />
                   ) : (
                     <button
-                      onClick={() => setEditingQuestion(d.filename, null)}
+                      onClick={() => setEditingQuestion({ domain: d.filename, index: null })}
                       className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs text-blue-600 dark:text-blue-400 hover:bg-gray-50 dark:hover:bg-gray-800"
                     >
                       <PlusIcon className="w-3.5 h-3.5" />

@@ -1,3 +1,13 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: 17e87f02-a4b0-4a6e-ae17-49ba2e447998
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Interactive ipywidgets for plan approval, clarification, and progress.
 
 All functions detect ipywidgets at import time and are only called when

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 842b3fa1-16d4-4f0d-a2e8-914b89f38a76
 
 """Tests for canonical_source on glossary terms."""
 

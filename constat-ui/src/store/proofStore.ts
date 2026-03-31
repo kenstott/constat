@@ -1,7 +1,17 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 1ac16cb2-037f-4146-91c5-58298eba5db7
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Proof state store for auditable mode
 
-import { create } from 'zustand'
-import { useUIStore } from '@/store/uiStore'
+import { create } from './createStore'
+import { enterReasonChainMode, uiModeVar } from '@/graphql/ui-state'
 
 type NodeStatus = 'pending' | 'planning' | 'executing' | 'resolved' | 'failed' | 'blocked'
 
@@ -68,7 +78,7 @@ export const useProofStore = create<ProofState>((set, get) => ({
       // All fact_start events have been received - enter reason-chain mode
       console.log('[proofStore] dag_execution_start - all nodes known, entering reason-chain mode')
       set({ isPlanningComplete: true, isPanelOpen: true })
-      useUIStore.getState().enterReasonChainMode()
+      enterReasonChainMode()
       return
     }
     if (eventType === 'proof_complete') {
@@ -206,7 +216,7 @@ export const useProofStore = create<ProofState>((set, get) => ({
     // Only open proof panel if currently in reason-chain mode.
     // In exploratory mode, user can click "View Proof" to open it.
     // Opening the panel in exploratory mode renders it as a modal, which is wrong.
-    const currentMode = useUIStore.getState().uiMode
+    const currentMode = uiModeVar()
     set({
       facts: factsMap,
       isProving: false,

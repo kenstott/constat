@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: a43db3cc-3473-43d3-ae8a-4d2d89ff5f8c
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Bot message group — collapses thinking/plan/steps into a summary with expandable detail
 
 import { useState, useMemo, useEffect } from 'react'
@@ -12,9 +22,9 @@ import {
   DocumentTextIcon,
 } from '@heroicons/react/24/outline'
 import { VeraIcon } from './VeraIcon'
-import { useArtifactStore } from '@/store/artifactStore'
-import { useUIStore } from '@/store/uiStore'
-import { useSessionStore } from '@/store/sessionStore'
+import { useArtifactContext } from '@/contexts/ArtifactContext'
+import { openFullscreenArtifact } from '@/graphql/ui-state'
+import { useSessionContext } from '@/contexts/SessionContext'
 import * as api from '@/api/client'
 
 type StoreMessage = {
@@ -72,8 +82,8 @@ export function BotMessageGroup({
       setExpanded(groupOverride.expanded)
     }
   }, [groupOverride?.version])
-  const { session, submitQuery } = useSessionStore()
-  const { tables } = useArtifactStore()
+  const { session, submitQuery } = useSessionContext()
+  const { tables } = useArtifactContext()
   // Show all domains except synthetic root/user nodes (constants, not useful)
   const activeDomains = (session?.active_domains || []).filter(d => d !== 'root' && d !== 'user')
 
@@ -337,9 +347,9 @@ export function BotMessageGroup({
 
 // Inline display of published artifacts (tables + non-table artifacts) within the response
 function InlineArtifacts() {
-  const { tables, artifacts } = useArtifactStore()
-  const { openFullscreenArtifact } = useUIStore()
-  const { session } = useSessionStore()
+  const { tables, artifacts } = useArtifactContext()
+  // openFullscreenArtifact imported from ui-state
+  const { session } = useSessionContext()
 
   // Filter to "published" artifacts — key results and starred tables
   const publishedTables = tables.filter((t) => t.is_starred)

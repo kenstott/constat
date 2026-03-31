@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: a6f57db6-6197-45cc-ab8e-62200251786f
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock dependencies
@@ -39,18 +49,23 @@ vi.mock('@/api/skills', () => ({
   draftSkill: vi.fn(),
 }))
 
-vi.mock('@/store/authStore', () => ({
+vi.mock('@/config/auth-helpers', () => ({
   isAuthDisabled: true,
-  useAuthStore: {
-    getState: () => ({
-      getToken: vi.fn().mockResolvedValue(null),
-      logout: vi.fn(),
-    }),
+  getAuthHeaders: vi.fn().mockResolvedValue({}),
+  getToken: vi.fn().mockResolvedValue(null),
+}))
+
+vi.mock('@/graphql/client', () => ({
+  apolloClient: {
+    query: vi.fn().mockResolvedValue({ data: {} }),
+    mutate: vi.fn().mockResolvedValue({ data: {} }),
   },
+  cache: {},
+  cachePersistor: { restore: vi.fn().mockResolvedValue(undefined) },
 }))
 
 import { useArtifactStore } from '../artifactStore'
-import * as sessionsApi from '@/api/sessions'
+import { apolloClient } from '@/graphql/client'
 
 describe('useArtifactStore', () => {
   beforeEach(() => {
@@ -102,19 +117,23 @@ describe('useArtifactStore', () => {
 
   describe('fetchArtifacts', () => {
     it('sets loading and populates artifacts on success', async () => {
-      const mockArtifacts = [{ id: 1, name: 'chart1', artifact_type: 'chart' as const, step_number: 1, mime_type: 'image/png' }]
-      vi.mocked(sessionsApi.listArtifacts).mockResolvedValue({ artifacts: mockArtifacts })
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: { artifacts: { artifacts: [
+          { id: 1, name: 'chart1', artifactType: 'chart', stepNumber: 1, mimeType: 'image/png', isStarred: false, version: 1, versionCount: 1 },
+        ] } },
+      } as any)
 
       await useArtifactStore.getState().fetchArtifacts('sess-1')
 
       const state = useArtifactStore.getState()
-      expect(state.artifacts).toEqual(mockArtifacts)
+      expect(state.artifacts).toHaveLength(1)
+      expect(state.artifacts[0].name).toBe('chart1')
       expect(state.loading).toBe(false)
       expect(state.error).toBeNull()
     })
 
     it('sets error on failure', async () => {
-      vi.mocked(sessionsApi.listArtifacts).mockRejectedValue(new Error('network fail'))
+      vi.mocked(apolloClient.query).mockRejectedValue(new Error('network fail'))
 
       await useArtifactStore.getState().fetchArtifacts('sess-1')
 
@@ -126,24 +145,32 @@ describe('useArtifactStore', () => {
 
   describe('fetchTables', () => {
     it('populates tables on success', async () => {
-      const mockTables = [{ name: 'sales', row_count: 100, step_number: 1, columns: ['id', 'amount'] }]
-      vi.mocked(sessionsApi.listTables).mockResolvedValue({ tables: mockTables })
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: { tables: { tables: [
+          { name: 'sales', rowCount: 100, stepNumber: 1, columns: ['id', 'amount'], isStarred: false, isView: false, version: 1, versionCount: 1 },
+        ] } },
+      } as any)
 
       await useArtifactStore.getState().fetchTables('sess-1')
 
-      expect(useArtifactStore.getState().tables).toEqual(mockTables)
+      expect(useArtifactStore.getState().tables).toHaveLength(1)
+      expect(useArtifactStore.getState().tables[0].name).toBe('sales')
     })
   })
 
   describe('fetchFacts', () => {
     it('sets factsLoading and populates facts', async () => {
-      const mockFacts = [{ name: 'total_sales', value: '1000', source: 'derived' as const, is_persisted: false }]
-      vi.mocked(sessionsApi.listFacts).mockResolvedValue({ facts: mockFacts })
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: { facts: { facts: [
+          { name: 'total_sales', value: '1000', source: 'derived', isPersisted: false },
+        ] } },
+      } as any)
 
       await useArtifactStore.getState().fetchFacts('sess-1')
 
       const state = useArtifactStore.getState()
-      expect(state.facts).toEqual(mockFacts)
+      expect(state.facts).toHaveLength(1)
+      expect(state.facts[0].name).toBe('total_sales')
       expect(state.factsLoading).toBe(false)
     })
   })
@@ -151,9 +178,11 @@ describe('useArtifactStore', () => {
   describe('clear', () => {
     it('resets all state to defaults', async () => {
       // First populate some data
-      vi.mocked(sessionsApi.listArtifacts).mockResolvedValue({
-        artifacts: [{ id: 1, name: 'x', artifact_type: 'chart', step_number: 1, mime_type: 'image/png' }],
-      })
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: { artifacts: { artifacts: [
+          { id: 1, name: 'x', artifactType: 'chart', stepNumber: 1, mimeType: 'image/png', isStarred: false, version: 1, versionCount: 1 },
+        ] } },
+      } as any)
       await useArtifactStore.getState().fetchArtifacts('sess-1')
       expect(useArtifactStore.getState().artifacts).toHaveLength(1)
 
@@ -174,9 +203,11 @@ describe('useArtifactStore', () => {
   describe('clearQueryResults', () => {
     it('clears query results but keeps data sources', async () => {
       // Populate artifacts
-      vi.mocked(sessionsApi.listArtifacts).mockResolvedValue({
-        artifacts: [{ id: 1, name: 'x', artifact_type: 'chart', step_number: 1, mime_type: 'image/png' }],
-      })
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: { artifacts: { artifacts: [
+          { id: 1, name: 'x', artifactType: 'chart', stepNumber: 1, mimeType: 'image/png', isStarred: false, version: 1, versionCount: 1 },
+        ] } },
+      } as any)
       await useArtifactStore.getState().fetchArtifacts('sess-1')
 
       // Manually set some entities (data source context)

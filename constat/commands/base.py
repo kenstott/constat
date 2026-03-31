@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 707a67ef-e2e7-4046-9383-62c223538456
 #
 # Base types for command results.
 

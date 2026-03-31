@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: adb6754f-7812-4237-bf21-89bbea79487e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Proof DAG Panel - Floating panel for auditable mode fact resolution visualization
 // Uses d3-dag for proper directed acyclic graph layout
 
@@ -6,14 +16,33 @@ import { XMarkIcon, TableCellsIcon, ChevronDownIcon } from '@heroicons/react/24/
 import * as d3dag from 'd3-dag'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { useUIStore } from '@/store/uiStore'
-import { useTestStore } from '@/store/testStore'
-import { useSessionStore } from '@/store/sessionStore'
+import { openFullscreenArtifact } from '@/graphql/ui-state'
+import { addToast } from '@/graphql/ui-state'
+import { useTestingMutations } from '@/hooks/useTesting'
+import { useSessionContext } from '@/contexts/SessionContext'
 import { createSkillFromProof } from '@/api/skills'
-import { extractExpectations } from '@/api/testing'
-import { listDomains, getObjectives } from '@/api/sessions'
-import type { DomainInfo, ObjectivesEntry } from '@/api/sessions'
-import { useToastStore } from '@/store/toastStore'
+import { apolloClient } from '@/graphql/client'
+import { EXTRACT_EXPECTATIONS, toExpectations } from '@/graphql/operations/testing'
+import { DOMAINS_QUERY } from '@/graphql/operations/domains'
+import { OBJECTIVES_QUERY } from '@/graphql/operations/state'
+
+interface DomainInfo {
+  filename: string
+  name: string
+  description: string
+  tier: string
+  active: boolean
+}
+
+interface ObjectivesEntry {
+  type: 'question' | 'clarification' | 'redo'
+  text?: string
+  question?: string
+  answer?: string
+  mode?: string
+  guidance?: string
+  ts: string
+}
 import type { GoldenQuestionRequest } from '@/types/api'
 import { MermaidBlock } from './MermaidBlock'
 import { CodeViewer } from '@/components/artifacts/CodeViewer'
@@ -270,10 +299,10 @@ function NodeTooltip({ node, position }: { node: FactNode; position: { x: number
 export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary, isSummaryGenerating = false, sessionId, onSkillCreated, onRedo, embedded = false, actionsRef }: ProofDAGPanelProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
-  const addToast = useToastStore((s) => s.addToast)
+  // addToast imported from ui-state
   const [allDomains, setAllDomains] = useState<DomainInfo[]>([])
-  const saveGoldenQuestion = useTestStore(s => s.saveGoldenQuestion)
-  const currentQuery = useSessionStore(s => s.currentQuery)
+  const { createGoldenQuestion } = useTestingMutations()
+  const { currentQuery } = useSessionContext()
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
   const [selectedIdStack, setSelectedIdStack] = useState<string[]>([])
   // Derive selectedNode from live facts map so updates (code, elapsed_ms) are reflected
@@ -324,7 +353,8 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   // Fetch objectives when panel opens
   useEffect(() => {
     if (showObjectives && sessionId) {
-      getObjectives(sessionId).then(res => setObjectives(res.objectives))
+      apolloClient.query({ query: OBJECTIVES_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+        .then(({ data }) => setObjectives(data.objectives))
     }
   }, [showObjectives, sessionId])
 
@@ -527,8 +557,8 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     try {
       let domains = allDomains
       if (domains.length === 0) {
-        const resp = await listDomains()
-        domains = resp.domains
+        const { data } = await apolloClient.query({ query: DOMAINS_QUERY, fetchPolicy: 'network-only' })
+        domains = data.domains.map((d: any) => ({ filename: d.filename, name: d.name, description: d.description, tier: d.tier, active: d.active }))
         setAllDomains(domains)
       }
       const userDomain = domains.find(d => d.tier === 'user')
@@ -545,8 +575,8 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
       // Build test question from objectives_log: raw question + clarifications + redos
       let questionText = currentQuery || ''
       try {
-        const objRes = await getObjectives(sessionId)
-        const entries = objRes.objectives
+        const { data: objData } = await apolloClient.query({ query: OBJECTIVES_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+        const entries = objData.objectives as ObjectivesEntry[]
         const qEntry = entries.find(o => o.type === 'question')
         if (qEntry?.text) {
           const parts: string[] = [qEntry.text]
@@ -563,14 +593,25 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
           questionText = parts.join('\n')
         }
       } catch { /* use currentQuery as fallback */ }
-      const expect = await extractExpectations(sessionId, fallbackNodes, questionText || undefined, summary ?? undefined)
+      const extractResult = await apolloClient.mutate({
+        mutation: EXTRACT_EXPECTATIONS,
+        variables: {
+          sessionId,
+          input: {
+            proofNodes: fallbackNodes,
+            originalQuestion: questionText || undefined,
+            proofSummary: summary ?? undefined,
+          },
+        },
+      })
+      const expect = toExpectations(extractResult.data.extractExpectations)
       const body: GoldenQuestionRequest = {
         question: questionText,
         tags: ['from-reason-chain'],
         expect,
         objectives: expect.objectives ?? [],
       }
-      await saveGoldenQuestion(sessionId, userDomain.filename, null, body)
+      await createGoldenQuestion(userDomain.filename, body as unknown as Record<string, unknown>)
       addToast('Test saved successfully')
     } catch (err) {
       console.error('Failed to save test:', err)
@@ -1349,7 +1390,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                       {isTable && (
                         <button
                           onClick={() => {
-                            useUIStore.getState().openFullscreenArtifact({
+                            openFullscreenArtifact({
                               type: 'proof_value',
                               name: selectedNode.name,
                               content: String(selectedNode.value),
@@ -1384,7 +1425,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                       ) : isDbSourceRef && dbName && dbTableName ? (
                         <button
                           onClick={() => {
-                            useUIStore.getState().openFullscreenArtifact({
+                            openFullscreenArtifact({
                               type: 'database_table',
                               dbName,
                               tableName: dbTableName,
@@ -1399,7 +1440,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                       ) : isClickableRowCount ? (
                         <button
                           onClick={() => {
-                            useUIStore.getState().openFullscreenArtifact({
+                            openFullscreenArtifact({
                               type: 'table',
                               name: materializedTableName,
                             })

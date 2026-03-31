@@ -1,6 +1,16 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 52179089-a151-42a2-8792-5853719c7708
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 import { get, post, put, del } from '@/api/client'
 import type { GoldenQuestionExpectations, GoldenQuestionRequest, GoldenQuestionResponse, TestableDomainInfo, TestRunResponse } from '@/types/api'
-import { useAuthStore, isAuthDisabled } from '@/store/authStore'
+import { getAuthHeaders } from '@/config/auth-helpers'
 
 export async function listTestableDomains(sessionId: string): Promise<TestableDomainInfo[]> {
   return get<TestableDomainInfo[]>(`/sessions/${sessionId}/tests/domains`)
@@ -26,11 +36,7 @@ export async function runTestsStreaming(
   excludeQuestions: Record<string, number[]> = {},
   onEvent: (event: TestProgressEvent) => void,
 ): Promise<TestRunResponse> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (!isAuthDisabled) {
-    const token = await useAuthStore.getState().getToken()
-    if (token) headers['Authorization'] = `Bearer ${token}`
-  }
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...await getAuthHeaders() }
 
   const response = await fetch(`/api/sessions/${sessionId}/tests/run`, {
     method: 'POST',

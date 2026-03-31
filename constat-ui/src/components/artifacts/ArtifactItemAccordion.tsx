@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: b52f7ded-0da5-4d62-88ab-a631ea098f0e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Artifact Item Accordion - individual artifact with expandable content and fullscreen mode
 
 import { useState, useEffect, useRef, useMemo } from 'react'
@@ -14,9 +24,11 @@ import {
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import * as sessionsApi from '@/api/sessions'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useTableMutations } from '@/hooks/useTables'
+import { useArtifactMutations } from '@/hooks/useArtifacts'
+import { apolloClient } from '@/graphql/client'
+import { TABLE_DATA_QUERY, ARTIFACT_QUERY, ARTIFACT_VERSIONS_QUERY, toTableData, toArtifactContent, toArtifactVersions } from '@/graphql/operations/data'
 import type { Artifact, ArtifactContent, ArtifactVersionInfo, TableData } from '@/types/api'
 
 /** Parse CSV text into header + rows and render as a scrollable table. */
@@ -117,8 +129,9 @@ interface ArtifactItemAccordionProps {
 }
 
 export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: ArtifactItemAccordionProps) {
-  const { session } = useSessionStore()
-  const { toggleArtifactStar, toggleTableStar, removeArtifact } = useArtifactStore()
+  const { session } = useSessionContext()
+  const { toggleStar: toggleArtifactStar, deleteArtifact: removeArtifact } = useArtifactMutations()
+  const { toggleStar: toggleTableStar } = useTableMutations()
   const [isOpen, setIsOpen] = useState(initiallyOpen)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [content, setContent] = useState<ArtifactContent | null>(null)
@@ -140,17 +153,16 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     e.stopPropagation()
     if (!session) return
     if (!confirm(`Remove "${artifact.title || artifact.name}"?`)) return
-    removeArtifact(session.session_id, artifact.id)
+    removeArtifact(artifact.id)
   }
 
   const handleToggleStar = (e: React.MouseEvent) => {
     e.stopPropagation()
     if (session) {
       if (isTable) {
-        // For tables, use toggleTableStar with the table name
-        toggleTableStar(session.session_id, artifact.name)
+        toggleTableStar(artifact.name)
       } else {
-        toggleArtifactStar(session.session_id, artifact.id)
+        toggleArtifactStar(artifact.id)
       }
     }
   }
@@ -169,18 +181,19 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
       try {
         if (isTable) {
           // Fetch table data instead of artifact content
-          const data = await sessionsApi.getTableData(
-            session.session_id,
-            artifact.name,
-            tablePage
-          )
-          setTableData(data)
+          const { data: result } = await apolloClient.query({
+            query: TABLE_DATA_QUERY,
+            variables: { sessionId: session.session_id, name: artifact.name, page: tablePage },
+            fetchPolicy: 'network-only',
+          })
+          setTableData(toTableData(result.tableData))
         } else {
-          const artifactContent = await sessionsApi.getArtifact(
-            session.session_id,
-            artifact.id
-          )
-          setContent(artifactContent)
+          const { data: result } = await apolloClient.query({
+            query: ARTIFACT_QUERY,
+            variables: { sessionId: session.session_id, id: artifact.id },
+            fetchPolicy: 'network-only',
+          })
+          setContent(toArtifactContent(result.artifact))
         }
       } catch (err) {
         setError(String(err))
@@ -275,8 +288,13 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     // Fetch versions if not loaded
     if (!versions) {
       try {
-        const resp = await sessionsApi.getArtifactVersions(session.session_id, artifact.id)
-        setVersions(resp.versions)
+        const { data: result } = await apolloClient.query({
+          query: ARTIFACT_VERSIONS_QUERY,
+          variables: { sessionId: session.session_id, id: artifact.id },
+          fetchPolicy: 'network-only',
+        })
+        const mapped = toArtifactVersions(result.artifactVersions)
+        setVersions(mapped.versions)
       } catch (err) {
         console.error('Failed to load artifact versions:', err)
         return
@@ -300,8 +318,12 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     setLoading(true)
     setError(null)
     try {
-      const artifactContent = await sessionsApi.getArtifact(session.session_id, versionId)
-      setContent(artifactContent)
+      const { data: result } = await apolloClient.query({
+        query: ARTIFACT_QUERY,
+        variables: { sessionId: session.session_id, id: versionId },
+        fetchPolicy: 'network-only',
+      })
+      setContent(toArtifactContent(result.artifact))
       setIsOpen(true)
     } catch (err) {
       setError(String(err))
@@ -370,7 +392,15 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
         }
 
         // For other artifacts, fetch content and download
-        const artifactContent = content || await sessionsApi.getArtifact(session.session_id, artifact.id)
+        let artifactContent = content
+        if (!artifactContent) {
+          const { data: result } = await apolloClient.query({
+            query: ARTIFACT_QUERY,
+            variables: { sessionId: session.session_id, id: artifact.id },
+            fetchPolicy: 'network-only',
+          })
+          artifactContent = toArtifactContent(result.artifact)
+        }
 
         let blob: Blob
         let filename: string

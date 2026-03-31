@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: ecb44fe2-8946-4d94-a4a4-a4bad999f3e5
 #
 # Help command - centralized command documentation.
 

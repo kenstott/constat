@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 42f8efb9-a8a3-4578-94f6-5cb80868149f
 
 """Test that /discover glossary terms include connected resources."""
 

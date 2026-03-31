@@ -1,8 +1,19 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: aa69fe55-eea0-465d-84a8-2699a7d31eb5
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Toolbar component
 
-import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import { useUIStore } from '@/store/uiStore'
+import { useReactiveVar } from '@apollo/client'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useArtifactContext } from '@/contexts/ArtifactContext'
+import { briefModeVar, toggleBriefMode } from '@/graphql/ui-state'
 import {
   PlusIcon,
   StopIcon,
@@ -19,9 +30,9 @@ interface ToolbarProps {
 }
 
 export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSession }: ToolbarProps) {
-  const { status, cancelExecution } = useSessionStore()
-  const { tables, stepCodes } = useArtifactStore()
-  const { briefMode, toggleBriefMode } = useUIStore()
+  const { status, cancelExecution } = useSessionContext()
+  const { tables, stepCodes } = useArtifactContext()
+  const briefMode = useReactiveVar(briefModeVar)
 
   const isExecuting = status === 'planning' || status === 'executing'
 

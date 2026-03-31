@@ -12,15 +12,19 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@apollo/client": "^3.14.1",
     "@headlessui/react": "^2.2.0",
     "@heroicons/react": "^2.2.0",
     "@tailwindcss/typography": "^0.5.19",
-    "@tanstack/react-query": "^5.62.0",
     "@tanstack/react-table": "^8.20.0",
+    "apollo-upload-client": "^18.0.1",
+    "apollo3-cache-persist": "^0.15.0",
     "d3": "^7.9.0",
     "d3-dag": "^1.1.0",
     "fast-json-patch": "^3.1.1",
     "firebase": "^12.8.0",
+    "graphql": "^16.13.2",
+    "graphql-ws": "^6.0.8",
     "idb": "^8.0.3",
     "mermaid": "^11.12.3",
     "plotly.js-dist-min": "^2.35.0",
@@ -30,14 +34,14 @@
     "react-plotly.js": "^2.6.0",
     "react-router-dom": "^7.13.0",
     "react-syntax-highlighter": "^16.1.0",
-    "remark-gfm": "^4.0.1",
-    "zustand": "^5.0.0"
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
+    "@types/apollo-upload-client": "^18.0.1",
     "@types/d3": "^7.4.3",
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.12",

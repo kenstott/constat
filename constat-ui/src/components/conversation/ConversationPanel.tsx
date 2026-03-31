@@ -1,9 +1,19 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 1fd5c590-f4e1-40b9-a112-d68a1839b0bf
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Conversation Panel container
 
 import { useEffect, useRef, useState, useMemo } from 'react'
-import { useSessionStore } from '@/store/sessionStore'
-import { useProofStore } from '@/store/proofStore'
-import { useArtifactStore } from '@/store/artifactStore'
+import { useSessionContext } from '@/contexts/SessionContext'
+// proofStore actions accessed via SessionContext
+import { useArtifactContext } from '@/contexts/ArtifactContext'
 import { MessageBubble, StepDisplayMode } from './MessageBubble'
 import { BotMessageGroup } from './BotMessageGroup'
 import { AutocompleteInput } from './AutocompleteInput'
@@ -17,12 +27,13 @@ import {
   ShareIcon,
   LinkIcon,
 } from '@heroicons/react/24/outline'
-import { useUIStore } from '@/store/uiStore'
-import { useAuthStore } from '@/store/authStore'
-import * as sessionsApi from '@/api/sessions'
+import { expandSection, expandResultStep as expandResultStepFn, showArtifactPanel as showArtifactPanelFn, setResultsShowPublishedOnly } from '@/graphql/ui-state'
+import { useAuth } from '@/contexts/AuthContext'
+import { useMutation } from '@apollo/client'
+import { TOGGLE_PUBLIC_SHARING } from '@/graphql/operations/sessions'
 
-// Use the actual messages type from the store
-type StoreMessage = ReturnType<typeof useSessionStore.getState>['messages'][number]
+// Message type from session context
+type StoreMessage = ReturnType<typeof import('@/contexts/SessionContext').useSessionContext>['messages'][number]
 
 type MessageGroupTyped =
   | { kind: 'user'; message: StoreMessage }
@@ -58,10 +69,12 @@ function groupMessages(messages: StoreMessage[]): MessageGroupTyped[] {
 }
 
 export function ConversationPanel() {
-  const { session, messages, suggestions, welcomeTagline, submitQuery, queuedMessages, removeQueuedMessage, isCreatingSession, shareSession, replanFromStep } = useSessionStore()
-  const { openPanel: openProofPanel } = useProofStore()
-  const { tables, artifacts } = useArtifactStore()
-  const { expandArtifactSection, expandResultStep, showArtifactPanel } = useUIStore()
+  const { session, messages, suggestions, welcomeTagline, submitQuery, queuedMessages, removeQueuedMessage, isCreatingSession, shareSession, replanFromStep, openProofPanel } = useSessionContext()
+  const { tables, artifacts } = useArtifactContext()
+  const { user: authUser } = useAuth()
+  const expandArtifactSection = expandSection
+  const expandResultStep = expandResultStepFn
+  const showArtifactPanel = showArtifactPanelFn
 
   const handleRoleClick = (role: string) => {
     showArtifactPanel()
@@ -81,7 +94,7 @@ export function ConversationPanel() {
     showArtifactPanel()
     expandArtifactSection('results')
     // Switch to "all" so unpublished items are visible
-    useUIStore.getState().setResultsShowPublishedOnly(false)
+    setResultsShowPublishedOnly(false)
     // Ensure the step group is expanded
     if (stepNumber) expandResultStep(stepNumber)
     // Scroll to the item after DOM updates
@@ -127,6 +140,7 @@ export function ConversationPanel() {
   const [isPublic, setIsPublic] = useState(session?.is_public ?? false)
   const [publicUrl, setPublicUrl] = useState<string | null>(null)
   const [publicCopied, setPublicCopied] = useState(false)
+  const [togglePublicMutation] = useMutation(TOGGLE_PUBLIC_SHARING)
   const [editValue, setEditValue] = useState<string | null>(null)
 
   const hasSteps = messages.some((m) => m.type === 'step')
@@ -178,9 +192,12 @@ export function ConversationPanel() {
     if (!session) return
     const newPublic = !isPublic
     try {
-      const result = await sessionsApi.togglePublicSharing(session.session_id, newPublic)
+      const { data } = await togglePublicMutation({
+        variables: { sessionId: session.session_id, public: newPublic },
+      })
+      const result = data.togglePublicSharing
       setIsPublic(result.public)
-      setPublicUrl(result.public ? result.share_url : null)
+      setPublicUrl(result.public ? result.shareUrl : null)
     } catch (err: unknown) {
       setShareError(err instanceof Error ? err.message : 'Failed to toggle public sharing')
     }
@@ -206,7 +223,7 @@ export function ConversationPanel() {
   }
 
   const greeting = (() => {
-    const user = useAuthStore.getState().user
+    const user = authUser
     const firstName = user?.displayName?.split(' ')[0]
     return firstName ? `${firstName}, what can I help you with?` : 'What can I help you with?'
   })()

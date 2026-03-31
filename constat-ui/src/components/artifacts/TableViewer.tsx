@@ -1,9 +1,20 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: fc9d57a2-b96a-4eab-a372-ea04eb040a01
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Table Viewer component
 
 import { useState, useEffect, useCallback } from 'react'
 import { ClipboardDocumentIcon, ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline'
-import { useSessionStore } from '@/store/sessionStore'
-import * as sessionsApi from '@/api/sessions'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { apolloClient } from '@/graphql/client'
+import { TABLE_DATA_QUERY, toTableData } from '@/graphql/operations/data'
 import type { TableData } from '@/types/api'
 
 interface TableViewerProps {
@@ -11,7 +22,7 @@ interface TableViewerProps {
 }
 
 export function TableViewer({ tableName }: TableViewerProps) {
-  const { session } = useSessionStore()
+  const { session } = useSessionContext()
   const [data, setData] = useState<TableData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -24,12 +35,12 @@ export function TableViewer({ tableName }: TableViewerProps) {
       setLoading(true)
       setError(null)
       try {
-        const tableData = await sessionsApi.getTableData(
-          session.session_id,
-          tableName,
-          page
-        )
-        setData(tableData)
+        const { data: result } = await apolloClient.query({
+          query: TABLE_DATA_QUERY,
+          variables: { sessionId: session.session_id, name: tableName, page },
+          fetchPolicy: 'network-only',
+        })
+        setData(toTableData(result.tableData))
       } catch (err) {
         setError(String(err))
       } finally {

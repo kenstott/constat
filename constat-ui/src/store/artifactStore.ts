@@ -1,9 +1,42 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: f8ab86d2-744a-4793-8fd5-745bcd2cba8e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Artifact state store
 
-import { create } from 'zustand'
+import { create } from './createStore'
 import type { Artifact, ArtifactContent, TableInfo, Fact, Entity, SessionDatabase, ApiSourceInfo, DocumentSourceInfo, Learning, Rule, ModelRouteInfo } from '@/types/api'
 import * as sessionsApi from '@/api/sessions'
 import * as skillsApi from '@/api/skills'
+import { apolloClient } from '@/graphql/client'
+import {
+  STEPS_QUERY, INFERENCE_CODES_QUERY, SCRATCHPAD_QUERY, SESSION_DDL_QUERY,
+  SESSION_ROUTING_QUERY, PROMPT_CONTEXT_QUERY, UPDATE_SYSTEM_PROMPT,
+  toStepCode, toInferenceCode, toScratchpadEntry, toPromptContext,
+} from '@/graphql/operations/state'
+import {
+  TABLES_QUERY, ARTIFACTS_QUERY, FACTS_QUERY, ENTITIES_QUERY,
+  ARTIFACT_QUERY,
+  DELETE_TABLE, DELETE_ARTIFACT, TOGGLE_TABLE_STAR, TOGGLE_ARTIFACT_STAR,
+  PERSIST_FACT, FORGET_FACT,
+  toTableInfo, toArtifact, toArtifactContent, toFact, toEntity,
+} from '@/graphql/operations/data'
+import {
+  DATABASES_QUERY, DATA_SOURCES_QUERY,
+  toSessionDatabase, toSessionApi, toSessionDocument,
+} from '@/graphql/operations/sources'
+import {
+  LEARNINGS_QUERY, SKILLS_QUERY, ACTIVATE_AGENT, SET_ACTIVE_SKILLS,
+  CREATE_RULE, UPDATE_RULE as UPDATE_RULE_MUTATION, DELETE_RULE as DELETE_RULE_MUTATION,
+  DELETE_LEARNING as DELETE_LEARNING_MUTATION,
+  toLearningInfo, toRuleInfo, toSkillInfo,
+} from '@/graphql/operations/learnings'
 
 // Step code from execution (matches API response)
 interface StepCode {
@@ -197,8 +230,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchArtifacts: async (sessionId) => {
     set({ loading: true, error: null })
     try {
-      const response = await sessionsApi.listArtifacts(sessionId)
-      set({ artifacts: response.artifacts, loading: false })
+      const { data } = await apolloClient.query({ query: ARTIFACTS_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      set({ artifacts: data.artifacts.artifacts.map(toArtifact), loading: false })
     } catch (error) {
       set({ error: String(error), loading: false })
     }
@@ -207,8 +240,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchTables: async (sessionId) => {
     set({ loading: true, error: null })
     try {
-      const response = await sessionsApi.listTables(sessionId)
-      set({ tables: response.tables, loading: false })
+      const { data } = await apolloClient.query({ query: TABLES_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      set({ tables: data.tables.tables.map(toTableInfo), loading: false })
     } catch (error) {
       set({ error: String(error), loading: false })
     }
@@ -217,8 +250,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchFacts: async (sessionId) => {
     set({ factsLoading: true, error: null })
     try {
-      const response = await sessionsApi.listFacts(sessionId)
-      set({ facts: response.facts, factsLoading: false })
+      const { data } = await apolloClient.query({ query: FACTS_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      set({ facts: data.facts.facts.map(toFact), factsLoading: false })
     } catch (error) {
       set({ error: String(error), factsLoading: false })
     }
@@ -227,8 +260,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchEntities: async (sessionId, entityType) => {
     set({ loading: true, error: null })
     try {
-      const response = await sessionsApi.listEntities(sessionId, entityType)
-      set({ entities: response.entities, loading: false })
+      const { data } = await apolloClient.query({ query: ENTITIES_QUERY, variables: { sessionId, entityType: entityType ?? null }, fetchPolicy: 'network-only' })
+      set({ entities: data.entities.entities.map(toEntity), loading: false })
     } catch (error) {
       set({ error: String(error), loading: false })
     }
@@ -237,20 +270,19 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchLearnings: async () => {
     set({ learningsLoading: true, error: null })
     try {
-      console.log('[LEARNINGS] Fetching learnings...')
-      const response = await sessionsApi.listLearnings()
-      console.log('[LEARNINGS] Received:', response.learnings.length, 'learnings,', response.rules?.length || 0, 'rules')
-      set({ learnings: response.learnings, rules: response.rules || [], learningsLoading: false })
+      const { data } = await apolloClient.query({ query: LEARNINGS_QUERY, fetchPolicy: 'network-only' })
+      const learnings = data.learnings.learnings.map(toLearningInfo)
+      const rules = data.learnings.rules.map(toRuleInfo)
+      set({ learnings, rules, learningsLoading: false })
     } catch (error) {
-      console.error('[LEARNINGS] Error fetching learnings:', error)
       set({ error: String(error), learningsLoading: false })
     }
   },
 
   fetchStepCodes: async (sessionId) => {
     try {
-      const response = await sessionsApi.listStepCodes(sessionId)
-      const sorted = [...response.steps].sort((a, b) => a.step_number - b.step_number)
+      const { data } = await apolloClient.query({ query: STEPS_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      const sorted = data.steps.steps.map(toStepCode).sort((a: any, b: any) => a.step_number - b.step_number)
       set({ stepCodes: sorted })
     } catch (error) {
       console.warn('Failed to fetch step codes:', error)
@@ -259,8 +291,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   fetchInferenceCodes: async (sessionId) => {
     try {
-      const response = await sessionsApi.listInferenceCodes(sessionId)
-      set({ inferenceCodes: response.inferences.filter((ic: { inference_id: string }) => ic.inference_id) })
+      const { data } = await apolloClient.query({ query: INFERENCE_CODES_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      set({ inferenceCodes: data.inferenceCodes.inferences.map(toInferenceCode).filter((ic: any) => ic.inference_id) })
     } catch (error) {
       console.warn('Failed to fetch inference codes:', error)
     }
@@ -268,8 +300,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   fetchScratchpad: async (sessionId) => {
     try {
-      const response = await sessionsApi.getScratchpad(sessionId)
-      set({ scratchpadEntries: response.entries })
+      const { data } = await apolloClient.query({ query: SCRATCHPAD_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      set({ scratchpadEntries: data.scratchpad.entries.map(toScratchpadEntry) })
     } catch (error) {
       console.warn('Failed to fetch scratchpad:', error)
     }
@@ -277,8 +309,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   fetchDDL: async (sessionId) => {
     try {
-      const response = await sessionsApi.getDDL(sessionId)
-      set({ sessionDDL: response.ddl })
+      const { data } = await apolloClient.query({ query: SESSION_DDL_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      set({ sessionDDL: data.sessionDdl })
     } catch (error) {
       console.warn('Failed to fetch DDL:', error)
     }
@@ -287,8 +319,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchDatabases: async (sessionId) => {
     set({ loading: true, error: null })
     try {
-      const response = await sessionsApi.listDatabases(sessionId)
-      set({ databases: response.databases, loading: false })
+      const { data } = await apolloClient.query({ query: DATABASES_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      set({ databases: data.databases.databases.map(toSessionDatabase), loading: false })
     } catch (error) {
       set({ error: String(error), loading: false })
     }
@@ -297,34 +329,12 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchDataSources: async (sessionId) => {
     set({ sourcesLoading: true, error: null })
     try {
-      // Use unified sources endpoint that includes config + active projects + session data
-      const response = await sessionsApi.listDataSources(sessionId)
-
-      // Map to frontend types
-      const apis: ApiSourceInfo[] = response.apis.map((api) => ({
-        name: api.name,
-        type: api.type,
-        description: api.description,
-        base_url: api.base_url,
-        connected: api.connected,
-        from_config: api.from_config,
-        source: api.source,
-      }))
-
-      const docs: DocumentSourceInfo[] = response.documents.map((doc) => ({
-        name: doc.name,
-        type: doc.type,
-        description: doc.description,
-        path: doc.path,
-        indexed: doc.indexed,
-        from_config: doc.from_config,
-        source: doc.source,
-      }))
-
+      const { data } = await apolloClient.query({ query: DATA_SOURCES_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      const ds = data.dataSources
       set({
-        databases: response.databases,
-        apis,
-        documents: docs,
+        databases: ds.databases.map(toSessionDatabase),
+        apis: ds.apis.map(toSessionApi),
+        documents: ds.documents.map(toSessionDocument),
         sourcesLoading: false,
       })
     } catch (error) {
@@ -334,12 +344,13 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   fetchPromptContext: async (sessionId) => {
     try {
-      const response = await sessionsApi.getPromptContext(sessionId)
+      const { data } = await apolloClient.query({ query: PROMPT_CONTEXT_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      const ctx = toPromptContext(data.promptContext)
       set({
         promptContext: {
-          systemPrompt: response.system_prompt,
-          activeAgent: response.active_agent,
-          activeSkills: response.active_skills,
+          systemPrompt: ctx.system_prompt,
+          activeAgent: ctx.active_agent,
+          activeSkills: ctx.active_skills,
         },
       })
     } catch (error) {
@@ -349,8 +360,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   fetchTaskRouting: async (sessionId: string) => {
     try {
-      const layers = await sessionsApi.getSessionRouting(sessionId)
-      set({ taskRouting: layers })
+      const { data } = await apolloClient.query({ query: SESSION_ROUTING_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      set({ taskRouting: data.sessionRouting })
     } catch (error) {
       console.warn('Failed to fetch task routing:', error)
     }
@@ -358,17 +369,9 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   fetchAllSkills: async () => {
     try {
-      const response = await skillsApi.listSkills()
+      const { data } = await apolloClient.query({ query: SKILLS_QUERY, fetchPolicy: 'network-only' })
       set({
-        allSkills: response.skills.map((s) => ({
-          name: s.name,
-          prompt: s.prompt,
-          description: s.description,
-          filename: s.filename,
-          is_active: s.is_active,
-          domain: s.domain || '',
-          source: s.source || '',
-        })),
+        allSkills: data.skills.skills.map(toSkillInfo),
         configLoading: false,
       })
     } catch (error) {
@@ -423,7 +426,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       : [...currentActive, name]
 
     try {
-      await skillsApi.setActiveSkills(newActive)
+      await apolloClient.mutate({ mutation: SET_ACTIVE_SKILLS, variables: { skillNames: newActive } })
       get().fetchAllSkills()
       get().fetchPromptContext(sessionId)
     } catch (error) {
@@ -443,15 +446,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   fetchAllAgents: async (sessionId) => {
     try {
-      // Import auth helpers
-      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-      const headers: Record<string, string> = {}
-      if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`
-        }
-      }
+      const { getAuthHeaders } = await import('@/config/auth-helpers')
+      const headers = await getAuthHeaders()
 
       const response = await fetch(`/api/sessions/agents?session_id=${sessionId}`, {
         headers,
@@ -478,34 +474,16 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   setActiveAgent: async (agentName, sessionId) => {
     try {
-      // Import auth helpers
-      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`
-        }
-      }
-
-      const response = await fetch(`/api/sessions/agents/current?session_id=${sessionId}`, {
-        method: 'PUT',
-        headers,
-        credentials: 'include',
-        body: JSON.stringify({ agent_name: agentName }),
-      })
-      if (response.ok) {
-        get().fetchAllAgents(sessionId)
-        get().fetchPromptContext(sessionId)
-      }
+      await apolloClient.mutate({ mutation: ACTIVATE_AGENT, variables: { sessionId, agentName } })
+      get().fetchAllAgents(sessionId)
+      get().fetchPromptContext(sessionId)
     } catch (error) {
       set({ error: String(error) })
     }
   },
 
   fetchPermissions: async () => {
-    // When auth disabled, grant full access (matches authStore behavior)
-    const { isAuthDisabled, useAuthStore } = await import('@/store/authStore')
+    const { isAuthDisabled, getToken } = await import('@/config/auth-helpers')
     if (isAuthDisabled) {
       set({ userPermissions: {
         isAdmin: true, persona: 'platform_admin',
@@ -514,8 +492,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       } })
       return
     }
-    // Skip if auth token not yet available (avoids 401 → logout during HMR)
-    const token = await useAuthStore.getState().getToken()
+    const token = await getToken()
     if (!token) {
       return
     }
@@ -529,8 +506,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   updateSystemPrompt: async (sessionId, systemPrompt) => {
     try {
-      await sessionsApi.updateSystemPrompt(sessionId, systemPrompt)
-      // Refresh prompt context to show updated value
+      await apolloClient.mutate({ mutation: UPDATE_SYSTEM_PROMPT, variables: { sessionId, systemPrompt } })
       get().fetchPromptContext(sessionId)
     } catch (error) {
       set({ error: String(error) })
@@ -541,8 +517,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   selectArtifact: async (sessionId, artifactId) => {
     set({ loading: true, error: null })
     try {
-      const artifact = await sessionsApi.getArtifact(sessionId, artifactId)
-      set({ selectedArtifact: artifact, loading: false })
+      const { data } = await apolloClient.query({ query: ARTIFACT_QUERY, variables: { sessionId, id: artifactId }, fetchPolicy: 'network-only' })
+      set({ selectedArtifact: toArtifactContent(data.artifact), loading: false })
     } catch (error) {
       set({ error: String(error), loading: false })
     }
@@ -551,12 +527,12 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   selectTable: (tableName) => set({ selectedTable: tableName }),
 
   persistFact: async (sessionId, factName) => {
-    await sessionsApi.persistFact(sessionId, factName)
+    await apolloClient.mutate({ mutation: PERSIST_FACT, variables: { sessionId, factName } })
     get().fetchFacts(sessionId)
   },
 
   forgetFact: async (sessionId, factName) => {
-    await sessionsApi.forgetFact(sessionId, factName)
+    await apolloClient.mutate({ mutation: FORGET_FACT, variables: { sessionId, factName } })
     get().fetchFacts(sessionId)
   },
 
@@ -635,14 +611,14 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     }))
 
     try {
-      await sessionsApi.deleteArtifact(sessionId, artifactId)
+      await apolloClient.mutate({ mutation: DELETE_ARTIFACT, variables: { sessionId, id: artifactId } })
     } catch {
       // Revert on error — refetch both lists
-      const response = await sessionsApi.listArtifacts(sessionId)
-      set({ artifacts: response.artifacts })
+      const { data } = await apolloClient.query({ query: ARTIFACTS_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      set({ artifacts: data.artifacts.artifacts.map(toArtifact) })
       if (isTable) {
-        const tablesResponse = await sessionsApi.listTables(sessionId)
-        set({ tables: tablesResponse.tables })
+        const { data: tablesData } = await apolloClient.query({ query: TABLES_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+        set({ tables: tablesData.tables.tables.map(toTableInfo) })
       }
     }
   },
@@ -655,14 +631,14 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     }))
 
     try {
-      await sessionsApi.deleteTable(sessionId, tableName)
+      await apolloClient.mutate({ mutation: DELETE_TABLE, variables: { sessionId, name: tableName } })
     } catch {
       // Revert on error — refetch both lists
-      const [tablesResponse, artifactsResponse] = await Promise.all([
-        sessionsApi.listTables(sessionId),
-        sessionsApi.listArtifacts(sessionId),
+      const [tablesResult, artifactsResult] = await Promise.all([
+        apolloClient.query({ query: TABLES_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' }),
+        apolloClient.query({ query: ARTIFACTS_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' }),
       ])
-      set({ tables: tablesResponse.tables, artifacts: artifactsResponse.artifacts })
+      set({ tables: tablesResult.data.tables.tables.map(toTableInfo), artifacts: artifactsResult.data.artifacts.artifacts.map(toArtifact) })
     }
   },
 
@@ -675,11 +651,10 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     }))
 
     try {
-      // Persist to server
-      await sessionsApi.toggleArtifactStar(sessionId, artifactId)
+      await apolloClient.mutate({ mutation: TOGGLE_ARTIFACT_STAR, variables: { sessionId, id: artifactId } })
       // Refresh artifacts list to reflect changes (is_key_result may change too)
-      const response = await sessionsApi.listArtifacts(sessionId)
-      set({ artifacts: response.artifacts })
+      const { data } = await apolloClient.query({ query: ARTIFACTS_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      set({ artifacts: data.artifacts.artifacts.map(toArtifact) })
     } catch (error) {
       // Revert on error
       set((state) => ({
@@ -700,11 +675,10 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     }))
 
     try {
-      // Persist to server
-      await sessionsApi.toggleTableStar(sessionId, tableName)
+      await apolloClient.mutate({ mutation: TOGGLE_TABLE_STAR, variables: { sessionId, name: tableName } })
       // Refresh artifacts list to reflect starred table changes
-      const response = await sessionsApi.listArtifacts(sessionId)
-      set({ artifacts: response.artifacts })
+      const { data } = await apolloClient.query({ query: ARTIFACTS_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      set({ artifacts: data.artifacts.artifacts.map(toArtifact) })
     } catch (error) {
       // Revert on error
       set((state) => ({
@@ -718,8 +692,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   addRule: async (summary, tags = []) => {
     try {
-      await sessionsApi.addRule({ summary, tags })
-      // Refresh learnings list
+      await apolloClient.mutate({ mutation: CREATE_RULE, variables: { input: { summary, tags } } })
       get().fetchLearnings()
     } catch (error) {
       set({ error: String(error) })
@@ -728,8 +701,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   updateRule: async (ruleId, summary, tags) => {
     try {
-      await sessionsApi.updateRule(ruleId, { summary, tags })
-      // Refresh learnings list
+      await apolloClient.mutate({ mutation: UPDATE_RULE_MUTATION, variables: { ruleId, input: { summary, tags } } })
       get().fetchLearnings()
     } catch (error) {
       set({ error: String(error) })
@@ -743,7 +715,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     }))
 
     try {
-      await sessionsApi.deleteRule(ruleId)
+      await apolloClient.mutate({ mutation: DELETE_RULE_MUTATION, variables: { ruleId } })
     } catch (error) {
       // Refresh to restore state on error
       get().fetchLearnings()
@@ -758,7 +730,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     }))
 
     try {
-      await sessionsApi.deleteLearning(learningId)
+      await apolloClient.mutate({ mutation: DELETE_LEARNING_MUTATION, variables: { learningId } })
     } catch (error) {
       // Refresh to restore state on error
       get().fetchLearnings()

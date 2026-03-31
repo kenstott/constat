@@ -1,0 +1,9 @@
+# Cross-Module Agent Isolation
+Agents must NEVER read files outside their assigned module boundary. When backend and frontend agents work in parallel:
+- **Backend agents** read only `constat/`, `tests/`, `docs/`. Never read `constat-ui/`.
+- **Frontend agents** read only `constat-ui/`. Never read `constat/` or `tests/`.
+- Shared contracts (GraphQL field names, API shapes) come from the **plan/task description**, not from reading the other module's source code.
+- If an agent needs information about the other module, it must ask the team lead — not read the files directly.
+
+# Teammate Spawn Context
+Include: 1) Module(s) they own  2) Files to read first  3) Verification command  4) What NOT to touch  5) Explicit `model` parameter

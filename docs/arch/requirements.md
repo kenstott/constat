@@ -57,6 +57,7 @@
 - **REQ-045** (2026-03-29): Frontend dynamically renders login page based on available methods from `/health` auth_methods.
 - **REQ-046** (2026-03-29): Login page shows "Sign in with Microsoft" button when `microsoft` in auth_methods (Microsoft branding guidelines).
 - **REQ-047** (2026-03-29): Frontend `useAuthMethods()` hook fetches `/health` and caches auth methods for session lifetime.
+- **REQ-048** (2026-03-29): Local/custom auth (username/password with server-side token) is supported as lightweight alternative for testing environments and simple customer deployments that don't need Firebase. Firebase remains primary auth platform for production use.
 
 ## API & Integration
 - **REQ-048** (2026-03-29): `create_api()` factory in `constat/api/__init__.py` is entry point for all API operations.
@@ -112,6 +113,17 @@
 - **REQ-087** (2026-03-29): `get_relevant_rules()` filters confidence in SQL then Python keyword scoring (rule set small).
 - **REQ-088** (2026-03-29): FactStore `value` field JSON-serialized to preserve Python types across RPC/persistence.
 - **REQ-089** (2026-03-29): Architecture docs in `docs/arch/` ARE the planning documents — update when requirements change, don't implement without planning.
+
+## GraphQL Migration
+- **REQ-093** (2026-03-29): All UI data fetching migrates from REST to GraphQL (52Q + 87M + 8S). 5 binary download endpoints stay REST.
+- **REQ-094** (2026-03-29): Persisted GraphQL queries (APQ) — client sends SHA-256 hash instead of full query string. Reduces payload size, enables CDN caching, prevents arbitrary query execution in production allowlist mode.
+- **REQ-095** (2026-03-29): Apollo is the only frontend state store. Zustand deleted entirely by Phase 10. Server data via queries/mutations/subscriptions, UI state via reactive variables (`makeVar`).
+- **REQ-096** (2026-03-29): Each GraphQL migration phase: implement backend schema + resolvers → wire frontend hooks → write tests → delete REST route → next phase.
+- **REQ-097** (2026-03-29): Phase 1 auth REST routes (`/auth/*`) deleted in Phase 1b after React consumer migration. Config/permissions REST routes deleted in Phase 4 when `artifactStore` is killed.
+- **REQ-098** (2026-03-29): `authStore.ts` file deleted in Phase 10 — 7 non-React modules depend on `getState().getToken()` for auth headers until all Zustand stores are removed.
+
+## User Sources & Configuration
+- **REQ-099** (2026-03-30): User source management (list, add, update, remove per-user databases/documents/APIs) must have a UI and be GraphQL-driven. User sources stored in per-user config.yaml files and persist across sessions.
 
 ## Documentation & Process
 - **REQ-090** (2026-03-29): Maximum brevity in communications — code and facts only, no pleasantries or explanations unless asked.

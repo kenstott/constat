@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 02a2813d-3027-4285-a93c-491492746a1d
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Main App component
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -12,13 +22,15 @@ import { LoginPage } from '@/components/auth/LoginPage'
 import { ProofDAGPanel, type ProofDAGActions } from '@/components/proof/ProofDAGPanel'
 import { ReasonChainCommandStrip } from '@/components/proof/ReasonChainCommandStrip'
 import { HelpModal } from '@/components/help/HelpModal'
-import { useSessionStore } from '@/store/sessionStore'
-import { useAuthStore, isAuthDisabled } from '@/store/authStore'
-import { useProofStore } from '@/store/proofStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import { pathToDeepLink, applyDeepLink, useUIStore } from '@/store/uiStore'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useAuth } from '@/contexts/AuthContext'
+import { useArtifactContext } from '@/contexts/ArtifactContext'
+import { useReactiveVar } from '@apollo/client'
+import { pathToDeepLink, applyDeepLink, clearPublicSession as clearPublicSessionFn, publicSessionIdVar, uiModeVar, exitReasonChainMode as exitReasonChainModeFn, initPreferences } from '@/graphql/ui-state'
 import { ToastContainer } from '@/components/common/ToastContainer'
-import * as sessionsApi from '@/api/sessions'
+import { apolloClient } from '@/graphql/client'
+import { SAVE_MESSAGES } from '@/graphql/operations/state'
+import { PUBLIC_SESSION_QUERY, PUBLIC_MESSAGES_QUERY } from '@/graphql/operations/public'
 
 const SPLASH_MIN_DURATION = 1500 // Minimum splash screen duration in ms
 
@@ -148,7 +160,7 @@ function NavigationSync() {
 
 /** Read-only viewer for publicly shared sessions. */
 function PublicViewerApp({ sessionId }: { sessionId: string }) {
-  const { clearPublicSession } = useUIStore()
+  const clearPublicSession = clearPublicSessionFn
   const [summary, setSummary] = useState<string | null>(null)
   const [messages, setMessages] = useState<Array<{ id: string; type: string; content: string; timestamp: string }>>([])
   const [loading, setLoading] = useState(true)
@@ -158,13 +170,13 @@ function PublicViewerApp({ sessionId }: { sessionId: string }) {
     let cancelled = false
     const load = async () => {
       try {
-        const [sessionResp, messagesResp] = await Promise.all([
-          sessionsApi.publicGetSession(sessionId),
-          sessionsApi.publicGetMessages(sessionId),
+        const [sessionResult, messagesResult] = await Promise.all([
+          apolloClient.query({ query: PUBLIC_SESSION_QUERY, variables: { sessionId } }),
+          apolloClient.query({ query: PUBLIC_MESSAGES_QUERY, variables: { sessionId } }),
         ])
         if (cancelled) return
-        setSummary(sessionResp.summary)
-        setMessages(messagesResp.messages || [])
+        setSummary(sessionResult.data.publicSession.summary)
+        setMessages(messagesResult.data.publicMessages.messages || [])
       } catch {
         if (!cancelled) setError('This session is not available or not publicly shared.')
       } finally {
@@ -256,9 +268,9 @@ function PublicViewerApp({ sessionId }: { sessionId: string }) {
 }
 
 function MainApp() {
-  const { session, wsConnected, createSession, messages } = useSessionStore()
-  const { userId } = useAuthStore()
-  const { fetchAllSkills } = useArtifactStore()
+  const { session, wsConnected, createSession, messages } = useSessionContext()
+  const { userId } = useAuth()
+  const { fetchAllSkills } = useArtifactContext()
   const initializingRef = useRef(false)
   const [initPhase, setInitPhase] = useState<InitPhase>('creating_session')
 
@@ -326,7 +338,10 @@ function MainApp() {
     }
 
     saveTimerRef.current = setTimeout(() => {
-      sessionsApi.saveMessages(session.session_id, messagesToSave)
+      apolloClient.mutate({
+        mutation: SAVE_MESSAGES,
+        variables: { sessionId: session.session_id, messages: messagesToSave },
+      })
         .then(() => {
           lastSavedRef.current = serialized
           pendingMessagesRef.current = null
@@ -355,7 +370,7 @@ function MainApp() {
     // 1. Getting/creating session ID from localStorage (per user)
     // 2. Sending to server (which reconnects if exists, or creates new)
     // 3. Connecting WebSocket
-    useUIStore.getState().initPreferences()
+    initPreferences()
     createSession(userId)
       .then(() => {
         setInitPhase('connecting_websocket')
@@ -366,10 +381,9 @@ function MainApp() {
   }, [session, createSession, userId])
 
   // Proof panel state
-  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, isPlanningComplete, proofSummary, isSummaryGenerating, closePanel: closeProofPanel, clearFacts, isProving, hasCompletedProof } = useProofStore()
-  const { submitQuery } = useSessionStore()
-  const uiMode = useUIStore((s) => s.uiMode)
-  const exitReasonChainMode = useUIStore((s) => s.exitReasonChainMode)
+  const { proofFacts, isProofPanelOpen, isPlanningComplete, proofSummary, isSummaryGenerating, closeProofPanel, clearProofFacts: clearFacts, isProving, hasCompletedProof, submitQuery } = useSessionContext()
+  const uiMode = useReactiveVar(uiModeVar)
+  const exitReasonChainMode = exitReasonChainModeFn
 
   // Help modal state
   const [isHelpOpen, setIsHelpOpen] = useState(false)
@@ -464,21 +478,12 @@ function MainApp() {
 }
 
 function App() {
-  const { initialize, loading, initialized } = useAuthStore()
-  const publicSessionId = useUIStore((state) => state.publicSessionId)
-  const isAuthenticated = useAuthStore((state) => {
-    if (isAuthDisabled) return true
-    return state.user !== null
-  })
+  const { loading, initialized, isAuthenticated } = useAuth()
+  const publicSessionId = useReactiveVar(publicSessionIdVar)
 
   // Track splash screen timing
   const [splashStartTime] = useState(() => Date.now())
   const [minTimeElapsed, setMinTimeElapsed] = useState(false)
-
-  // Initialize auth on mount
-  useEffect(() => {
-    initialize()
-  }, [initialize])
 
   // Ensure splash screen shows for minimum duration
   useEffect(() => {
@@ -504,7 +509,7 @@ function App() {
   }
 
   // Show login page if not authenticated (and auth is enabled)
-  if (!isAuthDisabled && !isAuthenticated) {
+  if (!isAuthenticated) {
     return <LoginPage />
   }
 

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 1f4ec839-42dc-48d0-8c31-5a2c485273f4
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -1121,7 +1122,7 @@ def elasticsearch_container(docker_available) -> Generator[dict, None, None]:
             "-e", "discovery.type=single-node",
             "-e", "xpack.security.enabled=false",
             "-e", "ES_JAVA_OPTS=-Xms256m -Xmx256m",
-            "elasticsearch:8.11.0"
+            "docker.elastic.co/elasticsearch/elasticsearch:9.0.0"
         ]
 
         try:
@@ -1190,6 +1191,43 @@ def audio_fixtures(tmp_path):
         "medium_wav": make_wav("medium.wav", duration_sec=5),
         "silence_wav": make_wav("silence.wav", duration_sec=2, frequency=0),
     }
+
+
+# =============================================================================
+# GraphQL Test Fixtures
+# =============================================================================
+
+@pytest.fixture
+def graphql_app():
+    """Minimal FastAPI app with GraphQL router mounted (auth disabled).
+
+    Use for integration tests that don't need a full server.
+    """
+    from unittest.mock import MagicMock
+    from fastapi import FastAPI
+    from constat.server.graphql import graphql_router
+
+    app = FastAPI()
+    app.state.session_manager = MagicMock()
+    server_config = MagicMock()
+    server_config.auth_disabled = True
+    app.state.server_config = server_config
+    app.include_router(graphql_router, prefix="/api/graphql")
+    return app
+
+
+@pytest.fixture
+def graphql_client(graphql_app):
+    """TestClient for the GraphQL endpoint (auth disabled).
+
+    Usage::
+
+        def test_something(graphql_client):
+            resp = graphql_client.post("/api/graphql", json={"query": "{ __typename }"})
+            assert resp.json()["data"]["__typename"] == "Query"
+    """
+    from starlette.testclient import TestClient
+    return TestClient(graphql_app)
 
 
 # Auto-skip tests based on markers

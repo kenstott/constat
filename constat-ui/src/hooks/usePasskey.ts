@@ -1,7 +1,23 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: aa5104bd-acbf-4249-9bfc-8e56fd7a51e1
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // WebAuthn passkey hook with PRF extension support
 
 import { useState, useCallback } from 'react'
-import { post } from '@/api/client'
+import { useMutation } from '@apollo/client'
+import {
+  PASSKEY_REGISTER_BEGIN,
+  PASSKEY_REGISTER_COMPLETE,
+  PASSKEY_AUTH_BEGIN,
+  PASSKEY_AUTH_COMPLETE,
+} from '@/graphql/operations/auth'
 
 // PRF extension types (not yet in standard TypeScript DOM lib)
 interface PRFValues {
@@ -45,15 +61,18 @@ export function usePasskey({ userId }: PasskeyOptions): UsePasskeyReturn {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const [registerBeginMutation] = useMutation(PASSKEY_REGISTER_BEGIN)
+  const [registerCompleteMutation] = useMutation(PASSKEY_REGISTER_COMPLETE)
+  const [authBeginMutation] = useMutation(PASSKEY_AUTH_BEGIN)
+  const [authCompleteMutation] = useMutation(PASSKEY_AUTH_COMPLETE)
+
   const registerPasskey = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
       // 1. Get registration options from server
-      const options = await post<PublicKeyCredentialCreationOptionsJSON>(
-        '/auth/passkey/register/begin',
-        { user_id: userId }
-      )
+      const { data: beginData } = await registerBeginMutation({ variables: { userId } })
+      const options = beginData.passkeyRegisterBegin.optionsJson as PublicKeyCredentialCreationOptionsJSON
 
       // 2. Create credential via WebAuthn
       const credential = await navigator.credentials.create({
@@ -66,9 +85,11 @@ export function usePasskey({ userId }: PasskeyOptions): UsePasskeyReturn {
 
       // 3. Send credential to server
       const response = credential.response as AuthenticatorAttestationResponse
-      await post('/auth/passkey/register/complete', {
-        user_id: userId,
-        credential: serializeAttestationResponse(credential, response),
+      await registerCompleteMutation({
+        variables: {
+          userId,
+          credential: serializeAttestationResponse(credential, response),
+        },
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Passkey registration failed'
@@ -77,17 +98,15 @@ export function usePasskey({ userId }: PasskeyOptions): UsePasskeyReturn {
     } finally {
       setLoading(false)
     }
-  }, [userId])
+  }, [userId, registerBeginMutation, registerCompleteMutation])
 
   const authenticatePasskey = useCallback(async (): Promise<{ vault_unlocked?: boolean }> => {
     setLoading(true)
     setError(null)
     try {
       // 1. Get authentication options from server
-      const options = await post<PublicKeyCredentialRequestOptionsJSON>(
-        '/auth/passkey/auth/begin',
-        { user_id: userId }
-      )
+      const { data: beginData } = await authBeginMutation({ variables: { userId } })
+      const options = beginData.passkeyAuthBegin.optionsJson as PublicKeyCredentialRequestOptionsJSON
 
       // 2. Authenticate via WebAuthn with PRF extension
       const requestOptions = parseRequestOptions(options)
@@ -113,16 +132,15 @@ export function usePasskey({ userId }: PasskeyOptions): UsePasskeyReturn {
 
       // 4. Send credential to server
       const response = credential.response as AuthenticatorAssertionResponse
-      const result = await post<{ status: string; user_id: string; vault_unlocked?: boolean }>(
-        '/auth/passkey/auth/complete',
-        {
-          user_id: userId,
+      const { data: completeData } = await authCompleteMutation({
+        variables: {
+          userId,
           credential: serializeAssertionResponse(credential, response),
-          prf_output: prfB64,
-        }
-      )
+          prfOutput: prfB64,
+        },
+      })
 
-      return { vault_unlocked: result.vault_unlocked }
+      return { vault_unlocked: completeData.passkeyAuthComplete.vaultUnlocked }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Passkey authentication failed'
       setError(message)
@@ -130,16 +148,16 @@ export function usePasskey({ userId }: PasskeyOptions): UsePasskeyReturn {
     } finally {
       setLoading(false)
     }
-  }, [userId])
+  }, [userId, authBeginMutation, authCompleteMutation])
 
   const hasPasskey = useCallback(async (): Promise<boolean> => {
     try {
-      await post('/auth/passkey/auth/begin', { user_id: userId })
+      await authBeginMutation({ variables: { userId } })
       return true
     } catch {
       return false
     }
-  }, [userId])
+  }, [userId, authBeginMutation])
 
   return { loading, error, registerPasskey, authenticatePasskey, hasPasskey }
 }

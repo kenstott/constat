@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 12190d16-ae4b-4b95-b340-d9bf52b16673
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -444,6 +445,46 @@ class SessionManager:
         # Diff generator registry (heartbeat-triggered)
         from constat.server.diff_generators import EntityDiffGenerator
         self._diff_generators = [EntityDiffGenerator()]
+
+        # GraphQL subscription pub/sub
+        self._glossary_subscribers: dict[str, list[asyncio.Queue]] = {}
+        self._execution_subscribers: dict[str, list[asyncio.Queue]] = {}
+
+    # ------------------------------------------------------------------
+    # GraphQL subscription pub/sub
+    # ------------------------------------------------------------------
+
+    def subscribe_glossary(self, session_id: str) -> asyncio.Queue:
+        if session_id not in self._glossary_subscribers:
+            self._glossary_subscribers[session_id] = []
+        queue: asyncio.Queue = asyncio.Queue()
+        self._glossary_subscribers[session_id].append(queue)
+        return queue
+
+    def unsubscribe_glossary(self, session_id: str, queue: asyncio.Queue) -> None:
+        subs = self._glossary_subscribers.get(session_id, [])
+        if queue in subs:
+            subs.remove(queue)
+
+    def publish_glossary_change(self, session_id: str, event) -> None:
+        for queue in self._glossary_subscribers.get(session_id, []):
+            queue.put_nowait(event)
+
+    def subscribe_execution(self, session_id: str) -> asyncio.Queue:
+        if session_id not in self._execution_subscribers:
+            self._execution_subscribers[session_id] = []
+        queue: asyncio.Queue = asyncio.Queue()
+        self._execution_subscribers[session_id].append(queue)
+        return queue
+
+    def unsubscribe_execution(self, session_id: str, queue: asyncio.Queue) -> None:
+        subs = self._execution_subscribers.get(session_id, [])
+        if queue in subs:
+            subs.remove(queue)
+
+    def publish_execution_event(self, session_id: str, event: dict) -> None:
+        for queue in self._execution_subscribers.get(session_id, []):
+            queue.put_nowait(event)
 
     # ------------------------------------------------------------------
     # Active connection tracking
@@ -1018,12 +1059,9 @@ class SessionManager:
                     "version": version,
                 })
             # No patch needed if states are identical
-        else:
-            self._push_event(managed, EventType.ENTITY_STATE, {
-                "state": new_state,
-                "version": version,
-            })
 
+        # Never push full ENTITY_STATE over WS — client fetches initial state
+        # via REST/GraphQL. Only patches are pushed for incremental sync.
         managed._last_entity_state = new_state
 
     def refresh_entities_async(self, session_id: str) -> None:

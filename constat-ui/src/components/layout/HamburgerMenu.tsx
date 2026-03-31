@@ -1,6 +1,16 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: b267904f-97dc-4e27-b330-21cb8ef1b130
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Hamburger Menu (drawer) component
 
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useState } from 'react'
 import { Dialog, Transition } from '@headlessui/react'
 import { XMarkIcon } from '@heroicons/react/24/outline'
 import {
@@ -12,20 +22,21 @@ import {
   ChevronRightIcon,
   GlobeAltIcon,
 } from '@heroicons/react/24/outline'
-import { useUIStore } from '@/store/uiStore'
-import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import { useAuthStore, isAuthDisabled } from '@/store/authStore'
-import * as sessionsApi from '@/api/sessions'
+import { useQuery } from '@apollo/client'
+import { useReactiveVar } from '@apollo/client'
+import { menuOpenVar, themeVar, setTheme } from '@/graphql/ui-state'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useAuth } from '@/contexts/AuthContext'
 import type { Session } from '@/types/api'
 import DomainPanel from '@/components/artifacts/DomainPanel'
+import { SESSIONS_QUERY, toSession } from '@/graphql/operations/sessions'
 
 interface HamburgerMenuProps {
   onNewSession?: () => void
 }
 
 function AccountSection({ onClose }: { onClose: () => void }) {
-  const { user, logout } = useAuthStore()
+  const { user, logout } = useAuth()
   const [imageError, setImageError] = useState(false)
 
   const handleLogout = async () => {
@@ -75,38 +86,30 @@ function AccountSection({ onClose }: { onClose: () => void }) {
 }
 
 export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
-  const { menuOpen, setMenuOpen, theme, setTheme } = useUIStore()
-  const { session: currentSession, setSession, createSession } = useSessionStore()
-  const [sessions, setSessions] = useState<Session[]>([])
-  const [loadingSessions, setLoadingSessions] = useState(false)
+  const menuOpen = useReactiveVar(menuOpenVar)
+  const setMenuOpen = (v: boolean) => menuOpenVar(v)
+  const theme = useReactiveVar(themeVar)
+  const { session: currentSession, createSession, switchSession } = useSessionContext()
+  const { isAuthDisabled } = useAuth()
   // Loading state for session operations
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null)
   const [creatingSession, setCreatingSession] = useState(false)
   const [domainCollapsed, setDomainCollapsed] = useState(false)
 
-  // Fetch sessions, projects, and skills when menu opens
-  useEffect(() => {
-    if (menuOpen) {
-      // Fetch sessions
-      setLoadingSessions(true)
-      sessionsApi.listSessions()
-        .then((response) => {
-          // Sort by last_activity descending (most recent first)
-          // Exclude current session - it will be shown separately at the top
-          // Exclude empty sessions (no tables and no query executed)
-          const sorted = [...response.sessions]
-            .filter(s => s.session_id !== currentSession?.session_id)
-            .filter(s => s.tables_count > 0 || s.current_query)
-            .sort(
-              (a, b) => new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
-            )
-          setSessions(sorted)
-        })
-        .catch(console.error)
-        .finally(() => setLoadingSessions(false))
+  // Fetch sessions via GraphQL when menu opens
+  const { data: sessionsData, loading: loadingSessions } = useQuery(SESSIONS_QUERY, {
+    skip: !menuOpen,
+    fetchPolicy: 'network-only',
+  })
 
-    }
-  }, [menuOpen, currentSession?.session_id])
+  // Sort by last_activity descending, exclude current session and empty sessions
+  const sessions: Session[] = (sessionsData?.sessions?.sessions || [])
+    .map(toSession)
+    .filter((s: Session) => s.session_id !== currentSession?.session_id)
+    .filter((s: Session) => s.tables_count > 0 || s.current_query)
+    .sort(
+      (a: Session, b: Session) => new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
+    )
 
   const handleSwitchSession = async (sessionId: string) => {
     if (sessionId === currentSession?.session_id) {
@@ -116,60 +119,7 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
 
     setSwitchingSessionId(sessionId)
     try {
-      console.log('[switchSession] Switching to session:', sessionId)
-      // Use createSession to restore/reconnect - it handles both in-memory and historical sessions
-      // getSession only looks in memory and returns 404 for historical sessions
-      const [session, messagesResult] = await Promise.all([
-        sessionsApi.createSession(currentSession?.user_id || 'default', sessionId),
-        sessionsApi.getMessages(sessionId).catch((err) => {
-          console.warn('[switchSession] Failed to fetch messages:', err)
-          return { messages: [] }
-        }),
-      ])
-      console.log('[switchSession] Restored session:', session.session_id)
-      console.log('[switchSession] Fetched messages:', messagesResult.messages?.length || 0)
-
-      // Clear current state
-      useArtifactStore.getState().clear()
-
-      // Restore messages BEFORE connecting WebSocket (prevents welcome message overwrite)
-      if (messagesResult.messages && messagesResult.messages.length > 0) {
-        const restoredMessages = messagesResult.messages.map(m => ({
-          id: m.id,
-          type: m.type as 'user' | 'system' | 'plan' | 'step' | 'output' | 'error' | 'thinking',
-          content: m.content,
-          timestamp: new Date(m.timestamp),
-          stepNumber: m.stepNumber,
-          isFinalInsight: m.isFinalInsight,
-        }))
-        console.log('[switchSession] Restored messages:', restoredMessages.length)
-        useSessionStore.setState({ messages: restoredMessages, suggestions: [], plan: null })
-      } else {
-        console.log('[switchSession] No messages to restore, clearing')
-        useSessionStore.getState().clearMessages()
-      }
-
-      // Set session with preserveMessages to avoid clearing restored messages
-      setSession(session, { preserveMessages: true })
-
-      // Update localStorage with user-specific session key
-      sessionsApi.storeSessionId(sessionId, session.user_id)
-
-      // Fetch all session data to restore state (parallel for speed)
-      const artifactStore = useArtifactStore.getState()
-      await Promise.all([
-        artifactStore.fetchTables(sessionId),
-        artifactStore.fetchArtifacts(sessionId),
-        artifactStore.fetchFacts(sessionId),
-        artifactStore.fetchEntities(sessionId),
-        artifactStore.fetchDataSources(sessionId),
-        artifactStore.fetchStepCodes(sessionId),
-        artifactStore.fetchInferenceCodes(sessionId),
-        artifactStore.fetchLearnings(),
-        artifactStore.fetchAllAgents(sessionId),
-        artifactStore.fetchPromptContext(sessionId),
-      ])
-
+      await switchSession(sessionId)
       setMenuOpen(false)
     } catch (error) {
       console.error('Failed to switch session:', error)

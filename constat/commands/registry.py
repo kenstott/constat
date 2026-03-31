@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 0ab516e4-2818-4b29-8856-c8f988e78297
 #
 # Command registry - maps command names to handlers.
 

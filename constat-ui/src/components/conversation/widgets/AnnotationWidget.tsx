@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: ad2018ad-640a-40c9-adb1-f5a8a8e36d48
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // AnnotationWidget - Image markup with canvas overlay for rectangle/circle/arrow/text annotations
 
 import { useState, useRef, useCallback, useEffect } from 'react'

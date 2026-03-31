@@ -1,16 +1,28 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 97ff88d6-df41-476e-a792-3236e00f1740
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Fullscreen Artifact Modal - triggered from View Result button
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { XMarkIcon, ArrowDownTrayIcon, ChevronDownIcon, ClipboardDocumentIcon, ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline'
-import { useUIStore } from '@/store/uiStore'
-import { useSessionStore } from '@/store/sessionStore'
-import * as sessionsApi from '@/api/sessions'
-import type { ArtifactContent, TableData } from '@/types/api'
-import type { DatabaseTablePreview } from '@/api/sessions'
+import { useReactiveVar } from '@apollo/client'
+import { fullscreenArtifactVar, closeFullscreenArtifact } from '@/graphql/ui-state'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { apolloClient } from '@/graphql/client'
+import { TABLE_DATA_QUERY, ARTIFACT_QUERY, toTableData, toArtifactContent } from '@/graphql/operations/data'
+import type { ArtifactContent, TableData, DatabaseTablePreview } from '@/types/api'
+import { DATABASE_TABLE_PREVIEW_QUERY, toDatabaseTablePreview } from '@/graphql/operations/sources'
 
 export function FullscreenArtifactModal() {
-  const { fullscreenArtifact, closeFullscreenArtifact } = useUIStore()
-  const { session } = useSessionStore()
+  const fullscreenArtifact = useReactiveVar(fullscreenArtifactVar)
+  const { session } = useSessionContext()
   const [content, setContent] = useState<ArtifactContent | null>(null)
   const [tableData, setTableData] = useState<TableData | null>(null)
   const [dbTableData, setDbTableData] = useState<DatabaseTablePreview | null>(null)
@@ -140,26 +152,26 @@ export function FullscreenArtifactModal() {
 
       try {
         if (fullscreenArtifact.type === 'table' && fullscreenArtifact.name) {
-          const data = await sessionsApi.getTableData(
-            session.session_id,
-            fullscreenArtifact.name,
-            tablePage
-          )
-          setTableData(data)
+          const { data: result } = await apolloClient.query({
+            query: TABLE_DATA_QUERY,
+            variables: { sessionId: session.session_id, name: fullscreenArtifact.name, page: tablePage },
+            fetchPolicy: 'network-only',
+          })
+          setTableData(toTableData(result.tableData))
         } else if (fullscreenArtifact.type === 'database_table' && fullscreenArtifact.dbName && fullscreenArtifact.tableName) {
-          const data = await sessionsApi.getDatabaseTablePreview(
-            session.session_id,
-            fullscreenArtifact.dbName,
-            fullscreenArtifact.tableName,
-            tablePage
-          )
-          setDbTableData(data)
+          const { data: dbResult } = await apolloClient.query({
+            query: DATABASE_TABLE_PREVIEW_QUERY,
+            variables: { sessionId: session.session_id, dbName: fullscreenArtifact.dbName, tableName: fullscreenArtifact.tableName, page: tablePage },
+            fetchPolicy: 'network-only',
+          })
+          setDbTableData(toDatabaseTablePreview(dbResult.databaseTablePreview))
         } else if (fullscreenArtifact.type === 'artifact' && fullscreenArtifact.id) {
-          const artifactContent = await sessionsApi.getArtifact(
-            session.session_id,
-            fullscreenArtifact.id
-          )
-          setContent(artifactContent)
+          const { data: result } = await apolloClient.query({
+            query: ARTIFACT_QUERY,
+            variables: { sessionId: session.session_id, id: fullscreenArtifact.id },
+            fetchPolicy: 'network-only',
+          })
+          setContent(toArtifactContent(result.artifact))
         }
       } catch (err) {
         setError(String(err))

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 52acd853-d514-4d89-9235-66bf5de001fc
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -312,7 +313,7 @@ def _create_clarification_callback(managed: ManagedSession, loop: asyncio.Abstra
     return clarification_callback
 
 
-def _create_event_handler(managed: ManagedSession):
+def _create_event_handler(managed: ManagedSession, session_manager: "SessionManager | None" = None):
     """Create an event handler that queues events for WebSocket delivery.
 
     The handler is called from a thread-pool thread (run_in_executor), so
@@ -405,6 +406,15 @@ def _create_event_handler(managed: ManagedSession):
             except RuntimeError:
                 # Loop closed — fall back to direct put
                 _enqueue(payload)
+
+            # Also publish to GraphQL subscription queues
+            if session_manager is not None:
+                try:
+                    loop.call_soon_threadsafe(
+                        session_manager.publish_execution_event, managed.session_id, payload
+                    )
+                except RuntimeError:
+                    session_manager.publish_execution_event(managed.session_id, payload)
 
         except Exception as e:
             logger.error(f"Error handling event: {e}")
@@ -520,6 +530,7 @@ async def _execute_query_async(
     is_followup: bool = False,
     replay: bool = False,
     objective_index: int | None = None,
+    session_manager: "SessionManager | None" = None,
 ) -> None:
     """Execute query in background and update session state.
 
@@ -530,8 +541,14 @@ async def _execute_query_async(
         is_followup: Whether this is a follow-up to a previous query
         replay: Whether to replay stored code instead of LLM codegen
         objective_index: If replaying, only replay entries with this objective_index
+        session_manager: Session manager for GraphQL subscription pub/sub
     """
     loop = asyncio.get_event_loop()
+
+    def _publish_terminal(payload: dict) -> None:
+        managed.event_queue.put_nowait(payload)
+        if session_manager is not None:
+            session_manager.publish_execution_event(managed.session_id, payload)
 
     try:
         # Run the synchronous solve() in thread pool
@@ -545,7 +562,7 @@ async def _execute_query_async(
         if result.get("success"):
             # Use synthesized final_answer if available, fallback to raw output
             final_output = result.get("final_answer") or result.get("output", "")
-            managed.event_queue.put_nowait({
+            _publish_terminal({
                 "event_type": EventType.QUERY_COMPLETE.value,
                 "session_id": managed.session_id,
                 "step_number": 0,
@@ -559,7 +576,7 @@ async def _execute_query_async(
             })
             managed.status = SessionStatus.COMPLETED
         else:
-            managed.event_queue.put_nowait({
+            _publish_terminal({
                 "event_type": EventType.QUERY_ERROR.value,
                 "session_id": managed.session_id,
                 "step_number": 0,
@@ -572,7 +589,7 @@ async def _execute_query_async(
 
     except asyncio.CancelledError:
         # Query was cancelled
-        managed.event_queue.put_nowait({
+        _publish_terminal({
             "event_type": EventType.QUERY_CANCELLED.value,
             "session_id": managed.session_id,
             "step_number": 0,
@@ -583,7 +600,7 @@ async def _execute_query_async(
 
     except Exception as e:
         logger.error(f"Async query execution error: {e}")
-        managed.event_queue.put_nowait({
+        _publish_terminal({
             "event_type": EventType.QUERY_ERROR.value,
             "session_id": managed.session_id,
             "step_number": 0,
@@ -690,14 +707,14 @@ async def submit_query(
         managed.session.session_config.force_approval = body.require_approval
 
     # Register event handler if not already registered
-    handler = _create_event_handler(managed)
+    handler = _create_event_handler(managed, session_manager)
     # Remove any existing handlers first to avoid duplicates
     managed.session._event_handlers = []
     managed.session.on_event(handler)
 
     # Start background execution using asyncio.create_task for better shutdown control
     task = asyncio.create_task(
-        _execute_query_async(managed, body.problem, execution_id, body.is_followup, replay=body.replay, objective_index=body.objective_index)
+        _execute_query_async(managed, body.problem, execution_id, body.is_followup, replay=body.replay, objective_index=body.objective_index, session_manager=session_manager)
     )
     _active_tasks.add(task)
     task.add_done_callback(_active_tasks.discard)
@@ -1114,7 +1131,7 @@ async def websocket_endpoint(
                         managed.execution_id = execution_id
 
                         # Register event handler so step events reach the WebSocket
-                        _handler = _create_event_handler(managed)
+                        _handler = _create_event_handler(managed, session_manager)
                         managed.session._event_handlers = []
                         managed.session.on_event(_handler)
 
@@ -1125,7 +1142,7 @@ async def websocket_endpoint(
                                     _executor,
                                     lambda: managed.session.edit_objective(obj_index, new_text)
                                 )
-                                managed.event_queue.put_nowait({
+                                _payload = {
                                     "event_type": EventType.QUERY_COMPLETE.value,
                                     "session_id": session_id,
                                     "step_number": 0,
@@ -1135,15 +1152,19 @@ async def websocket_endpoint(
                                         "final_answer": result.get("final_answer", ""),
                                         "suggestions": result.get("suggestions", []),
                                     },
-                                })
+                                }
+                                managed.event_queue.put_nowait(_payload)
+                                session_manager.publish_execution_event(session_id, _payload)
                             except Exception as obj_err:
                                 logger.error(f"Edit objective error: {obj_err}")
-                                managed.event_queue.put_nowait({
+                                _payload = {
                                     "event_type": EventType.QUERY_ERROR.value,
                                     "session_id": session_id,
                                     "step_number": 0,
                                     "data": {"error": str(obj_err)},
-                                })
+                                }
+                                managed.event_queue.put_nowait(_payload)
+                                session_manager.publish_execution_event(session_id, _payload)
                             finally:
                                 managed.status = SessionStatus.IDLE
                                 managed.execution_id = None
@@ -1164,7 +1185,7 @@ async def websocket_endpoint(
                         managed.execution_id = execution_id
 
                         # Register event handler so step events reach the WebSocket
-                        _handler = _create_event_handler(managed)
+                        _handler = _create_event_handler(managed, session_manager)
                         managed.session._event_handlers = []
                         managed.session.on_event(_handler)
 
@@ -1175,7 +1196,7 @@ async def websocket_endpoint(
                                     _executor,
                                     lambda: managed.session.delete_objective(del_index)
                                 )
-                                managed.event_queue.put_nowait({
+                                _payload = {
                                     "event_type": EventType.QUERY_COMPLETE.value,
                                     "session_id": session_id,
                                     "step_number": 0,
@@ -1185,15 +1206,19 @@ async def websocket_endpoint(
                                         "final_answer": result.get("final_answer", ""),
                                         "suggestions": result.get("suggestions", []),
                                     },
-                                })
+                                }
+                                managed.event_queue.put_nowait(_payload)
+                                session_manager.publish_execution_event(session_id, _payload)
                             except Exception as del_err:
                                 logger.error(f"Delete objective error: {del_err}")
-                                managed.event_queue.put_nowait({
+                                _payload = {
                                     "event_type": EventType.QUERY_ERROR.value,
                                     "session_id": session_id,
                                     "step_number": 0,
                                     "data": {"error": str(del_err)},
-                                })
+                                }
+                                managed.event_queue.put_nowait(_payload)
+                                session_manager.publish_execution_event(session_id, _payload)
                             finally:
                                 managed.status = SessionStatus.IDLE
                                 managed.execution_id = None
@@ -1212,19 +1237,21 @@ async def websocket_endpoint(
                         edited_goal = replan_data.get("edited_goal")
 
                         # Emit replan_start so UI can mark steps as superseded
-                        managed.event_queue.put_nowait({
+                        _replan_start = {
                             "event_type": "replan_start",
                             "session_id": session_id,
                             "step_number": step_number,
                             "data": {"mode": mode, "from_step": step_number},
-                        })
+                        }
+                        managed.event_queue.put_nowait(_replan_start)
+                        session_manager.publish_execution_event(session_id, _replan_start)
 
                         managed.status = SessionStatus.EXECUTING
                         execution_id = str(uuid.uuid4())
                         managed.execution_id = execution_id
 
                         # Register event handler so step events reach the WebSocket
-                        _handler = _create_event_handler(managed)
+                        _handler = _create_event_handler(managed, session_manager)
                         managed.session._event_handlers = []
                         managed.session.on_event(_handler)
 
@@ -1237,7 +1264,7 @@ async def websocket_endpoint(
                                         step_number, mode, edited_goal
                                     )
                                 )
-                                managed.event_queue.put_nowait({
+                                _payload = {
                                     "event_type": EventType.QUERY_COMPLETE.value,
                                     "session_id": session_id,
                                     "step_number": 0,
@@ -1247,15 +1274,19 @@ async def websocket_endpoint(
                                         "final_answer": result.get("final_answer", ""),
                                         "suggestions": result.get("suggestions", []),
                                     },
-                                })
+                                }
+                                managed.event_queue.put_nowait(_payload)
+                                session_manager.publish_execution_event(session_id, _payload)
                             except Exception as replan_err:
                                 logger.error(f"Replan error: {replan_err}")
-                                managed.event_queue.put_nowait({
+                                _payload = {
                                     "event_type": EventType.QUERY_ERROR.value,
                                     "session_id": session_id,
                                     "step_number": 0,
                                     "data": {"error": str(replan_err)},
-                                })
+                                }
+                                managed.event_queue.put_nowait(_payload)
+                                session_manager.publish_execution_event(session_id, _payload)
                             finally:
                                 managed.status = SessionStatus.IDLE
                                 managed.execution_id = None
@@ -1266,13 +1297,6 @@ async def websocket_endpoint(
                             "type": "ack",
                             "payload": {"action": "replan_from", "status": "ok"},
                         })
-
-                    elif action == "entity_seed":
-                        seed_data = data.get("data", {})
-                        version = seed_data.get("version")
-                        managed._client_entity_version = version
-                        if version != managed._entity_state_version:
-                            session_manager.push_entity_state(session_id)
 
                     elif action == "heartbeat":
                         since = data.get("data", {}).get("since") if data.get("data") else None

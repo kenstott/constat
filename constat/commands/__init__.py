@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: f17275da-27bb-46cc-a151-7da5586d60d6
 #
 # Command module - shared command handlers for REPL and UI.
 #

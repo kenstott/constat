@@ -1,9 +1,20 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 0c999e87-d0f5-404f-9ce5-45d20652325f
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Main Layout component
 
 import { ReactNode, useState, useCallback, useEffect } from 'react'
 import { StatusBar } from './StatusBar'
 import { HamburgerMenu } from './HamburgerMenu'
-import { useUIStore } from '@/store/uiStore'
+import { useReactiveVar } from '@apollo/client'
+import { artifactPanelHiddenVar, toggleArtifactPanel } from '@/graphql/ui-state'
 import { Squares2X2Icon } from '@heroicons/react/24/outline'
 
 interface MainLayoutProps {
@@ -37,8 +48,7 @@ export function MainLayout({
 }: MainLayoutProps) {
   const [panelWidth, setPanelWidth] = useState(getSavedPanelWidth)
   const [isResizing, setIsResizing] = useState(false)
-  const artifactPanelHidden = useUIStore((s) => s.artifactPanelHidden)
-  const toggleArtifactPanel = useUIStore((s) => s.toggleArtifactPanel)
+  const artifactPanelHidden = useReactiveVar(artifactPanelHiddenVar)
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()

@@ -1,7 +1,17 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: b0110888-ebb2-45a6-822d-4cbab4a0b884
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Login/Signup page with Google, Email/Password, and Passwordless authentication
 
 import { useState, useEffect } from 'react'
-import { useAuthStore } from '@/store/authStore'
+import { useAuth } from '@/contexts/AuthContext'
 
 type AuthMode = 'login' | 'signup' | 'reset' | 'emaillink'
 
@@ -23,8 +33,9 @@ export function LoginPage() {
     isEmailLinkSignIn,
     loading,
     error,
+    setError,
     clearError,
-  } = useAuthStore()
+  } = useAuth()
 
   // Check if user is returning from an email link
   useEffect(() => {
@@ -92,11 +103,11 @@ export function LoginPage() {
 
     if (mode === 'signup') {
       if (password !== confirmPassword) {
-        useAuthStore.setState({ error: 'Passwords do not match' })
+        setError('Passwords do not match')
         return
       }
       if (password.length < 6) {
-        useAuthStore.setState({ error: 'Password must be at least 6 characters' })
+        setError('Password must be at least 6 characters')
         return
       }
       try {

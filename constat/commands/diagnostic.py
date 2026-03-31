@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 6ef34e69-9dcf-499d-9ded-488885e1c460
 #
 # Diagnostic commands - expose LLM tool outputs for inspection.
 

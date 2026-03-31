@@ -1,4 +1,15 @@
-import { useToastStore } from '@/store/toastStore'
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 195343cf-0b9b-46ca-9245-ce2d74542710
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
+import { useReactiveVar } from '@apollo/client'
+import { toastsVar, dismissToast } from '@/graphql/ui-state'
 import { CheckCircleIcon, ExclamationCircleIcon, InformationCircleIcon, XMarkIcon } from '@heroicons/react/24/outline'
 
 const icons = {
@@ -14,8 +25,8 @@ const colors = {
 }
 
 export function ToastContainer() {
-  const toasts = useToastStore((s) => s.toasts)
-  const removeToast = useToastStore((s) => s.removeToast)
+  const toasts = useReactiveVar(toastsVar)
+  const removeToast = (id: string) => dismissToast(id)
 
   if (toasts.length === 0) return null
 

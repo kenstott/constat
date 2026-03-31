@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: fab19d37-cd4e-446c-8f54-bd8b792c6cd5
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -88,15 +89,17 @@ def test_token_eviction():
     _local_tokens.clear()
 
 
-# ---- Integration tests: endpoints ----
+# ---- Integration tests: GraphQL login endpoint ----
 
 
 def _make_test_app():
-    """Create a minimal FastAPI app with auth routes and local users."""
+    """Create a minimal FastAPI app with GraphQL auth routes and local users."""
+    from unittest.mock import MagicMock
+
     from fastapi import FastAPI
 
     from constat.server.config import LocalUser, ServerConfig
-    from constat.server.routes.auth_routes import router as auth_router
+    from constat.server.graphql import graphql_router
 
     app = FastAPI()
 
@@ -108,8 +111,21 @@ def _make_test_app():
         },
     )
     app.state.server_config = server_config
-    app.include_router(auth_router, prefix="/api/auth")
+    app.state.session_manager = MagicMock()
+    app.state.config = None
+    app.include_router(graphql_router, prefix="/graphql")
     return app, pw_hash
+
+
+LOGIN_MUTATION = """
+mutation Login($email: String!, $password: String!) {
+    login(email: $email, password: $password) {
+        token
+        userId
+        email
+    }
+}
+"""
 
 
 def test_login_endpoint_success():
@@ -117,13 +133,15 @@ def test_login_endpoint_success():
     app, _ = _make_test_app()
     client = TestClient(app)
 
-    resp = client.post("/api/auth/login", json={"username": "testuser", "password": "testpass"})
+    resp = client.post("/graphql", json={
+        "query": LOGIN_MUTATION,
+        "variables": {"email": "testuser", "password": "testpass"},
+    })
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["user_id"] == "testuser"
+    data = resp.json()["data"]["login"]
+    assert data["userId"] == "testuser"
     assert data["email"] == "test@example.com"
-    assert "token" in data
-    # Token should be valid
+    assert data["token"]
     assert validate_local_token(data["token"]) == ("testuser", "test@example.com")
     _local_tokens.clear()
 
@@ -132,29 +150,41 @@ def test_login_endpoint_bad_password():
     app, _ = _make_test_app()
     client = TestClient(app)
 
-    resp = client.post("/api/auth/login", json={"username": "testuser", "password": "wrong"})
-    assert resp.status_code == 401
+    resp = client.post("/graphql", json={
+        "query": LOGIN_MUTATION,
+        "variables": {"email": "testuser", "password": "wrong"},
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("errors")
 
 
 def test_login_endpoint_unknown_user():
     app, _ = _make_test_app()
     client = TestClient(app)
 
-    resp = client.post("/api/auth/login", json={"username": "nobody", "password": "testpass"})
-    assert resp.status_code == 401
+    resp = client.post("/graphql", json={
+        "query": LOGIN_MUTATION,
+        "variables": {"email": "nobody", "password": "testpass"},
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("errors")
 
 
 # ---- Integration test: local token accepted by auth middleware ----
 
 
 def test_local_token_accepted_by_auth():
-    """Token from login endpoint works on an authenticated route."""
+    """Token from GraphQL login works on an authenticated route."""
     _local_tokens.clear()
+    from unittest.mock import MagicMock
+
     from fastapi import Depends, FastAPI
 
     from constat.server.auth import get_current_user_id
     from constat.server.config import LocalUser, ServerConfig
-    from constat.server.routes.auth_routes import router as auth_router
+    from constat.server.graphql import graphql_router
 
     app = FastAPI()
     pw_hash = hash_password("secret")
@@ -163,7 +193,9 @@ def test_local_token_accepted_by_auth():
         local_users={"admin": LocalUser(password_hash=pw_hash, email="admin@localhost")},
     )
     app.state.server_config = server_config
-    app.include_router(auth_router, prefix="/api/auth")
+    app.state.session_manager = MagicMock()
+    app.state.config = None
+    app.include_router(graphql_router, prefix="/graphql")
 
     @app.get("/api/me")
     async def me(user_id: str = Depends(get_current_user_id)):
@@ -171,10 +203,13 @@ def test_local_token_accepted_by_auth():
 
     client = TestClient(app)
 
-    # Login
-    resp = client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
+    # Login via GraphQL
+    resp = client.post("/graphql", json={
+        "query": LOGIN_MUTATION,
+        "variables": {"email": "admin", "password": "secret"},
+    })
     assert resp.status_code == 200
-    token = resp.json()["token"]
+    token = resp.json()["data"]["login"]["token"]
 
     # Use token on authenticated endpoint
     resp = client.get("/api/me", headers={"Authorization": f"Bearer {token}"})

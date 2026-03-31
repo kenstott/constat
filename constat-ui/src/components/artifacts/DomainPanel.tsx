@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: e670f707-3912-4f1d-a662-67838b0767e9
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Domain Panel — recursive tree view with toggle, expand/collapse, CRUD, drag-and-drop
 
 import { useEffect, useState, useCallback, useRef } from 'react'
@@ -12,11 +22,25 @@ import {
   Square3Stack3DIcon,
   MapIcon,
 } from '@heroicons/react/24/outline'
-import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import { useAuthStore, isAuthDisabled } from '@/store/authStore'
-import * as sessionsApi from '@/api/sessions'
-import type { DomainTreeNode } from '@/api/sessions'
+import { useMutation } from '@apollo/client'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useArtifactContext } from '@/contexts/ArtifactContext'
+import { useAuth } from '@/contexts/AuthContext'
+import type { DomainTreeNode } from '@/types/api'
+import { apolloClient } from '@/graphql/client'
+import { SET_ACTIVE_DOMAINS } from '@/graphql/operations/sessions'
+import {
+  DOMAIN_TREE_QUERY,
+  DOMAIN_CONTENT_QUERY,
+  UPDATE_DOMAIN_CONTENT,
+  DELETE_DOMAIN,
+  UPDATE_DOMAIN,
+  PROMOTE_DOMAIN,
+  CREATE_DOMAIN,
+  MOVE_DOMAIN_SOURCE,
+  toDomainTreeNode,
+  toDomainContent,
+} from '@/graphql/operations/domains'
 import { ArrowDownTrayIcon } from '@heroicons/react/24/outline'
 import { MermaidBlock } from '@/components/proof/MermaidBlock'
 
@@ -325,12 +349,10 @@ function DomainTreeNodeView({
 }
 
 export default function DomainPanel() {
-  const { session, updateSession } = useSessionStore()
-  const { fetchDataSources } = useArtifactStore()
-  const authState = useAuthStore()
-  // Derive from raw state — Zustand getter `isAdmin` goes stale after set()
-  const isAdmin = isAuthDisabled || authState.permissions?.persona === 'platform_admin'
-  const userId = isAuthDisabled ? 'default' : (authState.user?.uid || 'default')
+  const { session, updateSession } = useSessionContext()
+  const { fetchDataSources, fetchPromptContext, promptContext } = useArtifactContext()
+  const { isAdmin, userId } = useAuth()
+  const [setActiveDomainsMutation] = useMutation(SET_ACTIVE_DOMAINS)
   const [tree, setTree] = useState<DomainTreeNode[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -458,8 +480,8 @@ export default function DomainPanel() {
 
   const refreshTree = useCallback(async () => {
     try {
-      const nodes = await sessionsApi.getDomainTree()
-      setTree(nodes)
+      const { data } = await apolloClient.query({ query: DOMAIN_TREE_QUERY, fetchPolicy: 'network-only' })
+      setTree(data.domainTree.map(toDomainTreeNode))
     } catch (err) {
       setError(String(err))
     }
@@ -468,10 +490,9 @@ export default function DomainPanel() {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    sessionsApi
-      .getDomainTree()
-      .then((nodes) => {
-        if (!cancelled) setTree(nodes)
+    apolloClient.query({ query: DOMAIN_TREE_QUERY, fetchPolicy: 'network-only' })
+      .then(({ data }) => {
+        if (!cancelled) setTree(data.domainTree.map(toDomainTreeNode))
       })
       .catch((err) => {
         if (!cancelled) setError(String(err))
@@ -496,11 +517,13 @@ export default function DomainPanel() {
         : [...current, filename]
 
       try {
-        await sessionsApi.setActiveDomains(session.session_id, newDomains)
+        await setActiveDomainsMutation({
+          variables: { sessionId: session.session_id, domains: newDomains },
+        })
         updateSession({ active_domains: newDomains })
         await fetchDataSources(session.session_id)
         // Refresh prompt context (domain activation may update session prompt)
-        await useArtifactStore.getState().fetchPromptContext(session.session_id)
+        await fetchPromptContext(session.session_id)
       } catch (err: unknown) {
         console.error('Failed to toggle domain:', err)
         if (err && typeof err === 'object' && 'message' in err) {
@@ -515,7 +538,8 @@ export default function DomainPanel() {
 
   const handleEdit = useCallback(async (filename: string) => {
     try {
-      const result = await sessionsApi.getDomainContent(filename)
+      const { data } = await apolloClient.query({ query: DOMAIN_CONTENT_QUERY, variables: { filename }, fetchPolicy: 'network-only' })
+      const result = toDomainContent(data.domainContent)
       setYamlContent(result.content)
       setYamlPath(result.path)
       setEditingFilename(filename)
@@ -528,7 +552,7 @@ export default function DomainPanel() {
     if (!editingFilename) return
     setSaving(true)
     try {
-      await sessionsApi.updateDomainContent(editingFilename, yamlContent)
+      await apolloClient.mutate({ mutation: UPDATE_DOMAIN_CONTENT, variables: { filename: editingFilename, content: yamlContent } })
       setEditingFilename(null)
       await refreshTree()
     } catch (err: unknown) {
@@ -542,7 +566,7 @@ export default function DomainPanel() {
 
   const handleDelete = useCallback(async (filename: string) => {
     try {
-      await sessionsApi.deleteDomain(filename)
+      await apolloClient.mutate({ mutation: DELETE_DOMAIN, variables: { filename } })
       setConfirmDelete(null)
       await refreshTree()
     } catch (err: unknown) {
@@ -554,7 +578,7 @@ export default function DomainPanel() {
 
   const handleRename = useCallback(async (filename: string, newName: string) => {
     try {
-      await sessionsApi.updateDomain(filename, { name: newName })
+      await apolloClient.mutate({ mutation: UPDATE_DOMAIN, variables: { filename, name: newName } })
       await refreshTree()
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'message' in err) {
@@ -565,7 +589,7 @@ export default function DomainPanel() {
 
   const handlePromote = useCallback(async (filename: string) => {
     try {
-      await sessionsApi.promoteDomain(filename)
+      await apolloClient.mutate({ mutation: PROMOTE_DOMAIN, variables: { filename } })
       await refreshTree()
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'message' in err) {
@@ -582,12 +606,12 @@ export default function DomainPanel() {
       const activeChildren = createChildParent.children
         .filter((c) => activeDomains.includes(c.filename))
         .map((c) => c.filename)
-      await sessionsApi.createDomain(
-        childName.trim(),
-        childDesc.trim(),
-        createChildParent.filename,
-        activeChildren,
-      )
+      await apolloClient.mutate({ mutation: CREATE_DOMAIN, variables: {
+        name: childName.trim(),
+        description: childDesc.trim(),
+        parentDomain: createChildParent.filename,
+        initialDomains: activeChildren,
+      } })
       setChildName('')
       setChildDesc('')
       setCreateChildParent(null)
@@ -606,7 +630,8 @@ export default function DomainPanel() {
     setSavingComposition(true)
     try {
       // Load current YAML, update domains list, save back
-      const result = await sessionsApi.getDomainContent(compositionNode.filename)
+      const { data } = await apolloClient.query({ query: DOMAIN_CONTENT_QUERY, variables: { filename: compositionNode.filename }, fetchPolicy: 'network-only' })
+      const result = toDomainContent(data.domainContent)
       const lines = result.content.split('\n')
       // Remove existing domains: block and rebuild
       let newLines: string[] = []
@@ -627,7 +652,7 @@ export default function DomainPanel() {
           newLines.push(`  - ${d}`)
         }
       }
-      await sessionsApi.updateDomainContent(compositionNode.filename, newLines.join('\n'))
+      await apolloClient.mutate({ mutation: UPDATE_DOMAIN_CONTENT, variables: { filename: compositionNode.filename, content: newLines.join('\n') } })
       setCompositionNode(null)
       await refreshTree()
     } catch (err: unknown) {
@@ -643,14 +668,14 @@ export default function DomainPanel() {
     if (!promoteName.trim()) return
     setPromoteSubmitting(true)
     try {
-      const sessionPrompt = useArtifactStore.getState().promptContext?.systemPrompt || ''
-      await sessionsApi.createDomain(
-        promoteName.trim(),
-        promoteDesc.trim(),
-        'user',
-        activeDomains,
-        sessionPrompt,
-      )
+      const sessionPrompt = promptContext?.systemPrompt || ''
+      await apolloClient.mutate({ mutation: CREATE_DOMAIN, variables: {
+        name: promoteName.trim(),
+        description: promoteDesc.trim(),
+        parentDomain: 'user',
+        initialDomains: activeDomains,
+        systemPrompt: sessionPrompt,
+      } })
       setPromoting(false)
       setPromoteName('')
       setPromoteDesc('')
@@ -666,13 +691,13 @@ export default function DomainPanel() {
 
   const handleDrop = useCallback(async (item: DragItem, targetDomain: string) => {
     try {
-      await sessionsApi.moveDomainSource({
-        source_type: item.type === 'database' ? 'databases' : item.type === 'api' ? 'apis' : 'documents',
-        source_name: item.name,
-        from_domain: item.sourceDomain,
-        to_domain: targetDomain,
-        session_id: session?.session_id,
-      })
+      await apolloClient.mutate({ mutation: MOVE_DOMAIN_SOURCE, variables: {
+        sourceType: item.type === 'database' ? 'databases' : item.type === 'api' ? 'apis' : 'documents',
+        sourceName: item.name,
+        fromDomain: item.sourceDomain,
+        toDomain: targetDomain,
+        sessionId: session?.session_id,
+      } })
       await refreshTree()
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'message' in err) {

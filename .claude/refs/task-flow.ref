@@ -1,0 +1,8 @@
+# Task Flow
+- Never wait for assignment — self-claim
+- Prefer lowest task ID among unblocked/unowned tasks
+- If no tasks available, report idle and stop
+- Respect module boundaries (see below) — only claim tasks in your domain
+- Run the verification command for your module when done
+- After completing a task, loop back to step 1 above — always pull the next task
+

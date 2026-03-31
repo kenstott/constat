@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 6db9cdad-bd2a-4544-a574-b8d4543ec148
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -18,7 +19,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from constat.server.config import user_vault_dir
+from constat.core.paths import user_vault_dir
 
 from webauthn import (
     generate_authentication_options,

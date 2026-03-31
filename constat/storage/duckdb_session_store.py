@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 782e6951-1224-49de-81fe-9d77b028fd1b
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -430,6 +431,123 @@ class DuckDBSessionStore:
         df.attrs["_source_columns"] = list(df.columns)
         df.attrs["_source_len"] = len(df)
         return df
+
+    def fuzzy_map(
+        self,
+        source: Union[str, list[str]],
+        source_col: Optional[str],
+        target: Union[str, list[str]],
+        target_col: Optional[str],
+        source_desc: str = "values",
+        target_desc: str = "",
+        *,
+        min_score: float = 0.0,
+        table_name: Optional[str] = None,
+    ) -> str:
+        """Map source values to target values using LLM, store result as a table.
+
+        Args:
+            source: Table name or list of source values.
+            source_col: Column name (or SQL expression) to read from source table. None if source is a list.
+            target: Table name or list of target values.
+            target_col: Column name to read from target table. None if target is a list.
+            source_desc: Label for source values.
+            target_desc: Label for target values.
+            min_score: Filter out mappings below this confidence score.
+            table_name: Override for the result table name.
+
+        Returns:
+            Name of the created mapping table.
+        """
+        from constat.llm import llm_map
+
+        # Resolve source values
+        if isinstance(source, str):
+            with self._locked_conn() as conn:
+                src_values = [
+                    row[0] for row in conn.execute(
+                        f"SELECT DISTINCT {source_col} FROM {_validate_table_name(source)}"
+                    ).fetchall()
+                ]
+        else:
+            src_values = list(source)
+
+        # Resolve target values
+        if isinstance(target, str):
+            with self._locked_conn() as conn:
+                tgt_values = [
+                    row[0] for row in conn.execute(
+                        f"SELECT DISTINCT {_validate_table_name(target_col)} FROM {_validate_table_name(target)}"
+                    ).fetchall()
+                ]
+        else:
+            tgt_values = list(target)
+
+        # Call LLM
+        mapping = llm_map(src_values, tgt_values, source_desc=source_desc, target_desc=target_desc, reason=True, score=True)
+
+        # Build result rows
+        rows = []
+        for sv, entry in mapping.items():
+            score = entry.get("score", 0.0)
+            if score < min_score:
+                continue
+            rows.append({
+                "source_value": sv,
+                "target_value": entry.get("value"),
+                "confidence": score,
+                "reason": entry.get("reason", ""),
+            })
+
+        # Determine table name
+        if table_name is None:
+            if isinstance(source, str) and source_col and isinstance(target, str) and target_col:
+                # Sanitize column names (strip SQL expressions)
+                s_slug = re.sub(r'[^a-zA-Z0-9_]', '', source_col.split()[0].lower())
+                t_slug = re.sub(r'[^a-zA-Z0-9_]', '', target_col.split()[0].lower())
+                table_name = f"_fuzzy_map_{s_slug}_{t_slug}"
+            else:
+                s_slug = re.sub(r'[^a-z0-9_]', '_', source_desc.lower()).strip('_')
+                t_slug = re.sub(r'[^a-z0-9_]', '_', target_desc.lower()).strip('_')
+                table_name = f"_fuzzy_map_{s_slug}_{t_slug}"
+
+        df = pd.DataFrame(rows)
+        self.save_dataframe(table_name, df)
+        return table_name
+
+    def extract_table(
+        self,
+        text: str,
+        description: str,
+        *,
+        columns: list[str] | None = None,
+        dtypes: dict[str, str] | None = None,
+        table_name: Optional[str] = None,
+    ) -> str:
+        """Extract a table from text using LLM and store it.
+
+        Args:
+            text: Document text to extract from.
+            description: What table to find.
+            columns: Optional column names to enforce.
+            dtypes: Optional type hints for columns.
+            table_name: Override for the result table name.
+
+        Returns:
+            Name of the created table.
+        """
+        from constat.llm import llm_extract_table
+
+        df = llm_extract_table(text, description, columns=columns, dtypes=dtypes)
+
+        if table_name is None:
+            slug = re.sub(r'[^a-z0-9_]', '_', description.lower()).strip('_')
+            # Collapse multiple underscores
+            slug = re.sub(r'_+', '_', slug)
+            table_name = f"_extracted_{slug}"
+
+        self.save_dataframe(table_name, df)
+        return table_name
 
     @property
     def _artifacts(self) -> dict[str, any]:

@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 82689b89-19f8-4760-a591-aadd019f9a3a
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Code Viewer component with syntax highlighting
 
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'

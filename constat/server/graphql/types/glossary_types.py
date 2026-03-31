@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: f9741cb4-910a-409a-94d6-60a4c29c64a9
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -7,7 +8,7 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""Strawberry GraphQL type definitions for the glossary domain."""
+"""Strawberry GraphQL types for glossary domain."""
 
 from __future__ import annotations
 

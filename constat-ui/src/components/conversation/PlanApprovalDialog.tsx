@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: f39424a1-ff4b-41bd-9ced-2fd83ba9c411
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Plan Approval Dialog - modal for reviewing and approving execution plans
 
 import { useState } from 'react'
@@ -13,7 +23,7 @@ import {
   TrashIcon,
 } from '@heroicons/react/24/outline'
 import { CheckCircleIcon as CheckCircleSolid, XCircleIcon } from '@heroicons/react/24/solid'
-import { useSessionStore } from '@/store/sessionStore'
+import { useSessionContext } from '@/contexts/SessionContext'
 import type { Step } from '@/types/api'
 
 const stepStatusIcons: Record<string, { icon: typeof ClockIcon; color: string }> = {
@@ -131,7 +141,7 @@ function StepItem({ step, index, isExpanded, onToggle, modification, onModificat
 }
 
 export function PlanApprovalDialog() {
-  const { status, plan, approvePlan, rejectPlan } = useSessionStore()
+  const { status, plan, approvePlan, rejectPlan } = useSessionContext()
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set())
   const [stepModifications, setStepModifications] = useState<Record<number, string>>({})
   const [deletedSteps, setDeletedSteps] = useState<Set<number>>(new Set())

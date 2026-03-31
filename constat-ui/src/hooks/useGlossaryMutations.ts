@@ -1,5 +1,15 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 8dc6d723-86da-470a-bead-d83b769636ab
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 import { useMutation } from '@apollo/client/react'
-import { useGlossaryStore } from '@/store/glossaryStore'
+import { setGlossaryGenerating, glossaryTaxonomySuggestionsVar } from '@/graphql/ui-state'
 import {
   CREATE_GLOSSARY_TERM_MUTATION,
   UPDATE_GLOSSARY_TERM_MUTATION,
@@ -97,7 +107,7 @@ export function useGlossaryMutations(sessionId: string) {
       bulkStatusMut({ variables: { sessionId, names, newStatus } }),
 
     generateGlossary: async (phases?: Record<string, boolean>) => {
-      useGlossaryStore.getState().setGenerating(true)
+      setGlossaryGenerating(true)
       await generateMut({ variables: { sessionId, phases } })
     },
 
@@ -130,7 +140,7 @@ export function useGlossaryMutations(sessionId: string) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = (data as any)?.suggestTaxonomy
       if (result?.suggestions) {
-        useGlossaryStore.getState().setTaxonomySuggestions(result.suggestions)
+        glossaryTaxonomySuggestionsVar(result.suggestions)
       }
       return result
     },

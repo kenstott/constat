@@ -1,4 +1,14 @@
-import { create } from 'zustand'
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 9b37e64c-4f6b-465a-b8ef-0e5292022585
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
+import { create } from './createStore'
 import type { GlossaryTerm, GlossaryFilter } from '@/types/api'
 import * as sessionsApi from '@/api/sessions'
 import { getCachedEntry } from './entityCache'

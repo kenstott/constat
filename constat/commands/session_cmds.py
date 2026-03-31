@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 363a0d22-98cc-4fa2-ad7a-36d3f054c80d
 #
 # Session management commands - state, reset, facts, context, preferences.
 

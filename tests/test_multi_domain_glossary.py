@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 1be40db1-2e36-4f3a-a05c-5c73f80c4744
 
 """Tests for multi-domain glossary support (Gap 1 + Gap 5)."""
 

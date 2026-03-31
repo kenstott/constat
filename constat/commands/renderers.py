@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: dad3683b-fdf4-4f99-828c-f82c362baf9a
 #
 # Renderers for command results - convert to Rich or Markdown.
 

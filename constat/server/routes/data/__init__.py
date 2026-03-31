@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 725a1423-9b5d-4a73-b780-a151b624c07e
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -70,7 +71,7 @@ from constat.server.routes.data.entities import router as entities_router
 from constat.server.routes.data.scripts import router as scripts_router
 from constat.server.routes.data.inference import router as inference_router
 from constat.server.routes.data.inference import generate_inference_script, _gather_source_configs
-from constat.server.routes.data.glossary import router as glossary_router
+from constat.server.routes.data.glossary_routes import router as glossary_router
 
 router = APIRouter()
 router.include_router(tables_router)

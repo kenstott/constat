@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: fc03bb48-c1dd-4d64-9026-271f5cb80b8e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Session API calls
 
 import { get, post, put, patch, del } from './client'
@@ -296,66 +306,6 @@ export async function togglePublicSharing(
     `/sessions/${sessionId}/public`,
     { public: isPublic }
   )
-}
-
-export async function publicGetSession(
-  sessionId: string
-): Promise<{ session_id: string; summary: string | null; status: string }> {
-  const resp = await fetch(`/api/public/${sessionId}`)
-  if (!resp.ok) throw new Error('Not found')
-  return resp.json()
-}
-
-export async function publicGetMessages(
-  sessionId: string
-): Promise<{ messages: StoredMessage[] }> {
-  const resp = await fetch(`/api/public/${sessionId}/messages`)
-  if (!resp.ok) throw new Error('Not found')
-  return resp.json()
-}
-
-export async function publicListArtifacts(
-  sessionId: string
-): Promise<{ artifacts: Artifact[] }> {
-  const resp = await fetch(`/api/public/${sessionId}/artifacts`)
-  if (!resp.ok) throw new Error('Not found')
-  return resp.json()
-}
-
-export async function publicListTables(
-  sessionId: string
-): Promise<{ tables: TableInfo[] }> {
-  const resp = await fetch(`/api/public/${sessionId}/tables`)
-  if (!resp.ok) throw new Error('Not found')
-  return resp.json()
-}
-
-export async function publicGetTableData(
-  sessionId: string,
-  tableName: string,
-  page = 1,
-  pageSize = 100
-): Promise<TableData> {
-  const resp = await fetch(`/api/public/${sessionId}/tables/${encodeURIComponent(tableName)}?page=${page}&page_size=${pageSize}`)
-  if (!resp.ok) throw new Error('Not found')
-  return resp.json()
-}
-
-export async function publicGetArtifact(
-  sessionId: string,
-  artifactId: number
-): Promise<ArtifactContent> {
-  const resp = await fetch(`/api/public/${sessionId}/artifacts/${artifactId}`)
-  if (!resp.ok) throw new Error('Not found')
-  return resp.json()
-}
-
-export async function publicGetProofFacts(
-  sessionId: string
-): Promise<{ facts: StoredProofFact[]; summary: string | null }> {
-  const resp = await fetch(`/api/public/${sessionId}/proof-facts`)
-  if (!resp.ok) throw new Error('Not found')
-  return resp.json()
 }
 
 // Session Sharing
@@ -960,12 +910,8 @@ export async function downloadSimpleExemplars(params: {
   if (params.since) query.set('since', params.since)
 
   // Build headers with auth
-  const headers: Record<string, string> = {}
-  const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-  if (!isAuthDisabled) {
-    const token = await useAuthStore.getState().getToken()
-    if (token) headers['Authorization'] = `Bearer ${token}`
-  }
+  const { getAuthHeaders } = await import('@/config/auth-helpers')
+  const headers = await getAuthHeaders()
 
   const response = await fetch(`/api/learnings/exemplars/simple?${query}`, { headers })
   if (!response.ok) throw new Error(`Download failed: ${response.statusText}`)

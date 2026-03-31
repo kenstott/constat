@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 859aaf5f-0192-430e-b9d3-fd458c601262
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // CurationWidget - Filterable checklist for selecting/removing items from a list
 
 import { useState, useMemo } from 'react'

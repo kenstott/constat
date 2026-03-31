@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 168b253b-f863-424e-8e16-197e99bda8fb
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -40,6 +41,72 @@ except ImportError:
 
 # Security scheme for JWT Bearer tokens
 security = HTTPBearer(auto_error=False)
+
+
+def authenticate_token(token: str | None, server_config) -> str:
+    """Authenticate a Bearer token and return the user_id.
+
+    Standalone function usable outside FastAPI DI (e.g. GraphQL context getter).
+    Returns "default" when auth is disabled.
+    Raises HTTPException(401) when auth is enabled and token is invalid/missing.
+    """
+    if server_config.auth_disabled:
+        return "default"
+
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Admin token bypass
+    if server_config.admin_token and token == server_config.admin_token:
+        return "admin"
+
+    # Local token
+    from constat.server.local_auth import validate_local_token
+    result = validate_local_token(token)
+    if result is not None:
+        return result[0]
+
+    # Firebase
+    if not FIREBASE_AVAILABLE:
+        raise HTTPException(status_code=500, detail="Firebase authentication not available.")
+    if not server_config.firebase_project_id:
+        raise HTTPException(status_code=500, detail="Firebase project ID not configured")
+
+    try:
+        now = time.monotonic()
+        cached = _token_cache.get(token)
+        if cached is not None:
+            decoded_token, expiry = cached
+            if now < expiry:
+                return decoded_token.get("sub") or decoded_token.get("user_id")
+            else:
+                del _token_cache[token]
+
+        decoded_token = id_token.verify_firebase_token(
+            token,
+            google_requests.Request(),
+            audience=server_config.firebase_project_id,
+        )
+        user_id = decoded_token.get("sub") or decoded_token.get("user_id")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token: missing user ID")
+
+        if len(_token_cache) >= _TOKEN_CACHE_MAX:
+            oldest_key = min(_token_cache, key=lambda k: _token_cache[k][1])
+            del _token_cache[oldest_key]
+        _token_cache[token] = (dict(decoded_token), now + _TOKEN_CACHE_TTL)
+        return user_id
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Invalid token: {e}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 async def get_current_user_id(

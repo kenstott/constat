@@ -1,3 +1,13 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: 5e3be602-c4af-4fa2-a2d9-188eb5e97316
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Compact entity state builder and JSON Patch differ for client-side caching.
 
 Builds an ID-keyed JSON object with ultra-short keys (~30-40% smaller than verbose).
@@ -158,6 +168,29 @@ def _resolve_entity_domain(entity_id: str | None, vs, source_to_domain: dict[str
     if len(domains) == 1:
         return domains[0]
     return None
+
+
+def normalize_domain(
+    domain: str | None,
+    user_id: str,
+    domain_path_map: dict[str, str],
+) -> str | None:
+    """Normalize a raw domain identifier for display.
+
+    Maps __base__ → system, keeps cross-domain, strips .yaml suffixes when
+    the bare name is in domain_path_map, and leaves everything else as-is.
+    """
+    if not domain:
+        return None
+    if domain == "__base__":
+        return "system"
+    if domain == "cross-domain":
+        return domain
+    # Strip .yaml suffix if the bare name is also in the map
+    bare = domain.removesuffix(".yaml")
+    if bare != domain and bare in domain_path_map:
+        return bare
+    return domain
 
 
 def build_compact_state(session_id: str, managed: ManagedSession) -> dict:

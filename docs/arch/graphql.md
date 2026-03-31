@@ -319,7 +319,7 @@ WS bidirectional actions (`approve`, `reject`, `cancel`, `replan_from`, `edit_ob
 |----------|---------------|---------------|-------|
 | Already done (glossary) | 0 | 2Q + 17M + 1S | Complete |
 | Session management | 9 | 2Q + 7M | |
-| Query execution | 4 + WS | 1Q + 4M + 1S | Largest subscription |
+| Query execution | 4 + WS | 1Q + 11M + 1S | **DONE** — WS replaced by GQL subscription |
 | Domains | 18 | 5Q + 13M | |
 | Tables | 6 | 3Q + 2M | |
 | Artifacts | 5 | 3Q + 2M | |
@@ -612,6 +612,51 @@ const typePolicies: TypePolicies = {
 
 Mutations use `cache.modify()` or `refetchQueries` — no manual `fetchTerms()` calls.
 
+### Persisted GraphQL Queries
+
+Use [Automatic Persisted Queries (APQ)](https://www.apollographql.com/docs/apollo-server/performance/apq/) to reduce request payload size and enable CDN caching.
+
+**How it works:**
+1. Client sends a SHA-256 hash of the query instead of the full query string
+2. Server looks up the hash in a cache; if found, executes the cached query
+3. On cache miss, client resends with full query string; server caches it for future requests
+
+**Backend (Strawberry):**
+```python
+# constat/server/graphql/__init__.py
+from strawberry.extensions import QueryDepthLimiter
+from strawberry.extensions.query_cache import AutomaticPersistedQueryExtension
+
+schema = strawberry.Schema(
+    query=Query,
+    mutation=Mutation,
+    subscription=Subscription,
+    extensions=[AutomaticPersistedQueryExtension],
+)
+```
+
+**Frontend (Apollo Client):**
+```typescript
+// constat-ui/src/graphql/client.ts
+import { createPersistedQueryLink } from '@apollo/client/link/persisted-queries'
+import { sha256 } from 'crypto-hash'
+
+const persistedQueryLink = createPersistedQueryLink({ sha256 })
+
+const link = ApolloLink.from([
+  persistedQueryLink,
+  splitLink,  // existing HTTP/WS split
+])
+```
+
+**Benefits:**
+- Smaller HTTP payloads (hash vs full query string)
+- Prevents arbitrary query execution (allowlist mode in production)
+- CDN-cacheable GET requests for queries
+- No build-time extraction step (APQ is runtime; extracted persisted queries are optional optimization)
+
+**Phase rollout:** Enable APQ in Phase 2 (after auth is stable). Production allowlist mode (reject unknown queries) in Phase 10 cleanup.
+
 ### Subscription Wiring
 
 ```typescript
@@ -715,7 +760,8 @@ Each implementation phase (below) includes the hook + context + reactive variabl
 | Phase | Zustand Stores Killed | New Hooks | New Context / Reactive Vars |
 |-------|----------------------|-----------|----------------------------|
 | 0 | Remove `QueryClientProvider` (dead) | — | `ApolloProvider` wired; `graphql/ui-state.ts` created |
-| 1 | `authStore` | `useAuth` | `AuthContext`; `isAuthDisabledVar` |
+| 1 | — (GraphQL equivalents created) | `useAuth`, `useConfig`, `usePermissions` | `AuthContext`; `isAuthDisabledVar` |
+| 1b | `authStore` (React consumers only) | — | Migrate 11 components from `useAuthStore()` → `useAuth()`; delete auth REST routes **DONE** |
 | 2 | `sessionStore` (session CRUD) | `useSession`, `useSessions` | `SessionContext` |
 | 3 | `sessionStore` (read-only state), `proofStore` | `useSteps`, `useScratchpad`, `useProofTree`, `useProofFacts`, `useMessages`, `useObjectives` | — |
 | 4 | `artifactStore` (tables/artifacts/facts/entities) | `useTables`, `useTableData`, `useArtifacts`, `useArtifact`, `useFacts`, `useEntities` + mutation hooks | — |
@@ -795,26 +841,56 @@ constat-ui/src/graphql/__tests__/client.test.ts (new)
 ### Phase 1: Auth + Config + Permissions
 **Scope:** 4 auth + 1 config + 1 permissions = **6 endpoints → 2Q + 4M**
 
+**Status: IMPLEMENTED** (GraphQL equivalents live; REST routes still active)
+
 **Gaps → GraphQL:**
 ```
-mutation login(email, password)             → AuthPayload {token, user}
+mutation login(email, password)             → AuthPayload {token, user_id, email}
 mutation logout                             → Boolean
-mutation registerPasskey(...)               → PasskeyRegistration
-mutation authenticatePasskey(...)           → AuthPayload
-query config                                → ServerConfig
-query myPermissions                         → UserPermissions
+mutation passkeyRegisterBegin(userId)       → PasskeyOptions {optionsJson}
+mutation passkeyRegisterComplete(userId, credential) → Boolean
+mutation passkeyAuthBegin(userId)           → PasskeyOptions {optionsJson}
+mutation passkeyAuthComplete(userId, credential, prfOutput?) → AuthPayload
+query config                                → ServerConfigType
+query myPermissions                         → UserPermissionsType
 ```
 
-**Tests:**
-- Unit: login resolver returns token on valid creds, raises on invalid. Config resolver returns expected shape.
-- Integration: `login` mutation → subsequent query with Bearer token succeeds. Unauthenticated query rejected.
-- E2E: Playwright login flow → token stored → authenticated page loads.
+Note: Passkey is 4 mutations (not 2) because WebAuthn requires a browser-intermediate step between begin and complete.
 
-**Done when:** All auth/config REST routes removed. Frontend `authStore` uses GraphQL only.
+**Tests:**
+- Unit: login resolver returns token on valid creds, raises on invalid. Config resolver returns expected shape. (`tests/test_graphql_auth.py`)
+- Integration: `login` mutation → subsequent query with Bearer token succeeds. Unauthenticated query rejected. (`tests/test_graphql_auth_integration.py`)
+- E2E: Config/permissions/logout via running server. (`tests/integration/test_graphql_auth_e2e.py`)
+
+**Implemented files:**
+```
+constat/server/graphql/auth_resolvers.py     (new — AuthQuery + AuthMutation)
+constat/server/graphql/types.py              (modified — AuthPayload, PasskeyOptions, ServerConfigType, UserPermissionsType)
+constat/server/graphql/session_context.py    (modified — added config field)
+constat/server/graphql/__init__.py           (modified — schema stitching + context)
+constat/server/routes/passkey.py             (bugfix — user_vault_dir import)
+constat-ui/src/graphql/operations/auth.ts    (new — 8 GQL documents)
+constat-ui/src/contexts/AuthContext.tsx       (new — AuthProvider + useAuth hook)
+constat-ui/src/hooks/useConfig.ts            (new — useConfig + usePermissions hooks)
+constat-ui/src/main.tsx                      (modified — AuthProvider in tree)
+```
+
+**Deferred work (tracked):**
+
+| Deferral | When | Reason |
+|----------|------|--------|
+| Migrate React components from `useAuthStore()` → `useAuth()` | **Phase 1b** | 5 easy swaps: `App.tsx`, `LoginPage.tsx`, `HamburgerMenu.tsx`, `FlagButton.tsx`, `DomainPanel.tsx`. 6 partial (async handler `getState()` stays): `ArtifactPanel`, `GlossaryPanel`, `AutocompleteInput`, `ConversationPanel`, `MessageBubble`, `StatusBar`. |
+| Migrate `usePasskey.ts` to GraphQL mutations | **Phase 1b** | Currently uses REST passkey endpoints; switch to `PASSKEY_*` operations from `auth.ts` |
+| Delete auth REST routes (`/auth/login`, `/auth/logout`, `/auth/passkey/*`) | **Phase 1b** | Safe after React components and passkey hook migrated |
+| Delete config REST route (`GET /config`) | **Phase 4** | `artifactStore.fetchConfig()` still calls REST; dies when `artifactStore` is killed |
+| Delete permissions REST route (`GET /users/me/permissions`) | **Phase 4** | `artifactStore.fetchPermissions()` still calls REST; dies when `artifactStore` is killed |
+| Delete `authStore.ts` file | **Phase 10** | 7 non-React modules use `getState().getToken()` for auth headers; killed when all Zustand stores deleted |
+
+**Done when:** Phase 1b complete — auth REST routes deleted, React components use `useAuth()`, passkey hook uses GraphQL.
 
 ---
 
-### Phase 2: Session CRUD + Domain Selection
+### Phase 2: Session CRUD + Domain Selection **DONE**
 **Scope:** 9 session + 2 domain selection = **11 endpoints → 4Q + 7M**
 
 **Gaps → GraphQL:**
@@ -841,7 +917,7 @@ query activeDomains(id)                     → [String]
 
 ---
 
-### Phase 3: Read-Only Session State
+### Phase 3: Read-Only Session State **DONE**
 **Scope:** 6 execution state + 3 proof + 5 messages/prefs + 2 schema = **16 endpoints → 16Q**
 
 **Gaps → GraphQL:**
@@ -873,7 +949,7 @@ mutation updateSystemPrompt(sessionId, p)   → Boolean
 
 ---
 
-### Phase 4: Tables + Artifacts + Facts + Entities
+### Phase 4: Tables + Artifacts + Facts + Entities **DONE**
 **Scope:** 6 + 5 + 6 + 2 = **19 endpoints → 8Q + 10M**
 
 **Gaps → GraphQL:**
@@ -915,8 +991,10 @@ mutation addEntityToGlossary(sessionId, id) → GlossaryTermType
 
 ---
 
-### Phase 5: Data Sources (Files, Documents, Databases, APIs)
-**Scope:** 8 + 6 + 7 + 2 + 1 = **24 endpoints → 5Q + 16M + 1S**
+### Phase 5: Data Sources (Files, Documents, Databases, APIs, User Sources)
+**Scope:** 22 operations = **6Q + 16M** **DONE**
+
+**Deferred:** `documentIngestion` subscription (Phase 7 — WS replacement). Binary downloads stay REST.
 
 **Gaps → GraphQL:**
 ```
@@ -930,43 +1008,43 @@ mutation addFileRef(sessionId, input)       → FileRef
 mutation deleteFileRef(sessionId, name)     → Boolean
 
 # Documents
-mutation uploadDocuments(sessionId, files)  → [DocumentResult]  # multipart
+mutation uploadDocuments(sessionId, files)  → UploadDocumentsResult  # multipart
 mutation addDocumentUri(sessionId, input)   → DocumentResult
 mutation addEmailSource(sessionId, input)   → DocumentResult
-mutation refreshDocuments(sessionId)        → Boolean
-mutation updateDocument(sessionId, n, inp)  → DocumentResult
+mutation refreshDocuments(sessionId)        → RefreshResult
 
 # Databases
-query databases(sessionId)                  → [Database]
-query databaseTablePreview(sid, db, t, p)   → TablePage
-mutation addDatabase(sessionId, input)      → Database
-mutation testDatabase(sessionId, name)      → TestResult
-mutation removeDatabase(sessionId, name)    → Boolean
-mutation updateDatabase(sessionId, n, inp)  → Database
+query databases(sessionId)                  → [SessionDatabase]
+query databaseTablePreview(sid, db, t, p)   → DatabaseTablePreview
+mutation addDatabase(sessionId, input)      → SessionDatabase
+mutation testDatabase(sessionId, name)      → DatabaseTestResult
+mutation removeDatabase(sessionId, name)    → DeleteResult
 
 # APIs
-mutation addApi(sessionId, input)           → ApiSource
-mutation removeApi(sessionId, name)        → Boolean
+mutation addApi(sessionId, input)           → SessionApi
+mutation removeApi(sessionId, name)        → DeleteResult
 
 # Combined
-query dataSources(sessionId)                → DataSources {databases, apis, documents, files}
+query dataSources(sessionId)                → DataSources {databases, apis, documents}
 
-# Subscription
-subscription documentIngestion(sessionId)   → IngestionEvent
+# User Sources (moved from Phase 9)
+query userSources(userId)                   → UserSources {databases, documents, apis}
+mutation removeUserSource(uid, type, name)  → UserSourceResult
+mutation moveSource(sid, type, name, toDomain) → MoveSourceResult
 ```
 
-**Multipart uploads:** Use `graphql-upload` spec (strawberry supports it via `Upload` scalar).
+**Multipart uploads:** Strawberry `Upload` scalar via `apollo-upload-client` on frontend.
 
 **Tests:**
 - Unit: upload resolver validates file type/size. addDatabase resolver validates connection string format.
 - Integration: uploadFile → listFiles → deleteFile round-trip. addDatabase → testDatabase → preview.
 - E2E: Playwright drag-and-drop file upload → see in file list. Add database URL → test connection → see tables.
 
-**Done when:** All source management panels use GraphQL. Document ingestion progress via subscription.
+**Done when:** All source management panels use GraphQL. No `sessionsApi` calls for file/document/database/API operations remain in migrated components.
 
 ---
 
-### Phase 6: Domain Management
+### Phase 6: Domain Management **DONE**
 **Scope:** 16 domain endpoints = **16 endpoints → 5Q + 13M** (including moves)
 
 **Gaps → GraphQL:**
@@ -998,7 +1076,7 @@ mutation moveDomainRule(input)              → Boolean
 
 ---
 
-### Phase 7: Query Execution + WebSocket Replacement
+### Phase 7: Query Execution + WebSocket Replacement **DONE**
 **Scope:** 4 execution endpoints + all WS events/actions = **4 endpoints + WS → 1Q + 11M + 1S**
 
 This is the hardest phase. The custom WS protocol becomes GraphQL mutations + a single execution subscription.
@@ -1047,7 +1125,7 @@ subscription queryExecution(sessionId) → ExecutionEvent
 
 ---
 
-### Phase 8: Learning/Rules + Skills/Agents
+### Phase 8: Learning/Rules + Skills/Agents **DONE**
 **Scope:** 7 + 3 = **10 endpoints → 4Q + 5M**
 
 **Gaps → GraphQL:**
@@ -1072,47 +1150,50 @@ mutation activateAgent(sessionId, name)     → Agent
 
 ---
 
-### Phase 9: User Sources + Fine-Tuning + Feedback + Testing + OAuth
-**Scope:** 4 + 6 + 1 + 3 + 2 = **16 endpoints → 8Q + 8M**
+### Phase 9: Fine-Tuning + Feedback + Testing + OAuth — **DONE**
+**Scope:** 18 operations → 6Q + 12M (across 3 new resolver files + 1 auth extension)
 
-**Gaps → GraphQL:**
+**Implemented operations:**
 ```
-# User sources
-query userSources(userId)                   → [UserSource]
-mutation removeUserSource(uid, type, name)  → Boolean
-mutation promoteSource(sessionId, type, n)  → UserSource
+# Fine-tuning (fine_tune_resolvers.py) — 3Q + 4M
+query fineTuneJobs(status?, domain?)        → [FineTuneJobType]
+query fineTuneJob(modelId)                  → FineTuneJobType
+query fineTuneProviders                     → [FineTuneProviderType]
+mutation startFineTuneJob(input)            → FineTuneJobType
+mutation cancelFineTuneJob(modelId)         → FineTuneJobType
+mutation deleteFineTuneJob(modelId)         → DeleteResultType
+mutation recreateFineTuneJob(artifactDir)   → FineTuneJobType
 
-# Fine-tuning
-query fineTuneJobs(params)                  → [FineTuneJob]
-query fineTuneJob(modelId)                  → FineTuneJob
-query fineTuneProviders                     → [FineTuneProvider]
-mutation startFineTuneJob(input)            → FineTuneJob
-mutation cancelFineTuneJob(modelId)         → FineTuneJob
-mutation deleteFineTuneJob(modelId)         → Boolean
+# Feedback (feedback_resolvers.py) — 1Q + 3M
+query glossarySuggestions(sessionId)        → [GlossarySuggestionType]
+mutation flagAnswer(input)                  → FlagAnswerResultType
+mutation approveGlossarySuggestion(sessionId, learningId) → SuggestionActionResultType
+mutation rejectGlossarySuggestion(sessionId, learningId)  → SuggestionActionResultType
 
-# Feedback
-mutation submitFeedback(sessionId, input)   → Boolean
+# Testing (testing_resolvers.py) — 2Q + 5M
+query testableDomains(sessionId)            → [TestableDomainType]
+query goldenQuestions(sessionId, domain)    → [GoldenQuestionType]
+mutation extractExpectations(sessionId, input) → GoldenQuestionExpectationType
+mutation createGoldenQuestion(sessionId, domain, input) → GoldenQuestionType
+mutation updateGoldenQuestion(sessionId, domain, index, input) → GoldenQuestionType
+mutation deleteGoldenQuestion(sessionId, domain, index) → DeleteResultType
+mutation moveGoldenQuestion(sessionId, domain, index, input) → GoldenQuestionType
 
-# Testing
-query goldenTests(sessionId)                → [GoldenTest]
-query testResults(sessionId)                → [TestResult]
-mutation runTest(sessionId, input)           → TestRun
-
-# OAuth
-query emailOAuthProviders                   → [OAuthProvider]
-mutation emailOAuthCallback(input)          → OAuthResult
+# OAuth (added to auth_resolvers.py)
+query emailOAuthProviders                   → EmailOAuthProvidersType
 ```
 
-**Tests:**
-- Unit: promoteSource validates source exists in session. Fine-tune job state machine.
-- Integration: startFineTuneJob → getFineTuneJob → cancelFineTuneJob lifecycle.
-- E2E: Playwright golden test runner → run test → see results.
+**Not migrated (stays REST):**
+- `POST /tests/run` — SSE streaming (defer to Phase 10 or keep as REST)
+- OAuth `/authorize` and `/callback` — browser redirect flows
 
-**Done when:** All secondary panels use GraphQL.
+**Tests:** 71 new tests across `test_graphql_fine_tune.py` (22), `test_graphql_feedback.py` (22), `test_graphql_testing.py` (27). Total: 427 GraphQL tests passing.
+
+**Frontend migration:** ArtifactPanel (fine-tune + OAuth), FlagButton, GlossaryPanel, testStore, ProofDAGPanel all migrated to GraphQL.
 
 ---
 
-### Phase 10: Public Sessions + Cleanup
+### Phase 10: Public Sessions + Cleanup **BACKEND DONE — FRONTEND INCOMPLETE**
 **Scope:** 7 public endpoints + REST route deletion + cleanup = **7 endpoints → 7Q**
 
 **Gaps → GraphQL:**
@@ -1144,19 +1225,188 @@ Public queries skip auth — use separate schema entry point or `@public` direct
 
 ---
 
+### Phase 11: Security Hardening & Code Quality **DONE**
+**Scope:** Fix pre-existing security and code quality issues inherited from REST routes into GraphQL resolvers.
+
+**Work:**
+
+1. **SQL injection in `databaseTablePreview`** (Critical)
+   - `source_resolvers.py` `database_table_preview` uses f-string interpolation for `table_name` and `file_path` in SQL queries
+   - Fix: parameterized queries or allowlist validation against `schema_manager.metadata_cache` keys
+   - Affects: `SELECT * FROM "{table_name}"`, `read_csv_auto('{file_path}')`, and COUNT queries
+
+2. **Broad `except Exception` in `uploadDocuments`** (Medium)
+   - `source_resolvers.py` `upload_documents` catches all exceptions per file, logging and continuing
+   - Fix: catch specific exceptions (`OSError`, `json.JSONDecodeError`, `ValueError`); let unexpected errors propagate
+
+3. **Silent file deletion failure in `removeDatabase`** (Low)
+   - `source_resolvers.py` `remove_database` swallows `fp.unlink()` failures with `logger.warning`
+   - Fix: propagate error or return warning in `DeleteResultType` (partial REQ-001 violation)
+
+**Tests:**
+- Unit: `databaseTablePreview` rejects table names containing SQL injection patterns (`;`, `--`, `DROP`)
+- Unit: `uploadDocuments` propagates unexpected errors (e.g., `PermissionError`) instead of swallowing
+- Unit: `removeDatabase` with unlink failure raises or returns error status
+
+**Files:**
+```
+constat/server/graphql/source_resolvers.py   (modify — 3 fixes)
+tests/test_graphql_sources.py                (modify — security tests)
+```
+
+**Done when:** No f-string SQL interpolation of user-controlled values. No broad `except Exception` in upload path. File deletion failures visible to caller.
+
+---
+
+### Phase 12: Frontend Zustand → Apollo Migration
+
+**Scope:** Create missing Apollo hooks, migrate all components from Zustand stores to GraphQL hooks, delete stores, delete REST API files, remove `zustand` dependency.
+
+**Status:** Backend resolvers + operation documents exist. Frontend still uses Zustand stores + REST calls.
+
+**Current frontend state:**
+- 6 hooks implemented: `useConfig`, `usePermissions`, `usePasskey`, `useGlossaryData`, `useGlossaryMutations`, `useSession`/`useSessions`
+- 10 Zustand stores still active (4,325 lines, 290+ component usages)
+- `api/sessions.ts` still imported in 13 places
+- `api/websocket.ts` deleted ✓
+- `ui-state.ts` has 3/5+ reactive variables
+- `cache-policies.ts` has 2/10+ type policies
+
+**Sub-phases:**
+
+#### Phase 12a: Foundation — Cache Policies + Reactive Variables + Missing Operations
+- Complete `cache-policies.ts` with all type policies (Table, Artifact, Fact, Session, Database, Domain, Rule, Learning)
+- Complete `ui-state.ts` with `activeDeepLinkVar`, `toastsVar`, `themeVar`, `expandedSectionsVar` + helpers
+- Audit `graphql/operations/` for missing operation documents; fill gaps
+
+#### Phase 12b: Core Data Hooks (kill `artifactStore`)
+- Create: `useTables`, `useTableData`, `useTableMutations`
+- Create: `useArtifacts`, `useArtifact`, `useArtifactMutations`
+- Create: `useFacts`, `useFactMutations`
+- Create: `useEntities`
+- Migrate: `ArtifactPanel`, `ArtifactItemAccordion`, `TableAccordion`, `TableViewer`, `FullscreenArtifactModal`
+- Delete: `store/artifactStore.ts` (60 usages → hooks)
+
+#### Phase 12c: Session State Hooks (kill `sessionStore`)
+- Create: `useSteps`, `useScratchpad`, `useMessages`, `useObjectives`
+- Create: `useQueryExecution` (subscription-driven, replaces WS handler)
+- Migrate: `ConversationPanel`, `AutocompleteInput`, `App.tsx`
+- Remove `useSessionStore` dependency from `SessionContext.tsx`
+- Delete: `store/sessionStore.ts` (48 usages → hooks)
+
+#### Phase 12d: Data Source + Domain Hooks (kill source-related store code)
+- Create: `useDatabases`, `useDatabaseMutations`, `useFiles`, `useDocuments`, `useDataSources`
+- Create: `useDomains`, `useDomainMutations`
+- Migrate: `ArtifactPanel` source panels, `DomainPanel`
+- Delete: remaining source/domain code from stores
+
+#### Phase 12e: Secondary Hooks (kill remaining stores)
+- Create: `useLearnings`, `useRuleMutations`, `useSkills`
+- Create: `useProofTree`, `useProofFacts`
+- Create: `useGoldenTests`, `useTestResults`, `useFineTuneJobs`
+- Migrate: `ProofDAGPanel`, learning panel, test panel
+- Delete: `store/proofStore.ts`, `store/testStore.ts`
+
+#### Phase 12f: UI State + Final Cleanup
+- ~~Migrate all `useUIStore()` calls to reactive variables~~ **DONE** — 0 component-level useUIStore imports remain
+- ~~Migrate `useToastStore()` to `toastsVar`~~ **DONE** — ToastContainer uses reactive var
+- ~~Migrate `useAuthStore` from React components → `useAuth()` context + `getAuthHeaders()` helper~~ **DONE**
+  - Created `config/auth-helpers.ts` with standalone `getToken()` and `getAuthHeaders()` for non-React code
+  - Migrated: ArtifactPanel (10 dynamic imports), StatusBar, AutocompleteInput, GlossaryPanel, api/client.ts, api/testing.ts, api/sessions.ts, graphql/client.ts
+  - Remaining authStore refs only in store files (removed when stores deleted) and test files
+- ~~Migrate `useTestStore` from React components → Apollo hooks~~ **DONE**
+  - ArtifactPanel → `useTestableDomains()` hook
+  - ProofDAGPanel → `useTestingMutations().createGoldenQuestion`
+  - RegressionPanel → `useTestableDomains()` + `useTestingMutations()` + local state + direct `runTestsStreaming`
+- ~~Migrate `useSessionStore` from 12 React components → `useSessionContext()`~~ **DONE**
+  - Expanded SessionContext as facade over sessionStore (all state + actions exposed)
+  - Migrated: App.tsx, StatusBar, Toolbar, DomainPanel, BotMessageGroup, PlanApprovalDialog, ClarificationDialog, ProofDAGPanel, ConversationPanel, AutocompleteInput, ArtifactPanel, GlossaryPanel
+  - Remaining: HamburgerMenu (needs `.getState()`/`.setState()` for session switching)
+- ~~Migrate GlossaryPanel REST imports → GraphQL operations~~ **DONE**
+  - Replaced 12 REST function imports with `apolloClient` GraphQL wrappers
+  - Only a `type { DomainTreeNode }` import remains (no runtime dependency)
+- ~~Migrate ProofDAGPanel REST imports → GraphQL operations~~ **DONE**
+  - `listDomains` → `DOMAINS_QUERY` via apolloClient
+  - `getObjectives` → `OBJECTIVES_QUERY` via apolloClient
+- ~~Extract session ID helpers from `api/sessions.ts`~~ **DONE**
+  - Created `api/session-id.ts` with `getOrCreateSessionId`, `createNewSessionId`, `storeSessionId`
+  - sessionStore and HamburgerMenu use new module
+- ~~Extract types from `api/sessions.ts` to `types/api.ts`~~ **DONE**
+  - Moved: `DomainTreeNode`, `DatabaseTablePreview`, `DatabaseTableInfo`, `ApiEndpointField`, `ApiEndpointInfo`, `ObjectivesEntry`
+  - Updated imports in: GlossaryPanel, DomainPanel, FullscreenArtifactModal, ArtifactPanel, `graphql/operations/domains.ts`
+- ~~Migrate App.tsx `useArtifactStore` → `useArtifactContext()`~~ **DONE**
+- ~~Migrate App.tsx `useUIStore.getState().initPreferences()` → standalone `initPreferences()` in `ui-state.ts`~~ **DONE**
+- **`api/sessions.ts` imports reduced to: 2 stores (`import *`), 1 component (2 binary REST fns), 1 test file**
+- **All component type imports now use `@/types/api`**
+- Migrated `useArtifactStore` mutations from TableAccordion, ArtifactItemAccordion → useTableMutations/useArtifactMutations hooks
+- **Remaining store imports (reduced from 39 to ~25):**
+  - `sessionStore` (2 component imports: SessionContext facade, HamburgerMenu) — stores still exist as internal implementation
+  - `artifactStore` (11 imports) — deep state + REST-backed mutations; called from sessionStore event handler
+  - `glossaryStore` (7 imports) — called from sessionStore event handler and useGlossaryData hook
+  - `proofStore` (6 imports) — event-driven state machine called from sessionStore
+  - `uiStore` (4 imports) — deep link handling, used by App.tsx and stores
+- ~~Migrate `useArtifactStore` from 6 React components → `useArtifactContext()`~~ **DONE**
+  - Created `ArtifactContext` as facade over artifactStore
+  - Migrated: ArtifactPanel, Toolbar, AutocompleteInput, BotMessageGroup, ConversationPanel, DomainPanel
+  - Remaining: HamburgerMenu (needs `.getState().clear()` for session switching)
+- ~~Migrate `useProofStore` action consumers → SessionContext~~ **DONE**
+  - Added `openProofPanel`, `closeProofPanel`, `clearProofFacts` to SessionContext
+  - Migrated: AutocompleteInput, ConversationPanel
+  - Remaining: App.tsx reads full proof state (facts, isPanelOpen, etc.) — stays on store
+- ~~Migrate ArtifactPanel `useGlossaryStore` → `useGlossaryData` hook~~ **DONE**
+- ~~Move `handleWSEvent` from sessionStore to React SessionProvider~~ **DONE**
+  - Extracted `sessionEventReducer` + `executeSideEffects` to `src/events/sessionEventHandler.ts` (1164 lines)
+  - SessionProvider rewritten with `useReducer` for execution state, `useRef` for subscription lifecycle
+  - All actions (createSession, submitQuery, approvePlan, etc.) as `useCallback` in SessionProvider
+  - `switchSession` method added for HamburgerMenu
+- ~~Delete dead stores~~ **DONE**
+  - Deleted: `sessionStore.ts`, `testStore.ts`, `toastStore.ts`, `authStore.ts` (4 stores)
+  - Fixed all authStore references → `config/auth-helpers`
+  - Fixed test mocks
+- ~~Migrate HamburgerMenu from `useSessionStore`/`useArtifactStore` → `useSessionContext().switchSession()`~~ **DONE**
+- ~~Migrate App.tsx `useProofStore` → SessionContext proof state~~ **DONE**
+- ~~Migrate App.tsx `uiStore` utilities → `graphql/ui-state.ts`~~ **DONE**
+- ~~Remove `useUIStore` from proofStore → reactive variables~~ **DONE** — deleted uiStore.ts
+- ~~Remove glossaryStore from useGlossaryData/useGlossaryMutations → reactive variables~~ **DONE**
+- ~~Replace zustand `create()` with custom `createStore.ts` using `useSyncExternalStore`~~ **DONE**
+- ~~Remove `zustand` from package.json~~ **DONE**
+- ~~Delete dead stores: sessionStore, authStore, testStore, toastStore, uiStore~~ **DONE** (5 deleted)
+- **Remaining stores (3): artifactStore, glossaryStore, proofStore** — using custom `createStore.ts` (55 lines, zero deps). Encapsulated behind context facades. Only GlossaryPanel directly imports glossaryStore.
+- **Zero external state management dependencies** — `zustand` fully removed
+- **Architecture note:** Stores can't be deleted yet because `sessionStore.handleWSEvent` (900 lines) orchestrates ALL real-time state updates across all stores. The event handler must be migrated to React context/hooks before stores can be removed. SessionContext and ArtifactContext are the stable consumer-facing APIs; the internal Zustand implementation is an encapsulated detail.
+- Delete: `api/sessions.ts`, `api/queries.ts` — still imported in stores and HamburgerMenu
+- Remove `zustand` from `package.json` — blocked until all stores deleted
+
+**Tests per sub-phase:**
+- Vitest: MockedProvider rendering for each new hook
+- Vitest: Reactive variable read/write/re-render
+- Frontend build + lint + type check must pass after each sub-phase
+
+**Done when:** Zero Zustand imports. Zero `api/sessions.ts` imports. `zustand` removed from `package.json`. All data flows through Apollo hooks.
+
+---
+
 ## Phase Summary
 
 | Phase | Section | Endpoints | GraphQL Ops | Risk |
 |-------|---------|-----------|-------------|------|
 | 0 | Infrastructure | — | — | Low |
-| 1 | Auth + Config | 6 | 2Q + 4M | Low |
-| 2 | Session CRUD | 11 | 4Q + 7M | Low |
-| 3 | Read-Only State | 16 | 16Q | Low |
-| 4 | Tables/Artifacts/Facts/Entities | 19 | 8Q + 10M | Medium |
-| 5 | Data Sources | 24 | 5Q + 16M + 1S | Medium |
-| 6 | Domain Management | 16 | 5Q + 13M | Medium |
-| 7 | Query Execution + WS | 4 + WS | 1Q + 11M + 1S | **High** |
-| 8 | Learning/Rules/Skills | 10 | 4Q + 5M | Low |
-| 9 | Secondary Features | 16 | 8Q + 8M | Low |
-| 10 | Public + Cleanup | 7 + cleanup | 7Q | Low |
+| 1 | Auth + Config (GraphQL equivalents) | 6 | 2Q + 6M | Low |
+| 1b | Auth consumer migration + REST deletion | — | — | Low | **DONE** |
+| 2 | Session CRUD | 11 | 4Q + 7M | Low | **DONE** |
+| 3 | Read-Only State | 16 | 16Q | Low | **DONE** |
+| 4 | Tables/Artifacts/Facts/Entities | 19 | 8Q + 10M | Medium | **DONE** |
+| 5 | Data Sources + User Sources | 22 | 6Q + 16M | Medium | **DONE** |
+| 6 | Domain Management | 16 | 5Q + 13M | Medium | **DONE** |
+| 7 | Query Execution + WS | 4 + WS | 1Q + 11M + 1S | **High** | **DONE** |
+| 8 | Learning/Rules/Skills | 10 | 4Q + 5M | Low | **DONE** |
+| 9 | Secondary Features | 12 | 6Q + 6M | Low | **DONE** |
+| 10 | Public + Cleanup (backend) | 7 + cleanup | 7Q | Low | **BACKEND DONE** |
+| 11 | Security Hardening & Code Quality | — | — | Medium | **DONE** |
+| 12a | Foundation (cache policies, reactive vars) | — | — | Low | **DONE** |
+| 12b | Core Data Hooks (kill artifactStore) | — | — | Medium | **DONE** |
+| 12c | Session State Hooks (kill sessionStore) | — | — | **High** | **DONE** |
+| 12d | Data Source + Domain Hooks | — | — | Medium | **DONE** |
+| 12e | Secondary Hooks (proof, test, learning) | — | — | Low | **DONE** |
+| 12f | UI State + Final Cleanup | — | — | Medium | **DONE — zustand removed** |
 | **Total** | | **~131** | **52Q + 87M + 8S** | |

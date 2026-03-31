@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 459b942b-f58d-48a6-8400-a58e24c8315e
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -17,7 +18,7 @@ import uuid
 from typing import Optional
 
 import strawberry
-from strawberry.types import Info
+from constat.server.graphql.session_context import GqlInfo as Info
 
 from constat.server.entity_state import (
     _build_domain_maps,
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 def _get_managed(info: Info, session_id: str):
     """Get managed session from context, raising if not found."""
-    sm = info.context["session_manager"]
+    sm = info.context.session_manager
     managed = sm.get_session_or_none(session_id)
     if not managed:
         raise ValueError(f"Session {session_id} not found")
@@ -389,7 +390,7 @@ class Query:
 
 
 def _publish(info: Info, session_id: str, action: GlossaryChangeAction, term_name: str, term: GlossaryTermType | None = None):
-    sm = info.context["session_manager"]
+    sm = info.context.session_manager
     event = GlossaryChangeEvent(session_id=session_id, action=action, term_name=term_name, term=term)
     sm.publish_glossary_change(session_id, event)
 
@@ -552,7 +553,7 @@ class Mutation:
     ) -> bool:
         managed = _get_managed(info, session_id)
         vs = _get_vector_store(managed)
-        sm = info.context["session_manager"]
+        sm = info.context.session_manager
 
         existing = vs.get_glossary_term(name, session_id, user_id=managed.user_id, domain=domain)
         if not existing:
@@ -576,7 +577,7 @@ class Mutation:
         """Batch delete glossary terms, publishing a delta event per deletion."""
         managed = _get_managed(info, session_id)
         vs = _get_vector_store(managed)
-        sm = info.context["session_manager"]
+        sm = info.context.session_manager
         active_domains = managed.session.active_domains if hasattr(managed.session, "active_domains") else None
 
         deleted = 0
@@ -717,7 +718,7 @@ class Mutation:
     ) -> GenerateResultType:
         from constat.server.routes.data.glossary import generate_glossary_op
         managed = _get_managed(info, session_id)
-        sm = info.context["session_manager"]
+        sm = info.context.session_manager
         result = await generate_glossary_op(session_id, managed, sm, phases=phases)
         return GenerateResultType(status=result["status"], message=result["message"])
 

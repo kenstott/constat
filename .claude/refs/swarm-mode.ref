@@ -1,0 +1,15 @@
+# Swarm Mode (Self-Claim)
+
+All agents operate autonomously. No lead assignment required.
+
+## After completing any task:
+1. Call `TaskList` to see all tasks
+2. Find the first task (lowest ID) that is **unblocked** AND has **no owner**
+3. Call `TaskUpdate` to set yourself as owner and status to "in_progress"
+4. Begin work immediately
+
+## Rules:
+@.claude/refs/task-flow.ref
+
+## TeammateIdle Pattern:
+When a teammate finishes and becomes idle, they must immediately self-claim the next available task rather than reporting back to a lead. The lead spawns initial teammates; after that, agents are self-sustaining.

@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 2f433f5f-0683-4378-85b2-985232307180
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Glossary Panel — unified glossary view replacing EntityAccordion
 
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
@@ -23,32 +33,86 @@ import {
 } from '@heroicons/react/24/outline'
 import { Dialog, DialogPanel } from '@headlessui/react'
 import { useGlossaryStore } from '@/store/glossaryStore'
-import { useUIStore } from '@/store/uiStore'
-import { useSessionStore } from '@/store/sessionStore'
+import { setDeepLink } from '@/graphql/ui-state'
+import { useSessionContext } from '@/contexts/SessionContext'
+import type { DomainTreeNode } from '@/types/api'
+import { GLOSSARY_TERM_QUERY } from '@/graphql/queries'
 import {
-  getGlossaryTerm,
-  createRelationship,
-  updateRelationshipVerb,
-  approveRelationship,
-  deleteRelationship,
-  updateGlossaryTerm,
-  draftGlossaryDefinition,
-  draftGlossaryAliases,
-  draftGlossaryTags,
-  listDomains,
-  getDomainTree,
-  moveDomainSource,
-} from '@/api/sessions'
-import type { DomainTreeNode } from '@/api/sessions'
+  CREATE_RELATIONSHIP_MUTATION,
+  UPDATE_RELATIONSHIP_MUTATION,
+  DELETE_RELATIONSHIP_MUTATION,
+  APPROVE_RELATIONSHIP_MUTATION,
+  UPDATE_GLOSSARY_TERM_MUTATION,
+  DRAFT_DEFINITION_MUTATION,
+  DRAFT_ALIASES_MUTATION,
+  DRAFT_TAGS_MUTATION,
+} from '@/graphql/mutations'
+import { DOMAINS_QUERY, DOMAIN_TREE_QUERY, MOVE_DOMAIN_SOURCE } from '@/graphql/operations/domains'
+
+// GraphQL wrappers matching old REST API signatures
+async function getGlossaryTerm(sessionId: string, name: string) {
+  const { data } = await apolloClient.query({ query: GLOSSARY_TERM_QUERY, variables: { sessionId, name }, fetchPolicy: 'network-only' })
+  return data.glossaryTerm
+}
+
+async function createRelationship(sessionId: string, subject: string, verb: string, object: string) {
+  const { data } = await apolloClient.mutate({ mutation: CREATE_RELATIONSHIP_MUTATION, variables: { sessionId, subject, verb, object }, refetchQueries: ['Glossary'] })
+  return data.createRelationship
+}
+
+async function updateRelationshipVerb(sessionId: string, relId: string, verb: string) {
+  await apolloClient.mutate({ mutation: UPDATE_RELATIONSHIP_MUTATION, variables: { sessionId, relId, verb }, refetchQueries: ['Glossary'] })
+}
+
+async function approveRelationship(sessionId: string, relId: string) {
+  await apolloClient.mutate({ mutation: APPROVE_RELATIONSHIP_MUTATION, variables: { sessionId, relId }, refetchQueries: ['Glossary'] })
+}
+
+async function deleteRelationship(sessionId: string, relId: string) {
+  await apolloClient.mutate({ mutation: DELETE_RELATIONSHIP_MUTATION, variables: { sessionId, relId }, refetchQueries: ['Glossary'] })
+}
+
+async function updateGlossaryTerm(sessionId: string, name: string, updates: Record<string, unknown>) {
+  await apolloClient.mutate({ mutation: UPDATE_GLOSSARY_TERM_MUTATION, variables: { sessionId, name, input: updates }, refetchQueries: ['Glossary'] })
+}
+
+async function draftGlossaryDefinition(sessionId: string, name: string) {
+  const { data } = await apolloClient.mutate({ mutation: DRAFT_DEFINITION_MUTATION, variables: { sessionId, name } })
+  return data.draftDefinition
+}
+
+async function draftGlossaryAliases(sessionId: string, name: string) {
+  const { data } = await apolloClient.mutate({ mutation: DRAFT_ALIASES_MUTATION, variables: { sessionId, name } })
+  return data.draftAliases
+}
+
+async function draftGlossaryTags(sessionId: string, name: string) {
+  const { data } = await apolloClient.mutate({ mutation: DRAFT_TAGS_MUTATION, variables: { sessionId, name } })
+  return data.draftTags
+}
+
+async function listDomains(): Promise<{ domains: Array<{ filename: string; name: string; description: string; tier: string; active: boolean }> }> {
+  const { data } = await apolloClient.query({ query: DOMAINS_QUERY, fetchPolicy: 'network-only' })
+  return { domains: data.domains }
+}
+
+async function getDomainTree(): Promise<DomainTreeNode[]> {
+  const { data } = await apolloClient.query({ query: DOMAIN_TREE_QUERY, fetchPolicy: 'network-only' })
+  return data.domainTree
+}
+
+async function moveDomainSource(input: { sourceType: string; sourceName: string; fromDomain: string; toDomain: string; sessionId?: string }) {
+  await apolloClient.mutate({ mutation: MOVE_DOMAIN_SOURCE, variables: input })
+}
 import { forceSimulation, forceLink, forceManyBody, forceCollide, forceX, forceY } from 'd3-force'
 import { SkeletonLoader } from '../common/SkeletonLoader'
 import type { GlossaryTerm, GlossaryEditorialStatus, GlossarySuggestion } from '@/types/api'
-import { useAuthStore } from '@/store/authStore'
+import { useAuth } from '@/contexts/AuthContext'
+import { apolloClient } from '@/graphql/client'
 import {
-  getGlossarySuggestions,
-  approveGlossarySuggestion,
-  rejectGlossarySuggestion,
-} from '@/api/feedback'
+  GLOSSARY_SUGGESTIONS_QUERY, APPROVE_GLOSSARY_SUGGESTION, REJECT_GLOSSARY_SUGGESTION,
+  toGlossarySuggestion,
+} from '@/graphql/operations/feedback'
 
 interface GlossaryPanelProps {
   sessionId: string
@@ -144,7 +208,7 @@ function buildTree(terms: GlossaryTerm[]): { roots: TreeNode[]; orphans: Glossar
 // Deep link to a glossary term via URL path
 function navigateToTerm(name: string) {
   console.log('[deep-link] navigateToTerm:', name)
-  useUIStore.getState().navigateTo({ type: 'glossary_term', termName: name })
+  setDeepLink({ type: 'glossary_term', termName: name })
 }
 
 // Clickable term link
@@ -162,7 +226,7 @@ function TermLink({ name, displayName }: { name: string; displayName: string }) 
 // Clickable source link — deep links to tables, documents, and APIs
 function SourceLink({ source, documentName, section, url }: { source: string; documentName: string; section?: string; url?: string }) {
   const label = `${documentName}${section ? ` > ${section}` : ''}`
-  const { navigateTo } = useUIStore.getState()
+  const navigateTo = setDeepLink
 
   // External URL for crawled docs — open in new tab
   if (url) {
@@ -1605,6 +1669,8 @@ function DomainPromotePicker({
   const [canPromoteToSystem, setCanPromoteToSystem] = useState(false)
   const [confirmCascade, setConfirmCascade] = useState<{ target: string | null; descendants: GlossaryTerm[] } | null>(null)
   const { terms: allTerms, updateTerm } = useGlossaryStore()
+  const { canWrite: authCanWrite } = useAuth()
+  const { activeDomains } = useSessionContext()
 
   const selfTerm = allTerms.find(t => t.name.toLowerCase() === termName.toLowerCase())
   if (!selfTerm) return null
@@ -1613,9 +1679,7 @@ function DomainPromotePicker({
     e.stopPropagation()
     setOpen(true)
     setLoading(true)
-    const { useAuthStore } = await import('@/store/authStore')
-    setCanPromoteToSystem(useAuthStore.getState().canWrite('tier_promote'))
-    const activeDomains = useSessionStore.getState().session?.active_domains || []
+    setCanPromoteToSystem(authCanWrite('tier_promote'))
     try {
       const tree = await getDomainTree()
       const filterTree = (nodes: DomainTreeNode[]): DomainTreeNode[] =>
@@ -1628,7 +1692,7 @@ function DomainPromotePicker({
       const flat = (activeDomains.length > 0
         ? allDomains.filter(d => activeDomains.includes(d.filename))
         : allDomains
-      ).map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], facts: [], system_prompt: '', domains: [], children: [], steward: '' }))
+      ).map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], facts: [], system_prompt: '', domains: [], children: [], steward: '', owner: '' }))
       setTreeNodes(flat)
     }
     setLoading(false)
@@ -3141,18 +3205,18 @@ function SourceMovePicker({
       setTreeNodes(tree)
     } catch {
       const { domains: allDomains } = await listDomains()
-      setTreeNodes(allDomains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], facts: [], system_prompt: '', domains: [], children: [], steward: '' })))
+      setTreeNodes(allDomains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], facts: [], system_prompt: '', domains: [], children: [], steward: '', owner: '' })))
     }
     setLoading(false)
   }
 
   const executeMove = async (targetDomain: string) => {
     await moveDomainSource({
-      source_type: sourceType,
-      source_name: sourceName,
-      from_domain: currentDomain,
-      to_domain: targetDomain,
-      session_id: sessionId,
+      sourceType,
+      sourceName,
+      fromDomain: currentDomain,
+      toDomain: targetDomain,
+      sessionId,
     })
     setOpen(false)
     onMoved()
@@ -3369,7 +3433,7 @@ function DomainFilterTree({
 
 // Glossary suggestions review section — shown to users with glossary write permission
 function GlossarySuggestionsSection({ sessionId }: { sessionId: string }) {
-  const canWrite = useAuthStore((s) => s.canWrite)
+  const { canWrite } = useAuth()
   const [suggestions, setSuggestions] = useState<GlossarySuggestion[]>([])
   const expanded = useGlossaryStore((s) => s.expandedItems['suggestions'] ?? false)
   const toggleExpanded = useGlossaryStore((s) => s.toggleExpanded)
@@ -3381,8 +3445,8 @@ function GlossarySuggestionsSection({ sessionId }: { sessionId: string }) {
   const fetchSuggestions = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await getGlossarySuggestions(sessionId)
-      setSuggestions(data)
+      const r = await apolloClient.query({ query: GLOSSARY_SUGGESTIONS_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+      setSuggestions(r.data.glossarySuggestions.map(toGlossarySuggestion))
     } catch {
       // Ignore errors (session may not exist yet)
     } finally {
@@ -3397,12 +3461,12 @@ function GlossarySuggestionsSection({ sessionId }: { sessionId: string }) {
   if (suggestions.length === 0 && !loading) return null
 
   const handleApprove = async (learningId: string) => {
-    await approveGlossarySuggestion(sessionId, learningId)
+    await apolloClient.mutate({ mutation: APPROVE_GLOSSARY_SUGGESTION, variables: { sessionId, learningId } })
     setSuggestions((prev) => prev.filter((s) => s.learning_id !== learningId))
   }
 
   const handleReject = async (learningId: string) => {
-    await rejectGlossarySuggestion(sessionId, learningId)
+    await apolloClient.mutate({ mutation: REJECT_GLOSSARY_SUGGESTION, variables: { sessionId, learningId } })
     setSuggestions((prev) => prev.filter((s) => s.learning_id !== learningId))
   }
 
@@ -3506,7 +3570,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     getDomainTree()
       .then(setDomainTree)
       .catch(() => listDomains().then(r => setDomainTree(
-        r.domains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], facts: [], system_prompt: '', domains: [], children: [], steward: '' }))
+        r.domains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], facts: [], system_prompt: '', domains: [], children: [], steward: '', owner: '' }))
       )).catch(() => {}))
   }, [])
 

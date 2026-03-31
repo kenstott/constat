@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 63722b86-fd6c-4248-aaaf-1db11bdac8db
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Clarification Dialog - stepper dialog for answering clarification questions
 
 import { useState, useEffect } from 'react'
@@ -8,7 +18,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
 } from '@heroicons/react/24/outline'
-import { useSessionStore } from '@/store/sessionStore'
+import { useSessionContext } from '@/contexts/SessionContext'
 import { WidgetRouter, getWidgetMaxWidth } from './widgets/WidgetRouter'
 
 export function ClarificationDialog() {
@@ -19,7 +29,7 @@ export function ClarificationDialog() {
     setClarificationStep,
     setClarificationAnswer,
     setClarificationStructuredAnswer,
-  } = useSessionStore()
+  } = useSessionContext()
 
   const [customAnswer, setCustomAnswer] = useState('')
   const [showFreeform, setShowFreeform] = useState(false)

@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 8d6bb15b-26f6-419a-9871-1f70a0ec2f1e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Artifact Panel container
 
 import React, { useEffect, useState, useCallback } from 'react'
@@ -34,12 +44,18 @@ import {
   QuestionMarkCircleIcon,
   EnvelopeIcon,
 } from '@heroicons/react/24/outline'
-import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import { useAuthStore, isAuthDisabled } from '@/store/authStore'
-import { useUIStore } from '@/store/uiStore'
-import { useGlossaryStore } from '@/store/glossaryStore'
-import { useTestStore } from '@/store/testStore'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useArtifactContext } from '@/contexts/ArtifactContext'
+import { useAuth } from '@/contexts/AuthContext'
+import { useReactiveVar } from '@apollo/client'
+import {
+  expandedSectionsVar, expandSection, activeDeepLinkVar, consumeDeepLink,
+  collapsedResultStepsVar, toggleResultStep as toggleResultStepFn,
+  resultsShowPublishedOnlyVar, setResultsShowPublishedOnly, toggleSection,
+} from '@/graphql/ui-state'
+import { useGlossaryData } from '@/hooks/useGlossaryData'
+import { useTestableDomains } from '@/hooks/useTesting'
+import { getAuthHeaders } from '@/config/auth-helpers'
 import { AccordionSection } from './ArtifactAccordion'
 import { TableAccordion } from './TableAccordion'
 import type { FineTuneJob, FineTuneProvider } from '@/types/api'
@@ -48,8 +64,33 @@ import { CodeViewer } from './CodeViewer'
 import GlossaryPanel from './GlossaryPanel'
 import RegressionPanel from './RegressionPanel'
 import { SkeletonLoader } from '../common/SkeletonLoader'
-import * as sessionsApi from '@/api/sessions'
-import type { ObjectivesEntry } from '@/api/sessions'
+import { getDocument, downloadSimpleExemplars } from '@/api/sessions'
+import type { ObjectivesEntry, DatabaseTableInfo, DatabaseTablePreview, ApiEndpointInfo, DomainTreeNode } from '@/types/api'
+import { apolloClient } from '@/graphql/client'
+import {
+  OBJECTIVES_QUERY, DATABASE_SCHEMA_QUERY, API_SCHEMA_QUERY,
+  toObjectivesEntry, toDatabaseTable, toApiEndpoint,
+} from '@/graphql/operations/state'
+import { FORGET_FACT, PERSIST_FACT, MOVE_FACT, ADD_FACT } from '@/graphql/operations/data'
+import {
+  ADD_DATABASE, ADD_API, REMOVE_API, REMOVE_DATABASE,
+  UPLOAD_DOCUMENTS, ADD_DOCUMENT_URI, ADD_FILE_REF, ADD_EMAIL_SOURCE,
+  DELETE_FILE_REF, DATABASE_TABLE_PREVIEW_QUERY,
+  toDatabaseTablePreview,
+} from '@/graphql/operations/sources'
+import {
+  DOMAIN_TREE_QUERY,
+  MOVE_DOMAIN_SKILL,
+  MOVE_DOMAIN_AGENT,
+  MOVE_DOMAIN_RULE,
+  toDomainTreeNode,
+} from '@/graphql/operations/domains'
+import { COMPACT_LEARNINGS } from '@/graphql/operations/learnings'
+import {
+  FINE_TUNE_JOBS_QUERY, FINE_TUNE_PROVIDERS_QUERY, START_FINE_TUNE_JOB,
+  CANCEL_FINE_TUNE_JOB, DELETE_FINE_TUNE_JOB, toFineTuneJob, toFineTuneProvider,
+} from '@/graphql/operations/fine-tune'
+import { EMAIL_OAUTH_PROVIDERS_QUERY } from '@/graphql/operations/auth'
 import * as agentsApi from '@/api/agents'
 
 type ModalType = 'database' | 'api' | 'document' | 'email' | 'fact' | 'rule' | null
@@ -368,8 +409,10 @@ function ScratchpadList({ entries, supersededStepNumbers, tables }: {
 }
 
 export function ArtifactPanel() {
-  const { session, messages, sessionReady } = useSessionStore()
-  const { expandedArtifactSections, expandArtifactSection, pendingDeepLink, consumeDeepLink } = useUIStore()
+  const { session, messages, sessionReady } = useSessionContext()
+  const expandedArtifactSections = useReactiveVar(expandedSectionsVar)
+  const expandArtifactSection = expandSection
+  const pendingDeepLink = useReactiveVar(activeDeepLinkVar)
   const {
     artifacts,
     tables,
@@ -403,22 +446,21 @@ export function ArtifactPanel() {
     deleteSkill,
     draftSkill,
     updateSystemPrompt,
+    addRule,
+    updateRule,
+    deleteRule,
+    deleteLearning,
     sourcesLoading,
     factsLoading,
     learningsLoading,
     configLoading,
     ingestingSource,
     ingestProgress,
-  } = useArtifactStore()
-  const { totalDefined, totalSelfDescribing, loading: glossaryLoading } = useGlossaryStore()
-  const regressionQuestionCount = useTestStore(s => s.testableDomains.reduce((n, d) => n + d.question_count, 0))
-  const loadTestableDomains = useTestStore(s => s.loadTestableDomains)
-  useEffect(() => {
-    if (session?.session_id) loadTestableDomains(session.session_id)
-  }, [session?.session_id, loadTestableDomains])
-  const authPermissions = useAuthStore(s => s.permissions)
-  const canSeeSection = (key: string) => isAuthDisabled || (authPermissions?.visibility?.[key] ?? false)
-  const canWrite = (key: string) => isAuthDisabled || (authPermissions?.writes?.[key] ?? false)
+  } = useArtifactContext()
+  const { totalDefined, totalSelfDescribing, loading: glossaryLoading } = useGlossaryData(session?.session_id || '')
+  const { domains: testableDomains } = useTestableDomains()
+  const regressionQuestionCount = testableDomains.reduce((n: number, d: { question_count: number }) => n + d.question_count, 0)
+  const { canSee: canSeeSection, canWrite } = useAuth()
   // Sources group visible if any child section visible
   const sourcesVisible = canSeeSection('databases') || canSeeSection('apis') || canSeeSection('documents') || canSeeSection('facts')
   // Reasoning group visible if any child section visible
@@ -430,15 +472,15 @@ export function ArtifactPanel() {
   const codeLogVisible = canSeeSection('code') || canSeeSection('inference_code') || scratchpadEntries.length > 0
 
   const [expandedDb, setExpandedDb] = useState<string | null>(null)
-  const [dbTables, setDbTables] = useState<Record<string, sessionsApi.DatabaseTableInfo[]>>({})
+  const [dbTables, setDbTables] = useState<Record<string, DatabaseTableInfo[]>>({})
   const [dbTablesLoading, setDbTablesLoading] = useState<string | null>(null)
   const [previewDb, setPreviewDb] = useState<string | null>(null)
   const [previewTable, setPreviewTable] = useState<string | null>(null)
-  const [previewData, setPreviewData] = useState<sessionsApi.DatabaseTablePreview | null>(null)
+  const [previewData, setPreviewData] = useState<DatabaseTablePreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewPage, setPreviewPage] = useState(1)
   const [expandedApi, setExpandedApi] = useState<string | null>(null)
-  const [apiEndpoints, setApiEndpoints] = useState<Record<string, sessionsApi.ApiEndpointInfo[]>>({})
+  const [apiEndpoints, setApiEndpoints] = useState<Record<string, ApiEndpointInfo[]>>({})
   const [apiEndpointsLoading, setApiEndpointsLoading] = useState<string | null>(null)
   const [expandedEndpoint, setExpandedEndpoint] = useState<string | null>(null)
   const [showModal, setShowModal] = useState<ModalType>(null)
@@ -529,7 +571,10 @@ export function ArtifactPanel() {
   // Results filter - persisted in localStorage
   const [showInferencePrompt, setShowInferencePrompt] = useState<Set<string>>(new Set())
   const [collapsedInferences, setCollapsedInferences] = useState<Set<string>>(new Set<string>())
-  const { collapsedResultSteps, toggleResultStep, resultsShowPublishedOnly: showPublishedOnly, setResultsShowPublishedOnly: setShowPublishedOnly } = useUIStore()
+  const collapsedResultSteps = useReactiveVar(collapsedResultStepsVar)
+  const toggleResultStep = toggleResultStepFn
+  const showPublishedOnly = useReactiveVar(resultsShowPublishedOnlyVar)
+  const setShowPublishedOnly = setResultsShowPublishedOnly
   // Collapsible section states - persisted in localStorage
   const [resultsCollapsed, setResultsCollapsed] = useState(() => {
     return localStorage.getItem('constat-results-collapsed') === 'true'
@@ -550,7 +595,7 @@ export function ArtifactPanel() {
       setResultsCollapsed(false)
       localStorage.setItem('constat-results-collapsed', 'false')
       // Consume the signal so collapsing works again
-      useUIStore.getState().toggleArtifactSection('results')
+      toggleSection('results')
     }
   }, [expandedArtifactSections, resultsCollapsed])
   // Move-to-domain state
@@ -607,8 +652,8 @@ export function ArtifactPanel() {
             setPreviewData(null)
             setDbTablesLoading(link.dbName)
             try {
-              const res = await sessionsApi.listDatabaseTables(session.session_id, link.dbName)
-              setDbTables((prev) => ({ ...prev, [link.dbName!]: res.tables }))
+              const { data: dbData } = await apolloClient.query({ query: DATABASE_SCHEMA_QUERY, variables: { sessionId: session.session_id, dbName: link.dbName }, fetchPolicy: 'network-only' })
+              setDbTables((prev) => ({ ...prev, [link.dbName!]: dbData.databaseSchema.tables.map(toDatabaseTable) }))
             } catch (err) {
               console.error('Failed to list tables:', err)
               setDbTables((prev) => ({ ...prev, [link.dbName!]: [] }))
@@ -631,8 +676,8 @@ export function ArtifactPanel() {
             setExpandedEndpoint(null)
             setApiEndpointsLoading(link.apiName)
             try {
-              const res = await sessionsApi.getApiSchema(session.session_id, link.apiName)
-              setApiEndpoints((prev) => ({ ...prev, [link.apiName!]: res.endpoints }))
+              const { data: apiData } = await apolloClient.query({ query: API_SCHEMA_QUERY, variables: { sessionId: session.session_id, apiName: link.apiName }, fetchPolicy: 'network-only' })
+              setApiEndpoints((prev) => ({ ...prev, [link.apiName!]: apiData.apiSchema.endpoints.map(toApiEndpoint) }))
             } catch (err) {
               console.error('Failed to load API schema:', err)
               setApiEndpoints((prev) => ({ ...prev, [link.apiName!]: [] }))
@@ -675,8 +720,9 @@ export function ArtifactPanel() {
       fetchAllSkills()
       fetchAllAgents(sid)
       fetchLearnings()
-      sessionsApi.getDomainTree().then((nodes) => {
-        const collect = (ns: sessionsApi.DomainTreeNode[]): { filename: string; name: string }[] =>
+      apolloClient.query({ query: DOMAIN_TREE_QUERY, fetchPolicy: 'network-only' }).then(({ data }) => {
+        const nodes = data.domainTree.map(toDomainTreeNode)
+        const collect = (ns: DomainTreeNode[]): { filename: string; name: string }[] =>
           ns.flatMap((n) => [{ filename: n.filename, name: n.name }, ...collect(n.children)])
         setDomainList(collect(nodes))
       }).catch(() => {})
@@ -686,7 +732,7 @@ export function ArtifactPanel() {
         fetchTaskRouting(sid)
         fetchScratchpad(sid)
         fetchDDL(sid)
-        sessionsApi.getObjectives(sid).then(r => setObjectives(r.objectives)).catch(() => {})
+        apolloClient.query({ query: OBJECTIVES_QUERY, variables: { sessionId: sid }, fetchPolicy: 'network-only' }).then(({ data }) => setObjectives(data.objectives.map(toObjectivesEntry))).catch(() => {})
       }, 500)
       return () => clearTimeout(timer)
     }
@@ -697,7 +743,9 @@ export function ArtifactPanel() {
     const hasTraining = ftJobs.some(j => j.status === 'training')
     if (!hasTraining || learningsTab !== 'fine-tune') return
     const interval = setInterval(() => {
-      sessionsApi.listFineTuneJobs().then(setFtJobs).catch(() => {})
+      apolloClient.query({ query: FINE_TUNE_JOBS_QUERY, fetchPolicy: 'network-only' })
+        .then((r) => setFtJobs(r.data.fineTuneJobs.map(toFineTuneJob)))
+        .catch(() => {})
     }, 30000)
     return () => clearInterval(interval)
   }, [ftJobs, learningsTab])
@@ -705,8 +753,8 @@ export function ArtifactPanel() {
   // Fetch OAuth providers when email modal opens
   useEffect(() => {
     if (showModal === 'email') {
-      sessionsApi.getEmailOAuthProviders()
-        .then(setEmailOAuthProviders)
+      apolloClient.query({ query: EMAIL_OAUTH_PROVIDERS_QUERY })
+        .then((r) => setEmailOAuthProviders(r.data.emailOAuthProviders))
         .catch(() => setEmailOAuthProviders(null))
     }
   }, [showModal])
@@ -735,51 +783,52 @@ export function ArtifactPanel() {
   // Handlers
   const handleForgetFact = async (factName: string) => {
     if (!session) return
-    await sessionsApi.forgetFact(session.session_id, factName)
+    await apolloClient.mutate({ mutation: FORGET_FACT, variables: { sessionId: session.session_id, factName } })
     fetchFacts(session.session_id)
   }
 
   const handlePersistFact = async (factName: string) => {
     if (!session) return
-    await sessionsApi.persistFact(session.session_id, factName)
+    await apolloClient.mutate({ mutation: PERSIST_FACT, variables: { sessionId: session.session_id, factName } })
     fetchFacts(session.session_id)
   }
 
   const handleMoveSkill = async (skillName: string, fromDomain: string, toDomain: string) => {
     // Validate first
-    const validation = await sessionsApi.moveSkill({ skill_name: skillName, from_domain: fromDomain, to_domain: toDomain, validate_only: true })
-    if (validation.warnings && validation.warnings.length > 0) {
-      const ok = window.confirm(`Warning:\n${validation.warnings.join('\n')}\n\nMove anyway?`)
+    const { data: valData } = await apolloClient.mutate({ mutation: MOVE_DOMAIN_SKILL, variables: { skillName, fromDomain, toDomain, validateOnly: true } })
+    const warnings = valData?.moveDomainSkill?.warnings
+    if (warnings && warnings.length > 0) {
+      const ok = window.confirm(`Warning:\n${warnings.join('\n')}\n\nMove anyway?`)
       if (!ok) return
     }
-    await sessionsApi.moveSkill({ skill_name: skillName, from_domain: fromDomain, to_domain: toDomain })
+    await apolloClient.mutate({ mutation: MOVE_DOMAIN_SKILL, variables: { skillName, fromDomain, toDomain } })
     setMovingSkill(null)
     fetchAllSkills()
   }
 
   const handleMoveAgent = async (agentName: string, fromDomain: string, toDomain: string) => {
     if (!session) return
-    await sessionsApi.moveAgent({ agent_name: agentName, from_domain: fromDomain, to_domain: toDomain })
+    await apolloClient.mutate({ mutation: MOVE_DOMAIN_AGENT, variables: { agentName, fromDomain, toDomain } })
     setMovingAgent(null)
     fetchAllAgents(session.session_id)
   }
 
   const handleMoveFact = async (factName: string, toDomain: string) => {
     if (!session) return
-    await sessionsApi.moveFact(session.session_id, factName, toDomain)
+    await apolloClient.mutate({ mutation: MOVE_FACT, variables: { sessionId: session.session_id, factName, toDomain } })
     setMovingFact(null)
     fetchFacts(session.session_id)
   }
 
   const handleMoveRule = async (ruleId: string, toDomain: string) => {
-    await sessionsApi.moveRule({ rule_id: ruleId, to_domain: toDomain })
+    await apolloClient.mutate({ mutation: MOVE_DOMAIN_RULE, variables: { ruleId, toDomain } })
     setMovingRule(null)
     fetchLearnings()
   }
 
   const handleAddFact = async () => {
     if (!session || !modalInput.name || !modalInput.value) return
-    await sessionsApi.addFact(session.session_id, modalInput.name, modalInput.value, modalInput.persist)
+    await apolloClient.mutate({ mutation: ADD_FACT, variables: { sessionId: session.session_id, name: modalInput.name, value: modalInput.value, persist: modalInput.persist } })
     fetchFacts(session.session_id)
     setShowModal(null)
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
@@ -787,11 +836,7 @@ export function ArtifactPanel() {
 
   const handleAddDatabase = async () => {
     if (!session || !modalInput.name || !modalInput.uri) return
-    await sessionsApi.addDatabase(session.session_id, {
-      name: modalInput.name,
-      uri: modalInput.uri,
-      type: modalInput.type || 'duckdb',
-    })
+    await apolloClient.mutate({ mutation: ADD_DATABASE, variables: { sessionId: session.session_id, input: { name: modalInput.name, uri: modalInput.uri, type: modalInput.type || 'duckdb' } } })
     fetchDataSources(session.session_id)
     setShowModal(null)
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
@@ -799,11 +844,7 @@ export function ArtifactPanel() {
 
   const handleAddApi = async () => {
     if (!session || !modalInput.name || !modalInput.uri) return
-    await sessionsApi.addApi(session.session_id, {
-      name: modalInput.name,
-      base_url: modalInput.uri,
-      type: modalInput.type || 'rest',
-    })
+    await apolloClient.mutate({ mutation: ADD_API, variables: { sessionId: session.session_id, input: { name: modalInput.name, baseUrl: modalInput.uri, type: modalInput.type || 'rest' } } })
     fetchDataSources(session.session_id)
     // Entities refresh via entity_rebuild_complete WS event
     setShowModal(null)
@@ -815,7 +856,7 @@ export function ArtifactPanel() {
     if (!confirm(`Remove API "${apiName}" from this session?`)) return
 
     try {
-      await sessionsApi.removeApi(session.session_id, apiName)
+      await apolloClient.mutate({ mutation: REMOVE_API, variables: { sessionId: session.session_id, name: apiName } })
       fetchDataSources(session.session_id)
       // Entities refresh via entity_rebuild_complete WS event
     } catch (err) {
@@ -832,7 +873,7 @@ export function ArtifactPanel() {
       if (selectedFiles.length === 0) return
       setUploading(true)
       try {
-        await sessionsApi.uploadDocuments(session.session_id, selectedFiles)
+        await apolloClient.mutate({ mutation: UPLOAD_DOCUMENTS, variables: { sessionId: session.session_id, files: selectedFiles } })
         fetchDataSources(session.session_id)
         // Entities refresh via entity_rebuild_complete WS event
         setShowModal(null)
@@ -847,20 +888,9 @@ export function ArtifactPanel() {
       setUploading(true)
       try {
         if (modalInput.uri.startsWith('http://') || modalInput.uri.startsWith('https://')) {
-          await sessionsApi.addDocumentURI(session.session_id, {
-            name: modalInput.name,
-            url: modalInput.uri,
-            follow_links: docFollowLinks,
-            max_depth: docMaxDepth,
-            max_documents: docMaxDocuments,
-            same_domain_only: docSameDomainOnly,
-            type: docContentType,
-          })
+          await apolloClient.mutate({ mutation: ADD_DOCUMENT_URI, variables: { sessionId: session.session_id, input: { name: modalInput.name, url: modalInput.uri, followLinks: docFollowLinks, maxDepth: docMaxDepth, maxDocuments: docMaxDocuments, sameDomainOnly: docSameDomainOnly, type: docContentType } } })
         } else {
-          await sessionsApi.addFileRef(session.session_id, {
-            name: modalInput.name,
-            uri: modalInput.uri,
-          })
+          await apolloClient.mutate({ mutation: ADD_FILE_REF, variables: { sessionId: session.session_id, input: { name: modalInput.name, uri: modalInput.uri } } })
         }
         fetchDataSources(session.session_id)
         // Entities refresh via entity_rebuild_complete WS event
@@ -886,22 +916,22 @@ export function ArtifactPanel() {
     setUploading(true)
     try {
       const scheme = effectiveHost.includes('://') ? '' : 'imaps://'
-      await sessionsApi.addEmailSource(session.session_id, {
+      await apolloClient.mutate({ mutation: ADD_EMAIL_SOURCE, variables: { sessionId: session.session_id, input: {
         name: modalInput.name,
         url: `${scheme}${effectiveHost}`,
         username: effectiveUsername,
         password: emailProvider === 'other' && emailAuthType === 'basic' ? emailPassword : undefined,
-        auth_type: emailOAuthToken ? 'oauth2_refresh' : emailAuthType,
+        authType: emailOAuthToken ? 'oauth2_refresh' : emailAuthType,
         mailbox: emailMailbox,
         since: emailSince || undefined,
-        max_messages: emailMaxMessages,
-        include_headers: emailIncludeHeaders,
-        extract_attachments: emailExtractAttachments,
-        oauth2_client_id: emailProvider === 'other' && emailAuthType === 'oauth2' ? emailOAuth2ClientId : undefined,
-        oauth2_client_secret: emailProvider === 'other' && emailAuthType === 'oauth2' ? emailOAuth2ClientSecret : undefined,
-        oauth2_tenant_id: emailProvider === 'other' && emailAuthType === 'oauth2' ? emailOAuth2TenantId || undefined : undefined,
-        oauth2_refresh_token: emailOAuthToken?.refresh_token || undefined,
-      })
+        maxMessages: emailMaxMessages,
+        includeHeaders: emailIncludeHeaders,
+        extractAttachments: emailExtractAttachments,
+        oauth2ClientId: emailProvider === 'other' && emailAuthType === 'oauth2' ? emailOAuth2ClientId : undefined,
+        oauth2ClientSecret: emailProvider === 'other' && emailAuthType === 'oauth2' ? emailOAuth2ClientSecret : undefined,
+        oauth2TenantId: emailProvider === 'other' && emailAuthType === 'oauth2' ? emailOAuth2TenantId || undefined : undefined,
+        oauth2RefreshToken: emailOAuthToken?.refresh_token || undefined,
+      } } })
       fetchDataSources(session.session_id)
       setShowModal(null)
       setEmailOAuthToken(null)
@@ -920,7 +950,7 @@ export function ArtifactPanel() {
     if (!confirm(`Delete document "${docName}" and its extracted entities?`)) return
 
     try {
-      await sessionsApi.deleteFileRef(session.session_id, docName)
+      await apolloClient.mutate({ mutation: DELETE_FILE_REF, variables: { sessionId: session.session_id, name: docName } })
       fetchDataSources(session.session_id)
       // Entities refresh via entity_rebuild_complete WS event
     } catch (err) {
@@ -933,7 +963,7 @@ export function ArtifactPanel() {
     if (!session) return
     setLoadingDocument(true)
     try {
-      const doc = await sessionsApi.getDocument(session.session_id, documentName)
+      const doc = await getDocument(session.session_id, documentName)
 
       // For file types (PDF, Office docs), open via file serving endpoint
       if (doc.type === 'file' && doc.path) {
@@ -987,11 +1017,12 @@ export function ArtifactPanel() {
     if (!dbTables[dbName] && session) {
       setDbTablesLoading(dbName)
       try {
-        const res = await sessionsApi.listDatabaseTables(session.session_id, dbName)
-        setDbTables((prev) => ({ ...prev, [dbName]: res.tables }))
+        const { data: dbData } = await apolloClient.query({ query: DATABASE_SCHEMA_QUERY, variables: { sessionId: session.session_id, dbName }, fetchPolicy: 'network-only' })
+        const tables = dbData.databaseSchema.tables.map(toDatabaseTable)
+        setDbTables((prev) => ({ ...prev, [dbName]: tables }))
         // File-based DBs are single-table — jump straight to preview
-        if (dbType && FILE_DB_TYPES.has(dbType) && res.tables.length === 1) {
-          openTablePreview(dbName, res.tables[0].name)
+        if (dbType && FILE_DB_TYPES.has(dbType) && tables.length === 1) {
+          openTablePreview(dbName, tables[0].name)
         }
       } catch (err) {
         console.error('Failed to list tables:', err)
@@ -1012,10 +1043,8 @@ export function ArtifactPanel() {
     setPreviewPage(page)
     setPreviewLoading(true)
     try {
-      const data = await sessionsApi.getDatabaseTablePreview(
-        session.session_id, dbName, tableName, page
-      )
-      setPreviewData(data)
+      const { data: gqlData } = await apolloClient.query({ query: DATABASE_TABLE_PREVIEW_QUERY, variables: { sessionId: session.session_id, dbName, tableName, page }, fetchPolicy: 'network-only' })
+      setPreviewData(toDatabaseTablePreview(gqlData.databaseTablePreview))
     } catch (err) {
       console.error('Failed to preview table:', err)
       setPreviewData(null)
@@ -1035,8 +1064,8 @@ export function ArtifactPanel() {
     if (!apiEndpoints[apiName] && session) {
       setApiEndpointsLoading(apiName)
       try {
-        const res = await sessionsApi.getApiSchema(session.session_id, apiName)
-        setApiEndpoints((prev) => ({ ...prev, [apiName]: res.endpoints }))
+        const { data: apiData } = await apolloClient.query({ query: API_SCHEMA_QUERY, variables: { sessionId: session.session_id, apiName }, fetchPolicy: 'network-only' })
+        setApiEndpoints((prev) => ({ ...prev, [apiName]: apiData.apiSchema.endpoints.map(toApiEndpoint) }))
       } catch (err) {
         console.error('Failed to load API schema:', err)
         setApiEndpoints((prev) => ({ ...prev, [apiName]: [] }))
@@ -1055,23 +1084,23 @@ export function ArtifactPanel() {
 
   const handleAddRule = async () => {
     if (!modalInput.value.trim()) return
-    await useArtifactStore.getState().addRule(modalInput.value.trim())
+    await addRule(modalInput.value.trim())
     setShowModal(null)
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
   }
 
   const handleUpdateRule = async () => {
     if (!editingRule || !editingRule.summary.trim()) return
-    await useArtifactStore.getState().updateRule(editingRule.id, editingRule.summary.trim())
+    await updateRule(editingRule.id, editingRule.summary.trim())
     setEditingRule(null)
   }
 
   const handleDeleteRule = async (ruleId: string) => {
-    await useArtifactStore.getState().deleteRule(ruleId)
+    await deleteRule(ruleId)
   }
 
   const handleDeleteLearning = async (learningId: string) => {
-    await useArtifactStore.getState().deleteLearning(learningId)
+    await deleteLearning(learningId)
   }
 
   // Build SKILL.md content from structured fields
@@ -1192,12 +1221,7 @@ ${skill.body}`
     if (agentContents[agentName]) return // Already loaded
 
     try {
-      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-      const headers: Record<string, string> = {}
-      if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) headers['Authorization'] = `Bearer ${token}`
-      }
+      const headers = await getAuthHeaders()
       const response = await fetch(
         `/api/sessions/agents/${encodeURIComponent(agentName)}?session_id=${session.session_id}`,
         { headers, credentials: 'include' }
@@ -1214,12 +1238,7 @@ ${skill.body}`
   const handleEditAgent = async (agentName: string) => {
     if (!session) return
     try {
-      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-      const headers: Record<string, string> = {}
-      if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) headers['Authorization'] = `Bearer ${token}`
-      }
+      const headers = await getAuthHeaders()
       const response = await fetch(
         `/api/sessions/agents/${encodeURIComponent(agentName)}?session_id=${session.session_id}`,
         { headers, credentials: 'include' }
@@ -1236,12 +1255,7 @@ ${skill.body}`
   const handleCreateAgent = async () => {
     if (!session || !newAgent.name.trim() || !newAgent.prompt.trim()) return
     try {
-      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) headers['Authorization'] = `Bearer ${token}`
-      }
+      const headers: Record<string, string> = { 'Content-Type': 'application/json', ...await getAuthHeaders() }
       const response = await fetch(
         `/api/sessions/agents?session_id=${session.session_id}`,
         {
@@ -1264,12 +1278,7 @@ ${skill.body}`
   const handleUpdateAgent = async () => {
     if (!session || !editingAgent) return
     try {
-      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) headers['Authorization'] = `Bearer ${token}`
-      }
+      const headers: Record<string, string> = { 'Content-Type': 'application/json', ...await getAuthHeaders() }
       const response = await fetch(
         `/api/sessions/agents/${encodeURIComponent(editingAgent.name)}?session_id=${session.session_id}`,
         {
@@ -1291,12 +1300,7 @@ ${skill.body}`
   const handleDeleteAgent = async (agentName: string) => {
     if (!session || !confirm(`Delete agent "${agentName}"?`)) return
     try {
-      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-      const headers: Record<string, string> = {}
-      if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) headers['Authorization'] = `Bearer ${token}`
-      }
+      const headers = await getAuthHeaders()
       const response = await fetch(
         `/api/sessions/agents/${encodeURIComponent(agentName)}?session_id=${session.session_id}`,
         {
@@ -1315,12 +1319,7 @@ ${skill.body}`
 
   const handleEditSkill = async (skillName: string) => {
     try {
-      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-      const headers: Record<string, string> = {}
-      if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) headers['Authorization'] = `Bearer ${token}`
-      }
+      const headers = await getAuthHeaders()
       const response = await fetch(`/api/skills/${encodeURIComponent(skillName)}`, {
         headers,
         credentials: 'include',
@@ -1350,12 +1349,7 @@ ${skill.body}`
     if (skillContents[skillName]) return // Already loaded
 
     try {
-      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-      const headers: Record<string, string> = {}
-      if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) headers['Authorization'] = `Bearer ${token}`
-      }
+      const headers = await getAuthHeaders()
       const response = await fetch(`/api/skills/${encodeURIComponent(skillName)}`, {
         headers,
         credentials: 'include',
@@ -2203,7 +2197,7 @@ ${skill.body}`
                           if (!session) return
                           if (!confirm(`Remove database "${db.name}" from this session?`)) return
                           try {
-                            await sessionsApi.removeDatabase(session.session_id, db.name)
+                            await apolloClient.mutate({ mutation: REMOVE_DATABASE, variables: { sessionId: session.session_id, name: db.name } })
                             await fetchDataSources(session.session_id)
                             // Entities refresh via entity_rebuild_complete WS event
                           } catch (err) {
@@ -2428,7 +2422,7 @@ ${skill.body}`
                     ) : (() => {
                       const allEps = apiEndpoints[api.name] || []
 
-                      const renderEndpoint = (ep: sessionsApi.ApiEndpointInfo) => (
+                      const renderEndpoint = (ep: ApiEndpointInfo) => (
                         <div key={ep.name}>
                           <button
                             onClick={() => setExpandedEndpoint(expandedEndpoint === ep.name ? null : ep.name)}
@@ -2474,7 +2468,7 @@ ${skill.body}`
                         </div>
                       )
 
-                      const renderSection = (label: string, items: sessionsApi.ApiEndpointInfo[]) => (
+                      const renderSection = (label: string, items: ApiEndpointInfo[]) => (
                         items.length > 0 ? (
                           <div key={label}>
                             <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
@@ -3524,14 +3518,7 @@ ${skill.body}`
                       <button
                         onClick={async () => {
                           try {
-                            const headers: Record<string, string> = {}
-                            const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-                            if (!isAuthDisabled) {
-                              const token = await useAuthStore.getState().getToken()
-                              if (token) {
-                                headers['Authorization'] = `Bearer ${token}`
-                              }
-                            }
+                            const headers = await getAuthHeaders()
                             const response = await fetch(
                               `/api/skills/${encodeURIComponent(skill.name)}/download`,
                               { headers, credentials: 'include' }
@@ -3794,7 +3781,8 @@ ${skill.body}`
                 onClick={async () => {
                   setCompacting(true)
                   try {
-                    const result = await sessionsApi.compactLearnings()
+                    const { data } = await apolloClient.mutate({ mutation: COMPACT_LEARNINGS })
+                    const result = data.compactLearnings
                     if (result.status === 'success') {
                       fetchLearnings()
                     }
@@ -3859,14 +3847,18 @@ ${skill.body}`
               <button
                 onClick={() => {
                   setLearningsTab('fine-tune')
-                  sessionsApi.listFineTuneJobs().then(setFtJobs).catch(() => {})
-                  sessionsApi.listFineTuneProviders().then((p) => {
-                    setFtProviders(p)
-                    if (p.length > 0 && !ftProvider) {
-                      setFtProvider(p[0].name)
-                      if (p[0].models.length > 0) setFtBaseModel(p[0].models[0])
-                    }
-                  }).catch(() => {})
+                  apolloClient.query({ query: FINE_TUNE_JOBS_QUERY, fetchPolicy: 'network-only' })
+                    .then((r) => setFtJobs(r.data.fineTuneJobs.map(toFineTuneJob)))
+                    .catch(() => {})
+                  apolloClient.query({ query: FINE_TUNE_PROVIDERS_QUERY, fetchPolicy: 'network-only' })
+                    .then((r) => {
+                      const p = r.data.fineTuneProviders.map(toFineTuneProvider)
+                      setFtProviders(p)
+                      if (p.length > 0 && !ftProvider) {
+                        setFtProvider(p[0].name)
+                        if (p[0].models.length > 0) setFtBaseModel(p[0].models[0])
+                      }
+                    }).catch(() => {})
                 }}
                 className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
                   learningsTab === 'fine-tune'
@@ -4080,7 +4072,7 @@ ${skill.body}`
                   onClick={async () => {
                     setExporting(true)
                     try {
-                      await sessionsApi.downloadSimpleExemplars({
+                      await downloadSimpleExemplars({
                         format: exportFormat,
                         include: Array.from(exportInclude),
                         min_confidence: exportMinConfidence,
@@ -4135,7 +4127,7 @@ ${skill.body}`
                             {job.status === 'training' && (
                               <button
                                 onClick={async () => {
-                                  await sessionsApi.cancelFineTuneJob(job.id)
+                                  await apolloClient.mutate({ mutation: CANCEL_FINE_TUNE_JOB, variables: { modelId: job.id } })
                                   setFtJobs(ftJobs.map(j => j.id === job.id ? { ...j, status: 'failed' as const } : j))
                                 }}
                                 className="p-1 text-gray-400 hover:text-yellow-600 rounded"
@@ -4146,7 +4138,7 @@ ${skill.body}`
                             )}
                             <button
                               onClick={async () => {
-                                await sessionsApi.deleteFineTuneJob(job.id)
+                                await apolloClient.mutate({ mutation: DELETE_FINE_TUNE_JOB, variables: { modelId: job.id } })
                                 setFtJobs(ftJobs.filter(j => j.id !== job.id))
                               }}
                               className="p-1 text-gray-400 hover:text-red-500 rounded"
@@ -4279,15 +4271,21 @@ ${skill.body}`
                           if (!ftName || !ftProvider || !ftBaseModel || ftTaskTypes.size === 0) return
                           setFtSubmitting(true)
                           try {
-                            const job = await sessionsApi.startFineTuneJob({
-                              name: ftName,
-                              provider: ftProvider,
-                              base_model: ftBaseModel,
-                              task_types: Array.from(ftTaskTypes),
-                              domain: ftDomain || undefined,
-                              include: Array.from(ftInclude),
-                              min_confidence: ftMinConf,
+                            const ftResult = await apolloClient.mutate({
+                              mutation: START_FINE_TUNE_JOB,
+                              variables: {
+                                input: {
+                                  name: ftName,
+                                  provider: ftProvider,
+                                  baseModel: ftBaseModel,
+                                  taskTypes: Array.from(ftTaskTypes),
+                                  domain: ftDomain || undefined,
+                                  include: Array.from(ftInclude),
+                                  minConfidence: ftMinConf,
+                                },
+                              },
                             })
+                            const job = toFineTuneJob(ftResult.data.startFineTuneJob)
                             setFtJobs([job, ...ftJobs])
                             setFtShowForm(false)
                             setFtName('')
@@ -4390,15 +4388,7 @@ ${skill.body}`
               onClick={async () => {
                 if (!session) return
                 try {
-                  // Build headers with auth token
-                  const headers: Record<string, string> = {}
-                  const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-                  if (!isAuthDisabled) {
-                    const token = await useAuthStore.getState().getToken()
-                    if (token) {
-                      headers['Authorization'] = `Bearer ${token}`
-                    }
-                  }
+                  const headers = await getAuthHeaders()
 
                   const response = await fetch(
                     `/api/sessions/${session.session_id}/download-code`,
@@ -4447,14 +4437,7 @@ ${skill.body}`
               onClick={async () => {
                 if (!session) return
                 try {
-                  const headers: Record<string, string> = {}
-                  const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
-                  if (!isAuthDisabled) {
-                    const token = await useAuthStore.getState().getToken()
-                    if (token) {
-                      headers['Authorization'] = `Bearer ${token}`
-                    }
-                  }
+                  const headers = await getAuthHeaders()
                   const response = await fetch(
                     `/api/sessions/${session.session_id}/download-inference-code`,
                     { headers, credentials: 'include' }

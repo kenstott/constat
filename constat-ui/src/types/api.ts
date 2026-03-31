@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: e1b52c78-9796-4a03-afde-51e8a3fb3b7e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // API Types - mirrors server models
 
 export type SessionStatus =
@@ -633,4 +643,71 @@ export interface GoldenQuestionResponse {
   objectives?: string[]
   warnings?: string[]
   system_prompt?: string | null
+}
+
+// Domain types (migrated from api/sessions.ts)
+
+export interface DomainTreeNode {
+  filename: string
+  name: string
+  path: string
+  description: string
+  tier: string
+  active: boolean
+  owner: string
+  steward: string
+  databases: string[]
+  apis: string[]
+  documents: string[]
+  skills: string[]
+  agents: string[]
+  rules: string[]
+  facts: string[]
+  system_prompt: string
+  domains: string[]
+  children: DomainTreeNode[]
+}
+
+export interface DatabaseTablePreview {
+  database: string
+  table_name: string
+  columns: string[]
+  data: Record<string, unknown>[]
+  page: number
+  page_size: number
+  total_rows: number
+  has_more: boolean
+}
+
+export interface DatabaseTableInfo {
+  name: string
+  row_count: number | null
+  column_count: number
+}
+
+export interface ApiEndpointField {
+  name: string
+  type: string
+  description?: string
+  is_required: boolean
+}
+
+export interface ApiEndpointInfo {
+  name: string
+  kind?: string
+  return_type?: string
+  description?: string
+  http_method?: string
+  http_path?: string
+  fields: ApiEndpointField[]
+}
+
+export interface ObjectivesEntry {
+  type: 'question' | 'clarification' | 'redo'
+  text?: string
+  question?: string
+  answer?: string
+  mode?: string
+  guidance?: string
+  ts: string
 }

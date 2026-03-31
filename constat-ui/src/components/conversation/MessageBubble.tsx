@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 5842db5b-4d3e-41c8-969a-92096079b7c6
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Message Bubble component
 
 import { ReactNode, useState, useRef, useEffect } from 'react'
@@ -21,7 +31,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { FlagButton } from './FlagButton'
 import { VeraIcon } from './VeraIcon'
-import { useAuthStore } from '@/store/authStore'
+import { useAuth } from '@/contexts/AuthContext'
 
 // Shared markdown renderer used by MessageBubble content sections
 function MarkdownContent({ content }: { content: string }) {
@@ -168,8 +178,7 @@ function formatMs(ms: number): string {
   return `${minutes}m ${remainSec}s`
 }
 
-function getUserInitials(): string {
-  const user = useAuthStore.getState().user
+function getUserInitials(user: { displayName?: string | null; email?: string | null } | null): string {
   if (user?.displayName) {
     return user.displayName.split(' ').map(p => p[0]).join('').toUpperCase().slice(0, 2)
   }
@@ -217,6 +226,7 @@ export function MessageBubble({
   hideHeader,
 }: MessageBubbleProps) {
   const isUser = type === 'user'
+  const { user: authUser } = useAuth()
 
   // Elapsed timer for running steps
   const [elapsed, setElapsed] = useState(0)
@@ -302,7 +312,7 @@ export function MessageBubble({
         <div className="flex items-center gap-3 mb-1">
           {isUser ? (
             <div className={`w-8 h-8 rounded-lg flex items-center justify-center bg-primary-600 text-white text-xs font-semibold ${isPending ? 'opacity-50' : ''}`}>
-              {getUserInitials()}
+              {getUserInitials(authUser)}
             </div>
           ) : (
             <div className={`w-8 h-8 rounded-lg flex items-center justify-center bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800 ${isLive ? 'animate-pulse' : ''} ${isPending ? 'opacity-50' : ''}`}>
@@ -310,7 +320,7 @@ export function MessageBubble({
             </div>
           )}
           <span className="font-semibold text-sm text-gray-900 dark:text-gray-100">
-            {isUser ? (useAuthStore.getState().user?.displayName || 'You') : 'Vera'}
+            {isUser ? (authUser?.displayName || 'You') : 'Vera'}
           </span>
           {timestamp && !isLive && (
             <span className="text-xs text-gray-400 dark:text-gray-500">

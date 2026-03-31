@@ -1,3 +1,13 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: edfd7a18-95cc-4e34-bcbb-7c1d899c3302
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Tests for progress callback and SOURCE_INGEST_PROGRESS event type (Fix 3)."""
 
 import inspect

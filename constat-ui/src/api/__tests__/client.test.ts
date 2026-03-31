@@ -1,14 +1,20 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: c8bae386-77e4-4ccc-95ef-f6ea1013d2ae
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// Mock authStore before importing client
-vi.mock('@/store/authStore', () => ({
+// Mock auth-helpers before importing client
+vi.mock('@/config/auth-helpers', () => ({
   isAuthDisabled: true,
-  useAuthStore: {
-    getState: () => ({
-      getToken: vi.fn().mockResolvedValue(null),
-      logout: vi.fn(),
-    }),
-  },
+  getAuthHeaders: vi.fn().mockResolvedValue({}),
+  getToken: vi.fn().mockResolvedValue(null),
 }))
 
 import { ApiError, get, post, put, patch, del } from '../client'
@@ -227,15 +233,10 @@ describe('API client methods', () => {
     })
   })
 
-  describe('401 logout', () => {
-    it('does not trigger logout when auth is disabled', async () => {
-      const { useAuthStore } = await import('@/store/authStore')
-      const logoutFn = useAuthStore.getState().logout as ReturnType<typeof vi.fn>
-      logoutFn.mockClear()
-
+  describe('401 handling', () => {
+    it('throws ApiError on 401', async () => {
       mockFetch.mockResolvedValue(errorResponse(401, 'Unauthorized'))
       await expect(get('/protected')).rejects.toThrow(ApiError)
-      expect(logoutFn).not.toHaveBeenCalled()
     })
   })
 })

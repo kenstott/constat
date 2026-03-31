@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 8b2013a7-3443-45d4-a22d-c0e5005cd986
 #
 # Data exploration commands - tables, show, query, code, artifacts, export.
 

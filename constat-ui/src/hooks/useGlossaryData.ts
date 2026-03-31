@@ -1,7 +1,17 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 3e166ac0-8d35-4fbf-a80c-42bee4831517
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 import { useQuery, useSubscription } from '@apollo/client/react'
 import { GLOSSARY_QUERY } from '@/graphql/queries'
 import { GLOSSARY_CHANGED_SUBSCRIPTION } from '@/graphql/subscriptions'
-import { useGlossaryStore } from '@/store/glossaryStore'
+import { setGlossaryGenerating, setGlossaryProgress } from '@/graphql/ui-state'
 import type { GlossaryTerm } from '@/types/api'
 import { useMemo, useRef, useCallback } from 'react'
 
@@ -97,16 +107,15 @@ export function useGlossaryData(sessionId: string, scope?: string, domain?: stri
     onData: ({ data: subData }) => {
       const event = subData?.data?.glossaryChanged
       if (!event) return
-      const gStore = useGlossaryStore.getState()
       switch (event.action) {
         case 'GENERATION_STARTED':
-          gStore.setGenerating(true)
+          setGlossaryGenerating(true)
           break
         case 'GENERATION_PROGRESS':
-          gStore.setProgress(event.stage ?? '', event.percent ?? 0)
+          setGlossaryProgress(event.stage ?? '', event.percent ?? 0)
           break
         case 'GENERATION_COMPLETE':
-          gStore.setGenerating(false)
+          setGlossaryGenerating(false)
           break
         default:
           // CREATED / UPDATED / DELETED — refetch glossary data
