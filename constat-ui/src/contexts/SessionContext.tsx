@@ -19,11 +19,24 @@ import {
   useMemo,
   type ReactNode,
 } from 'react'
-import type { ObservableSubscription } from '@apollo/client'
+import { useReactiveVar, type ObservableSubscription } from '@apollo/client'
 import { useAuth } from '@/contexts/AuthContext'
-import { useProofStore } from '@/store/proofStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import { useGlossaryStore } from '@/store/glossaryStore'
+import {
+  clearArtifactState,
+  markStepsSuperseded,
+  proofFactsVar,
+  isProvingVar,
+  isPlanningCompleteVar,
+  isProofPanelOpenVar,
+  proofSummaryVar,
+  isSummaryGeneratingVar,
+  hasCompletedProofVar,
+  openProofPanel,
+  closeProofPanel,
+  clearProofFacts,
+  importFacts,
+} from '@/graphql/ui-state'
+import { fetchTerms as glossaryFetchTerms, loadFromCache as glossaryLoadFromCache } from '@/store/glossaryState'
 import { briefModeVar } from '@/graphql/ui-state'
 import { apolloClient } from '@/graphql/client'
 import { sessionEventReducer, executeSideEffects } from '@/events/sessionEventHandler'
@@ -111,7 +124,7 @@ interface SessionContextValue {
   createSession: (userId?: string, forceNew?: boolean) => Promise<void>
 
   // Connection
-  wsConnected: boolean
+  subscriptionConnected: boolean
   sessionReady: boolean
   isCreatingSession: boolean
 
@@ -179,7 +192,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   // useState — imperative, not event-driven
   const [session, setSessionState] = useState<Session | null>(null)
-  const [wsConnected, setWsConnected] = useState(false)
+  const [subscriptionConnected, setSubscriptionConnected] = useState(false)
   const [sessionReady, setSessionReady] = useState(false)
   const [isCreatingSession, setIsCreatingSession] = useState(false)
   const [agents, setAgents] = useState<AgentInfo[]>([])
@@ -201,24 +214,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => { userIdRef.current = userId }, [userId])
   useEffect(() => { sessionRef.current = session }, [session])
 
-  // Proof store state + actions
-  const proofFacts = useProofStore((s) => s.facts)
-  const isProofPanelOpen = useProofStore((s) => s.isPanelOpen)
-  const isPlanningComplete = useProofStore((s) => s.isPlanningComplete)
-  const proofSummary = useProofStore((s) => s.proofSummary)
-  const isSummaryGenerating = useProofStore((s) => s.isSummaryGenerating)
-  const isProving = useProofStore((s) => s.isProving)
-  const hasCompletedProof = useProofStore((s) => s.hasCompletedProof)
-  const openProofPanel = useProofStore((s) => s.openPanel)
-  const closeProofPanel = useProofStore((s) => s.closePanel)
-  const clearProofFacts = useProofStore((s) => s.clearFacts)
+  // Proof reactive var state
+  const proofFacts = useReactiveVar(proofFactsVar)
+  const isProofPanelOpen = useReactiveVar(isProofPanelOpenVar)
+  const isPlanningComplete = useReactiveVar(isPlanningCompleteVar)
+  const proofSummary = useReactiveVar(proofSummaryVar)
+  const isSummaryGenerating = useReactiveVar(isSummaryGeneratingVar)
+  const isProving = useReactiveVar(isProvingVar)
+  const hasCompletedProof = useReactiveVar(hasCompletedProofVar)
 
-  // SideEffectStores reference (stable — Zustand stores never change identity)
-  const sideEffectStores: SideEffectStores = useMemo(() => ({
-    artifactStore: useArtifactStore,
-    proofStore: useProofStore,
-    glossaryStore: useGlossaryStore,
-  }), [])
+  // SideEffectStores — all stores migrated to reactive vars, empty object kept for call-site compat
+  const sideEffectStores: SideEffectStores = useMemo(() => ({}), [])
 
   // ---------------------------------------------------------------------------
   // Subscription helpers
@@ -244,21 +250,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           if (!data?.queryExecution) return
           const event = toExecutionEvent(data.queryExecution)
 
-          // session_ready: update session object outside reducer
+          // session_ready: mark session as ready (active domains handled by Apollo cache)
           if (event.event_type === 'session_ready') {
-            const readyData = event.data as { active_domains?: string[] }
-            setSessionState((prev) =>
-              prev
-                ? readyData.active_domains
-                  ? { ...prev, active_domains: readyData.active_domains }
-                  : prev
-                : prev
-            )
             setSessionReady(true)
           }
 
           // Reducer handles execution state
-          dispatch({ type: 'WS_EVENT', event })
+          dispatch({ type: 'SUBSCRIPTION_EVENT', event })
 
           // Side effects for cross-store calls
           executeSideEffects(event, sess.session_id, sideEffectStores, lastHeartbeatRef)
@@ -282,10 +280,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         },
         error(err) {
           console.error('[subscription] error:', err)
-          setWsConnected(false)
+          setSubscriptionConnected(false)
         },
       })
-    setWsConnected(true)
+    setSubscriptionConnected(true)
 
     heartbeatRef.current = setInterval(() => {
       apolloClient
@@ -318,7 +316,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const uid = overrideUserId ?? userIdRef.current ?? 'default'
     setIsCreatingSession(true)
     stopSubscription()
-    useArtifactStore.getState().clear()
+    clearArtifactState()
 
     const sessionId = forceNew
       ? createNewSessionId(uid)
@@ -332,7 +330,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     let restoredMessages: Message[] = []
     if (!forceNew) {
-      const artifactStore = useArtifactStore.getState()
       const [messagesRes, factsRes, _codesRes, _artifactsRes] = await Promise.allSettled([
         apolloClient
           .query({ query: MESSAGES_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
@@ -343,14 +340,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             facts: d.proofFacts.facts.map(toStoredProofFact),
             summary: d.proofFacts.summary,
           })),
-        Promise.all([
-          artifactStore.fetchStepCodes(sessionId),
-          artifactStore.fetchInferenceCodes(sessionId),
-        ]),
-        Promise.all([
-          artifactStore.fetchTables(sessionId),
-          artifactStore.fetchArtifacts(sessionId),
-        ]),
+        apolloClient.refetchQueries({ include: ['Steps', 'InferenceCodes'] }),
+        apolloClient.refetchQueries({ include: ['Tables', 'Artifacts'] }),
       ])
 
       if (messagesRes.status === 'fulfilled') {
@@ -376,7 +367,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (factsRes.status === 'fulfilled') {
         const { facts: storedFacts, summary } = factsRes.value
         if (storedFacts && storedFacts.length > 0) {
-          useProofStore.getState().importFacts(storedFacts, summary)
+          importFacts(storedFacts, summary)
           console.log('[createSession] Restored', storedFacts.length, 'proof facts')
         }
       } else {
@@ -400,7 +391,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     startSubscription(sess)
 
     if (isReconnect) {
-      useGlossaryStore.getState().fetchTerms(sess.session_id)
+      glossaryFetchTerms(sess.session_id)
     }
   }, [stopSubscription, startSubscription])
 
@@ -415,10 +406,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         if (!options?.preserveMessages) {
           dispatch({ type: 'SET_MESSAGES', messages: [], suggestions: [], plan: null })
         }
-        useGlossaryStore.getState().loadFromCache(sess.session_id)
+        glossaryLoadFromCache(sess.session_id)
         startSubscription(sess)
       } else {
-        setWsConnected(false)
+        setSubscriptionConnected(false)
       }
       setSessionState(sess)
       if (sess?.status) {
@@ -713,7 +704,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       })
 
       if (isRedo) {
-        useArtifactStore.getState().markStepsSuperseded()
+        markStepsSuperseded()
       }
 
       dispatch({ type: 'APPROVE_PLAN', stepMessages, stepMessageIds, isRedo })
@@ -889,7 +880,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     (stepNumber: number, mode: 'edit' | 'delete' | 'redo', editedGoal?: string) => {
       // replan_start marks steps >= stepNumber as superseded and sets status: 'executing'
       dispatch({
-        type: 'WS_EVENT',
+        type: 'SUBSCRIPTION_EVENT',
         event: {
           event_type: 'replan_start',
           session_id: '',
@@ -978,7 +969,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setAgents((prev) =>
         prev.map((r) => ({ ...r, is_active: r.name === active })),
       )
-      useArtifactStore.getState().fetchPromptContext(sess.session_id)
+      apolloClient.refetchQueries({ include: ['PromptContext'] })
     } catch (error) {
       console.error('Failed to set agent:', error)
     }
@@ -993,7 +984,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (targetSessionId === currentSessionId) return
 
     stopSubscription()
-    useArtifactStore.getState().clear()
+    clearArtifactState()
 
     // Create/restore session + fetch messages in parallel
     const [sessionResult, messagesResult] = await Promise.all([
@@ -1033,20 +1024,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const { storeSessionId } = await import('@/api/session-id')
     storeSessionId(targetSessionId, newSession.user_id)
 
-    // Fetch all session data
-    const as = useArtifactStore.getState()
-    await Promise.all([
-      as.fetchTables(targetSessionId),
-      as.fetchArtifacts(targetSessionId),
-      as.fetchFacts(targetSessionId),
-      as.fetchEntities(targetSessionId),
-      as.fetchDataSources(targetSessionId),
-      as.fetchStepCodes(targetSessionId),
-      as.fetchInferenceCodes(targetSessionId),
-      as.fetchLearnings(),
-      as.fetchAllAgents(targetSessionId),
-      as.fetchPromptContext(targetSessionId),
-    ])
+    // Fetch all session data via Apollo cache
+    await apolloClient.refetchQueries({
+      include: ['Tables', 'Artifacts', 'Facts', 'Entities', 'DataSources',
+                'Steps', 'InferenceCodes', 'Learnings', 'PromptContext', 'ActiveDomains'],
+    })
   }, [stopSubscription, startSubscription])
 
   // ---------------------------------------------------------------------------
@@ -1072,7 +1054,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       updateSession,
       setSession,
       createSession,
-      wsConnected,
+      subscriptionConnected,
       sessionReady,
       isCreatingSession,
       status: execState.status,
@@ -1116,7 +1098,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }),
     [
       session,
-      wsConnected,
+      subscriptionConnected,
       sessionReady,
       isCreatingSession,
       execState,

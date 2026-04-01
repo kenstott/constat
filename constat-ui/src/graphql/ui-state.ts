@@ -158,8 +158,8 @@ export function applyDeepLink(link: DeepLink) {
 
   // For glossary terms, select the term
   if (link.type === 'glossary_term' && link.termName) {
-    import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-      useGlossaryStore.getState().selectTerm(link.termName!)
+    import('@/store/glossaryState').then(({ selectTerm }) => {
+      selectTerm(link.termName!)
     })
   }
 
@@ -282,6 +282,92 @@ export function setGlossaryProgress(stage: string, percent: number) {
   glossaryGenerationPercentVar(percent)
 }
 
+// ---------- Artifact store state (event-driven, no Apollo query) ----------
+
+import type { ArtifactContent } from '@/types/api'
+
+interface StepCode {
+  step_number: number
+  goal: string
+  code: string
+  prompt?: string
+  model?: string
+}
+
+interface InferenceCode {
+  inference_id: string
+  name: string
+  operation: string
+  code: string
+  attempt: number
+  prompt?: string
+  model?: string
+}
+
+interface ScratchpadEntry {
+  step_number: number
+  goal: string
+  narrative: string
+  tables_created: string[]
+  code: string
+  user_query: string
+  objective_index: number | null
+}
+
+export const stepCodesVar = makeVar<StepCode[]>([])
+export const inferenceCodesVar = makeVar<InferenceCode[]>([])
+export const scratchpadEntriesVar = makeVar<ScratchpadEntry[]>([])
+export const selectedArtifactVar = makeVar<ArtifactContent | null>(null)
+export const selectedTableVar = makeVar<string | null>(null)
+export const supersededStepNumbersVar = makeVar<Set<number>>(new Set())
+export const ingestingSourceVar = makeVar<string | null>(null)
+export const ingestProgressVar = makeVar<{ current: number; total: number } | null>(null)
+
+export function addStepCode(stepNumber: number, goal: string, code: string, model?: string) {
+  const current = stepCodesVar()
+  const existing = current.findIndex((s) => s.step_number === stepNumber)
+  if (existing >= 0) {
+    const updated = [...current]
+    updated[existing] = { step_number: stepNumber, goal, code, model }
+    stepCodesVar(updated)
+  } else {
+    const updated = [...current, { step_number: stepNumber, goal, code, model }]
+    updated.sort((a, b) => a.step_number - b.step_number)
+    stepCodesVar(updated)
+  }
+}
+
+export function addInferenceCode(ic: InferenceCode) {
+  const filtered = inferenceCodesVar().filter(x => x.inference_id !== ic.inference_id)
+  inferenceCodesVar([...filtered, ic])
+}
+
+export function clearInferenceCodes() {
+  inferenceCodesVar([])
+}
+
+export function markStepsSuperseded() {
+  const superseded = new Set(supersededStepNumbersVar())
+  for (const sc of stepCodesVar()) superseded.add(sc.step_number)
+  supersededStepNumbersVar(superseded)
+}
+
+export function truncateFromStep(fromStep: number) {
+  stepCodesVar(stepCodesVar().filter((sc) => sc.step_number < fromStep))
+  scratchpadEntriesVar(scratchpadEntriesVar().filter((e) => (e.step_number ?? 0) < fromStep))
+}
+
+export function clearArtifactState() {
+  stepCodesVar([])
+  inferenceCodesVar([])
+  scratchpadEntriesVar([])
+  selectedArtifactVar(null)
+  selectedTableVar(null)
+  supersededStepNumbersVar(new Set())
+  ingestingSourceVar(null)
+  ingestProgressVar(null)
+}
+
 // ---------- Collapsed result steps ----------
 
 export const collapsedResultStepsVar = makeVar<Set<number>>(new Set())
@@ -322,6 +408,176 @@ export function addToast(message: string, type: Toast['type'] = 'success') {
 
 export function dismissToast(id: string) {
   toastsVar(toastsVar().filter(t => t.id !== id))
+}
+
+// ---------- Proof state (event-driven, GraphQL subscription fact events) ----------
+
+export type NodeStatus = 'pending' | 'planning' | 'executing' | 'resolved' | 'failed' | 'blocked'
+
+export interface FactNode {
+  id: string
+  name: string
+  description?: string
+  status: NodeStatus
+  value?: unknown
+  source?: string
+  confidence?: number
+  tier?: number
+  strategy?: string
+  formula?: string
+  reason?: string
+  dependencies: string[]
+  elapsed_ms?: number
+  attempt?: number
+  code?: string
+}
+
+export const proofFactsVar = makeVar<Map<string, FactNode>>(new Map())
+export const isProvingVar = makeVar<boolean>(false)
+export const isPlanningCompleteVar = makeVar<boolean>(false)
+export const isProofPanelOpenVar = makeVar<boolean>(false)
+export const proofSummaryVar = makeVar<string | null>(null)
+export const isSummaryGeneratingVar = makeVar<boolean>(false)
+export const hasCompletedProofVar = makeVar<boolean>(false)
+
+export function openProofPanel() { isProofPanelOpenVar(true) }
+export function closeProofPanel() { isProofPanelOpenVar(false) }
+export function toggleProofPanel() { isProofPanelOpenVar(!isProofPanelOpenVar()) }
+
+export function clearProofFacts() {
+  proofFactsVar(new Map())
+  isProvingVar(false)
+  isPlanningCompleteVar(false)
+  proofSummaryVar(null)
+  hasCompletedProofVar(false)
+}
+
+export function exportFacts(): FactNode[] {
+  return Array.from(proofFactsVar().values())
+}
+
+export function importFacts(facts: FactNode[], summary?: string | null) {
+  const factsMap = new Map<string, FactNode>()
+  for (const fact of facts) {
+    factsMap.set(fact.id, fact)
+  }
+  const currentMode = uiModeVar()
+  proofFactsVar(factsMap)
+  isProvingVar(false)
+  isProofPanelOpenVar(currentMode === 'reason-chain')
+  isPlanningCompleteVar(true)
+  proofSummaryVar(summary ?? null)
+  hasCompletedProofVar(facts.length > 0)
+}
+
+export function handleFactEvent(eventType: string, data: Record<string, unknown>): void {
+  const factName = data.fact_name as string
+  console.log(`[proofState] ${eventType}:`, factName, data.dependencies)
+
+  if (eventType === 'proof_start') {
+    proofFactsVar(new Map())
+    isProvingVar(true)
+    isPlanningCompleteVar(false)
+    proofSummaryVar(null)
+    return
+  }
+  if (eventType === 'dag_execution_start') {
+    console.log('[proofState] dag_execution_start - all nodes known, entering reason-chain mode')
+    isPlanningCompleteVar(true)
+    isProofPanelOpenVar(true)
+    enterReasonChainMode()
+    return
+  }
+  if (eventType === 'proof_complete') {
+    console.log('[proofState] proof_complete received, starting summary generation')
+    isProvingVar(false)
+    hasCompletedProofVar(true)
+    isSummaryGeneratingVar(true)
+    return
+  }
+  if (eventType === 'proof_summary_ready') {
+    const summary = data.summary as string
+    console.log('[proofState] proof_summary_ready, summary length:', summary?.length || 0, 'summary:', summary?.substring(0, 100))
+    if (summary) {
+      proofSummaryVar(summary)
+      isSummaryGeneratingVar(false)
+    } else {
+      console.warn('[proofState] proof_summary_ready received but summary is empty')
+      isSummaryGeneratingVar(false)
+    }
+    return
+  }
+
+  if (eventType === 'inference_code') {
+    const codeFact = factName || (data.inference_id as string)
+    if (!codeFact) return
+    const next = new Map(proofFactsVar())
+    const existing = next.get(codeFact)
+    if (existing) {
+      next.set(codeFact, { ...existing, code: data.code as string, attempt: data.attempt as number })
+      proofFactsVar(next)
+    }
+    return
+  }
+
+  if (!factName) return
+
+  const next = new Map(proofFactsVar())
+  const existing = next.get(factName) || {
+    id: factName,
+    name: factName,
+    status: 'pending' as NodeStatus,
+    dependencies: [],
+  }
+
+  switch (eventType) {
+    case 'fact_start':
+      next.set(factName, {
+        ...existing,
+        description: data.fact_description as string | undefined,
+        dependencies: (data.dependencies as string[]) || existing.dependencies,
+        status: 'pending',
+      })
+      proofFactsVar(next)
+      isProvingVar(true)
+      break
+
+    case 'fact_planning':
+      next.set(factName, { ...existing, status: 'planning' })
+      proofFactsVar(next)
+      break
+
+    case 'fact_executing':
+      next.set(factName, { ...existing, status: 'executing', formula: data.formula as string | undefined })
+      proofFactsVar(next)
+      break
+
+    case 'fact_resolved':
+      next.set(factName, {
+        ...existing,
+        status: 'resolved',
+        value: data.value,
+        source: data.source as string | undefined,
+        confidence: data.confidence as number | undefined,
+        tier: data.tier as number | undefined,
+        strategy: data.strategy as string | undefined,
+        dependencies: (data.dependencies as string[]) || existing.dependencies,
+        elapsed_ms: data.elapsed_ms as number | undefined,
+        attempt: data.attempt as number | undefined ?? existing.attempt,
+      })
+      proofFactsVar(next)
+      break
+
+    case 'fact_failed':
+      next.set(factName, { ...existing, status: 'failed', reason: data.reason as string | undefined })
+      proofFactsVar(next)
+      break
+
+    case 'fact_blocked':
+      next.set(factName, { ...existing, status: 'blocked', reason: data.reason as string | undefined })
+      proofFactsVar(next)
+      break
+  }
 }
 
 // ---------- localStorage persistence ----------

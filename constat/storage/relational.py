@@ -649,18 +649,18 @@ class RelationalStore:
             self._clusters_dirty = True
         return deleted
 
-    def get_glossary_term(self, name: str, session_id: str, *, user_id: str | None = None) -> GlossaryTerm | None:
+    def get_glossary_term(self, name: str, session_id: str, *, user_id: str | None = None, domain: str | None = None) -> GlossaryTerm | None:
         tbl = self._view('glossary_terms')
         if user_id:
-            row = self._conn.execute(
-                f"SELECT {self._GLOSSARY_COLUMNS} FROM {tbl} WHERE LOWER(name) = LOWER(?) AND user_id = ?",
-                [name, user_id],
-            ).fetchone()
+            sql = f"SELECT {self._GLOSSARY_COLUMNS} FROM {tbl} WHERE LOWER(name) = LOWER(?) AND user_id = ?"
+            params: list = [name, user_id]
         else:
-            row = self._conn.execute(
-                f"SELECT {self._GLOSSARY_COLUMNS} FROM {tbl} WHERE LOWER(name) = LOWER(?) AND session_id = ?",
-                [name, session_id],
-            ).fetchone()
+            sql = f"SELECT {self._GLOSSARY_COLUMNS} FROM {tbl} WHERE LOWER(name) = LOWER(?) AND session_id = ?"
+            params = [name, session_id]
+        if domain:
+            sql += " AND domain_id = ?"
+            params.append(domain)
+        row = self._conn.execute(sql, params).fetchone()
         return self._term_from_row(row) if row else None
 
     def get_glossary_term_by_id(self, term_id: str) -> GlossaryTerm | None:

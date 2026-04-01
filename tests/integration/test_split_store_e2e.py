@@ -263,7 +263,7 @@ class TestSplitStoreE2E:
             f"{server_url}/api/graphql",
             data=json.dumps({
                 "query": GLOSSARY_QUERY,
-                "variables": {"sid": sid, "scope": None},
+                "variables": {"sid": sid, "scope": "all"},
             }),
             headers={"Content-Type": "application/json"},
         )

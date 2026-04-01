@@ -15,29 +15,54 @@ import { getMainDefinition } from '@apollo/client/utilities'
 import { createClient } from 'graphql-ws'
 import { CachePersistor } from 'apollo3-cache-persist'
 import type { PersistentStorage } from 'apollo3-cache-persist/lib/types'
-import { openDB } from 'idb'
 import { getToken } from '@/config/auth-helpers'
 import { typePolicies } from './cache-policies'
 
 const DB_NAME = 'constat-apollo'
 const STORE = 'cache'
-const KEY = 'apollo-cache'
 
 class IDBStorage implements PersistentStorage<string> {
-  private dbPromise = openDB(DB_NAME, 1, {
-    upgrade(db) { db.createObjectStore(STORE) },
-  })
+  private dbReady: Promise<IDBDatabase>
+
+  constructor() {
+    this.dbReady = new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, 1)
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore(STORE)
+      }
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+  }
 
   async getItem(key: string): Promise<string | null> {
-    return (await this.dbPromise).get(STORE, key) ?? null
+    const db = await this.dbReady
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readonly')
+      const req = tx.objectStore(STORE).get(key)
+      req.onsuccess = () => resolve(req.result ?? null)
+      req.onerror = () => reject(req.error)
+    })
   }
 
   async setItem(key: string, value: string): Promise<void> {
-    await (await this.dbPromise).put(STORE, value, key)
+    const db = await this.dbReady
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite')
+      tx.objectStore(STORE).put(value, key)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
   }
 
   async removeItem(key: string): Promise<void> {
-    await (await this.dbPromise).delete(STORE, key)
+    const db = await this.dbReady
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite')
+      tx.objectStore(STORE).delete(key)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
   }
 }
 
@@ -77,13 +102,12 @@ export const cache = new InMemoryCache({ typePolicies })
 export const cachePersistor = new CachePersistor({
   cache,
   storage: new IDBStorage(),
-  key: KEY,
   maxSize: false,
   trigger: 'write',
-  debug: import.meta.env.DEV,
 })
 
 export const apolloClient = new ApolloClient({
   link: splitLink,
   cache,
+  devtools: { enabled: import.meta.env.DEV },
 })

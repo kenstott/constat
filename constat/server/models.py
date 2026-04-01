@@ -35,7 +35,7 @@ class SessionStatus(str, Enum):
 
 
 class EventType(str, Enum):
-    """Types of events emitted via WebSocket."""
+    """Types of events emitted via GraphQL subscription."""
 
     # Heartbeat
     HEARTBEAT_ACK = "heartbeat_ack"
@@ -514,12 +514,12 @@ class TableSchemaResponse(BaseModel):
 
 
 # ============================================================================
-# WebSocket Event Models
+# Subscription Event Models
 # ============================================================================
 
 
 class StepEventWS(BaseModel):
-    """WebSocket event format for step events."""
+    """Event format for GraphQL subscription events."""
 
     event_type: EventType = Field(description="Type of event")
     session_id: str = Field(description="Session this event belongs to")
@@ -531,23 +531,6 @@ class StepEventWS(BaseModel):
     data: dict[str, Any] = Field(
         default_factory=dict,
         description="Event-specific data",
-    )
-
-
-class WebSocketMessage(BaseModel):
-    """Generic WebSocket message envelope."""
-
-    type: str = Field(description="Message type (event, command, error)")
-    payload: dict[str, Any] = Field(description="Message payload")
-
-
-class WebSocketCommand(BaseModel):
-    """Command sent from client via WebSocket."""
-
-    action: str = Field(description="Command action (approve, reject, cancel)")
-    data: Optional[dict[str, Any]] = Field(
-        default=None,
-        description="Command-specific data",
     )
 
 

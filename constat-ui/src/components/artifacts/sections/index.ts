@@ -1,4 +1,5 @@
 // Copyright (c) 2025 Kenneth Stott
+// Canary: f6989383-2658-4146-9ab8-342906343cb9
 // Canary: a1b2c3d4-sections-index
 
 export { ResultsSection } from './ResultsSection'

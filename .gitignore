@@ -62,3 +62,6 @@ Screenshot*
 
 # Canary system
 .canary_registry.json
+/.claude/scheduled_tasks.lock
+/node_modules/.cache/wrangler/wrangler-account.json
+/node_modules/.cache/wrangler/pages.json

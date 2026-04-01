@@ -19,7 +19,8 @@ import { ArtifactProvider } from '@/contexts/ArtifactContext'
 import './index.css'
 import App from './App'
 
-cachePersistor.restore().then(() => {
+// Restore cache from IndexedDB, then render (with timeout fallback)
+const renderApp = () => {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <BrowserRouter>
@@ -35,4 +36,12 @@ cachePersistor.restore().then(() => {
       </BrowserRouter>
     </StrictMode>,
   )
-})
+}
+
+// Race: restore cache or timeout after 2s
+Promise.race([
+  cachePersistor.restore(),
+  new Promise(resolve => setTimeout(resolve, 2000)),
+]).catch((err) => {
+  console.warn('[apollo-cache] Failed to restore from IndexedDB:', err)
+}).then(renderApp)

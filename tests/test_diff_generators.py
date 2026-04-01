@@ -91,8 +91,6 @@ class TestProcessHeartbeat:
 
         sm = MagicMock(spec=SessionManager)
         sm._sessions = {"s1": managed}
-        sm._active_connections = {"s1": MagicMock()}
-        sm.update_heartbeat = SessionManager.update_heartbeat.__get__(sm)
 
         gen = MagicMock()
         gen.name = "test"
@@ -114,8 +112,6 @@ class TestProcessHeartbeat:
 
         sm = MagicMock(spec=SessionManager)
         sm._sessions = {"s1": managed}
-        sm._active_connections = {"s1": MagicMock()}
-        sm.update_heartbeat = SessionManager.update_heartbeat.__get__(sm)
 
         gen = MagicMock()
         gen.name = "test"
@@ -124,40 +120,6 @@ class TestProcessHeartbeat:
 
         SessionManager.process_heartbeat(sm, "s1", "2026-03-24T09:00:00")
         gen.run.assert_not_called()
-
-
-class TestActiveConnections:
-    """Tests for connection tracking."""
-
-    def test_register_and_list(self):
-        from constat.server.session_manager import SessionManager
-        sm = MagicMock(spec=SessionManager)
-        sm._active_connections = {}
-        SessionManager.register_connection(sm, "s1", "user1", "127.0.0.1:5000")
-        connections = SessionManager.get_active_connections(sm)
-        assert len(connections) == 1
-        assert connections[0]["session_id"] == "s1"
-        assert connections[0]["user_id"] == "user1"
-
-    def test_unregister(self):
-        from constat.server.session_manager import SessionManager
-        sm = MagicMock(spec=SessionManager)
-        sm._active_connections = {}
-        SessionManager.register_connection(sm, "s1", "user1", "127.0.0.1:5000")
-        SessionManager.unregister_connection(sm, "s1")
-        assert SessionManager.get_active_connections(sm) == []
-
-    def test_update_heartbeat(self):
-        from constat.server.session_manager import SessionManager
-        sm = MagicMock(spec=SessionManager)
-        sm._active_connections = {}
-        SessionManager.register_connection(sm, "s1", "user1", "127.0.0.1:5000")
-        old_hb = sm._active_connections["s1"].last_heartbeat
-        import time
-        time.sleep(0.01)
-        SessionManager.update_heartbeat(sm, "s1")
-        new_hb = sm._active_connections["s1"].last_heartbeat
-        assert new_hb >= old_hb
 
 
 class TestGeneratorCooldown:

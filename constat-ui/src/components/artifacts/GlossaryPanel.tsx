@@ -32,9 +32,9 @@ import {
   CheckIcon,
 } from '@heroicons/react/24/outline'
 import { Dialog, DialogPanel } from '@headlessui/react'
-import { useGlossaryStore } from '@/store/glossaryStore'
+import { useGlossaryState, useGlossaryVar, toggleExpanded as glossaryToggleExpanded } from '@/store/glossaryState'
 import { setDeepLink } from '@/graphql/ui-state'
-import { useSessionContext } from '@/contexts/SessionContext'
+import { useActiveDomains } from '@/hooks/useDomains'
 import type { DomainTreeNode } from '@/types/api'
 import { GLOSSARY_TERM_QUERY } from '@/graphql/queries'
 import {
@@ -311,7 +311,7 @@ function RelationshipRow({
   onUpdated: (id: string, verb: string) => void
   onApproved: (id: string) => void
 }) {
-  const { terms } = useGlossaryStore()
+  const { terms } = useGlossaryState()
   const displayFor = (name: string) => {
     const t = terms.find(t => t.name.toLowerCase() === name.toLowerCase())
     return t?.display_name || name
@@ -423,7 +423,7 @@ function EntityAutocomplete({
   className?: string
   autoFocus?: boolean
 }) {
-  const { terms } = useGlossaryStore()
+  const { terms } = useGlossaryState()
   const [focused, setFocused] = useState(false)
 
   const matches = useMemo(() => {
@@ -733,8 +733,8 @@ function ConnectedResources({
   sessionId: string
   term: GlossaryTerm
 }) {
-  const refreshKey = useGlossaryStore((s) => s.refreshKey)
-  const updateTerm = useGlossaryStore((s) => s.updateTerm)
+  const refreshKey = useGlossaryVar((s) => s.refreshKey)
+  const updateTerm = useGlossaryVar((s) => s.updateTerm)
   const termName = term.name
   const displayName = term.display_name
 
@@ -920,7 +920,7 @@ function AliasEditor({ term, sessionId }: { term: GlossaryTerm; sessionId: strin
   const [editIdx, setEditIdx] = useState<number | null>(null)
   const [editValue, setEditValue] = useState('')
   const [drafting, setDrafting] = useState(false)
-  const { fetchTerms } = useGlossaryStore()
+  const { fetchTerms } = useGlossaryState()
 
   const aliases = term.aliases || []
 
@@ -1063,7 +1063,7 @@ function DefineInline({
 }) {
   const [definition, setDefinition] = useState('')
   const [drafting, setDrafting] = useState(false)
-  const { addDefinition } = useGlossaryStore()
+  const { addDefinition } = useGlossaryState()
 
   const handleSubmit = async () => {
     if (!definition.trim()) return
@@ -1130,8 +1130,8 @@ function GlossaryItem({
   sessionId: string
   depth?: number
 }) {
-  const { terms: allTerms, selectedName, updateTerm, refineTerm, deleteTerm, renameTerm, toggleExpanded } = useGlossaryStore()
-  const isOpen = useGlossaryStore((s) => s.expandedItems[term.name] ?? false)
+  const { terms: allTerms, selectedName, updateTerm, refineTerm, deleteTerm, renameTerm, toggleExpanded } = useGlossaryState()
+  const isOpen = useGlossaryVar((s) => s.expandedItems[term.name] ?? false)
   const isSelected = selectedName?.toLowerCase() === term.name.toLowerCase()
   const [isDefining, setIsDefining] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -1406,8 +1406,8 @@ function TreeNodeView({
   depth?: number
 }) {
   const treeKey = `tree:${node.term.name}`
-  const expanded = useGlossaryStore((s) => s.expandedItems[treeKey] ?? depth < 2)
-  const toggleExpanded = useGlossaryStore((s) => s.toggleExpanded)
+  const expanded = useGlossaryVar((s) => s.expandedItems[treeKey] ?? depth < 2)
+  const toggleExpanded = glossaryToggleExpanded
   const isDomainFolder = node.term.name.startsWith('__domain__')
 
   return (
@@ -1455,7 +1455,7 @@ function TreeNodeView({
 // Taxonomy suggestions panel
 function TaxonomySuggestionsPanel({ sessionId }: { sessionId: string }) {
   const { taxonomySuggestions, acceptTaxonomySuggestion, dismissTaxonomySuggestion } =
-    useGlossaryStore()
+    useGlossaryState()
 
   if (taxonomySuggestions.length === 0) return null
 
@@ -1497,7 +1497,7 @@ function DeprecatedSection({
 }: {
   sessionId: string
 }) {
-  const { deprecatedTerms, deleteTerm, reconnectTerm, terms: allTerms } = useGlossaryStore()
+  const { deprecatedTerms, deleteTerm, reconnectTerm, updateTerm, terms: allTerms } = useGlossaryState()
   const [reconnecting, setReconnecting] = useState<string | null>(null)
   const [selectedParent, setSelectedParent] = useState('')
   const [reconnectVerb, setReconnectVerb] = useState<'HAS_ONE' | 'HAS_KIND' | 'HAS_MANY'>('HAS_KIND')
@@ -1508,7 +1508,6 @@ function DeprecatedSection({
     if (!selectedParent) return
     await reconnectTerm(sessionId, name, { parent_id: selectedParent })
     // Also set the parent_verb via updateTerm
-    const { updateTerm } = useGlossaryStore.getState()
     await updateTerm(sessionId, name, { parent_verb: reconnectVerb })
     setReconnecting(null)
     setSelectedParent('')
@@ -1613,8 +1612,8 @@ function buildTagGroups(terms: GlossaryTerm[]): Map<string, GlossaryTerm[]> {
 
 function TagGroupSection({ tag, terms, sessionId }: { tag: string; terms: GlossaryTerm[]; sessionId: string }) {
   const tagKey = `tag:${tag}`
-  const collapsed = useGlossaryStore((s) => !(s.expandedItems[tagKey] ?? true))
-  const toggleExpanded = useGlossaryStore((s) => s.toggleExpanded)
+  const collapsed = useGlossaryVar((s) => !(s.expandedItems[tagKey] ?? true))
+  const toggleExpanded = glossaryToggleExpanded
   return (
     <div className="mb-1">
       <button
@@ -1668,9 +1667,9 @@ function DomainPromotePicker({
   const [loading, setLoading] = useState(false)
   const [canPromoteToSystem, setCanPromoteToSystem] = useState(false)
   const [confirmCascade, setConfirmCascade] = useState<{ target: string | null; descendants: GlossaryTerm[] } | null>(null)
-  const { terms: allTerms, updateTerm } = useGlossaryStore()
+  const { terms: allTerms, updateTerm } = useGlossaryState()
   const { canWrite: authCanWrite } = useAuth()
-  const { activeDomains } = useSessionContext()
+  const { activeDomains } = useActiveDomains()
 
   const selfTerm = allTerms.find(t => t.name.toLowerCase() === termName.toLowerCase())
   if (!selfTerm) return null
@@ -3435,8 +3434,8 @@ function DomainFilterTree({
 function GlossarySuggestionsSection({ sessionId }: { sessionId: string }) {
   const { canWrite } = useAuth()
   const [suggestions, setSuggestions] = useState<GlossarySuggestion[]>([])
-  const expanded = useGlossaryStore((s) => s.expandedItems['suggestions'] ?? false)
-  const toggleExpanded = useGlossaryStore((s) => s.toggleExpanded)
+  const expanded = useGlossaryVar((s) => s.expandedItems['suggestions'] ?? false)
+  const toggleExpanded = glossaryToggleExpanded
   const [loading, setLoading] = useState(false)
 
   // Only show for users who can write glossary
@@ -3542,7 +3541,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     entityRebuilding,
     setFilter,
     setViewMode,
-  } = useGlossaryStore()
+  } = useGlossaryState()
 
   const [showConfirm, setShowConfirm] = useState(false)
   const [taxonomyPhases, setTaxonomyPhases] = useState<Record<string, boolean>>({

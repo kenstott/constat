@@ -10,9 +10,32 @@
 
 // Session event handler — reducer + side effects extracted from sessionStore
 import { applyPatch, type Operation } from 'fast-json-patch'
-import type { WSEvent, TableInfo, Artifact, Fact, Plan, GlossaryTerm } from '@/types/api'
+import type { SubscriptionEvent, Plan, GlossaryTerm } from '@/types/api'
+import {
+  fetchTerms as glossaryFetchTerms,
+  setTermsFromState,
+  addTerms as glossaryAddTerms,
+  setEntityRebuilding,
+  setGenerating,
+  setProgress,
+  bumpRefreshKey,
+} from '@/store/glossaryState'
 import { apolloClient } from '@/graphql/client'
 import { SAVE_PROOF_FACTS } from '@/graphql/operations/state'
+import { ARTIFACTS_QUERY, TABLES_QUERY, FACTS_QUERY, ARTIFACT_QUERY, toArtifact, toArtifactContent, toTableInfo } from '@/graphql/operations/data'
+import {
+  addStepCode,
+  addInferenceCode,
+  clearInferenceCodes,
+  truncateFromStep,
+  ingestingSourceVar,
+  ingestProgressVar,
+  selectedArtifactVar,
+  expandSections,
+  handleFactEvent,
+  exportFacts,
+  isSummaryGeneratingVar,
+} from '@/graphql/ui-state'
 import { getCachedEntry, setCachedEntry } from '@/store/entityCache'
 import { type CompactState, inflateToGlossaryTerms } from '@/store/entityCacheKeys'
 import type {
@@ -322,7 +345,7 @@ export function sessionEventReducer(
         querySubmittedAt: null,
       }
 
-    case 'WS_EVENT':
+    case 'SUBSCRIPTION_EVENT':
       return reduceWSEvent(state, action.event)
 
     default:
@@ -331,10 +354,10 @@ export function sessionEventReducer(
 }
 
 // ---------------------------------------------------------------------------
-// WS_EVENT reducer (session state changes only, no side effects)
+// SUBSCRIPTION_EVENT reducer (session state changes only, no side effects)
 // ---------------------------------------------------------------------------
 
-function reduceWSEvent(state: SessionExecutionState, event: WSEvent): SessionExecutionState {
+function reduceWSEvent(state: SessionExecutionState, event: SubscriptionEvent): SessionExecutionState {
   switch (event.event_type) {
     case 'heartbeat_ack':
       // Side effect only — handled in executeSideEffects
@@ -872,13 +895,11 @@ function reduceWSEvent(state: SessionExecutionState, event: WSEvent): SessionExe
 // ---------------------------------------------------------------------------
 
 export function executeSideEffects(
-  event: WSEvent,
+  event: SubscriptionEvent,
   sessionId: string,
-  stores: SideEffectStores,
+  _stores: SideEffectStores,
   lastHeartbeatRef: { current: string | null },
 ): void {
-  const { artifactStore, proofStore, glossaryStore } = stores
-
   switch (event.event_type) {
     case 'heartbeat_ack': {
       const data = event.data as { server_time: string }
@@ -887,17 +908,14 @@ export function executeSideEffects(
     }
 
     case 'session_ready': {
-      artifactStore.getState().fetchEntities(sessionId)
-      artifactStore.getState().fetchDataSources(sessionId)
-      artifactStore.getState().fetchAllSkills()
-      artifactStore.getState().fetchAllAgents(sessionId)
-      glossaryStore.getState().fetchTerms(sessionId)
+      apolloClient.refetchQueries({ include: ['Entities', 'DataSources', 'Skills', 'Agents', 'ActiveDomains'] })
+      glossaryFetchTerms(sessionId)
       break
     }
 
     case 'proof_start': {
-      artifactStore.getState().clearInferenceCodes()
-      proofStore.getState().handleFactEvent(event.event_type, event.data as Record<string, unknown>)
+      clearInferenceCodes()
+      handleFactEvent(event.event_type, event.data as Record<string, unknown>)
       break
     }
 
@@ -906,7 +924,7 @@ export function executeSideEffects(
       const code = (event.data.code as string) || ''
       const model = (event.data.model as string) || undefined
       if (code) {
-        artifactStore.getState().addStepCode(event.step_number, goal, code, model)
+        addStepCode(event.step_number, goal, code, model)
       }
       break
     }
@@ -914,50 +932,63 @@ export function executeSideEffects(
     case 'step_complete': {
       const result = event.data as { goal?: string; code?: string; model?: string }
       if (result.code) {
-        artifactStore.getState().addStepCode(event.step_number, result.goal || '', result.code, result.model)
+        addStepCode(event.step_number, result.goal || '', result.code, result.model)
       }
-      artifactStore.getState().fetchArtifacts(sessionId)
-      artifactStore.getState().fetchFacts(sessionId)
-      artifactStore.getState().fetchTables(sessionId)
-      artifactStore.getState().fetchLearnings()
-      artifactStore.getState().fetchScratchpad(sessionId)
+      // No refetch during execution — query_complete will refresh all
       break
     }
 
     case 'synthesizing':
     case 'generating_insights': {
-      Promise.all([
-        artifactStore.getState().fetchArtifacts(sessionId),
-        artifactStore.getState().fetchTables(sessionId),
-      ]).then(() => {
-        import('@/graphql/ui-state').then(({ expandSections }) => {
-          const { artifacts, tables, selectArtifact } = artifactStore.getState()
-
-          const sectionsToExpand: string[] = []
-          const publishedArtifacts = artifacts.filter((a) => a.is_key_result)
-          const nonTableArtifacts = publishedArtifacts.filter((a) => a.artifact_type !== 'table')
-          const tableArtifacts = publishedArtifacts.filter((a) => a.artifact_type === 'table')
-
-          if (publishedArtifacts.length > 0) sectionsToExpand.push('artifacts')
-          if (tables.length > 0) sectionsToExpand.push('tables')
-          if (sectionsToExpand.length > 0) expandSections(sectionsToExpand)
-
-          const candidates = nonTableArtifacts.length > 0 ? nonTableArtifacts : tableArtifacts
-          if (candidates.length > 0) {
-            const markdownTypes = ['markdown', 'md']
-            const sortedCandidates = [...candidates].sort((a, b) => {
-              const aIsMarkdown = markdownTypes.includes(a.artifact_type?.toLowerCase() || '')
-              const bIsMarkdown = markdownTypes.includes(b.artifact_type?.toLowerCase() || '')
-              if (aIsMarkdown && !bIsMarkdown) return -1
-              if (!aIsMarkdown && bIsMarkdown) return 1
-              return b.step_number - a.step_number
-            })
-            const best = sortedCandidates[0]
-            selectArtifact(sessionId, best.id)
-          }
-        }).catch(err => {
-          console.error('[synthesizing] Error expanding sections:', err)
+      apolloClient.refetchQueries({ include: ['Artifacts', 'Tables'] }).then(() => {
+        const artifactsResult = apolloClient.readQuery({
+          query: ARTIFACTS_QUERY,
+          variables: { sessionId },
         })
+        const tablesResult = apolloClient.readQuery({
+          query: TABLES_QUERY,
+          variables: { sessionId },
+        })
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const artifacts = ((artifactsResult as any)?.artifacts?.artifacts ?? []).map(toArtifact)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const tables = ((tablesResult as any)?.tables?.tables ?? []).map(toTableInfo)
+
+        const sectionsToExpand: string[] = []
+        const publishedArtifacts = artifacts.filter((a: ReturnType<typeof toArtifact>) => a.is_key_result)
+        const nonTableArtifacts = publishedArtifacts.filter((a: ReturnType<typeof toArtifact>) => a.artifact_type !== 'table')
+        const tableArtifacts = publishedArtifacts.filter((a: ReturnType<typeof toArtifact>) => a.artifact_type === 'table')
+
+        if (publishedArtifacts.length > 0) sectionsToExpand.push('artifacts')
+        if (tables.length > 0) sectionsToExpand.push('tables')
+        if (sectionsToExpand.length > 0) expandSections(sectionsToExpand)
+
+        const candidates = nonTableArtifacts.length > 0 ? nonTableArtifacts : tableArtifacts
+        if (candidates.length > 0) {
+          const markdownTypes = ['markdown', 'md']
+          const sortedCandidates = [...candidates].sort((a: ReturnType<typeof toArtifact>, b: ReturnType<typeof toArtifact>) => {
+            const aIsMarkdown = markdownTypes.includes(a.artifact_type?.toLowerCase() || '')
+            const bIsMarkdown = markdownTypes.includes(b.artifact_type?.toLowerCase() || '')
+            if (aIsMarkdown && !bIsMarkdown) return -1
+            if (!aIsMarkdown && bIsMarkdown) return 1
+            return b.step_number - a.step_number
+          })
+          const best = sortedCandidates[0]
+          apolloClient.query({
+            query: ARTIFACT_QUERY,
+            variables: { sessionId, id: best.id },
+            fetchPolicy: 'network-only',
+          }).then((res) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const content = (res.data as any)?.artifact
+            if (content) {
+              selectedArtifactVar(toArtifactContent(content))
+            }
+          }).catch(err => {
+            console.error('[synthesizing] Error fetching artifact content:', err)
+          })
+        }
       }).catch(err => {
         console.error('[synthesizing] Error fetching artifacts/tables:', err)
       })
@@ -965,61 +996,117 @@ export function executeSideEffects(
     }
 
     case 'query_complete': {
-      artifactStore.getState().fetchTables(sessionId)
-      artifactStore.getState().fetchArtifacts(sessionId)
-      artifactStore.getState().fetchFacts(sessionId)
-      artifactStore.getState().fetchInferenceCodes(sessionId)
-      artifactStore.getState().fetchStepCodes(sessionId)
-      artifactStore.getState().fetchLearnings()
+      // Terminal event — refresh all query data once
+      apolloClient.refetchQueries({
+        include: ['Tables', 'Artifacts', 'Facts', 'InferenceCodes', 'Steps', 'Learnings', 'Scratchpad', 'SessionDDL'],
+      })
       break
     }
 
     case 'table_created': {
+      // Write directly to Apollo cache — no network call
       const tableData = event.data as { name: string; row_count?: number; columns?: string[] }
-      const table: TableInfo = {
-        name: tableData.name,
-        row_count: tableData.row_count || 0,
-        step_number: event.step_number,
-        columns: tableData.columns || [],
+      const existing = apolloClient.readQuery({ query: TABLES_QUERY, variables: { sessionId } })
+      if (existing) {
+        const newTable = {
+          __typename: 'TableInfoType',
+          name: tableData.name,
+          rowCount: tableData.row_count || 0,
+          stepNumber: event.step_number,
+          columns: tableData.columns || [],
+          isStarred: false,
+          isView: false,
+          roleId: null,
+          version: 1,
+          versionCount: 1,
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const tables = (existing as any).tables.tables
+        const idx = tables.findIndex((t: { name: string }) => t.name === tableData.name)
+        const updated = idx >= 0 ? tables.map((t: { name: string }) => t.name === tableData.name ? newTable : t) : [...tables, newTable]
+        apolloClient.writeQuery({
+          query: TABLES_QUERY,
+          variables: { sessionId },
+          data: { tables: { __typename: 'TablesResult', tables: updated, total: updated.length } },
+        })
       }
-      artifactStore.getState().addTable(table)
-      artifactStore.getState().fetchDDL(sessionId)
       break
     }
 
     case 'artifact_created': {
-      const artifactData = event.data as Partial<Artifact>
+      // Write directly to Apollo cache — no network call
+      const artifactData = event.data as { id?: number; name?: string; artifact_type?: string; title?: string; description?: string; mime_type?: string; is_key_result?: boolean }
       if (artifactData.id && artifactData.name && artifactData.artifact_type) {
-        const artifact: Artifact = {
-          id: artifactData.id,
-          name: artifactData.name,
-          artifact_type: artifactData.artifact_type,
-          step_number: event.step_number,
-          title: artifactData.title,
-          description: artifactData.description,
-          mime_type: artifactData.mime_type || 'application/octet-stream',
-          is_key_result: artifactData.is_key_result,
+        const existing = apolloClient.readQuery({ query: ARTIFACTS_QUERY, variables: { sessionId } })
+        if (existing) {
+          const newArtifact = {
+            __typename: 'ArtifactInfoType',
+            id: artifactData.id,
+            name: artifactData.name,
+            artifactType: artifactData.artifact_type,
+            stepNumber: event.step_number,
+            title: artifactData.title || null,
+            description: artifactData.description || null,
+            mimeType: artifactData.mime_type || 'application/octet-stream',
+            createdAt: new Date().toISOString(),
+            isStarred: artifactData.is_key_result || false,
+            metadata: null,
+            roleId: null,
+            version: 1,
+            versionCount: 1,
+          }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const artifacts = (existing as any).artifacts.artifacts
+          const idx = artifacts.findIndex((a: { id: number }) => a.id === artifactData.id)
+          const updated = idx >= 0 ? artifacts.map((a: { id: number }) => a.id === artifactData.id ? newArtifact : a) : [...artifacts, newArtifact]
+          apolloClient.writeQuery({
+            query: ARTIFACTS_QUERY,
+            variables: { sessionId },
+            data: { artifacts: { __typename: 'ArtifactsResult', artifacts: updated, total: updated.length } },
+          })
         }
-        artifactStore.getState().addArtifact(artifact)
+      }
+      break
+    }
+
+    case 'facts_extracted': {
+      // Write directly to Apollo cache — no network call
+      const factsData = event.data as { facts?: Array<{ name: string; value?: unknown; source?: string; reasoning?: string; confidence?: number }> }
+      if (factsData.facts && factsData.facts.length > 0) {
+        const existing = apolloClient.readQuery({ query: FACTS_QUERY, variables: { sessionId } })
+        if (existing) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const currentFacts = [...(existing as any).facts.facts]
+          for (const fact of factsData.facts) {
+            const newFact = {
+              __typename: 'FactInfoType',
+              name: fact.name,
+              value: fact.value ?? null,
+              source: fact.source ?? null,
+              reasoning: fact.reasoning ?? null,
+              confidence: fact.confidence ?? null,
+              isPersisted: false,
+              roleId: null,
+              domain: null,
+            }
+            const idx = currentFacts.findIndex((f: { name: string }) => f.name === fact.name)
+            if (idx >= 0) currentFacts[idx] = newFact
+            else currentFacts.push(newFact)
+          }
+          apolloClient.writeQuery({
+            query: FACTS_QUERY,
+            variables: { sessionId },
+            data: { facts: { __typename: 'FactsResult', facts: currentFacts, total: currentFacts.length } },
+          })
+        }
       }
       break
     }
 
     case 'steps_truncated': {
-      const tablesDropped = (event.data as { tables_dropped?: string[] })?.tables_dropped
-      artifactStore.getState().truncateFromStep(event.step_number, tablesDropped)
-      artifactStore.getState().fetchDDL(sessionId)
-      break
-    }
-
-    case 'facts_extracted': {
-      const factsData = event.data as { facts?: Fact[]; fact?: Fact }
-      if (factsData.facts) {
-        factsData.facts.forEach((fact) => artifactStore.getState().addFact(fact))
-      }
-      if (factsData.fact) {
-        artifactStore.getState().addFact(factsData.fact)
-      }
+      truncateFromStep(event.step_number)
+      // Truncation changes visible state — refresh affected queries
+      apolloClient.refetchQueries({ include: ['Tables', 'Artifacts', 'SessionDDL'] })
       break
     }
 
@@ -1029,14 +1116,14 @@ export function executeSideEffects(
     case 'fact_resolved':
     case 'fact_failed':
     case 'dag_execution_start':
-      proofStore.getState().handleFactEvent(event.event_type, event.data as Record<string, unknown>)
+      handleFactEvent(event.event_type, event.data as Record<string, unknown>)
       break
 
     case 'inference_code': {
-      proofStore.getState().handleFactEvent(event.event_type, event.data as Record<string, unknown>)
+      handleFactEvent(event.event_type, event.data as Record<string, unknown>)
       const icData = event.data as Record<string, unknown>
       if (icData.inference_id && icData.code) {
-        artifactStore.getState().addInferenceCode({
+        addInferenceCode({
           inference_id: icData.inference_id as string,
           name: (icData.name as string) || '',
           operation: (icData.operation as string) || '',
@@ -1049,9 +1136,8 @@ export function executeSideEffects(
     }
 
     case 'proof_summary_ready': {
-      const ps = proofStore.getState()
-      ps.handleFactEvent(event.event_type, event.data as Record<string, unknown>)
-      const facts = ps.exportFacts()
+      handleFactEvent(event.event_type, event.data as Record<string, unknown>)
+      const facts = exportFacts()
       const summary = (event.data as Record<string, unknown>).summary as string
       if (facts.length > 0) {
         apolloClient.mutate({ mutation: SAVE_PROOF_FACTS, variables: { sessionId, facts, summary } }).catch(err => {
@@ -1062,40 +1148,35 @@ export function executeSideEffects(
     }
 
     case 'proof_complete': {
-      const ps = proofStore.getState()
-      ps.handleFactEvent(event.event_type, event.data as Record<string, unknown>)
+      handleFactEvent(event.event_type, event.data as Record<string, unknown>)
       setTimeout(() => {
-        const current = proofStore.getState()
-        if (current.isSummaryGenerating) {
-          const facts = current.exportFacts()
-          if (facts.length > 0) {
-            apolloClient.mutate({ mutation: SAVE_PROOF_FACTS, variables: { sessionId, facts, summary: null } }).catch(err => {
+        if (isSummaryGeneratingVar()) {
+          const currentFacts = exportFacts()
+          if (currentFacts.length > 0) {
+            apolloClient.mutate({ mutation: SAVE_PROOF_FACTS, variables: { sessionId, facts: currentFacts, summary: null } }).catch(err => {
               console.error('Failed to save proof facts (fallback):', err)
             })
           }
-          current.handleFactEvent('proof_summary_ready', { summary: null })
+          handleFactEvent('proof_summary_ready', { summary: null })
         }
       }, 30000)
       break
     }
 
     case 'entity_rebuild_complete': {
-      const data = event.data as { diff?: { added: Array<{name: string; type: string}>; removed: Array<{name: string; type: string}> } }
-      if (data.diff) {
-        artifactStore.getState().patchEntities(data.diff)
-      }
-      glossaryStore.getState().setEntityRebuilding(false)
+      apolloClient.refetchQueries({ include: ['Entities'] })
+      setEntityRebuilding(false)
       break
     }
 
     case 'entity_rebuild_start':
-      glossaryStore.getState().setEntityRebuilding(true)
+      setEntityRebuilding(true)
       break
 
     case 'entity_state': {
       const { state, version } = event.data as { state: CompactState; version: number }
       const { terms, totalDefined, totalSelfDescribing } = inflateToGlossaryTerms(state)
-      glossaryStore.getState().setTermsFromState(terms, totalDefined, totalSelfDescribing)
+      setTermsFromState(terms, totalDefined, totalSelfDescribing)
       setCachedEntry(sessionId, state, version)
       break
     }
@@ -1107,16 +1188,16 @@ export function executeSideEffects(
         const { newDocument } = applyPatch(base, patch, false, false)
         const newState = newDocument as CompactState
         const { terms, totalDefined, totalSelfDescribing } = inflateToGlossaryTerms(newState)
-        glossaryStore.getState().setTermsFromState(terms, totalDefined, totalSelfDescribing)
+        setTermsFromState(terms, totalDefined, totalSelfDescribing)
         setCachedEntry(sessionId, newState, version)
       })
       break
     }
 
     case 'source_ingest_complete':
-      artifactStore.getState().fetchDataSources(sessionId)
-      artifactStore.getState().setIngestingSource(null)
-      artifactStore.getState().setIngestProgress(null)
+      apolloClient.refetchQueries({ include: ['DataSources'] })
+      ingestingSourceVar(null)
+      ingestProgressVar(null)
       break
 
     case 'source_ingest_error': {
@@ -1127,41 +1208,41 @@ export function executeSideEffects(
 
     case 'source_ingest_progress': {
       const progressData = event.data as { current: number; total: number }
-      artifactStore.getState().setIngestProgress({ current: progressData.current, total: progressData.total })
+      ingestProgressVar({ current: progressData.current, total: progressData.total })
       break
     }
 
     case 'source_ingest_start': {
       const startData = event.data as { name?: string }
-      artifactStore.getState().setIngestingSource(startData.name || null)
-      artifactStore.getState().setIngestProgress(null)
+      ingestingSourceVar(startData.name || null)
+      ingestProgressVar(null)
       break
     }
 
     case 'glossary_terms_added': {
       const termsData = event.data as { terms?: GlossaryTerm[] }
       if (termsData.terms && termsData.terms.length > 0) {
-        glossaryStore.getState().addTerms(termsData.terms!)
+        glossaryAddTerms(termsData.terms!)
       }
       break
     }
 
     case 'glossary_rebuild_complete':
-      glossaryStore.getState().setGenerating(false)
+      setGenerating(false)
       break
 
     case 'glossary_rebuild_start':
-      glossaryStore.getState().setGenerating(true)
+      setGenerating(true)
       break
 
     case 'glossary_generation_progress': {
       const { stage, percent } = event.data as { stage: string; percent: number }
-      glossaryStore.getState().setProgress(stage, percent)
+      setProgress(stage, percent)
       break
     }
 
     case 'relationships_extracted':
-      glossaryStore.setState((s) => ({ refreshKey: s.refreshKey + 1 }))
+      bumpRefreshKey()
       break
 
     default:

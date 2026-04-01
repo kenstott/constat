@@ -1683,7 +1683,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   )
 }
 
-// Hook to manage proof facts from WebSocket events
+// Hook to manage proof facts from subscription events
 export function useProofFacts() {
   const [facts, setFacts] = useState<Map<string, FactNode>>(new Map())
   const [isProving, setIsProving] = useState(false)

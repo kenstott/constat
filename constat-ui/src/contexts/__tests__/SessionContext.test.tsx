@@ -42,38 +42,9 @@ vi.mock('@/contexts/AuthContext', () => ({
   }),
 }))
 
-// Mock stores used internally
-vi.mock('@/store/proofStore', () => ({
-  useProofStore: (selector: (s: unknown) => unknown) => {
-    const state = {
-      facts: new Map(),
-      isPanelOpen: false,
-      isPlanningComplete: false,
-      proofSummary: null,
-      isSummaryGenerating: false,
-      isProving: false,
-      hasCompletedProof: false,
-      openPanel: vi.fn(),
-      closePanel: vi.fn(),
-      clearFacts: vi.fn(),
-      importFacts: vi.fn(),
-    }
-    return selector ? selector(state) : state
-  },
-}))
-
-vi.mock('@/store/artifactStore', () => ({
-  useArtifactStore: Object.assign(
-    () => ({}),
-    { getState: () => ({ clear: vi.fn(), fetchTables: vi.fn(), fetchArtifacts: vi.fn() }) },
-  ),
-}))
-
-vi.mock('@/store/glossaryStore', () => ({
-  useGlossaryStore: Object.assign(
-    () => ({}),
-    { getState: () => ({ fetchTerms: vi.fn(), loadFromCache: vi.fn() }) },
-  ),
+vi.mock('@/store/glossaryState', () => ({
+  fetchTerms: vi.fn(),
+  loadFromCache: vi.fn(),
 }))
 
 vi.mock('@/graphql/client', () => ({
@@ -81,12 +52,29 @@ vi.mock('@/graphql/client', () => ({
     query: vi.fn().mockResolvedValue({ data: {} }),
     mutate: vi.fn().mockResolvedValue({ data: {} }),
     subscribe: vi.fn().mockReturnValue({ subscribe: vi.fn().mockReturnValue({ unsubscribe: vi.fn() }) }),
+    refetchQueries: vi.fn().mockResolvedValue([]),
   },
 }))
 
-vi.mock('@/graphql/ui-state', () => ({
-  briefModeVar: () => false,
-}))
+vi.mock('@/graphql/ui-state', async () => {
+  const { makeVar } = await import('@apollo/client')
+  return {
+    briefModeVar: makeVar(false),
+    clearArtifactState: vi.fn(),
+    markStepsSuperseded: vi.fn(),
+    proofFactsVar: makeVar(new Map()),
+    isProvingVar: makeVar(false),
+    isPlanningCompleteVar: makeVar(false),
+    isProofPanelOpenVar: makeVar(false),
+    proofSummaryVar: makeVar(null),
+    isSummaryGeneratingVar: makeVar(false),
+    hasCompletedProofVar: makeVar(false),
+    openProofPanel: vi.fn(),
+    closeProofPanel: vi.fn(),
+    clearProofFacts: vi.fn(),
+    importFacts: vi.fn(),
+  }
+})
 
 vi.mock('@/api/session-id', () => ({
   getOrCreateSessionId: vi.fn().mockReturnValue('test-session-id'),

@@ -83,6 +83,7 @@
 - **REQ-062** (2026-03-29): UI completely GraphQL-driven — no REST.
 - **REQ-063** (2026-03-29): Session events (step_complete, plan_ready, entity_update, artifact_created, etc.) delivered via GraphQL subscriptions.
 - **REQ-064** (2026-03-29): Session actions (approve, reject, cancel, replan_from, edit_objective, etc.) executed via GraphQL mutations.
+- **REQ-100** (2026-04-01): Replace custom artifactStore (createStore.ts) with direct Apollo Client cache usage. Remove artifactStore Zustand store; components use useQuery() directly instead of fetch methods. Real-time updates via apolloClient.writeQuery() or cache.modify() instead of custom set() calls.
 
 ## Infrastructure & Configuration
 - **REQ-065** (2026-03-29): Demo config at `demo/config.yaml` with domains `sales-analytics` and `hr-reporting`.

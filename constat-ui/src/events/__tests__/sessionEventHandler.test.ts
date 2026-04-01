@@ -1,10 +1,46 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: aa91d3a8-0c7e-45fe-9219-ef0a6ff884bd
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@/graphql/client', () => ({
   apolloClient: {
     query: vi.fn().mockResolvedValue({ data: {} }),
     mutate: vi.fn().mockResolvedValue({ data: {} }),
+    refetchQueries: vi.fn().mockResolvedValue([]),
+    readQuery: vi.fn().mockReturnValue(null),
   },
+}))
+
+vi.mock('@/graphql/ui-state', () => ({
+  addStepCode: vi.fn(),
+  addInferenceCode: vi.fn(),
+  clearInferenceCodes: vi.fn(),
+  truncateFromStep: vi.fn(),
+  ingestingSourceVar: vi.fn(),
+  ingestProgressVar: vi.fn(),
+  selectedArtifactVar: vi.fn(),
+  expandSections: vi.fn(),
+  handleFactEvent: vi.fn(),
+  exportFacts: vi.fn().mockReturnValue([]),
+  isSummaryGeneratingVar: vi.fn().mockReturnValue(false),
+}))
+
+vi.mock('@/store/glossaryState', () => ({
+  fetchTerms: vi.fn(),
+  setTermsFromState: vi.fn(),
+  addTerms: vi.fn(),
+  setEntityRebuilding: vi.fn(),
+  setGenerating: vi.fn(),
+  setProgress: vi.fn(),
+  bumpRefreshKey: vi.fn(),
 }))
 
 vi.mock('@/config/auth-helpers', () => ({
@@ -27,7 +63,7 @@ describe('sessionEventReducer', () => {
   describe('session_ready event', () => {
     it('returns state unchanged (session update handled externally)', () => {
       const action: SessionAction = {
-        type: 'WS_EVENT',
+        type: 'SUBSCRIPTION_EVENT',
         event: {
           event_type: 'session_ready',
           session_id: 'test-session',
@@ -45,7 +81,7 @@ describe('sessionEventReducer', () => {
   describe('welcome event', () => {
     it('populates suggestions and tagline from adjectives', () => {
       const action: SessionAction = {
-        type: 'WS_EVENT',
+        type: 'SUBSCRIPTION_EVENT',
         event: {
           event_type: 'welcome',
           session_id: 'test-session',
@@ -67,7 +103,7 @@ describe('sessionEventReducer', () => {
 
     it('returns empty tagline when adjectives missing', () => {
       const action: SessionAction = {
-        type: 'WS_EVENT',
+        type: 'SUBSCRIPTION_EVENT',
         event: {
           event_type: 'welcome',
           session_id: 'test-session',
@@ -87,7 +123,7 @@ describe('sessionEventReducer', () => {
   describe('planning_start event', () => {
     it('transitions to planning phase', () => {
       const action: SessionAction = {
-        type: 'WS_EVENT',
+        type: 'SUBSCRIPTION_EVENT',
         event: {
           event_type: 'planning_start',
           session_id: 'test-session',
@@ -105,7 +141,7 @@ describe('sessionEventReducer', () => {
     it('sets status to completed', () => {
       state.status = 'executing'
       const action: SessionAction = {
-        type: 'WS_EVENT',
+        type: 'SUBSCRIPTION_EVENT',
         event: {
           event_type: 'query_complete',
           session_id: 'test-session',
@@ -152,35 +188,7 @@ describe('sessionEventReducer', () => {
 })
 
 describe('executeSideEffects', () => {
-  const artifactState = {
-    fetchEntities: vi.fn(),
-    fetchDataSources: vi.fn(),
-    fetchAllSkills: vi.fn(),
-    fetchAllAgents: vi.fn(),
-    fetchArtifacts: vi.fn(),
-    fetchFacts: vi.fn(),
-    fetchTables: vi.fn(),
-    fetchLearnings: vi.fn(),
-    fetchScratchpad: vi.fn(),
-    addStepCode: vi.fn(),
-    addTable: vi.fn(),
-    addArtifact: vi.fn(),
-    clearInferenceCodes: vi.fn(),
-    addInferenceCode: vi.fn(),
-    truncateFromStep: vi.fn(),
-    markStepsSuperseded: vi.fn(),
-  }
-  const proofState = {
-    handleFactEvent: vi.fn(),
-  }
-  const glossaryState = {
-    fetchTerms: vi.fn(),
-  }
-  const stores = {
-    artifactStore: { getState: () => artifactState } as any,
-    proofStore: { getState: () => proofState } as any,
-    glossaryStore: { getState: () => glossaryState } as any,
-  }
+  const stores = {} as any
   const lastHeartbeatRef = { current: null as string | null }
 
   beforeEach(() => {
@@ -188,7 +196,9 @@ describe('executeSideEffects', () => {
     lastHeartbeatRef.current = null
   })
 
-  it('fetches data sources on session_ready', () => {
+  it('refetches DataSources, Entities, Skills on session_ready', async () => {
+    const { apolloClient } = await import('@/graphql/client')
+    const { fetchTerms: glossaryFetchTerms } = await import('@/store/glossaryState')
     const event = {
       event_type: 'session_ready' as const,
       session_id: 'test-session',
@@ -197,10 +207,8 @@ describe('executeSideEffects', () => {
       data: { active_domains: ['user'] },
     }
     executeSideEffects(event, 'test-session', stores, lastHeartbeatRef)
-    expect(artifactState.fetchDataSources).toHaveBeenCalledWith('test-session')
-    expect(artifactState.fetchAllSkills).toHaveBeenCalled()
-    expect(artifactState.fetchEntities).toHaveBeenCalledWith('test-session')
-    expect(glossaryState.fetchTerms).toHaveBeenCalledWith('test-session')
+    expect(apolloClient.refetchQueries).toHaveBeenCalledWith({ include: ['Entities', 'DataSources', 'Skills', 'Agents', 'ActiveDomains'] })
+    expect(glossaryFetchTerms).toHaveBeenCalledWith('test-session')
   })
 
   it('updates heartbeat on heartbeat_ack', () => {

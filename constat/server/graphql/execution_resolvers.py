@@ -10,9 +10,9 @@
 
 """GraphQL resolvers for query execution (Phase 7).
 
-Ports the REST/WebSocket execution endpoints from routes/queries.py into
+Ports the REST execution endpoints from routes/queries.py into
 GraphQL mutations and a query, enabling the frontend to migrate away from
-the WebSocket transport.
+GraphQL subscriptions.
 """
 
 from __future__ import annotations
@@ -292,7 +292,6 @@ class Mutation:
             "step_number": step_number,
             "data": {"mode": mode, "from_step": step_number},
         }
-        managed.event_queue.put_nowait(replan_start)
         sm.publish_execution_event(session_id, replan_start)
 
         managed.status = SessionStatus.EXECUTING
@@ -321,7 +320,6 @@ class Mutation:
                         "suggestions": result.get("suggestions", []),
                     },
                 }
-                managed.event_queue.put_nowait(_payload)
                 sm.publish_execution_event(session_id, _payload)
             except Exception as err:
                 logger.error(f"Replan error: {err}")
@@ -331,7 +329,6 @@ class Mutation:
                     "step_number": 0,
                     "data": {"error": str(err)},
                 }
-                managed.event_queue.put_nowait(_payload)
                 sm.publish_execution_event(session_id, _payload)
             finally:
                 managed.status = SessionStatus.IDLE
@@ -388,7 +385,6 @@ class Mutation:
                         "suggestions": result.get("suggestions", []),
                     },
                 }
-                managed.event_queue.put_nowait(_payload)
                 sm.publish_execution_event(session_id, _payload)
             except Exception as err:
                 logger.error(f"Edit objective error: {err}")
@@ -398,7 +394,6 @@ class Mutation:
                     "step_number": 0,
                     "data": {"error": str(err)},
                 }
-                managed.event_queue.put_nowait(_payload)
                 sm.publish_execution_event(session_id, _payload)
             finally:
                 managed.status = SessionStatus.IDLE
@@ -454,7 +449,6 @@ class Mutation:
                         "suggestions": result.get("suggestions", []),
                     },
                 }
-                managed.event_queue.put_nowait(_payload)
                 sm.publish_execution_event(session_id, _payload)
             except Exception as err:
                 logger.error(f"Delete objective error: {err}")
@@ -464,7 +458,6 @@ class Mutation:
                     "step_number": 0,
                     "data": {"error": str(err)},
                 }
-                managed.event_queue.put_nowait(_payload)
                 sm.publish_execution_event(session_id, _payload)
             finally:
                 managed.status = SessionStatus.IDLE

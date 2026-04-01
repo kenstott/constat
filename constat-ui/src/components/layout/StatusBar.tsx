@@ -35,7 +35,7 @@ const statusColors: Record<string, string> = {
 }
 
 export function StatusBar() {
-  const { session, status, wsConnected, createSession, clearProofFacts } = useSessionContext()
+  const { session, status, subscriptionConnected, createSession, clearProofFacts } = useSessionContext()
   const { userId } = useAuth()
   const theme = useReactiveVar(themeVar)
   const toggleMenu = () => menuOpenVar(!menuOpenVar())
@@ -107,13 +107,13 @@ export function StatusBar() {
 
       {/* Connection status */}
       <div className="flex items-center gap-1.5">
-        {wsConnected ? (
+        {subscriptionConnected ? (
           <SignalIcon className="w-4 h-4 text-green-500" />
         ) : (
           <SignalSlashIcon className="w-4 h-4 text-red-500" />
         )}
         <span className="text-xs text-gray-500 dark:text-gray-400">
-          {wsConnected ? 'Connected' : 'Disconnected'}
+          {subscriptionConnected ? 'Connected' : 'Disconnected'}
         </span>
       </div>
 

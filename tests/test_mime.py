@@ -46,9 +46,12 @@ class TestNormalizeType:
         assert normalize_type("confluence") == "auto"
         assert normalize_type("notion") == "auto"
 
+    def test_video_maps_to_audio(self):
+        assert normalize_type("video/mp4") == "audio"
+
     def test_unknown_raises(self):
         with pytest.raises(ValueError, match="Unknown document type"):
-            normalize_type("video/mp4")
+            normalize_type("application/x-unknown-format")
 
 
 class TestDetectTypeFromSource:

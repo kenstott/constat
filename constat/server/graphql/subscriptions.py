@@ -80,6 +80,17 @@ class ExecutionSubscription:
             },
         )
 
+        # Replay session_ready if it fired before subscription connected
+        if managed._session_ready_event:
+            evt = managed._session_ready_event
+            yield ExecutionEventType(
+                event_type=evt.get("event_type", ""),
+                session_id=evt.get("session_id", session_id),
+                step_number=evt.get("step_number", 0),
+                timestamp=evt.get("timestamp", datetime.now(timezone.utc).isoformat()),
+                data=evt.get("data", {}),
+            )
+
         # Replay cached entity rebuild event if it fired before subscription connected
         if managed._entity_rebuild_event:
             evt = managed._entity_rebuild_event

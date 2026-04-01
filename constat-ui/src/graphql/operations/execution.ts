@@ -9,7 +9,7 @@
 // permission from the copyright holder.
 
 import { gql } from '@apollo/client'
-import type { WSEvent } from '@/types/api'
+import type { SubscriptionEvent } from '@/types/api'
 
 // -- Subscription ------------------------------------------------------------
 
@@ -149,9 +149,9 @@ export const HEARTBEAT = gql`
 
 // -- Mapper ------------------------------------------------------------------
 
-// Converts camelCase GQL subscription event to snake_case WSEvent for handleWSEvent
+// Converts camelCase GQL subscription event to snake_case SubscriptionEvent
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function toExecutionEvent(gqlEvent: any): WSEvent {
+export function toExecutionEvent(gqlEvent: any): SubscriptionEvent {
   return {
     event_type: gqlEvent.eventType,
     session_id: gqlEvent.sessionId,

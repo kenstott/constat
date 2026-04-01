@@ -25,10 +25,10 @@ import {
   HEARTBEAT,
   toExecutionEvent,
 } from '@/graphql/operations/execution'
-import type { WSEvent } from '@/types/api'
+import type { SubscriptionEvent } from '@/types/api'
 
 interface UseQueryExecutionOptions {
-  onEvent?: (event: WSEvent) => void
+  onEvent?: (event: SubscriptionEvent) => void
 }
 
 export function useQueryExecution(options?: UseQueryExecutionOptions) {

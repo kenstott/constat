@@ -516,7 +516,7 @@ def schema(config: str):
 def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool):
     """Start the API server.
 
-    Launches the Constat API server for HTTP/WebSocket access.
+    Launches the Constat API server for HTTP/GraphQL access.
 
     \b
     Examples:

@@ -146,7 +146,7 @@ class ServerConfig(BaseModel):
     )
     require_plan_approval: bool = Field(
         default=True,
-        description="Whether to require user approval for plans via WebSocket",
+        description="Whether to require user approval for plans via GraphQL subscription",
     )
     auth_disabled: bool = Field(
         default=True,

@@ -27,6 +27,7 @@ import { useArtifacts } from '@/hooks/useArtifacts'
 import type { TableInfo, Artifact } from '@/types/api'
 import { openFullscreenArtifact } from '@/graphql/ui-state'
 import { useSessionContext } from '@/contexts/SessionContext'
+import { useActiveDomains } from '@/hooks/useDomains'
 import * as api from '@/api/client'
 
 type StoreMessage = {
@@ -86,8 +87,9 @@ export function BotMessageGroup({
   }, [groupOverride?.version])
   const { session, submitQuery } = useSessionContext()
   const { tables } = useTables() as { tables: TableInfo[] }
+  const { activeDomains: rawDomains } = useActiveDomains()
   // Show all domains except synthetic root/user nodes (constants, not useful)
-  const activeDomains = (session?.active_domains || []).filter(d => d !== 'root' && d !== 'user')
+  const activeDomains = rawDomains.filter(d => d !== 'root' && d !== 'user')
 
   // Format filename → display name (e.g., "sales-analytics" → "Sales Analytics")
   const domainDisplayName = (filename: string): string =>

@@ -16,7 +16,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from constat.api.types import SolveResult, FollowUpResult
 from constat.messages import WelcomeMessage
@@ -50,21 +50,8 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="query-worker")
 # Track active query tasks for graceful shutdown
 _active_tasks: set[asyncio.Task] = set()
 
-# Track active WebSocket connections for graceful shutdown
-_active_websockets: set[WebSocket] = set()
-
-
 async def shutdown_executor_async() -> None:
     """Shutdown the thread pool executor and cancel active tasks. Called during app shutdown."""
-    # Close all active WebSocket connections first
-    websockets_to_close = list(_active_websockets)
-    for ws in websockets_to_close:
-        try:
-            await ws.close(code=1001, reason="Server shutting down")
-        except (RuntimeError, ConnectionError, OSError):
-            pass
-    _active_websockets.clear()
-
     # Cancel all active query tasks
     tasks_to_cancel = list(_active_tasks)
     for task in tasks_to_cancel:
@@ -163,14 +150,14 @@ def _api_result_to_dict_raw(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEventLoop):
-    """Create an approval callback that bridges sync session to async WebSocket.
+def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEventLoop, session_manager: "SessionManager | None" = None):
+    """Create an approval callback that bridges sync session to async GraphQL subscription.
 
     This callback is called from the synchronous session.solve() thread when
     plan approval is required. It:
     1. Updates status to awaiting_approval
-    2. Emits plan_ready event via the event queue
-    3. Blocks waiting for approval_event to be set (by WebSocket handler)
+    2. Emits plan_ready event via GraphQL subscription
+    3. Blocks waiting for approval_event to be set
     4. Returns the approval response
     """
     def approval_callback(request: PlanApprovalRequest) -> PlanApprovalResponse:
@@ -183,10 +170,6 @@ def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEve
         managed.approval_event = asyncio.Event()
         managed.approval_response = None
 
-        # Queue plan_ready event for WebSocket.
-        # MUST use call_soon_threadsafe because this callback runs in a
-        # thread-pool thread; asyncio.Queue is not thread-safe and a direct
-        # put_nowait would not wake up the get() coroutine on the event loop.
         plan_data = {
             "problem": request.problem,
             "steps": request.steps,
@@ -198,14 +181,13 @@ def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEve
             "step_number": 0,
             "data": {"plan": plan_data},
         }
-        try:
-            loop.call_soon_threadsafe(managed.event_queue.put_nowait, payload)
-        except RuntimeError:
-            # Loop closed — fall back to direct put
+        if session_manager is not None:
             try:
-                managed.event_queue.put_nowait(payload)
-            except asyncio.QueueFull:
-                logger.warning(f"Event queue full for session {managed.session_id}")
+                loop.call_soon_threadsafe(
+                    session_manager.publish_execution_event, managed.session_id, payload
+                )
+            except RuntimeError:
+                session_manager.publish_execution_event(managed.session_id, payload)
 
         # Wait for approval (blocking in thread, but event is set from async context)
         # Use run_coroutine_threadsafe to wait on the async event from sync code
@@ -244,8 +226,8 @@ def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEve
     return approval_callback
 
 
-def _create_clarification_callback(managed: ManagedSession, loop: asyncio.AbstractEventLoop):
-    """Create a clarification callback that bridges sync session to async WebSocket.
+def _create_clarification_callback(managed: ManagedSession, loop: asyncio.AbstractEventLoop, session_manager: "SessionManager | None" = None):
+    """Create a clarification callback that bridges sync session to async GraphQL subscription.
 
     This callback is called from the synchronous session.solve() thread when
     clarification is needed. It sends all questions at once for stepper UI.
@@ -260,8 +242,6 @@ def _create_clarification_callback(managed: ManagedSession, loop: asyncio.Abstra
         managed.clarification_event = asyncio.Event()
         managed.clarification_response = None
 
-        # Send all questions at once for stepper UI.
-        # MUST use call_soon_threadsafe (same reason as approval callback).
         clarification_data = {
             "original_question": request.original_question,
             "ambiguity_reason": request.ambiguity_reason,
@@ -280,13 +260,13 @@ def _create_clarification_callback(managed: ManagedSession, loop: asyncio.Abstra
             "step_number": 0,
             "data": clarification_data,
         }
-        try:
-            loop.call_soon_threadsafe(managed.event_queue.put_nowait, payload)
-        except RuntimeError:
+        if session_manager is not None:
             try:
-                managed.event_queue.put_nowait(payload)
-            except asyncio.QueueFull:
-                logger.warning(f"Event queue full for session {managed.session_id}")
+                loop.call_soon_threadsafe(
+                    session_manager.publish_execution_event, managed.session_id, payload
+                )
+            except RuntimeError:
+                session_manager.publish_execution_event(managed.session_id, payload)
 
         # Wait for all answers
         async def wait_for_clarification():
@@ -314,12 +294,10 @@ def _create_clarification_callback(managed: ManagedSession, loop: asyncio.Abstra
 
 
 def _create_event_handler(managed: ManagedSession, session_manager: "SessionManager | None" = None):
-    """Create an event handler that queues events for WebSocket delivery.
+    """Create an event handler that publishes events to GraphQL subscribers.
 
     The handler is called from a thread-pool thread (run_in_executor), so
-    we use loop.call_soon_threadsafe to schedule the queue put on the
-    event loop.  This ensures the asyncio.Queue wakes up immediately
-    rather than waiting until the executor future resolves.
+    we use loop.call_soon_threadsafe to schedule publish on the event loop.
     """
     loop = asyncio.get_event_loop()
 
@@ -359,15 +337,8 @@ def _create_event_handler(managed: ManagedSession, session_manager: "SessionMana
         "proof_summary_ready": EventType.PROOF_SUMMARY_READY,
     }
 
-    def _enqueue(payload: dict) -> None:
-        """Put event on queue from any thread."""
-        try:
-            managed.event_queue.put_nowait(payload)
-        except asyncio.QueueFull:
-            logger.warning(f"Event queue full for session {managed.session_id}")
-
     def handle_event(event: StepEvent) -> None:
-        """Handle session events by queuing them."""
+        """Handle session events by publishing to GraphQL subscribers."""
         try:
             if event.event_type == "dynamic_context":
                 logger.info(f"[EVENT_HANDLER] Received dynamic_context event: {event.data}")
@@ -399,15 +370,6 @@ def _create_event_handler(managed: ManagedSession, session_manager: "SessionMana
 
             payload = ws_event.model_dump(mode="json")
 
-            # Schedule on event loop so asyncio.Queue wakes up immediately,
-            # even when called from a worker thread.
-            try:
-                loop.call_soon_threadsafe(_enqueue, payload)
-            except RuntimeError:
-                # Loop closed — fall back to direct put
-                _enqueue(payload)
-
-            # Also publish to GraphQL subscription queues
             if session_manager is not None:
                 try:
                     loop.call_soon_threadsafe(
@@ -422,7 +384,7 @@ def _create_event_handler(managed: ManagedSession, session_manager: "SessionMana
     return handle_event
 
 
-def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEventLoop, is_followup: bool = False, replay: bool = False, objective_index: int | None = None) -> dict[str, Any]:
+def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEventLoop, is_followup: bool = False, replay: bool = False, objective_index: int | None = None, session_manager: "SessionManager | None" = None) -> dict[str, Any]:
     """Run a query synchronously (called from thread pool).
 
     Uses the ConstatAPI for solve/follow_up operations, ensuring
@@ -442,13 +404,13 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
     try:
         # Register approval callback if plan approval is required
         if managed.session.session_config.require_approval:
-            approval_callback = _create_approval_callback(managed, loop)
+            approval_callback = _create_approval_callback(managed, loop, session_manager)
             managed.api.set_approval_callback(approval_callback)
             logger.debug(f"Registered approval callback for session {managed.session_id}")
 
         # Register clarification callback if clarifications are enabled
         if managed.session.session_config.ask_clarifications:
-            clarification_callback = _create_clarification_callback(managed, loop)
+            clarification_callback = _create_clarification_callback(managed, loop, session_manager)
             managed.session.set_clarification_callback(clarification_callback)
             logger.debug(f"Registered clarification callback for session {managed.session_id}")
 
@@ -546,7 +508,6 @@ async def _execute_query_async(
     loop = asyncio.get_event_loop()
 
     def _publish_terminal(payload: dict) -> None:
-        managed.event_queue.put_nowait(payload)
         if session_manager is not None:
             session_manager.publish_execution_event(managed.session_id, payload)
 
@@ -555,7 +516,7 @@ async def _execute_query_async(
         # noinspection PyTypeChecker
         result = await loop.run_in_executor(
             _executor,
-            lambda: _run_query(managed, problem, loop, is_followup, replay=replay, objective_index=objective_index)
+            lambda: _run_query(managed, problem, loop, is_followup, replay=replay, objective_index=objective_index, session_manager=session_manager)
         )
 
         # Queue completion event
@@ -624,8 +585,8 @@ async def submit_query(
 ) -> QueryResponse:
     """Submit a query for execution.
 
-    The query is executed asynchronously. Subscribe to the WebSocket
-    endpoint to receive real-time progress events.
+    The query is executed asynchronously. Subscribe to the GraphQL subscription
+    to receive real-time progress events.
 
     Args:
         session_id: Session ID
@@ -722,7 +683,7 @@ async def submit_query(
     return QueryResponse(
         execution_id=execution_id,
         status="started",
-        message="Query execution started. Connect to WebSocket for progress updates.",
+        message="Query execution started. Subscribe to queryExecution for progress updates.",
     )
 
 
@@ -801,7 +762,7 @@ async def approve_plan(
     """Approve or reject the current plan.
 
     This endpoint is used when require_plan_approval is enabled.
-    Call this after receiving the plan_ready event via WebSocket.
+    Call this after receiving the plan_ready event via GraphQL subscription.
 
     Args:
         session_id: Session ID
@@ -847,504 +808,3 @@ async def approve_plan(
         managed.status = SessionStatus.IDLE
         return ApprovalResponse(status="rejected", message=f"Plan rejected: {body.feedback}")
 
-
-@router.websocket("/{session_id}/ws")
-async def websocket_endpoint(
-    websocket: WebSocket,
-    session_id: str,
-):
-    """WebSocket endpoint for real-time event streaming.
-
-    Connect to this endpoint to receive real-time progress events
-    during query execution. Events include:
-    - planning_start: Planning has begun
-    - plan_ready: Plan is ready (approval may be required)
-    - step_start: Step execution starting
-    - step_generating: Generating code for step
-    - step_executing: Executing step code
-    - step_complete: Step completed successfully
-    - step_error: Step encountered an error
-    - query_complete: Query execution completed
-    - query_error: Query execution failed
-
-    Commands can be sent via the WebSocket:
-    - {"action": "approve"}: Approve the current plan
-    - {"action": "reject", "data": {"feedback": "reason"}}: Reject plan
-    - {"action": "cancel"}: Cancel execution
-    - {"action": "clarify", "data": {"answer": "user answer"}}: Answer a clarification question
-    - {"action": "skip_clarification"}: Skip clarification and proceed
-    """
-    await websocket.accept()
-    _active_websockets.add(websocket)
-
-    # Get session manager from app state
-    session_manager: SessionManager = websocket.app.state.session_manager
-
-    # Wait for session to be registered (background init may still be running)
-    managed = None
-    for _ in range(30):  # up to 15s
-        try:
-            managed = session_manager.get_session(session_id)
-            break
-        except KeyError:
-            await asyncio.sleep(0.5)
-    if managed is None:
-        _active_websockets.discard(websocket)
-        await websocket.close(code=4404, reason="Session not found")
-        return
-
-    # Reset stuck session status on reconnect (e.g., browser refresh mid-operation)
-    if managed.status in (SessionStatus.PLANNING, SessionStatus.EXECUTING, SessionStatus.AWAITING_APPROVAL):
-        logger.info(f"Resetting stuck session {session_id} from {managed.status.value} to idle")
-        managed.status = SessionStatus.IDLE
-        managed.current_query = None
-        managed.execution_id = None
-        managed.approval_event = None
-        managed.approval_response = None
-        managed.clarification_event = None
-        managed.clarification_response = None
-        # Signal cancellation to any running execution
-        if hasattr(managed.session, "_cancelled"):
-            managed.session._cancelled = True
-        # Clear stale events from previous execution to prevent duplicates
-        while not managed.event_queue.empty():
-            try:
-                managed.event_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-
-    # Store event loop reference so background threads can use call_soon_threadsafe
-    managed._event_loop = asyncio.get_running_loop()
-
-    # Register active connection
-    remote_addr = ""
-    if websocket.client:
-        remote_addr = f"{websocket.client.host}:{websocket.client.port}"
-    session_manager.register_connection(session_id, managed.user_id, remote_addr)
-
-    # Send welcome message on connection
-    welcome = WelcomeMessage.create()
-    await websocket.send_json({
-        "type": "event",
-        "payload": {
-            "event_type": "welcome",
-            "session_id": session_id,
-            "step_number": 0,
-            "data": {
-                "reliable_adjective": welcome.reliable_adjective,
-                "honest_adjective": welcome.honest_adjective,
-                "tagline": welcome.tagline,
-                "suggestions": welcome.suggestions,
-                "message_markdown": welcome.to_markdown(),
-            },
-        },
-    })
-
-    # Replay entity_rebuild_complete if it fired before WS connected
-    # (scope cache restore finishes in <100ms, often before WS handshake)
-    if managed._entity_rebuild_event:
-        await websocket.send_json({
-            "type": "event",
-            "payload": managed._entity_rebuild_event,
-        })
-        managed._entity_rebuild_event = None
-        # Drain stale entity rebuild events from queue to avoid duplicates
-        kept: list = []
-        while not managed.event_queue.empty():
-            try:
-                item = managed.event_queue.get_nowait()
-                if item.get("event_type") not in ("entity_rebuild_start", "entity_rebuild_complete"):
-                    kept.append(item)
-            except asyncio.QueueEmpty:
-                break
-        for item in kept:
-            managed.event_queue.put_nowait(item)
-
-    # Replay glossary generation status if generation is in progress
-    if managed._glossary_generating:
-        await websocket.send_json({
-            "type": "event",
-            "payload": {
-                "event_type": "glossary_rebuild_start",
-                "session_id": session_id,
-                "step_number": 0,
-                "data": {"session_id": session_id},
-            },
-        })
-
-    try:
-        # Create tasks for sending events and receiving commands
-        async def send_events():
-            """Send events from queue to WebSocket."""
-            while True:
-                try:
-                    event = await managed.event_queue.get()
-                    await websocket.send_json({
-                        "type": "event",
-                        "payload": event,
-                    })
-                except asyncio.CancelledError:
-                    break
-                except Exception as send_err:
-                    # WebSocket closed mid-send (e.g. reconnecting after session restore).
-                    # Re-queue the event so the next WS connection picks it up.
-                    logger.debug(f"WebSocket send failed (will retry on reconnect): {send_err}")
-                    try:
-                        managed.event_queue.put_nowait(event)
-                    except Exception:
-                        pass
-                    break
-
-        async def receive_commands():
-            """Receive and process commands from WebSocket."""
-            while True:
-                try:
-                    data = await websocket.receive_json()
-                    action = data.get("action")
-
-                    if action == "approve":
-                        managed.approval_response = {"approved": True, "feedback": None}
-                        if managed.approval_event:
-                            managed.approval_event.set()
-                        await websocket.send_json({
-                            "type": "ack",
-                            "payload": {"action": "approve", "status": "ok"},
-                        })
-
-                    elif action == "reject":
-                        feedback = data.get("data", {}).get("feedback", "Rejected by user")
-                        managed.approval_response = {"approved": False, "feedback": feedback}
-                        if managed.approval_event:
-                            managed.approval_event.set()
-                        await websocket.send_json({
-                            "type": "ack",
-                            "payload": {"action": "reject", "status": "ok"},
-                        })
-
-                    elif action == "cancel":
-                        if hasattr(managed.session, "_cancelled"):
-                            managed.session._cancelled = True
-                        if hasattr(managed.session, "_execution_context"):
-                            managed.session._execution_context.cancel()
-                        await websocket.send_json({
-                            "type": "ack",
-                            "payload": {"action": "cancel", "status": "ok"},
-                        })
-
-                    elif action == "clarify":
-                        # User answered all clarification questions
-                        clarify_data = data.get("data", {})
-                        answers = clarify_data.get("answers", {})
-                        structured_answers = clarify_data.get("structured_answers", {})
-                        managed.clarification_response = {
-                            "answers": answers,
-                            "structured_answers": structured_answers,
-                            "skip": False,
-                        }
-                        if managed.clarification_event:
-                            managed.clarification_event.set()
-                        await websocket.send_json({
-                            "type": "ack",
-                            "payload": {"action": "clarify", "status": "ok"},
-                        })
-
-                    elif action == "skip_clarification":
-                        # User wants to skip clarification
-                        managed.clarification_response = {"skip": True}
-                        if managed.clarification_event:
-                            managed.clarification_event.set()
-                        await websocket.send_json({
-                            "type": "ack",
-                            "payload": {"action": "skip_clarification", "status": "ok"},
-                        })
-
-                    elif action == "autocomplete":
-                        # Handle autocomplete requests for tables, columns, entities
-                        ac_data = data.get("data", {})
-                        context = ac_data.get("context")
-                        prefix = ac_data.get("prefix", "").lower()
-                        parent = ac_data.get("parent")
-                        request_id = ac_data.get("request_id")
-
-                        items = []
-                        try:
-                            if context == "table":
-                                # Get tables from datastore
-                                tables = managed.session.datastore.list_tables()
-                                for t in tables:
-                                    name = t.get("name", "")
-                                    if name.lower().startswith(prefix):
-                                        items.append({
-                                            "label": name,
-                                            "value": name,
-                                            "description": t.get("description") or f"{t.get('row_count', 0)} rows",
-                                        })
-
-                            elif context == "column" and parent:
-                                # Get columns for a specific table
-                                schema = managed.session.datastore.get_table_schema(parent)
-                                if schema:
-                                    for col in schema:
-                                        name = col.get("name", "")
-                                        if name.lower().startswith(prefix):
-                                            items.append({
-                                                "label": name,
-                                                "value": name,
-                                                "description": col.get("type", ""),
-                                            })
-
-                            elif context == "entity":
-                                # Get entity names from schema manager
-                                if hasattr(managed.session, "schema_manager") and managed.session.schema_manager:
-                                    entities = managed.session.schema_manager.get_schema_entities(include_columns=False)
-                                    for entity in entities:
-                                        if entity.lower().startswith(prefix):
-                                            items.append({
-                                                "label": entity,
-                                                "value": entity,
-                                                "description": "Table",
-                                            })
-                        except Exception as ac_err:
-                            logger.warning(f"Autocomplete error: {ac_err}")
-
-                        # Send autocomplete response
-                        await websocket.send_json({
-                            "type": "event",
-                            "payload": {
-                                "event_type": "autocomplete_response",
-                                "session_id": session_id,
-                                "step_number": 0,
-                                "data": {
-                                    "request_id": request_id,
-                                    "items": items[:20],  # Limit to 20 items
-                                },
-                            },
-                        })
-
-                    elif action == "edit_objective":
-                        obj_data = data.get("data", {})
-                        obj_index = obj_data.get("objective_index")
-                        new_text = obj_data.get("new_text")
-
-                        managed.status = SessionStatus.EXECUTING
-                        execution_id = str(uuid.uuid4())
-                        managed.execution_id = execution_id
-
-                        # Register event handler so step events reach the WebSocket
-                        _handler = _create_event_handler(managed, session_manager)
-                        managed.session._event_handlers = []
-                        managed.session.on_event(_handler)
-
-                        async def _run_edit_objective():
-                            _loop = asyncio.get_event_loop()
-                            try:
-                                result = await _loop.run_in_executor(
-                                    _executor,
-                                    lambda: managed.session.edit_objective(obj_index, new_text)
-                                )
-                                _payload = {
-                                    "event_type": EventType.QUERY_COMPLETE.value,
-                                    "session_id": session_id,
-                                    "step_number": 0,
-                                    "data": {
-                                        "success": result.get("success", False),
-                                        "output": result.get("output", ""),
-                                        "final_answer": result.get("final_answer", ""),
-                                        "suggestions": result.get("suggestions", []),
-                                    },
-                                }
-                                managed.event_queue.put_nowait(_payload)
-                                session_manager.publish_execution_event(session_id, _payload)
-                            except Exception as obj_err:
-                                logger.error(f"Edit objective error: {obj_err}")
-                                _payload = {
-                                    "event_type": EventType.QUERY_ERROR.value,
-                                    "session_id": session_id,
-                                    "step_number": 0,
-                                    "data": {"error": str(obj_err)},
-                                }
-                                managed.event_queue.put_nowait(_payload)
-                                session_manager.publish_execution_event(session_id, _payload)
-                            finally:
-                                managed.status = SessionStatus.IDLE
-                                managed.execution_id = None
-
-                        asyncio.create_task(_run_edit_objective())
-
-                        await websocket.send_json({
-                            "type": "ack",
-                            "payload": {"action": "edit_objective", "status": "ok"},
-                        })
-
-                    elif action == "delete_objective":
-                        del_data = data.get("data", {})
-                        del_index = del_data.get("objective_index")
-
-                        managed.status = SessionStatus.EXECUTING
-                        execution_id = str(uuid.uuid4())
-                        managed.execution_id = execution_id
-
-                        # Register event handler so step events reach the WebSocket
-                        _handler = _create_event_handler(managed, session_manager)
-                        managed.session._event_handlers = []
-                        managed.session.on_event(_handler)
-
-                        async def _run_delete_objective():
-                            _loop = asyncio.get_event_loop()
-                            try:
-                                result = await _loop.run_in_executor(
-                                    _executor,
-                                    lambda: managed.session.delete_objective(del_index)
-                                )
-                                _payload = {
-                                    "event_type": EventType.QUERY_COMPLETE.value,
-                                    "session_id": session_id,
-                                    "step_number": 0,
-                                    "data": {
-                                        "success": result.get("success", False),
-                                        "output": result.get("output", ""),
-                                        "final_answer": result.get("final_answer", ""),
-                                        "suggestions": result.get("suggestions", []),
-                                    },
-                                }
-                                managed.event_queue.put_nowait(_payload)
-                                session_manager.publish_execution_event(session_id, _payload)
-                            except Exception as del_err:
-                                logger.error(f"Delete objective error: {del_err}")
-                                _payload = {
-                                    "event_type": EventType.QUERY_ERROR.value,
-                                    "session_id": session_id,
-                                    "step_number": 0,
-                                    "data": {"error": str(del_err)},
-                                }
-                                managed.event_queue.put_nowait(_payload)
-                                session_manager.publish_execution_event(session_id, _payload)
-                            finally:
-                                managed.status = SessionStatus.IDLE
-                                managed.execution_id = None
-
-                        asyncio.create_task(_run_delete_objective())
-
-                        await websocket.send_json({
-                            "type": "ack",
-                            "payload": {"action": "delete_objective", "status": "ok"},
-                        })
-
-                    elif action == "replan_from":
-                        replan_data = data.get("data", {})
-                        step_number = replan_data.get("step_number")
-                        mode = replan_data.get("mode", "redo")
-                        edited_goal = replan_data.get("edited_goal")
-
-                        # Emit replan_start so UI can mark steps as superseded
-                        _replan_start = {
-                            "event_type": "replan_start",
-                            "session_id": session_id,
-                            "step_number": step_number,
-                            "data": {"mode": mode, "from_step": step_number},
-                        }
-                        managed.event_queue.put_nowait(_replan_start)
-                        session_manager.publish_execution_event(session_id, _replan_start)
-
-                        managed.status = SessionStatus.EXECUTING
-                        execution_id = str(uuid.uuid4())
-                        managed.execution_id = execution_id
-
-                        # Register event handler so step events reach the WebSocket
-                        _handler = _create_event_handler(managed, session_manager)
-                        managed.session._event_handlers = []
-                        managed.session.on_event(_handler)
-
-                        async def _run_replan():
-                            _loop = asyncio.get_event_loop()
-                            try:
-                                result = await _loop.run_in_executor(
-                                    _executor,
-                                    lambda: managed.session.replan_from_step(
-                                        step_number, mode, edited_goal
-                                    )
-                                )
-                                _payload = {
-                                    "event_type": EventType.QUERY_COMPLETE.value,
-                                    "session_id": session_id,
-                                    "step_number": 0,
-                                    "data": {
-                                        "success": result.get("success", False),
-                                        "output": result.get("output", ""),
-                                        "final_answer": result.get("final_answer", ""),
-                                        "suggestions": result.get("suggestions", []),
-                                    },
-                                }
-                                managed.event_queue.put_nowait(_payload)
-                                session_manager.publish_execution_event(session_id, _payload)
-                            except Exception as replan_err:
-                                logger.error(f"Replan error: {replan_err}")
-                                _payload = {
-                                    "event_type": EventType.QUERY_ERROR.value,
-                                    "session_id": session_id,
-                                    "step_number": 0,
-                                    "data": {"error": str(replan_err)},
-                                }
-                                managed.event_queue.put_nowait(_payload)
-                                session_manager.publish_execution_event(session_id, _payload)
-                            finally:
-                                managed.status = SessionStatus.IDLE
-                                managed.execution_id = None
-
-                        asyncio.create_task(_run_replan())
-
-                        await websocket.send_json({
-                            "type": "ack",
-                            "payload": {"action": "replan_from", "status": "ok"},
-                        })
-
-                    elif action == "heartbeat":
-                        since = data.get("data", {}).get("since") if data.get("data") else None
-                        server_time = session_manager.process_heartbeat(session_id, since)
-                        await websocket.send_json({
-                            "type": "event",
-                            "payload": {
-                                "event_type": "heartbeat_ack",
-                                "session_id": session_id,
-                                "step_number": 0,
-                                "data": {"server_time": server_time},
-                            },
-                        })
-
-                    else:
-                        await websocket.send_json({
-                            "type": "error",
-                            "payload": {"message": f"Unknown action: {action}"},
-                        })
-
-                except asyncio.CancelledError:
-                    break
-                except WebSocketDisconnect:
-                    break
-                except Exception as recv_err:
-                    logger.error(f"Error receiving command: {recv_err}")
-                    break
-
-        # Run both tasks concurrently
-        send_task = asyncio.create_task(send_events())
-        receive_task = asyncio.create_task(receive_commands())
-
-        try:
-            await asyncio.gather(send_task, receive_task)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            send_task.cancel()
-            receive_task.cancel()
-
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for session {session_id}")
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-    finally:
-        session_manager.unregister_connection(session_id)
-        _active_websockets.discard(websocket)
-        try:
-            await websocket.close()
-        except (RuntimeError, ConnectionError, OSError):
-            pass  # Already closed

@@ -466,7 +466,7 @@ export interface WidgetResponse<T = unknown> {
   structured: T
 }
 
-// WebSocket Events
+// Subscription Events
 export type EventType =
   | 'heartbeat_ack'
   | 'welcome'
@@ -528,7 +528,7 @@ export type EventType =
   | 'entity_state'
   | 'entity_patch'
 
-export interface WSEvent {
+export interface SubscriptionEvent {
   event_type: EventType
   session_id: string
   step_number: number

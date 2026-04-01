@@ -10,7 +10,7 @@
 
 // Session execution state types — used by the event reducer and SessionProvider
 
-import type { SessionStatus, Plan, WSEvent, TableInfo, Artifact, Fact, GlossaryTerm } from '@/types/api'
+import type { SessionStatus, Plan, SubscriptionEvent } from '@/types/api'
 
 export interface Message {
   id: string
@@ -113,7 +113,7 @@ export const initialExecutionState: SessionExecutionState = {
 
 /** Actions dispatched to the session event reducer */
 export type SessionAction =
-  | { type: 'WS_EVENT'; event: WSEvent }
+  | { type: 'SUBSCRIPTION_EVENT'; event: SubscriptionEvent }
   | { type: 'SUBMIT_QUERY'; query: string; thinkingId: string; isRedo: boolean }
   | { type: 'CANCEL_EXECUTION' }
   | { type: 'APPROVE_PLAN'; stepMessages: Message[]; stepMessageIds: Record<number, string>; isRedo: boolean }
@@ -135,54 +135,6 @@ export type SessionAction =
   | { type: 'CLEAR_QUEUE' }
   | { type: 'RESET'; messages?: Message[] }
 
-/** Interface for cross-store side effects */
-export interface SideEffectStores {
-  artifactStore: {
-    getState: () => {
-      addStepCode: (stepNumber: number, goal: string, code: string, model?: string) => void
-      addTable: (table: TableInfo) => void
-      addArtifact: (artifact: Artifact) => void
-      addFact: (fact: Fact) => void
-      addInferenceCode: (ic: { inference_id: string; name: string; operation: string; code: string; attempt: number; model?: string }) => void
-      fetchArtifacts: (sessionId: string) => Promise<void>
-      fetchFacts: (sessionId: string) => Promise<void>
-      fetchTables: (sessionId: string) => Promise<void>
-      fetchLearnings: () => Promise<void>
-      fetchScratchpad: (sessionId: string) => Promise<void>
-      fetchDDL: (sessionId: string) => Promise<void>
-      fetchDataSources: (sessionId: string) => Promise<void>
-      fetchEntities: (sessionId: string) => Promise<void>
-      fetchAllSkills: () => Promise<void>
-      fetchAllAgents: (sessionId: string) => Promise<void>
-      fetchStepCodes: (sessionId: string) => Promise<void>
-      fetchInferenceCodes: (sessionId: string) => Promise<void>
-      clearInferenceCodes: () => void
-      markStepsSuperseded: () => void
-      truncateFromStep: (fromStep: number, tablesDropped?: string[]) => void
-      patchEntities: (diff: { added: Array<{name: string; type: string}>; removed: Array<{name: string; type: string}> }) => void
-      selectArtifact: (sessionId: string, artifactId: number) => Promise<void>
-      setIngestingSource: (name: string | null) => void
-      setIngestProgress: (progress: { current: number; total: number } | null) => void
-      artifacts: Artifact[]
-      tables: TableInfo[]
-    }
-  }
-  proofStore: {
-    getState: () => {
-      handleFactEvent: (eventType: string, data: Record<string, unknown>) => void
-      exportFacts: () => unknown[]
-      isSummaryGenerating: boolean
-    }
-  }
-  glossaryStore: {
-    getState: () => {
-      fetchTerms: (sessionId: string) => Promise<void>
-      setTermsFromState: (terms: GlossaryTerm[], totalDefined: number, totalSelfDescribing: number) => void
-      addTerms: (terms: GlossaryTerm[]) => void
-      setEntityRebuilding: (rebuilding: boolean) => void
-      setGenerating: (generating: boolean) => void
-      setProgress: (stage: string, percent: number) => void
-    }
-    setState: (updater: (state: { refreshKey: number }) => { refreshKey: number }) => void
-  }
-}
+/** Kept for API compatibility — all side-effect stores migrated to Apollo reactive vars */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface SideEffectStores {}

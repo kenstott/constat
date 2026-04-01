@@ -689,7 +689,7 @@ async def add_email_source(
     """Add and index an IMAP email source (async).
 
     Returns immediately. Pushes source_ingest_start, source_ingest_complete,
-    or source_ingest_error via WebSocket.
+    or source_ingest_error via GraphQL subscription.
     """
     managed = session_manager.get_session_or_none(session_id)
     if not managed:

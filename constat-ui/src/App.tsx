@@ -36,12 +36,12 @@ const SPLASH_MIN_DURATION = 1500 // Minimum splash screen duration in ms
 // Initialization phases for granular status display
 type InitPhase =
   | 'creating_session'
-  | 'connecting_websocket'
+  | 'connecting_subscription'
   | 'ready'
 
 const INIT_PHASE_MESSAGES: Record<InitPhase, { title: string; detail: string }> = {
   creating_session: { title: 'Connecting to Constat', detail: 'Starting session...' },
-  connecting_websocket: { title: 'Connecting', detail: 'Establishing real-time connection...' },
+  connecting_subscription: { title: 'Connecting', detail: 'Establishing real-time connection...' },
   ready: { title: 'Ready', detail: '' },
 }
 
@@ -267,7 +267,7 @@ function PublicViewerApp({ sessionId }: { sessionId: string }) {
 }
 
 function MainApp() {
-  const { session, wsConnected, createSession, messages } = useSessionContext()
+  const { session, subscriptionConnected, createSession, messages } = useSessionContext()
   const { userId } = useAuth()
   const initializingRef = useRef(false)
   const [initPhase, setInitPhase] = useState<InitPhase>('creating_session')
@@ -367,11 +367,11 @@ function MainApp() {
     // createSession handles:
     // 1. Getting/creating session ID from localStorage (per user)
     // 2. Sending to server (which reconnects if exists, or creates new)
-    // 3. Connecting WebSocket
+    // 3. Connecting subscription
     initPreferences()
     createSession(userId)
       .then(() => {
-        setInitPhase('connecting_websocket')
+        setInitPhase('connecting_subscription')
       })
       .finally(() => {
         initializingRef.current = false
@@ -387,8 +387,8 @@ function MainApp() {
   const [isHelpOpen, setIsHelpOpen] = useState(false)
   const proofActionsRef = useRef<ProofDAGActions>(null)
 
-  // Show connecting overlay until session exists and WebSocket is connected
-  if (!session || !wsConnected) {
+  // Show connecting overlay until session exists and subscription is connected
+  if (!session || !subscriptionConnected) {
     return <ConnectingOverlay phase={initPhase} />
   }
 

@@ -10,6 +10,8 @@
 
 import { useQuery, useMutation } from '@apollo/client'
 import { useSessionContext } from '@/contexts/SessionContext'
+import { ACTIVE_DOMAINS_QUERY, SET_ACTIVE_DOMAINS } from '@/graphql/operations/sessions'
+import { apolloClient } from '@/graphql/client'
 import {
   DOMAINS_QUERY,
   DOMAIN_TREE_QUERY,
@@ -84,6 +86,36 @@ export function useDomainRules(filename: string) {
     skip: !filename,
   })
   return { rules: data?.domainRules ?? [], loading, error }
+}
+
+export function useActiveDomains() {
+  const { sessionId } = useSessionContext()
+  const { data, loading } = useQuery(ACTIVE_DOMAINS_QUERY, {
+    variables: { sessionId: sessionId! },
+    skip: !sessionId,
+  })
+  const activeDomains: string[] = data?.activeDomains ?? []
+
+  const [setActiveDomainsMut] = useMutation(SET_ACTIVE_DOMAINS)
+
+  const toggleDomain = async (filename: string) => {
+    if (!sessionId) return
+    const current = activeDomains
+    const newDomains = current.includes(filename)
+      ? current.filter((d) => d !== filename)
+      : [...current, filename]
+    await setActiveDomainsMut({
+      variables: { sessionId, domains: newDomains },
+      refetchQueries: ['ActiveDomains', 'DataSources'],
+    })
+  }
+
+  return { activeDomains, loading, toggleDomain }
+}
+
+/** Refetch active domains from the server (call from event handlers). */
+export function refetchActiveDomains(_sessionId: string) {
+  apolloClient.refetchQueries({ include: ['ActiveDomains', 'DataSources'] }).catch(() => {})
 }
 
 export function useDomainMutations() {

@@ -611,64 +611,18 @@ class TestSchemaEndpoints:
 
 
 class TestWebSocket:
-    """Tests for WebSocket functionality."""
+    """Tests verifying the legacy WebSocket endpoint has been removed."""
 
-    def test_websocket_connect(self, client_with_mock):
-        """Test WebSocket connection."""
-        # Create a session
+    def test_websocket_endpoint_removed(self, client_with_mock):
+        """The /ws endpoint is removed; GraphQL subscriptions are the event delivery path."""
+        from starlette.websockets import WebSocketDisconnect
+
         create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
-        with client_with_mock.websocket_connect(f"/api/sessions/{session_id}/ws") as websocket:
-            # Connection successful if we get here
-            pass
-
-    @staticmethod
-    def _recv_until_type(websocket, expected_type: str, max_reads: int = 10):
-        """Read messages until we get one with the expected type, skipping background events."""
-        for _ in range(max_reads):
-            msg = websocket.receive_json()
-            if msg["type"] == expected_type:
-                return msg
-        raise AssertionError(f"Never received message with type={expected_type}")
-
-    def test_websocket_send_cancel_command(self, client_with_mock):
-        """Test sending cancel command via WebSocket."""
-        # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
-        session_id = create_response.json()["session_id"]
-
-        with client_with_mock.websocket_connect(f"/api/sessions/{session_id}/ws") as websocket:
-            # First, consume the welcome event sent on connection
-            welcome = websocket.receive_json()
-            assert welcome["type"] == "event"
-            assert welcome["payload"]["event_type"] == "welcome"
-
-            # Send cancel command
-            websocket.send_json({"action": "cancel"})
-
-            # Should receive acknowledgment (skip any background entity events)
-            response = self._recv_until_type(websocket, "ack")
-            assert response["payload"]["action"] == "cancel"
-
-    def test_websocket_send_unknown_command(self, client_with_mock):
-        """Test sending unknown command via WebSocket."""
-        # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
-        session_id = create_response.json()["session_id"]
-
-        with client_with_mock.websocket_connect(f"/api/sessions/{session_id}/ws") as websocket:
-            # First, consume the welcome event sent on connection
-            welcome = websocket.receive_json()
-            assert welcome["type"] == "event"
-            assert welcome["payload"]["event_type"] == "welcome"
-
-            # Send unknown command
-            websocket.send_json({"action": "unknown_action"})
-
-            # Should receive error (skip any background entity events)
-            response = self._recv_until_type(websocket, "error")
-            assert "Unknown action" in response["payload"]["message"]
+        with pytest.raises(WebSocketDisconnect):
+            with client_with_mock.websocket_connect(f"/api/sessions/{session_id}/ws"):
+                pass
 
 
 # ============================================================================

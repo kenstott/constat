@@ -22,13 +22,12 @@ import {
   Square3Stack3DIcon,
   MapIcon,
 } from '@heroicons/react/24/outline'
-import { useMutation } from '@apollo/client'
 import { useSessionContext } from '@/contexts/SessionContext'
 import { useArtifactContext } from '@/contexts/ArtifactContext'
 import { useAuth } from '@/contexts/AuthContext'
+import { useActiveDomains } from '@/hooks/useDomains'
 import type { DomainTreeNode } from '@/types/api'
 import { apolloClient } from '@/graphql/client'
-import { SET_ACTIVE_DOMAINS } from '@/graphql/operations/sessions'
 import {
   DOMAIN_TREE_QUERY,
   DOMAIN_CONTENT_QUERY,
@@ -349,10 +348,10 @@ function DomainTreeNodeView({
 }
 
 export default function DomainPanel() {
-  const { session, updateSession } = useSessionContext()
+  const { session } = useSessionContext()
   const { fetchPromptContext, promptContext } = useArtifactContext()
   const { isAdmin, userId } = useAuth()
-  const [setActiveDomainsMutation] = useMutation(SET_ACTIVE_DOMAINS)
+  const { activeDomains, toggleDomain } = useActiveDomains()
   const [tree, setTree] = useState<DomainTreeNode[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -370,7 +369,6 @@ export default function DomainPanel() {
   const [childName, setChildName] = useState('')
   const [childDesc, setChildDesc] = useState('')
   const [creatingChild, setCreatingChild] = useState(false)
-  const activeDomains = session?.active_domains || []
   // Save session as domain
   const [promoting, setPromoting] = useState(false)
   const [promoteName, setPromoteName] = useState('')
@@ -490,7 +488,7 @@ export default function DomainPanel() {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    apolloClient.query({ query: DOMAIN_TREE_QUERY, fetchPolicy: 'network-only' })
+    apolloClient.query({ query: DOMAIN_TREE_QUERY, fetchPolicy: 'cache-first' })
       .then(({ data }) => {
         if (!cancelled) setTree(data.domainTree.map(toDomainTreeNode))
       })
@@ -510,19 +508,8 @@ export default function DomainPanel() {
       if (!session) return
       setError(null)
       setTogglingDomain(filename)
-      const current = session.active_domains || []
-      const isSelected = current.includes(filename)
-      const newDomains = isSelected
-        ? current.filter((d) => d !== filename)
-        : [...current, filename]
-
       try {
-        await setActiveDomainsMutation({
-          variables: { sessionId: session.session_id, domains: newDomains },
-        })
-        updateSession({ active_domains: newDomains })
-        await apolloClient.refetchQueries({ include: ['DataSources'] })
-        // Refresh prompt context (domain activation may update session prompt)
+        await toggleDomain(filename)
         await fetchPromptContext(session.session_id)
       } catch (err: unknown) {
         console.error('Failed to toggle domain:', err)
@@ -533,7 +520,7 @@ export default function DomainPanel() {
         setTogglingDomain(null)
       }
     },
-    [session, updateSession, fetchPromptContext],
+    [session, toggleDomain, fetchPromptContext],
   )
 
   const handleEdit = useCallback(async (filename: string) => {

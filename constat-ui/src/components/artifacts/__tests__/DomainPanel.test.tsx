@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 0934c7bc-ad27-4aa1-9f32-71ae55d1c675
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 import { describe, it, expect } from 'vitest'
 
 // Minimal DomainNode extraction for testing isSystem/isActive logic

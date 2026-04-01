@@ -34,17 +34,6 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ActiveConnectionInfo:
-    """Tracks an active WebSocket connection."""
-
-    session_id: str
-    user_id: str
-    remote_addr: str
-    connected_at: str  # ISO
-    last_heartbeat: str  # ISO
-
-
-@dataclass
 class ManagedSession:
     """A server-managed Session with metadata."""
 
@@ -76,16 +65,13 @@ class ManagedSession:
     _dynamic_apis: list[dict[str, Any]] = field(default_factory=list)
     _file_refs: list[dict[str, Any]] = field(default_factory=list)
 
-    # Event queue for WebSocket bridging (sync Session events -> async WebSocket)
-    event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
-
-    # Reference to the main event loop — used by _push_event from background threads
-    # to call_soon_threadsafe and wake up await queue.get().
-    _event_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # Last entity_rebuild_complete event — replayed on WS connect
+    # Last entity_rebuild_complete event — replayed on subscription connect
     # (scope cache may finish before WS connects, losing the event)
     _entity_rebuild_event: Optional[dict] = None
+
+    # Last session_ready event — replayed on GraphQL subscription connect
+    # (background init may finish before subscription connects)
+    _session_ready_event: Optional[dict] = None
 
     # Entity state cache tracking for JSON Patch diffs
     _entity_state_version: int = 0
@@ -439,9 +425,6 @@ class SessionManager:
         self._lock = Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
 
-        # Active WebSocket connection tracking
-        self._active_connections: dict[str, ActiveConnectionInfo] = {}
-
         # Diff generator registry (heartbeat-triggered)
         from constat.server.diff_generators import EntityDiffGenerator
         self._diff_generators = [EntityDiffGenerator()]
@@ -487,44 +470,6 @@ class SessionManager:
             queue.put_nowait(event)
 
     # ------------------------------------------------------------------
-    # Active connection tracking
-    # ------------------------------------------------------------------
-
-    def register_connection(self, session_id: str, user_id: str, remote_addr: str) -> None:
-        """Register an active WebSocket connection."""
-        now = datetime.now(timezone.utc).isoformat()
-        self._active_connections[session_id] = ActiveConnectionInfo(
-            session_id=session_id,
-            user_id=user_id,
-            remote_addr=remote_addr,
-            connected_at=now,
-            last_heartbeat=now,
-        )
-
-    def unregister_connection(self, session_id: str) -> None:
-        """Remove an active connection on WS disconnect."""
-        self._active_connections.pop(session_id, None)
-
-    def update_heartbeat(self, session_id: str) -> None:
-        """Update last heartbeat timestamp for a connection."""
-        conn = self._active_connections.get(session_id)
-        if conn:
-            conn.last_heartbeat = datetime.now(timezone.utc).isoformat()
-
-    def get_active_connections(self) -> list[dict]:
-        """Return list of active connections as dicts."""
-        return [
-            {
-                "session_id": c.session_id,
-                "user_id": c.user_id,
-                "remote_addr": c.remote_addr,
-                "connected_at": c.connected_at,
-                "last_heartbeat": c.last_heartbeat,
-            }
-            for c in self._active_connections.values()
-        ]
-
-    # ------------------------------------------------------------------
     # Heartbeat processing
     # ------------------------------------------------------------------
 
@@ -534,7 +479,6 @@ class SessionManager:
         if not managed:
             return datetime.now(timezone.utc).isoformat()
         managed.touch()
-        self.update_heartbeat(session_id)
         for gen in self._diff_generators:
             try:
                 if gen.should_run(managed, since):
@@ -584,7 +528,7 @@ class SessionManager:
                 verbose=False,
                 require_approval=self._server_config.require_plan_approval,
                 auto_approve=not self._server_config.require_plan_approval,
-                ask_clarifications=True,  # Clarifications via WebSocket dialog
+                ask_clarifications=True,  # Clarifications via GraphQL subscription
                 skip_clarification=False,
             )
 
@@ -1068,7 +1012,7 @@ class SessionManager:
         """Refresh entity extraction in a background thread.
 
         Non-blocking — returns immediately and pushes ENTITY_REBUILD_START
-        and ENTITY_REBUILD_COMPLETE events via the session's WebSocket queue.
+        and ENTITY_REBUILD_COMPLETE events via GraphQL subscription.
         Skips if NER is already running for this session.
 
         Args:
@@ -1535,49 +1479,28 @@ class SessionManager:
         except Exception as e:
             logger.exception(f"HAS promotion for {session_id} failed: {e}")
 
-    @staticmethod
-    def _push_event(managed: "ManagedSession", event_type: EventType, data: dict) -> None:
-        """Push an event to a managed session's WebSocket queue.
-
-        Uses call_soon_threadsafe when called from a background thread to ensure
-        the event loop wakes up and delivers the event promptly.
-        """
+    def _push_event(self, managed: "ManagedSession", event_type: EventType, data: dict) -> None:
+        """Push an event to GraphQL subscribers, with caching for replay."""
         from constat.server.models import StepEventWS
-        try:
-            ws_event = StepEventWS(
-                event_type=event_type,
-                session_id=managed.session_id,
-                step_number=0,
-                timestamp=datetime.now(timezone.utc),
-                data=data,
-            )
-            event_dict = ws_event.model_dump(mode="json")
+        ws_event = StepEventWS(
+            event_type=event_type,
+            session_id=managed.session_id,
+            step_number=0,
+            timestamp=datetime.now(timezone.utc),
+            data=data,
+        )
+        event_dict = ws_event.model_dump(mode="json")
 
-            # Store entity rebuild events for WS replay
-            # (scope cache may finish before WS connects)
-            if event_type == EventType.ENTITY_REBUILD_COMPLETE:
-                managed._entity_rebuild_event = event_dict
-            elif event_type == EventType.ENTITY_REBUILD_START:
-                managed._entity_rebuild_event = None
+        # Cache events for subscription replay
+        # (background init may finish before client connects)
+        if event_type == EventType.ENTITY_REBUILD_COMPLETE:
+            managed._entity_rebuild_event = event_dict
+        elif event_type == EventType.ENTITY_REBUILD_START:
+            managed._entity_rebuild_event = None
+        elif event_type == EventType.SESSION_READY:
+            managed._session_ready_event = event_dict
 
-            # asyncio.Queue is not thread-safe — put_nowait from a background
-            # thread won't wake await queue.get() on the event loop.
-            # Use call_soon_threadsafe via the stored loop reference.
-            try:
-                asyncio.get_running_loop()
-                # We're on the event loop thread — safe to put directly
-                managed.event_queue.put_nowait(event_dict)
-            except RuntimeError:
-                # Background thread — use stored event loop reference
-                loop = managed._event_loop
-                if loop and loop.is_running():
-                    loop.call_soon_threadsafe(managed.event_queue.put_nowait, event_dict)
-                else:
-                    # No loop yet (WS not connected) — direct put; will be
-                    # delivered when send_events starts draining the queue
-                    managed.event_queue.put_nowait(event_dict)
-        except asyncio.QueueFull:
-            logger.warning(f"Event queue full for session {managed.session_id}, dropping {event_type}")
+        self.publish_execution_event(managed.session_id, event_dict)
 
     def get_session(self, session_id: str) -> ManagedSession:
         """Get a managed session by ID.

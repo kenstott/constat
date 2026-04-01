@@ -85,9 +85,14 @@ class SplitVectorStore:
         ]
         if "sys" in attached:
             return
-        self._db.conn.execute(
-            f"ATTACH '{self._system_db_path}' AS sys"
-        )
+        try:
+            self._db.conn.execute(
+                f"ATTACH '{self._system_db_path}' AS sys"
+            )
+        except Exception as e:
+            if "already attached" in str(e):
+                return
+            raise
 
     def _create_union_views(self) -> None:
         """Create TEMP UNION ALL views over main and sys schemas.
