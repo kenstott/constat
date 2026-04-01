@@ -350,7 +350,7 @@ function DomainTreeNodeView({
 
 export default function DomainPanel() {
   const { session, updateSession } = useSessionContext()
-  const { fetchDataSources, fetchPromptContext, promptContext } = useArtifactContext()
+  const { fetchPromptContext, promptContext } = useArtifactContext()
   const { isAdmin, userId } = useAuth()
   const [setActiveDomainsMutation] = useMutation(SET_ACTIVE_DOMAINS)
   const [tree, setTree] = useState<DomainTreeNode[]>([])
@@ -521,7 +521,7 @@ export default function DomainPanel() {
           variables: { sessionId: session.session_id, domains: newDomains },
         })
         updateSession({ active_domains: newDomains })
-        await fetchDataSources(session.session_id)
+        await apolloClient.refetchQueries({ include: ['DataSources'] })
         // Refresh prompt context (domain activation may update session prompt)
         await fetchPromptContext(session.session_id)
       } catch (err: unknown) {
@@ -533,7 +533,7 @@ export default function DomainPanel() {
         setTogglingDomain(null)
       }
     },
-    [session, updateSession, fetchDataSources],
+    [session, updateSession, fetchPromptContext],
   )
 
   const handleEdit = useCallback(async (filename: string) => {

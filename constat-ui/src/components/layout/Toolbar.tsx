@@ -13,6 +13,7 @@
 import { useReactiveVar } from '@apollo/client'
 import { useSessionContext } from '@/contexts/SessionContext'
 import { useArtifactContext } from '@/contexts/ArtifactContext'
+import { useTables } from '@/hooks/useTables'
 import { briefModeVar, toggleBriefMode } from '@/graphql/ui-state'
 import {
   PlusIcon,
@@ -31,7 +32,8 @@ interface ToolbarProps {
 
 export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSession }: ToolbarProps) {
   const { status, cancelExecution } = useSessionContext()
-  const { tables, stepCodes } = useArtifactContext()
+  const { stepCodes } = useArtifactContext()
+  const { tables } = useTables()
   const briefMode = useReactiveVar(briefModeVar)
 
   const isExecuting = status === 'planning' || status === 'executing'

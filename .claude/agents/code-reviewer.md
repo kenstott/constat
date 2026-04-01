@@ -89,6 +89,7 @@ When reviewing LLM prompts (system prompts, agent definitions):
 ## Also Check
 
 - Unused imports/variables (ruff/flake8)
+- **Files >1000 lines — flag for splitting by separation of concerns**
 - Functions >50 lines, classes with too many responsibilities
 - `print()` that should be `logging`
 - `assert` for validation (use explicit checks)

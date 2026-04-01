@@ -24,7 +24,6 @@ import { ReasonChainCommandStrip } from '@/components/proof/ReasonChainCommandSt
 import { HelpModal } from '@/components/help/HelpModal'
 import { useSessionContext } from '@/contexts/SessionContext'
 import { useAuth } from '@/contexts/AuthContext'
-import { useArtifactContext } from '@/contexts/ArtifactContext'
 import { useReactiveVar } from '@apollo/client'
 import { pathToDeepLink, applyDeepLink, clearPublicSession as clearPublicSessionFn, publicSessionIdVar, uiModeVar, exitReasonChainMode as exitReasonChainModeFn, initPreferences } from '@/graphql/ui-state'
 import { ToastContainer } from '@/components/common/ToastContainer'
@@ -270,7 +269,6 @@ function PublicViewerApp({ sessionId }: { sessionId: string }) {
 function MainApp() {
   const { session, wsConnected, createSession, messages } = useSessionContext()
   const { userId } = useAuth()
-  const { fetchAllSkills } = useArtifactContext()
   const initializingRef = useRef(false)
   const [initPhase, setInitPhase] = useState<InitPhase>('creating_session')
 
@@ -430,7 +428,7 @@ function MainApp() {
         summary={proofSummary}
         isSummaryGenerating={isSummaryGenerating}
         sessionId={session?.session_id}
-        onSkillCreated={() => fetchAllSkills()}
+        onSkillCreated={() => apolloClient.refetchQueries({ include: ['Skills'] })}
         onRedo={handleRedo}
         actionsRef={proofActionsRef}
       />
@@ -465,7 +463,7 @@ function MainApp() {
           summary={proofSummary}
           isSummaryGenerating={isSummaryGenerating}
           sessionId={session?.session_id}
-          onSkillCreated={() => fetchAllSkills()}
+          onSkillCreated={() => apolloClient.refetchQueries({ include: ['Skills'] })}
           onRedo={handleRedo}
         />
       )}

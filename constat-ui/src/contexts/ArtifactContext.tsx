@@ -10,7 +10,7 @@
 
 import { createContext, useContext, type ReactNode } from 'react'
 import { useArtifactStore } from '@/store/artifactStore'
-import type { Artifact, ArtifactContent, TableInfo, Fact, Entity, SessionDatabase, ApiSourceInfo, DocumentSourceInfo, Learning, Rule, ModelRouteInfo } from '@/types/api'
+import type { ArtifactContent, ModelRouteInfo } from '@/types/api'
 
 interface StepCode {
   step_number: number
@@ -46,16 +46,6 @@ interface PromptContext {
   activeSkills: Array<{ name: string; prompt: string; description: string }>
 }
 
-interface SkillInfo {
-  name: string
-  prompt: string
-  description: string
-  filename: string
-  is_active: boolean
-  domain: string
-  source: string
-}
-
 interface AgentInfo {
   name: string
   prompt: string
@@ -65,45 +55,25 @@ interface AgentInfo {
 }
 
 interface ArtifactContextValue {
-  // Data
-  artifacts: Artifact[]
-  tables: TableInfo[]
-  facts: Fact[]
-  entities: Entity[]
-  learnings: Learning[]
-  rules: Rule[]
-  databases: SessionDatabase[]
-  apis: ApiSourceInfo[]
-  documents: DocumentSourceInfo[]
+  // Event-driven state (not served by Apollo hooks)
   stepCodes: StepCode[]
   inferenceCodes: InferenceCode[]
   scratchpadEntries: ScratchpadEntry[]
   sessionDDL: string
   promptContext: PromptContext | null
   taskRouting: Record<string, Record<string, ModelRouteInfo[]>> | null
-  allSkills: SkillInfo[]
   allAgents: AgentInfo[]
   selectedArtifact: ArtifactContent | null
   selectedTable: string | null
   supersededStepNumbers: Set<number>
 
-  // Loading states
-  loading: boolean
-  sourcesLoading: boolean
-  factsLoading: boolean
-  learningsLoading: boolean
-  configLoading: boolean
+  // Loading states (event-driven only)
   ingestingSource: string | null
   ingestProgress: { current: number; total: number } | null
 
-  // Fetch actions
-  fetchFacts: (sessionId: string) => Promise<void>
-  fetchEntities: (sessionId: string, entityType?: string) => Promise<void>
-  fetchLearnings: () => Promise<void>
-  fetchDataSources: (sessionId: string) => Promise<void>
+  // Fetch actions (non-query data only)
   fetchPromptContext: (sessionId: string) => Promise<void>
   fetchTaskRouting: (sessionId: string) => Promise<void>
-  fetchAllSkills: () => Promise<void>
   fetchAllAgents: (sessionId: string) => Promise<void>
   fetchScratchpad: (sessionId: string) => Promise<void>
   fetchDDL: (sessionId: string) => Promise<void>
@@ -135,45 +105,25 @@ export function ArtifactProvider({ children }: { children: ReactNode }) {
   const store = useArtifactStore()
 
   const value: ArtifactContextValue = {
-    // Data
-    artifacts: store.artifacts,
-    tables: store.tables,
-    facts: store.facts,
-    entities: store.entities,
-    learnings: store.learnings,
-    rules: store.rules,
-    databases: store.databases,
-    apis: store.apis,
-    documents: store.documents,
+    // Event-driven state
     stepCodes: store.stepCodes,
     inferenceCodes: store.inferenceCodes,
     scratchpadEntries: store.scratchpadEntries,
     sessionDDL: store.sessionDDL,
     promptContext: store.promptContext as PromptContext | null,
     taskRouting: store.taskRouting,
-    allSkills: store.allSkills as SkillInfo[],
     allAgents: store.allAgents as AgentInfo[],
     selectedArtifact: store.selectedArtifact,
     selectedTable: store.selectedTable,
     supersededStepNumbers: store.supersededStepNumbers,
 
     // Loading states
-    loading: store.loading,
-    sourcesLoading: store.sourcesLoading,
-    factsLoading: store.factsLoading,
-    learningsLoading: store.learningsLoading,
-    configLoading: store.configLoading,
     ingestingSource: store.ingestingSource,
     ingestProgress: store.ingestProgress,
 
-    // Fetch actions
-    fetchFacts: store.fetchFacts,
-    fetchEntities: store.fetchEntities,
-    fetchLearnings: store.fetchLearnings,
-    fetchDataSources: store.fetchDataSources,
+    // Fetch actions (non-query data only)
     fetchPromptContext: store.fetchPromptContext,
     fetchTaskRouting: store.fetchTaskRouting,
-    fetchAllSkills: store.fetchAllSkills,
     fetchAllAgents: store.fetchAllAgents,
     fetchScratchpad: store.fetchScratchpad,
     fetchDDL: store.fetchDDL,

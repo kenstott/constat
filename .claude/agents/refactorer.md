@@ -39,6 +39,7 @@ Apply standard refactoring patterns (Extract Function/Class/Constant, Rename, In
 
 | Smell | Indicators | Refactoring |
 |-------|------------|-------------|
+| Long File | >1000 lines | Extract Module (split by concern) |
 | Long Function | >30 lines, multiple comments | Extract Function |
 | Large Class | >300 lines, many attributes | Extract Class |
 | Primitive Obsession | Dicts/tuples everywhere | Extract Dataclass |

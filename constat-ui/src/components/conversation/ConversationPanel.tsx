@@ -13,7 +13,8 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { useSessionContext } from '@/contexts/SessionContext'
 // proofStore actions accessed via SessionContext
-import { useArtifactContext } from '@/contexts/ArtifactContext'
+import { useTables } from '@/hooks/useTables'
+import { useArtifacts } from '@/hooks/useArtifacts'
 import { MessageBubble, StepDisplayMode } from './MessageBubble'
 import { BotMessageGroup } from './BotMessageGroup'
 import { AutocompleteInput } from './AutocompleteInput'
@@ -70,7 +71,8 @@ function groupMessages(messages: StoreMessage[]): MessageGroupTyped[] {
 
 export function ConversationPanel() {
   const { session, messages, suggestions, welcomeTagline, submitQuery, queuedMessages, removeQueuedMessage, isCreatingSession, shareSession, replanFromStep, openProofPanel } = useSessionContext()
-  const { tables, artifacts } = useArtifactContext()
+  const { tables } = useTables()
+  const { artifacts } = useArtifacts()
   const { user: authUser } = useAuth()
   const expandArtifactSection = expandSection
   const expandResultStep = expandResultStepFn

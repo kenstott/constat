@@ -79,6 +79,10 @@ def func(x: int, y: str) -> bool:
 - Use `logger = logging.getLogger(__name__)` at module scope
 - Debug context tags: `[PARALLEL]`, `[COMPLEXITY]`, `[DYNAMIC_CONTEXT]`
 
+## File Size
+- **Max 1000 lines per file** — split by separation of concerns when approaching this limit
+- Group related functionality into focused modules
+
 ## General
 - Dataclasses/Pydantic for data structures (not plain dicts)
 - Context managers for resource cleanup

@@ -14,6 +14,7 @@ import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react'
 import { QueueListIcon, ArrowUpIcon } from '@heroicons/react/24/solid'
 import { XMarkIcon, AtSymbolIcon, PaperClipIcon, CheckBadgeIcon, BoltIcon, StopIcon } from '@heroicons/react/24/outline'
 import { useArtifactContext } from '@/contexts/ArtifactContext'
+import { useTables } from '@/hooks/useTables'
 import { useReactiveVar } from '@apollo/client'
 import { briefModeVar, toggleBriefMode, enterReasonChainMode } from '@/graphql/ui-state'
 // proofStore actions accessed via SessionContext
@@ -191,7 +192,8 @@ function InputToolbar({
   onInsertAt: () => void
 }) {
   const { session, status, cancelExecution, submitQuery, openProofPanel, clearProofFacts: clearFacts } = useSessionContext()
-  const { stepCodes, tables } = useArtifactContext()
+  const { stepCodes } = useArtifactContext()
+  const { tables } = useTables()
   const briefMode = useReactiveVar(briefModeVar)
 
   const isExecuting = status === 'planning' || status === 'executing'

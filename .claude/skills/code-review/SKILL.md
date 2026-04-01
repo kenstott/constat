@@ -43,9 +43,16 @@ Suggest: extract function, extract constant, decorator, base class.
 - Token budget: ~3,000 tokens max; estimate chars ÷ 4
 - Global instructions stable; turn-specific logic injected dynamically
 
+## UI Audit
+When reviewing UI features, audit includes:
+- **Vitest**: component rendering and behavior tests
+- **Playwright**: e2e browser tests for user-visible workflows
+- Flag UI code lacking either test type
+
 ## Also Check
 - Unused imports/variables
 - Functions >50 lines
+- **Files >1000 lines — flag for splitting by separation of concerns**
 - `print()` that should be `logging`
 - `assert` for validation (use explicit checks)
 - Global mutable state

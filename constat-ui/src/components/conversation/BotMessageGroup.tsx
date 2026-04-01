@@ -22,7 +22,9 @@ import {
   DocumentTextIcon,
 } from '@heroicons/react/24/outline'
 import { VeraIcon } from './VeraIcon'
-import { useArtifactContext } from '@/contexts/ArtifactContext'
+import { useTables } from '@/hooks/useTables'
+import { useArtifacts } from '@/hooks/useArtifacts'
+import type { TableInfo, Artifact } from '@/types/api'
 import { openFullscreenArtifact } from '@/graphql/ui-state'
 import { useSessionContext } from '@/contexts/SessionContext'
 import * as api from '@/api/client'
@@ -83,7 +85,7 @@ export function BotMessageGroup({
     }
   }, [groupOverride?.version])
   const { session, submitQuery } = useSessionContext()
-  const { tables } = useArtifactContext()
+  const { tables } = useTables() as { tables: TableInfo[] }
   // Show all domains except synthetic root/user nodes (constants, not useful)
   const activeDomains = (session?.active_domains || []).filter(d => d !== 'root' && d !== 'user')
 
@@ -347,7 +349,8 @@ export function BotMessageGroup({
 
 // Inline display of published artifacts (tables + non-table artifacts) within the response
 function InlineArtifacts() {
-  const { tables, artifacts } = useArtifactContext()
+  const { tables } = useTables() as { tables: TableInfo[] }
+  const { artifacts } = useArtifacts() as { artifacts: Artifact[] }
   // openFullscreenArtifact imported from ui-state
   const { session } = useSessionContext()
 
