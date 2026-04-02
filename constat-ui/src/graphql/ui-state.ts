@@ -368,6 +368,12 @@ export function clearArtifactState() {
   ingestProgressVar(null)
 }
 
+// ---------- Sources section collapsed ----------
+
+export const sourcesCollapsedVar = makeVar<boolean>(
+  localStorage.getItem('constat-sources-collapsed') === 'true'
+)
+
 // ---------- Collapsed result steps ----------
 
 export const collapsedResultStepsVar = makeVar<Set<number>>(new Set())

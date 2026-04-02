@@ -231,8 +231,8 @@ function TermLink({ name, displayName }: { name: string; displayName: string }) 
 
 // Clickable source link — deep links to tables, documents, and APIs
 function SourceLink({ source, documentName, section, url }: { source: string; documentName?: string; section?: string; url?: string }) {
-  if (!documentName) return null
-  const label = `${documentName}${section ? ` > ${section}` : ''}`
+  const docName = documentName || ''
+  const label = `${docName}${section ? ` > ${section}` : ''}` || source
   const navigateTo = setDeepLink
 
   // External URL for crawled docs — open in new tab
@@ -252,16 +252,16 @@ function SourceLink({ source, documentName, section, url }: { source: string; do
   // Strip source-type prefix (e.g., "schema:sales.customers" → "sales.customers")
   // Entity resolution chunks use api:/schema:/entity_resolution: prefixes
   // Document names keep their full form (e.g., "hr_management:crawled_8" is the actual name)
-  const hasKnownPrefix = documentName.startsWith('api:') || documentName.startsWith('schema:') || documentName.startsWith('entity_resolution:')
+  const hasKnownPrefix = docName.startsWith('api:') || docName.startsWith('schema:') || docName.startsWith('entity_resolution:')
   const stripped = hasKnownPrefix
-    ? documentName.split(':').slice(1).join(':')
-    : (source === 'schema' || source === 'api') && documentName.includes(':')
-      ? documentName.split(':').slice(1).join(':')
-      : documentName
+    ? docName.split(':').slice(1).join(':')
+    : (source === 'schema' || source === 'api') && docName.includes(':')
+      ? docName.split(':').slice(1).join(':')
+      : docName
 
   // For entity_resolution, determine navigation type from document_name prefix
   const effectiveSource = source === 'entity_resolution'
-    ? (documentName.startsWith('api:') ? 'api' : documentName.startsWith('schema:') ? 'schema' : source)
+    ? (docName.startsWith('api:') ? 'api' : docName.startsWith('schema:') ? 'schema' : source)
     : source
 
   // entity_resolution: prefix means static/inline values — no navigation target
@@ -269,14 +269,14 @@ function SourceLink({ source, documentName, section, url }: { source: string; do
 
   const handleClick = () => {
     if (!canNavigate) return
-    console.log('[deep-link] SourceLink clicked:', { source, effectiveSource, documentName, stripped })
+    console.log('[deep-link] SourceLink clicked:', { source, effectiveSource, docName, stripped })
     if (effectiveSource === 'schema') {
       const parts = stripped.split('.')
       if (parts.length >= 2) {
         navigateTo({ type: 'table', dbName: parts[0], tableName: parts[1] })
       }
     } else if (effectiveSource === 'document') {
-      navigateTo({ type: 'document', documentName })
+      navigateTo({ type: 'document', documentName: docName })
     } else if (effectiveSource === 'api') {
       const parts = stripped.split('.')
       navigateTo({ type: 'api', apiName: parts[0] })

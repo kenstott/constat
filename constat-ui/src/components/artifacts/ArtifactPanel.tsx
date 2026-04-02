@@ -19,7 +19,7 @@ import { useSessionContext } from '@/contexts/SessionContext'
 import { useArtifactContext } from '@/contexts/ArtifactContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { useReactiveVar } from '@apollo/client'
-import { activeDeepLinkVar, consumeDeepLink } from '@/graphql/ui-state'
+import { activeDeepLinkVar, consumeDeepLink, sourcesCollapsedVar } from '@/graphql/ui-state'
 import { useGlossaryData } from '@/hooks/useGlossaryData'
 import { useSkills } from '@/hooks/useLearnings'
 import { useArtifacts } from '@/hooks/useArtifacts'
@@ -147,6 +147,12 @@ export function ArtifactPanel() {
           document.getElementById(`section-${sectionId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
         })
       })
+    }
+
+    // Ensure Sources section is expanded for source deep links
+    if (link.type === 'table' || link.type === 'document' || link.type === 'api') {
+      sourcesCollapsedVar(false)
+      localStorage.setItem('constat-sources-collapsed', 'false')
     }
 
     switch (link.type) {

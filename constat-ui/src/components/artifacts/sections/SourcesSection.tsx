@@ -9,6 +9,8 @@
 // permission from the copyright holder.
 
 import React, { useState, useCallback } from 'react'
+import { useReactiveVar } from '@apollo/client'
+import { sourcesCollapsedVar } from '@/graphql/ui-state'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -71,10 +73,12 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
   const { databases, apis, documents, loading: sourcesLoading } = useDataSources()
   const { facts, loading: factsLoading } = useFacts()
 
-  // Collapsible state - persisted in localStorage
-  const [sourcesCollapsed, setSourcesCollapsed] = useState(() => {
-    return localStorage.getItem('constat-sources-collapsed') === 'true'
-  })
+  // Collapsible state - reactive var (deep links can expand it)
+  const sourcesCollapsed = useReactiveVar(sourcesCollapsedVar)
+  const setSourcesCollapsed = (val: boolean) => {
+    sourcesCollapsedVar(val)
+    localStorage.setItem('constat-sources-collapsed', String(val))
+  }
 
   // Database expand/preview state
   const [expandedDb, setExpandedDb] = useState<string | null>(null)
