@@ -720,8 +720,9 @@ class DuckDBVectorBackend(VectorBackend):
         )
 
     def get_document_url(self, document_name: str) -> str | None:
+        tbl = self._view('document_urls')
         row = self._conn.execute(
-            "SELECT source_url FROM document_urls WHERE document_name = ?",
+            f"SELECT source_url FROM {tbl} WHERE document_name = ?",
             [document_name],
         ).fetchone()
         return row[0] if row else None

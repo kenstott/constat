@@ -8,9 +8,9 @@
 // machine learning models is strictly prohibited without explicit written
 // permission from the copyright holder.
 
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { useReactiveVar } from '@apollo/client'
-import { sourcesCollapsedVar } from '@/graphql/ui-state'
+import { sourcesCollapsedVar, activeDeepLinkVar, consumeDeepLink, expandSection } from '@/graphql/ui-state'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -100,6 +100,84 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
   const [viewingDocument, setViewingDocument] = useState<{ name: string; content: string; format?: string; url?: string; imageUrl?: string } | null>(null)
   const [iframeBlocked, setIframeBlocked] = useState(false)
   const [loadingDocument, setLoadingDocument] = useState(false)
+
+  // Deep link handling — expand the target source, scroll, consume
+  const pendingDeepLink = useReactiveVar(activeDeepLinkVar)
+  useEffect(() => {
+    if (!pendingDeepLink) return
+    const link = pendingDeepLink
+    console.log('[deep-link] SourcesSection received:', link.type, link)
+    console.log('[deep-link] sourcesCollapsed:', sourcesCollapsed)
+    console.log('[deep-link] available apis:', apis.map((a: { name: string }) => a.name))
+    console.log('[deep-link] available dbs:', databases.map((d: { name: string }) => d.name))
+
+    if (link.type !== 'table' && link.type !== 'api' && link.type !== 'document') {
+      console.log('[deep-link] SourcesSection ignoring non-source link:', link.type)
+      return
+    }
+
+    consumeDeepLink()
+
+    // Uncollapse the Sources section if collapsed
+    if (sourcesCollapsed) {
+      setSourcesCollapsed(false)
+      localStorage.setItem('constat-sources-collapsed', 'false')
+    }
+
+    // Expand the accordion section
+    const accordionId = link.type === 'api' ? 'apis' : link.type === 'table' ? 'databases' : 'documents'
+    expandSection(accordionId)
+
+    if (link.type === 'api' && link.apiName) {
+      console.log('[deep-link] expanding api:', link.apiName, 'endpoint:', link.apiEndpoint)
+      toggleApiExpand(link.apiName).then(() => {
+        if (link.apiEndpoint) {
+          setExpandedEndpoint(link.apiEndpoint)
+        }
+      })
+    } else if (link.type === 'table' && link.dbName) {
+      console.log('[deep-link] expanding db:', link.dbName, 'table:', link.tableName)
+      toggleDbExpand(link.dbName).then(() => {
+        if (link.tableName) {
+          openTablePreview(link.dbName!, link.tableName)
+        }
+      })
+    } else if (link.type === 'document' && link.documentName) {
+      console.log('[deep-link] opening document viewer:', link.documentName)
+      // Open document viewer modal — inline to avoid forward-ref to handleViewDocument
+      if (session) {
+        setLoadingDocument(true)
+        getDocument(session.session_id, link.documentName)
+          .then(doc => {
+            const httpUrl = doc.url && /^https?:\/\//i.test(doc.url) ? doc.url : undefined
+            setIframeBlocked(false)
+            setViewingDocument({
+              name: doc.name || link.documentName!,
+              content: doc.content || '',
+              format: doc.format,
+              url: httpUrl,
+            })
+          })
+          .catch(err => {
+            setViewingDocument({
+              name: link.documentName!,
+              content: `Document not found or could not be loaded.\n\n${err instanceof Error ? err.message : String(err)}`,
+              format: 'text',
+            })
+          })
+          .finally(() => setLoadingDocument(false))
+      }
+    }
+
+    // Scroll after accordion + content renders
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.getElementById(`section-${accordionId}`)
+        console.log('[deep-link] scroll target:', `section-${accordionId}`, el ? 'found' : 'NOT FOUND')
+        el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
+    })
+  }, [pendingDeepLink, sourcesCollapsed, apis, databases, expandedApi, expandedDb, session])
 
   // --- Handlers ---
 

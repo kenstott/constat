@@ -260,15 +260,12 @@ function SourceLink({ source, documentName, section, url }: { source: string; do
       : docName
 
   // For entity_resolution, determine navigation type from document_name prefix
+  // Email sources (no api:/schema: prefix) navigate as documents to show reconstructed chunks
   const effectiveSource = source === 'entity_resolution'
-    ? (docName.startsWith('api:') ? 'api' : docName.startsWith('schema:') ? 'schema' : source)
+    ? (docName.startsWith('api:') ? 'api' : docName.startsWith('schema:') ? 'schema' : 'document')
     : source
 
-  // entity_resolution: prefix means static/inline values — no navigation target
-  const canNavigate = effectiveSource !== 'entity_resolution'
-
   const handleClick = () => {
-    if (!canNavigate) return
     console.log('[deep-link] SourceLink clicked:', { source, effectiveSource, docName, stripped })
     if (effectiveSource === 'schema') {
       const parts = stripped.split('.')
@@ -279,20 +276,12 @@ function SourceLink({ source, documentName, section, url }: { source: string; do
       navigateTo({ type: 'document', documentName: docName })
     } else if (effectiveSource === 'api') {
       const parts = stripped.split('.')
-      navigateTo({ type: 'api', apiName: parts[0] })
+      navigateTo({ type: 'api', apiName: parts[0], apiEndpoint: parts[1] || undefined })
     }
   }
 
   // Show display label without prefix for entity_resolution chunks
   const displayLabel = hasKnownPrefix ? `${stripped}${section ? ` > ${section}` : ''}` : label
-
-  if (!canNavigate) {
-    return (
-      <span className="text-gray-500 dark:text-gray-400">
-        {displayLabel}
-      </span>
-    )
-  }
 
   return (
     <button
@@ -3535,12 +3524,19 @@ function GlossarySuggestionsSection({ sessionId }: { sessionId: string }) {
 
 function VirtualizedGlossaryList({ terms, sessionId, fullscreen }: { terms: GlossaryTerm[]; sessionId: string; fullscreen: boolean }) {
   const parentRef = useRef<HTMLDivElement>(null)
+  // Subscribe so this component re-renders when items expand/collapse
+  useReactiveVar(glossaryExpandedItemsVar)
   const virtualizer = useVirtualizer({
     count: terms.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 40,
     overscan: 10,
   })
+
+  // measureElement refs use ResizeObserver to auto-update sizes
+  // when items expand/collapse — no manual measure() needed.
+  // Calling measure() was resetting cached sizes to the 40px estimate,
+  // causing items to overlap until ResizeObserver re-fired.
 
   return (
     <div ref={parentRef} className={`overflow-y-auto ${fullscreen ? 'flex-1' : 'max-h-[calc(100vh-20rem)]'}`}>

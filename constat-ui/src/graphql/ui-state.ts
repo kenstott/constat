@@ -90,6 +90,7 @@ export interface DeepLink {
   tableName?: string
   documentName?: string
   apiName?: string
+  apiEndpoint?: string
   termName?: string
   sessionId?: string
   _ts?: number

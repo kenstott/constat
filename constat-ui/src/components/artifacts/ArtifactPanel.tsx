@@ -136,53 +136,30 @@ export function ArtifactPanel() {
   // Deep link handling
   useEffect(() => {
     if (!pendingDeepLink || !session) return
-    const link = consumeDeepLink()
-    if (!link) return
+    const link = pendingDeepLink
 
-    console.log('[deep-link] handling:', link.type, link)
-
-    const scrollToSection = (sectionId: string) => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          document.getElementById(`section-${sectionId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        })
-      })
-    }
-
-    // Ensure Sources section is expanded for source deep links
+    // Source deep links (table/api/document): expand Sources section, let SourcesSection consume
     if (link.type === 'table' || link.type === 'document' || link.type === 'api') {
       sourcesCollapsedVar(false)
       localStorage.setItem('constat-sources-collapsed', 'false')
+      // Don't consume — SourcesSection will handle expand + scroll + consume
+      return
     }
 
-    switch (link.type) {
-      case 'table':
-        if (link.dbName && link.tableName) {
-          scrollToSection('databases')
-        }
-        break
-      case 'document':
-        if (link.documentName) {
-          scrollToSection('documents')
-        }
-        break
-      case 'api':
-        if (link.apiName) {
-          scrollToSection('apis')
-        }
-        break
-      case 'glossary_term':
+    // Non-source deep links: consume here
+    consumeDeepLink()
+
+    if (link.type === 'glossary_term') {
+      requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            const el = document.getElementById(`glossary-term-${link.termName}`)
-            if (el) {
-              el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-            } else {
-              scrollToSection('glossary')
-            }
-          })
+          const el = document.getElementById(`glossary-term-${link.termName}`)
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          } else {
+            document.getElementById('section-glossary')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          }
         })
-        break
+      })
     }
   }, [pendingDeepLink, session])
 
