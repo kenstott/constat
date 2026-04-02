@@ -32,7 +32,13 @@ import {
   CheckIcon,
 } from '@heroicons/react/24/outline'
 import { Dialog, DialogPanel } from '@headlessui/react'
-import { useGlossaryState, useGlossaryVar, toggleExpanded as glossaryToggleExpanded } from '@/store/glossaryState'
+import { useReactiveVar } from '@apollo/client'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import {
+  useGlossaryState, useGlossaryVar, toggleExpanded as glossaryToggleExpanded,
+  glossaryTermsVar, glossarySelectedNameVar, glossaryExpandedItemsVar, glossaryRefreshKeyVar,
+  updateTerm, refineTerm, deleteTerm, renameTerm, toggleExpanded,
+} from '@/store/glossaryState'
 import { setDeepLink } from '@/graphql/ui-state'
 import { useActiveDomains } from '@/hooks/useDomains'
 import type { DomainTreeNode } from '@/types/api'
@@ -224,7 +230,8 @@ function TermLink({ name, displayName }: { name: string; displayName: string }) 
 }
 
 // Clickable source link — deep links to tables, documents, and APIs
-function SourceLink({ source, documentName, section, url }: { source: string; documentName: string; section?: string; url?: string }) {
+function SourceLink({ source, documentName, section, url }: { source: string; documentName?: string; section?: string; url?: string }) {
+  if (!documentName) return null
   const label = `${documentName}${section ? ` > ${section}` : ''}`
   const navigateTo = setDeepLink
 
@@ -733,8 +740,7 @@ function ConnectedResources({
   sessionId: string
   term: GlossaryTerm
 }) {
-  const refreshKey = useGlossaryVar((s) => s.refreshKey)
-  const updateTerm = useGlossaryVar((s) => s.updateTerm)
+  const refreshKey = useReactiveVar(glossaryRefreshKeyVar)
   const termName = term.name
   const displayName = term.display_name
 
@@ -753,12 +759,12 @@ function ConnectedResources({
   // Server-side data (requires HTTP fetch — chunk lookups)
   const [serverDetail, setServerDetail] = useState<{
     resources: Array<{
-      entity_name: string
-      entity_type: string
-      sources: Array<{ document_name: string; source: string; section?: string; url?: string }>
+      entityName: string
+      entityType: string
+      sources: Array<{ documentName: string; source: string; section?: string; url?: string }>
     }>
-    spanning_domains: string[]
-  }>({ resources: [], spanning_domains: [] })
+    spanningDomains: string[]
+  }>({ resources: [], spanningDomains: [] })
   const [resourcesLoaded, setResourcesLoaded] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
 
@@ -768,8 +774,8 @@ function ConnectedResources({
     getGlossaryTerm(sessionId, termName).then((data) => {
       if (!cancelled) {
         setServerDetail({
-          resources: data.connected_resources || [],
-          spanning_domains: data.spanning_domains || [],
+          resources: data.connectedResources || [],
+          spanningDomains: data.spanningDomains || [],
         })
         setResourcesLoaded(true)
       }
@@ -780,7 +786,7 @@ function ConnectedResources({
     return () => { cancelled = true }
   }, [sessionId, termName, refreshKey])
 
-  const { resources, spanning_domains } = serverDetail
+  const { resources, spanningDomains } = serverDetail
   const hasConnections = !!(parent || children.length > 0 || relationships.length > 0 || cluster_siblings.length > 0)
   const hasContent = resources.length > 0 || hasConnections || !!domain || Object.keys(tags).length > 0
   if (!hasContent && resourcesLoaded) return null
@@ -857,13 +863,13 @@ function ConnectedResources({
           <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-0.5">Connected Resources</div>
           {resources.map((r, i) => (
             <div key={i} className="group/res text-xs text-gray-500 dark:text-gray-400 ml-2 mb-0.5">
-              <span className="font-medium">{r.entity_name}</span>
-              <span className="text-gray-400"> ({r.entity_type})</span>
+              <span className="font-medium">{r.entityName}</span>
+              <span className="text-gray-400"> ({r.entityType})</span>
               {r.sources.map((s, j) => {
-                const isCanonical = canonical_source === s.document_name
+                const isCanonical = canonical_source === s.documentName
                 return (
                   <div key={j} className="ml-2 flex items-center gap-1">
-                    <SourceLink source={s.source} documentName={s.document_name} section={s.section} url={s.url} />
+                    <SourceLink source={s.source} documentName={s.documentName} section={s.section} url={s.url} />
                     {isCanonical ? (
                       <button
                         onClick={() => {
@@ -877,7 +883,7 @@ function ConnectedResources({
                     ) : (
                       <button
                         onClick={() => {
-                          updateTerm(sessionId, termName, { canonical_source: s.document_name })
+                          updateTerm(sessionId, termName, { canonical_source: s.documentName })
                         }}
                         className="px-1 py-0 rounded text-[10px] text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 opacity-0 group-hover/res:opacity-100 transition-opacity"
                         title="Set as canonical source"
@@ -894,7 +900,7 @@ function ConnectedResources({
       )}
       {domain && (
         <div className="text-xs text-gray-400 dark:text-gray-500">
-          Domain: {spanning_domains.length > 0 ? spanning_domains.join(', ') : (domain_path || domain)}
+          Domain: {spanningDomains.length > 0 ? spanningDomains.join(', ') : (domain_path || domain)}
         </div>
       )}
       {hasConnections && (
@@ -1130,8 +1136,10 @@ function GlossaryItem({
   sessionId: string
   depth?: number
 }) {
-  const { terms: allTerms, selectedName, updateTerm, refineTerm, deleteTerm, renameTerm, toggleExpanded } = useGlossaryState()
-  const isOpen = useGlossaryVar((s) => s.expandedItems[term.name] ?? false)
+  const allTerms = useReactiveVar(glossaryTermsVar)
+  const selectedName = useReactiveVar(glossarySelectedNameVar)
+  const expandedItems = useReactiveVar(glossaryExpandedItemsVar)
+  const isOpen = expandedItems[term.name] ?? false
   const isSelected = selectedName?.toLowerCase() === term.name.toLowerCase()
   const [isDefining, setIsDefining] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -3525,6 +3533,39 @@ function GlossarySuggestionsSection({ sessionId }: { sessionId: string }) {
   )
 }
 
+function VirtualizedGlossaryList({ terms, sessionId, fullscreen }: { terms: GlossaryTerm[]; sessionId: string; fullscreen: boolean }) {
+  const parentRef = useRef<HTMLDivElement>(null)
+  const virtualizer = useVirtualizer({
+    count: terms.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 40,
+    overscan: 10,
+  })
+
+  return (
+    <div ref={parentRef} className={`overflow-y-auto ${fullscreen ? 'flex-1' : 'max-h-[calc(100vh-20rem)]'}`}>
+      <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+        {virtualizer.getVirtualItems().map((virtualItem) => (
+          <div
+            key={terms[virtualItem.index].name}
+            data-index={virtualItem.index}
+            ref={virtualizer.measureElement}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              transform: `translateY(${virtualItem.start}px)`,
+            }}
+          >
+            <GlossaryItem term={terms[virtualItem.index]} sessionId={sessionId} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
   const {
     terms,
@@ -3825,11 +3866,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
           ))}
         </div>
       ) : (
-        <div className={`overflow-y-auto ${fullscreen ? 'flex-1' : 'max-h-[calc(100vh-20rem)]'}`}>
-          {displayTerms.map((term) => (
-            <GlossaryItem key={term.name} term={term} sessionId={sessionId} />
-          ))}
-        </div>
+        <VirtualizedGlossaryList terms={displayTerms} sessionId={sessionId} fullscreen={fullscreen} />
       )}
 
       {/* Glossary suggestions from user feedback */}
