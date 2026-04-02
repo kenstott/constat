@@ -37,7 +37,7 @@ export function TableViewer({ tableName }: TableViewerProps) {
       try {
         const { data: result } = await apolloClient.query({
           query: TABLE_DATA_QUERY,
-          variables: { sessionId: session.session_id, name: tableName, page },
+          variables: { sessionId: session.session_id, tableName, page },
           fetchPolicy: 'network-only',
         })
         setData(toTableData(result.tableData))

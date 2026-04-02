@@ -69,7 +69,7 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
       try {
         const { data: result } = await apolloClient.query({
           query: TABLE_DATA_QUERY,
-          variables: { sessionId: session.session_id, name: table.name, page },
+          variables: { sessionId: session.session_id, tableName: table.name, page },
           fetchPolicy: 'network-only',
         })
         setData(toTableData(result.tableData))

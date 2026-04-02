@@ -32,8 +32,8 @@ export const TABLES_QUERY = gql`
 `
 
 export const TABLE_DATA_QUERY = gql`
-  query TableData($sessionId: String!, $name: String!, $page: Int, $pageSize: Int) {
-    tableData(sessionId: $sessionId, name: $name, page: $page, pageSize: $pageSize) {
+  query TableData($sessionId: String!, $tableName: String!, $page: Int, $pageSize: Int) {
+    tableData(sessionId: $sessionId, tableName: $tableName, page: $page, pageSize: $pageSize) {
       name
       columns
       data

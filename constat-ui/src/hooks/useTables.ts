@@ -35,7 +35,7 @@ export function useTables() {
 export function useTableData(name: string, page = 1, pageSize = 100) {
   const { sessionId } = useSessionContext()
   const { data, loading, error, refetch } = useQuery(TABLE_DATA_QUERY, {
-    variables: { sessionId: sessionId!, name, page, pageSize },
+    variables: { sessionId: sessionId!, tableName: name, page, pageSize },
     skip: !sessionId || !name,
   })
   return {

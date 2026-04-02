@@ -183,7 +183,7 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
           // Fetch table data instead of artifact content
           const { data: result } = await apolloClient.query({
             query: TABLE_DATA_QUERY,
-            variables: { sessionId: session.session_id, name: artifact.name, page: tablePage },
+            variables: { sessionId: session.session_id, tableName: artifact.name, page: tablePage },
             fetchPolicy: 'network-only',
           })
           setTableData(toTableData(result.tableData))

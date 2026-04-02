@@ -154,7 +154,7 @@ export function FullscreenArtifactModal() {
         if (fullscreenArtifact.type === 'table' && fullscreenArtifact.name) {
           const { data: result } = await apolloClient.query({
             query: TABLE_DATA_QUERY,
-            variables: { sessionId: session.session_id, name: fullscreenArtifact.name, page: tablePage },
+            variables: { sessionId: session.session_id, tableName: fullscreenArtifact.name, page: tablePage },
             fetchPolicy: 'network-only',
           })
           setTableData(toTableData(result.tableData))

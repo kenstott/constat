@@ -585,7 +585,7 @@ class RelationalStore:
         )
         self._clusters_dirty = True
 
-    def update_glossary_term(self, name: str, session_id: str, updates: dict, *, user_id: str | None = None) -> bool:
+    def update_glossary_term(self, name: str, session_id: str, updates: dict, *, user_id: str | None = None, domain: str | None = None) -> bool:
         import json
         allowed = {
             "definition", "display_name", "domain", "parent_id", "parent_verb",
@@ -614,6 +614,9 @@ class RelationalStore:
         else:
             params.extend([name, session_id])
             where = "LOWER(name) = LOWER(?) AND session_id = ?"
+        if domain is not None:
+            where += " AND domain = ?"
+            params.append(domain)
 
         import time
         import duckdb
@@ -633,17 +636,20 @@ class RelationalStore:
                 else:
                     raise
 
-    def delete_glossary_term(self, name: str, session_id: str, *, user_id: str | None = None) -> bool:
+    def delete_glossary_term(self, name: str, session_id: str, *, user_id: str | None = None, domain: str | None = None) -> bool:
         if user_id:
-            results = self._conn.execute(
-                "DELETE FROM glossary_terms WHERE LOWER(name) = LOWER(?) AND user_id = ? RETURNING id",
-                [name, user_id],
-            ).fetchall()
+            where = "LOWER(name) = LOWER(?) AND user_id = ?"
+            params: list = [name, user_id]
         else:
-            results = self._conn.execute(
-                "DELETE FROM glossary_terms WHERE LOWER(name) = LOWER(?) AND session_id = ? RETURNING id",
-                [name, session_id],
-            ).fetchall()
+            where = "LOWER(name) = LOWER(?) AND session_id = ?"
+            params = [name, session_id]
+        if domain is not None:
+            where += " AND domain = ?"
+            params.append(domain)
+        results = self._conn.execute(
+            f"DELETE FROM glossary_terms WHERE {where} RETURNING id",
+            params,
+        ).fetchall()
         deleted = len(results) > 0
         if deleted:
             self._clusters_dirty = True
@@ -953,8 +959,9 @@ class RelationalStore:
         active_domains: list[str] | None = None,
         *,
         user_id: str | None = None,
+        domain: str | None = None,
     ) -> dict:
-        term = self.get_glossary_term(name, session_id, user_id=user_id)
+        term = self.get_glossary_term(name, session_id, user_id=user_id, domain=domain)
         if not term:
             return {}
 
@@ -969,7 +976,7 @@ class RelationalStore:
             )
             reparented.append(child.name)
 
-        self.delete_glossary_term(name, session_id, user_id=user_id)
+        self.delete_glossary_term(name, session_id, user_id=user_id, domain=domain)
 
         deprecated_names: list[str] = []
         if former_parent_id:

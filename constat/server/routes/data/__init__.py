@@ -45,6 +45,12 @@ def _sanitize_value(v: Any) -> Any:
         return {str(dk): _sanitize_value(dv) for dk, dv in v.items()}
     if isinstance(v, (np.str_, np.bytes_)):
         return str(v)
+    if v is pd.NaT:
+        return None
+    if isinstance(v, pd.Timestamp):
+        return v.isoformat()
+    if isinstance(v, np.datetime64):
+        return None if pd.isna(v) else str(pd.Timestamp(v).isoformat())
     if hasattr(v, 'item'):
         return v.item()
     return v
