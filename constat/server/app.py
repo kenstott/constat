@@ -787,6 +787,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
 
     from constat.server.routes.oauth_email import router as oauth_email_router
     from constat.server.graphql import graphql_router
+    from constat.server.routes.graphql_sse import router as graphql_sse_router
 
     # IMPORTANT: Register routers with specific paths BEFORE routers with /{session_id} wildcards
     # Otherwise the wildcard routes will match paths like /agents, /skills, etc.
@@ -799,6 +800,11 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         graphql_router,
         prefix="/api/graphql",
         tags=["graphql"],
+    )
+    fastapi_app.include_router(
+        graphql_sse_router,
+        prefix="/api/graphql",
+        tags=["graphql-sse"],
     )
     fastapi_app.include_router(
         agents_router,

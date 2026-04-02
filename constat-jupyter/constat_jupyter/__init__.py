@@ -12,7 +12,8 @@ import polars
 polars.Config.set_tbl_hide_column_data_types(True)
 polars.Config.set_tbl_rows(100)
 
-from .client import ConstatClient, Session
+from .client import ConstatClient
+from .session import Session
 from .entity_cache import EntityCache, inflate_glossary
 from .models import SolveResult, Artifact, StepInfo, ConstatError
 

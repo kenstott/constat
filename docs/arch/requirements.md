@@ -84,6 +84,7 @@
 - **REQ-063** (2026-03-29): Session events (step_complete, plan_ready, entity_update, artifact_created, etc.) delivered via GraphQL subscriptions.
 - **REQ-064** (2026-03-29): Session actions (approve, reject, cancel, replan_from, edit_objective, etc.) executed via GraphQL mutations.
 - **REQ-100** (2026-04-01): Replace custom artifactStore (createStore.ts) with direct Apollo Client cache usage. Remove artifactStore Zustand store; components use useQuery() directly instead of fetch methods. Real-time updates via apolloClient.writeQuery() or cache.modify() instead of custom set() calls.
+- **REQ-101** (2026-04-02): 3-section accordion panel for artifacts: (1) **Artifacts** — published/starred final output (charts, tables, answer), expanded by default, auto-expands during execution; (2) **Debug** — step code, intermediate tables, unpublished artifacts, raw output, collapsed by default for power users; (3) **Context** — sources, glossary, reasoning, configuration, collapsed by default for clean knowledge/config surface. Replaces 2-section design, separating "the answer" / "how it got there" / "what it knows."
 
 ## Infrastructure & Configuration
 - **REQ-065** (2026-03-29): Demo config at `demo/config.yaml` with domains `sales-analytics` and `hr-reporting`.

@@ -32,7 +32,8 @@ from textwrap import dedent
 from IPython.core.magic import Magics, magics_class, line_magic, no_var_expand
 from IPython.display import display, HTML
 
-from .client import ConstatClient, Session
+from .client import ConstatClient
+from .session import Session
 
 
 _TOKEN_CACHE_DIR = Path.home() / ".constat"
