@@ -359,7 +359,18 @@ class DocumentConfig(BaseModel):
     attachment_types: Optional[list[str]] = None
     extract_attachments: bool = True
 
-    # OAuth2 (IMAP)
+    # Calendar source
+    provider: Optional[str] = None  # "google" | "microsoft"
+    calendar_id: str = "primary"  # Google: calendar ID; Microsoft: calendar ID or "me"
+    until: Optional[str] = None  # events before this date
+    max_events: int = 500  # max events per sync
+    expand_recurring: bool = True  # expand recurring events to instances
+    include_declined: bool = False  # include declined events
+    include_cancelled: bool = False  # include cancelled events
+    extract_body: bool = True  # index event description/notes
+    calendars: list[str] = Field(default_factory=list)  # multi-calendar support
+
+    # OAuth2 (IMAP / Calendar)
     auth_type: str = "basic"  # "basic" | "oauth2" | "oauth2_refresh"
     oauth2_client_id: Optional[str] = None
     oauth2_client_secret: Optional[str] = None
