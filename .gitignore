@@ -65,3 +65,6 @@ Screenshot*
 /.claude/scheduled_tasks.lock
 /node_modules/.cache/wrangler/wrangler-account.json
 /node_modules/.cache/wrangler/pages.json
+constat-ui/coverage/
+.claude/worktrees/
+.claude/projects/
