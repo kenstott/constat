@@ -41,8 +41,8 @@ def infer_transport(config: "DocumentConfig") -> str:
 
     Returns: inline, file, http, s3, ftp, sftp
     """
-    if config.type == "calendar":
-        return "calendar"
+    if config.type == "drive":
+        return "drive"
     if config.content is not None:
         return "inline"
     if config.path is not None:

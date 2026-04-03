@@ -359,18 +359,7 @@ class DocumentConfig(BaseModel):
     attachment_types: Optional[list[str]] = None
     extract_attachments: bool = True
 
-    # Calendar source
-    provider: Optional[str] = None  # "google" | "microsoft"
-    calendar_id: str = "primary"  # Google: calendar ID; Microsoft: calendar ID or "me"
-    until: Optional[str] = None  # events before this date
-    max_events: int = 500  # max events per sync
-    expand_recurring: bool = True  # expand recurring events to instances
-    include_declined: bool = False  # include declined events
-    include_cancelled: bool = False  # include cancelled events
-    extract_body: bool = True  # index event description/notes
-    calendars: list[str] = Field(default_factory=list)  # multi-calendar support
-
-    # OAuth2 (IMAP / Calendar)
+    # OAuth2 (IMAP)
     auth_type: str = "basic"  # "basic" | "oauth2" | "oauth2_refresh"
     oauth2_client_id: Optional[str] = None
     oauth2_client_secret: Optional[str] = None
@@ -407,6 +396,17 @@ class DocumentConfig(BaseModel):
     diarize: bool = False  # Enable WhisperX speaker diarization
     language: Optional[str] = None  # Language code (None = auto-detect)
     hf_token: Optional[str] = None  # HuggingFace token for diarization (${HF_TOKEN})
+
+    # Cloud drive source
+    provider: Optional[str] = None  # "google" | "microsoft"
+    folder_id: Optional[str] = None  # Provider-specific folder ID
+    folder_path: Optional[str] = None  # Human-readable path
+    recursive: bool = True  # Traverse subfolders
+    max_files: int = 200  # Max files per sync
+    include_types: Optional[list[str]] = None  # File extension allowlist [".pdf", ".docx"]
+    include_trashed: bool = False  # Include trashed files
+    site_id: Optional[str] = None  # SharePoint site ID
+    drive_id: Optional[str] = None  # Specific drive ID
 
     # Background refresh
     auto_refresh: bool = True  # Whether this source is eligible for background refresh

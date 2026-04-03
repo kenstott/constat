@@ -115,13 +115,13 @@ def _load_document(mixin, name: str) -> dict | None:
     user_type = normalize_type(doc_config.type)
     transport = infer_transport(doc_config)
 
-    # Calendar: fetch events and index each as a sub-document
-    if transport == "calendar":
-        return _load_calendar(mixin, name, doc_config)
-
     # IMAP: fetch messages, chunk/embed each incrementally
     if transport == "imap":
         return _load_imap(mixin, name, doc_config, user_type)
+
+    # Cloud drive: list + download files from Google Drive / OneDrive
+    if transport == "drive":
+        return _load_drive(mixin, name, doc_config)
 
     # Directory: iterate files and load each as a sub-document
     if transport == "file":
@@ -277,85 +277,6 @@ def _load_document(mixin, name: str) -> dict | None:
                 sections=[],
                 loaded_at=datetime.now().isoformat(),
             )
-
-
-def _load_calendar(mixin, name: str, doc_config: DocumentConfig) -> dict:
-    """Handle calendar document loading — fetch events, render + index each."""
-    from datetime import datetime
-    from ._calendar import CalendarFetcher, render_event
-
-    logger.info("[CALENDAR] Fetching events for %s (provider=%s, calendar_id=%s)",
-                name, doc_config.provider, doc_config.calendar_id)
-    config_dir = Path(mixin.config.config_dir) if mixin.config.config_dir else None
-    fetcher = CalendarFetcher(doc_config, config_dir=config_dir)
-    events = fetcher.fetch_events()
-    logger.info("[CALENDAR] Fetched %d events from %s", len(events), name)
-
-    cal_ctx = getattr(mixin, '_imap_context', None)  # reuse IMAP context pattern
-    total_chunks = 0
-    total_attachments = 0
-
-    for i, event in enumerate(events):
-        event_name = f"{name}:{event.event_id}"
-
-        # Index event body
-        body_text = render_event(event)
-        mixin._loaded_documents[event_name] = LoadedDocument(
-            name=event_name,
-            config=doc_config,
-            content=body_text,
-            format="markdown",
-            sections=_extract_markdown_sections(body_text, "markdown"),
-            loaded_at=datetime.now().isoformat(),
-        )
-
-        if cal_ctx:
-            total_chunks += mixin._index_loaded_doc(
-                event_name, cal_ctx["domain_id"], cal_ctx["session_id"],
-                cal_ctx["skip_entity_extraction"],
-            )
-
-        # Process attachments
-        if doc_config.extract_attachments and event.attachments:
-            for att in event.attachments:
-                att_name = f"{event_name}:{att.filename}"
-                total_attachments += 1
-                try:
-                    att_bytes = fetcher.download_attachment(att)
-                except Exception as e:
-                    logger.warning("[CALENDAR] Failed to download attachment %s: %s", att.filename, e)
-                    continue
-
-                att_type = detect_type_from_source(att.filename, att.mime_type)
-                fetch_result = FetchResult(
-                    data=att_bytes, detected_mime=att.mime_type, source_path=att.filename,
-                )
-                try:
-                    content, fmt = _extract_content(mixin, fetch_result, att_type, "")
-                except Exception as e:
-                    logger.warning("[CALENDAR] Skipping attachment %s: %s", att.filename, e)
-                    continue
-
-                if fmt == "html":
-                    content = _convert_html_to_markdown(content)
-                    fmt = "markdown"
-
-                mixin._loaded_documents[att_name] = LoadedDocument(
-                    name=att_name, config=doc_config, content=content, format=fmt,
-                    sections=[], loaded_at=datetime.now().isoformat(),
-                )
-                if cal_ctx:
-                    total_chunks += mixin._index_loaded_doc(
-                        att_name, cal_ctx["domain_id"], cal_ctx["session_id"],
-                        cal_ctx["skip_entity_extraction"],
-                    )
-
-        if (i + 1) % 100 == 0:
-            logger.info("[CALENDAR] Progress: %d/%d events", i + 1, len(events))
-
-    logger.info("[CALENDAR] Done: %s — %d events, %d attachments, %d chunks",
-                name, len(events), total_attachments, total_chunks)
-    return {"calendar_chunks": total_chunks, "calendar_events": len(events)}
 
 
 def _load_imap(mixin, name: str, doc_config: DocumentConfig, user_type: str) -> dict:
@@ -583,6 +504,65 @@ def _load_file_directly(mixin, name: str, filepath: Path, doc_config: DocumentCo
     )
 
 
+def _load_drive(mixin, name: str, doc_config: DocumentConfig) -> None:
+    """Handle cloud drive document loading — list files, download, extract content."""
+    from datetime import datetime
+    from ._drive import DriveFetcher
+
+    logger.info("[DRIVE] Listing files from %s provider=%s", name, doc_config.provider)
+    fetcher = DriveFetcher(
+        doc_config,
+        config_dir=Path(mixin.config.config_dir) if mixin.config.config_dir else None,
+    )
+    files = fetcher.list_files()
+    logger.info("[DRIVE] Found %d files in %s", len(files), name)
+
+    # Google native format → exported Office doc type
+    _native_export_types = {
+        "application/vnd.google-apps.document": "docx",
+        "application/vnd.google-apps.spreadsheet": "xlsx",
+        "application/vnd.google-apps.presentation": "pptx",
+    }
+
+    loaded = 0
+    for file in files:
+        file_id = fetcher.make_file_id(file)
+        file_name = f"{name}:{file_id}"
+
+        data = fetcher.download_file(file)
+
+        # Determine doc type
+        if file.is_google_native:
+            doc_type = _native_export_types.get(file.mime_type, "auto")
+        else:
+            doc_type = detect_type_from_source(file.name, file.mime_type)
+
+        sub_result = FetchResult(
+            data=data,
+            detected_mime=file.mime_type,
+            source_path=file.name,
+        )
+
+        content, doc_format = _extract_content(mixin, sub_result, doc_type, name)
+
+        if doc_format == "html":
+            content = _convert_html_to_markdown(content)
+            doc_format = "markdown"
+
+        mixin._loaded_documents[file_name] = LoadedDocument(
+            name=file_name,
+            config=doc_config,
+            content=content,
+            format=doc_format,
+            sections=_extract_markdown_sections(content, doc_format),
+            loaded_at=datetime.now().isoformat(),
+        )
+        loaded += 1
+
+    logger.info("[DRIVE] Loaded %d files from %s", loaded, name)
+    return None
+
+
 def add_document_from_config(
     mixin,
     name: str,
@@ -631,10 +611,6 @@ def add_document_from_config(
         # IMAP handles chunking inline per message — already done
         if isinstance(result, dict) and "imap_chunks" in result:
             return True, f"Added {result['imap_docs']} email(s) ({result['imap_chunks']} chunks)"
-
-        # Calendar handles chunking inline per event — already done
-        if isinstance(result, dict) and "calendar_chunks" in result:
-            return True, f"Added {result['calendar_events']} event(s) ({result['calendar_chunks']} chunks)"
 
         # Non-IMAP: collect loaded docs and chunk/embed in batch
         loaded_names = [
