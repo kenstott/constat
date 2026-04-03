@@ -740,6 +740,11 @@ class DuckDBVectorStore(VectorStoreBackend):
         return DuckDBVectorBackend.chunk_visibility_filter(domain_ids, alias)
 
     @staticmethod
+    def embeddings_domain_join_filter(domain_ids=None, alias=""):
+        from constat.storage.duckdb_backend import DuckDBVectorBackend
+        return DuckDBVectorBackend.embeddings_domain_join_filter(domain_ids, alias)
+
+    @staticmethod
     def _rows_to_chunks(rows):
         from constat.storage.duckdb_backend import DuckDBVectorBackend
         return DuckDBVectorBackend._rows_to_chunks(rows)

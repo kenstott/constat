@@ -87,6 +87,31 @@ class DuckDBVectorBackend(VectorBackend):
             params.extend(domain_ids)
         return f"({' OR '.join(parts)})", params
 
+    @staticmethod
+    def embeddings_domain_join_filter(
+        domain_ids: list[str] | None = None,
+        alias: str = "",
+    ) -> tuple[str, str, list]:
+        """Return (join_clause, where_clause, params) for embeddings domain filtering.
+
+        Uses LEFT JOIN on data_sources to resolve domain via the FK,
+        with OR fallback to direct domain_id for backward compatibility.
+        """
+        pfx = f"{alias}." if alias else ""
+        ds_alias = f"_ds_{alias}" if alias else "_ds"
+        join_clause = f"LEFT JOIN data_sources {ds_alias} ON {pfx}data_source_id = {ds_alias}.id"
+
+        parts = [f"{pfx}domain_id IS NULL", f"{pfx}domain_id = '__base__'"]
+        params: list = []
+        if domain_ids:
+            placeholders = ",".join(["?" for _ in domain_ids])
+            parts.append(
+                f"({ds_alias}.domain_id IN ({placeholders}) OR {pfx}domain_id IN ({placeholders}))"
+            )
+            params.extend(domain_ids)
+            params.extend(domain_ids)
+        return join_clause, f"({' OR '.join(parts)})", params
+
     # ------------------------------------------------------------------
     # Chunk ID generation
     # ------------------------------------------------------------------
@@ -233,6 +258,7 @@ class DuckDBVectorBackend(VectorBackend):
         ct_params: list | None = None,
         source_filter: str | None = None,
         source_params: list | None = None,
+        domain_join: str = "",
     ) -> list[tuple[str, float, DocumentChunk]]:
         from constat.discovery.models import ChunkType
         try:
@@ -259,10 +285,11 @@ class DuckDBVectorBackend(VectorBackend):
 
             rows = self._conn.execute(
                 f"""
-                SELECT chunk_id, document_name, source, chunk_type, section,
-                       chunk_index, content,
-                       fts_main_embeddings.match_bm25(chunk_id, ?) AS bm25_score
-                FROM embeddings
+                SELECT e.chunk_id, e.document_name, e.source, e.chunk_type, e.section,
+                       e.chunk_index, e.content,
+                       fts_main_embeddings.match_bm25(e.chunk_id, ?) AS bm25_score
+                FROM embeddings e
+                {domain_join}
                 WHERE {where}
                 ORDER BY bm25_score DESC
                 LIMIT ?
@@ -358,7 +385,7 @@ class DuckDBVectorBackend(VectorBackend):
     ) -> list[tuple[str, float, DocumentChunk]]:
         query = query_embedding.flatten().tolist()
 
-        chunk_filter, filter_params = self.chunk_visibility_filter(domain_ids)
+        domain_join, chunk_filter, filter_params = self.embeddings_domain_join_filter(domain_ids, alias="e")
         params: list = [query] + filter_params
 
         chunk_type_clause = ""
@@ -366,7 +393,7 @@ class DuckDBVectorBackend(VectorBackend):
         if chunk_types:
             ct_values = [ct.value if hasattr(ct, 'value') else str(ct) for ct in chunk_types]
             ct_placeholders = ",".join(["?" for _ in ct_values])
-            chunk_type_clause = f" AND chunk_type IN ({ct_placeholders})"
+            chunk_type_clause = f" AND e.chunk_type IN ({ct_placeholders})"
             ct_params = ct_values
             params.extend(ct_values)
 
@@ -377,15 +404,16 @@ class DuckDBVectorBackend(VectorBackend):
         result = self._conn.execute(
             f"""
             SELECT
-                chunk_id,
-                document_name,
-                source,
-                chunk_type,
-                section,
-                chunk_index,
-                content,
-                array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
-            FROM {emb_view}
+                e.chunk_id,
+                e.document_name,
+                e.source,
+                e.chunk_type,
+                e.section,
+                e.chunk_index,
+                e.content,
+                array_cosine_similarity(e.embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
+            FROM {emb_view} e
+            {domain_join}
             WHERE {chunk_filter}{chunk_type_clause}
             ORDER BY similarity DESC
             LIMIT ?
@@ -421,6 +449,7 @@ class DuckDBVectorBackend(VectorBackend):
             filter_params=list(filter_params),
             chunk_type_clause=chunk_type_clause,
             ct_params=ct_params,
+            domain_join=domain_join,
         )
         if not bm25_results:
             results = vector_results[:limit]
@@ -626,23 +655,25 @@ class DuckDBVectorBackend(VectorBackend):
     def get_domain_chunks(self, domain_id: str) -> list[DocumentChunk]:
         result = self._conn.execute(
             f"""
-            SELECT document_name, content, section, chunk_index, source, chunk_type
-            FROM {self._view('embeddings')}
-            WHERE domain_id = ?
-            ORDER BY document_name, chunk_index
+            SELECT e.document_name, e.content, e.section, e.chunk_index, e.source, e.chunk_type
+            FROM {self._view('embeddings')} e
+            LEFT JOIN data_sources _ds ON e.data_source_id = _ds.id
+            WHERE (_ds.domain_id = ? OR e.domain_id = ?)
+            ORDER BY e.document_name, e.chunk_index
             """,
-            [domain_id],
+            [domain_id, domain_id],
         ).fetchall()
         return self._rows_to_chunks(result)
 
     def get_all_chunks(self, domain_ids: list[str] | None = None) -> list[DocumentChunk]:
-        chunk_filter, params = self.chunk_visibility_filter(domain_ids)
+        domain_join, chunk_filter, params = self.embeddings_domain_join_filter(domain_ids, alias="e")
         result = self._conn.execute(
             f"""
-            SELECT document_name, content, section, chunk_index, source, chunk_type
-            FROM {self._view('embeddings')}
+            SELECT e.document_name, e.content, e.section, e.chunk_index, e.source, e.chunk_type
+            FROM {self._view('embeddings')} e
+            {domain_join}
             WHERE {chunk_filter}
-            ORDER BY document_name, chunk_index
+            ORDER BY e.document_name, e.chunk_index
             """,
             params,
         ).fetchall()
@@ -667,12 +698,18 @@ class DuckDBVectorBackend(VectorBackend):
     def delete_by_source(self, source: str, domain_id: str | None = None) -> int:
         if domain_id:
             count = self._conn.execute(
-                "SELECT COUNT(*) FROM embeddings WHERE source = ? AND domain_id = ?",
-                [source, domain_id],
+                """SELECT COUNT(*) FROM embeddings e
+                   LEFT JOIN data_sources _ds ON e.data_source_id = _ds.id
+                   WHERE e.source = ? AND (_ds.domain_id = ? OR e.domain_id = ?)""",
+                [source, domain_id, domain_id],
             ).fetchone()[0]
             self._conn.execute(
-                "DELETE FROM embeddings WHERE source = ? AND domain_id = ?",
-                [source, domain_id],
+                """DELETE FROM embeddings WHERE chunk_id IN (
+                    SELECT e.chunk_id FROM embeddings e
+                    LEFT JOIN data_sources _ds ON e.data_source_id = _ds.id
+                    WHERE e.source = ? AND (_ds.domain_id = ? OR e.domain_id = ?)
+                )""",
+                [source, domain_id, domain_id],
             )
         else:
             count = self._conn.execute(
@@ -698,8 +735,10 @@ class DuckDBVectorBackend(VectorBackend):
 
     def clear_domain_embeddings(self, domain_id: str) -> int:
         chunk_ids = self._conn.execute(
-            "SELECT chunk_id FROM embeddings WHERE domain_id = ?",
-            [domain_id]
+            """SELECT e.chunk_id FROM embeddings e
+               LEFT JOIN data_sources _ds ON e.data_source_id = _ds.id
+               WHERE (_ds.domain_id = ? OR e.domain_id = ?)""",
+            [domain_id, domain_id]
         ).fetchall()
         chunk_ids = [row[0] for row in chunk_ids]
 
@@ -709,11 +748,10 @@ class DuckDBVectorBackend(VectorBackend):
                 f"DELETE FROM chunk_entities WHERE chunk_id IN ({placeholders})",
                 chunk_ids
             )
-
-        self._conn.execute(
-            "DELETE FROM embeddings WHERE domain_id = ?",
-            [domain_id]
-        )
+            self._conn.execute(
+                f"DELETE FROM embeddings WHERE chunk_id IN ({placeholders})",
+                chunk_ids
+            )
 
         self._conn.execute(
             "DELETE FROM entities WHERE domain_id = ?",
@@ -812,12 +850,14 @@ class DuckDBVectorBackend(VectorBackend):
         return [r[0] for r in rows if r[0]]
 
     def get_visible_chunks_with_metadata(
-        self, chunk_filter: str, params: list,
+        self, chunk_filter: str, params: list, domain_join: str = "",
     ) -> list[tuple]:
         return self._conn.execute(
             f"""
-            SELECT chunk_id, document_name, content, section, chunk_index, domain_id
-            FROM {self._view('embeddings')}
+            SELECT e.chunk_id, e.document_name, e.content, e.section, e.chunk_index,
+                   COALESCE(_ds.domain_id, e.domain_id) AS domain_id
+            FROM {self._view('embeddings')} e
+            LEFT JOIN data_sources _ds ON e.data_source_id = _ds.id
             WHERE {chunk_filter}
             """,
             params,
@@ -845,5 +885,8 @@ class DuckDBVectorBackend(VectorBackend):
 
     def count_by_domain(self) -> list[tuple]:
         return self._conn.execute(
-            f"SELECT domain_id, COUNT(*) FROM {self._view('embeddings')} GROUP BY domain_id"
+            f"""SELECT COALESCE(_ds.domain_id, e.domain_id) AS resolved_domain, COUNT(*)
+                FROM {self._view('embeddings')} e
+                LEFT JOIN data_sources _ds ON e.data_source_id = _ds.id
+                GROUP BY resolved_domain"""
         ).fetchall()

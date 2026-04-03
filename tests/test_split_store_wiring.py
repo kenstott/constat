@@ -34,6 +34,7 @@ _SCHEMA_DDL = {
             embedding FLOAT[{EMBEDDING_DIM}] NOT NULL,
             session_id VARCHAR,
             domain_id VARCHAR,
+            data_source_id VARCHAR,
             entity_class VARCHAR DEFAULT 'mixed',
             source_offset INTEGER,
             source_length INTEGER
@@ -118,6 +119,13 @@ _SCHEMA_DDL = {
         CREATE TABLE IF NOT EXISTS proven_grounding (
             entity_name TEXT NOT NULL, source_pattern TEXT NOT NULL,
             PRIMARY KEY (entity_name, source_pattern)
+        )
+    """,
+    "data_sources": """
+        CREATE TABLE IF NOT EXISTS data_sources (
+            id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
+            type VARCHAR NOT NULL, domain_id VARCHAR NOT NULL,
+            session_id VARCHAR, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """,
 }
@@ -215,14 +223,14 @@ class TestBackendSplitRouting:
         emb = _make_embedding()
         _init_db(sys_path, seed={"embeddings": [
             f"INSERT INTO embeddings VALUES ('sys1', 'schema:hr', 'schema', 'document', '', 0, "
-            f"'hr employees table', {emb}::FLOAT[{EMBEDDING_DIM}], NULL, '__base__', 'mixed', NULL, NULL)",
+            f"'hr employees table', {emb}::FLOAT[{EMBEDDING_DIM}], NULL, '__base__', NULL, 'mixed', NULL, NULL)",
         ]})
 
         # Create user DB with a chunk
         user_emb = _make_embedding()
         _init_db(user_path, seed={"embeddings": [
             f"INSERT INTO embeddings VALUES ('u1', 'doc:notes', 'document', 'document', '', 0, "
-            f"'user notes content', {user_emb}::FLOAT[{EMBEDDING_DIM}], NULL, 'user-domain', 'mixed', NULL, NULL)",
+            f"'user notes content', {user_emb}::FLOAT[{EMBEDDING_DIM}], NULL, 'user-domain', NULL, 'mixed', NULL, NULL)",
         ]})
 
         # Open split store
@@ -260,7 +268,7 @@ class TestWarmupToSessionIntegration:
         sys_conn.execute(
             f"INSERT INTO embeddings VALUES ('warmup1', 'schema:hr.employees', 'schema', "
             f"'schema_table', 'hr', 0, 'employees table with name, salary, department', "
-            f"?::FLOAT[{EMBEDDING_DIM}], NULL, 'hr-reporting', 'metadata', NULL, NULL)",
+            f"?::FLOAT[{EMBEDDING_DIM}], NULL, 'hr-reporting', NULL, 'metadata', NULL, NULL)",
             [emb],
         )
         sys_conn.execute(
@@ -356,7 +364,7 @@ class TestWarmupToSessionIntegration:
             sys_conn.execute(
                 f"INSERT INTO embeddings VALUES ('sys{i}', 'schema:table{i}', 'schema', "
                 f"'document', '', {i}, 'system schema content {i}', "
-                f"?::FLOAT[{EMBEDDING_DIM}], NULL, '__base__', 'mixed', NULL, NULL)",
+                f"?::FLOAT[{EMBEDDING_DIM}], NULL, '__base__', NULL, 'mixed', NULL, NULL)",
                 [emb],
             )
         sys_conn.close()
@@ -369,7 +377,7 @@ class TestWarmupToSessionIntegration:
             user_conn.execute(
                 f"INSERT INTO embeddings VALUES ('usr{i}', 'doc:note{i}', 'document', "
                 f"'document', '', {i}, 'user document content {i}', "
-                f"?::FLOAT[{EMBEDDING_DIM}], NULL, 'my-domain', 'mixed', NULL, NULL)",
+                f"?::FLOAT[{EMBEDDING_DIM}], NULL, 'my-domain', NULL, 'mixed', NULL, NULL)",
                 [emb],
             )
         user_conn.close()
@@ -750,6 +758,7 @@ class TestE2ESessionLifecycle:
                 content TEXT NOT NULL,
                 embedding FLOAT[{EMBEDDING_DIM}] NOT NULL,
                 session_id VARCHAR, domain_id VARCHAR,
+                data_source_id VARCHAR,
                 entity_class VARCHAR DEFAULT 'mixed',
                 source_offset INTEGER, source_length INTEGER
             )

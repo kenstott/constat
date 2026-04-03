@@ -218,9 +218,9 @@ class _EntityMixin:
 
         from constat.discovery.vector_store import DuckDBVectorStore
 
-        chunk_filter, params = DuckDBVectorStore.chunk_visibility_filter(domain_ids)
+        domain_join, chunk_filter, params = DuckDBVectorStore.embeddings_domain_join_filter(domain_ids, alias="e")
 
-        result = self._vector_store.get_visible_chunks_with_metadata(chunk_filter, params)
+        result = self._vector_store.get_visible_chunks_with_metadata(chunk_filter, params, domain_join=domain_join)
 
         chunks = []
         skipped = 0

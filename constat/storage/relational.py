@@ -341,12 +341,15 @@ class RelationalStore:
 
     def backfill_entity_domains(self) -> int:
         result = self._conn.execute("""
-            UPDATE entities SET domain_id = sub.domain_id
+            UPDATE entities SET domain_id = sub.resolved_domain
             FROM (
-                SELECT DISTINCT ce.entity_id, c.domain_id
+                SELECT DISTINCT ce.entity_id,
+                       COALESCE(_ds.domain_id, c.domain_id) AS resolved_domain
                 FROM chunk_entities ce
                 JOIN embeddings c ON ce.chunk_id = c.chunk_id
-                WHERE c.domain_id IS NOT NULL AND c.domain_id != ''
+                LEFT JOIN data_sources _ds ON c.data_source_id = _ds.id
+                WHERE COALESCE(_ds.domain_id, c.domain_id) IS NOT NULL
+                  AND COALESCE(_ds.domain_id, c.domain_id) != ''
             ) sub
             WHERE entities.id = sub.entity_id
               AND (entities.domain_id IS NULL OR entities.domain_id = '')
@@ -437,8 +440,9 @@ class RelationalStore:
         if all_domains:
             emb_where = "1=1"
             filter_params: list = []
+            domain_join = ""
         else:
-            emb_where, filter_params = DuckDBVectorBackend.chunk_visibility_filter(domain_ids, alias="em")
+            domain_join, emb_where, filter_params = DuckDBVectorBackend.embeddings_domain_join_filter(domain_ids, alias="em")
         params: list = [entity_id] + filter_params
 
         limit_clause = ""
@@ -458,6 +462,7 @@ class RelationalStore:
                 ce.confidence
             FROM {self._view('chunk_entities')} ce
             JOIN {self._view('embeddings')} em ON ce.chunk_id = em.chunk_id
+            {domain_join}
             WHERE ce.entity_id = ? AND {emb_where}
             ORDER BY ce.confidence DESC
             {limit_clause}
@@ -1431,19 +1436,21 @@ class RelationalStore:
         if source_id == '__base__':
             chunk_ids = self._conn.execute(
                 f"""
-                SELECT chunk_id FROM {self._view('embeddings')}
-                WHERE document_name = ? AND source = ?
-                AND (domain_id IS NULL OR domain_id = '__base__')
+                SELECT e.chunk_id FROM {self._view('embeddings')} e
+                WHERE e.document_name = ? AND e.source = ?
+                AND (e.domain_id IS NULL OR e.domain_id = '__base__')
                 """,
                 [resource_name, source_type],
             ).fetchall()
         else:
             chunk_ids = self._conn.execute(
                 f"""
-                SELECT chunk_id FROM {self._view('embeddings')}
-                WHERE document_name = ? AND source = ? AND domain_id = ?
+                SELECT e.chunk_id FROM {self._view('embeddings')} e
+                LEFT JOIN data_sources _ds ON e.data_source_id = _ds.id
+                WHERE e.document_name = ? AND e.source = ?
+                AND (_ds.domain_id = ? OR e.domain_id = ?)
                 """,
-                [resource_name, source_type, source_id],
+                [resource_name, source_type, source_id, source_id],
             ).fetchall()
 
         chunk_ids = [row[0] for row in chunk_ids]
@@ -1458,23 +1465,10 @@ class RelationalStore:
             chunk_ids,
         )
 
-        if source_id == '__base__':
-            self._conn.execute(
-                """
-                DELETE FROM embeddings
-                WHERE document_name = ? AND source = ?
-                AND (domain_id IS NULL OR domain_id = '__base__')
-                """,
-                [resource_name, source_type],
-            )
-        else:
-            self._conn.execute(
-                """
-                DELETE FROM embeddings
-                WHERE document_name = ? AND source = ? AND domain_id = ?
-                """,
-                [resource_name, source_type, source_id],
-            )
+        self._conn.execute(
+            f"DELETE FROM embeddings WHERE chunk_id IN ({placeholders})",
+            chunk_ids,
+        )
 
         logger.info(f"delete_resource_chunks({source_id}, {resource_type}, {resource_name}): deleted {len(chunk_ids)} chunks")
         return len(chunk_ids)

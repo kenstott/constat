@@ -121,5 +121,14 @@ class VectorBackend(ABC):
 
     @staticmethod
     @abstractmethod
+    def embeddings_domain_join_filter(
+        domain_ids: list[str] | None = None,
+        alias: str = "",
+    ) -> tuple[str, str, list]:
+        """Return (join_clause, where_clause, params) for embeddings domain filtering."""
+        ...
+
+    @staticmethod
+    @abstractmethod
     def _rows_to_chunks(rows: list) -> list[DocumentChunk]:
         ...
