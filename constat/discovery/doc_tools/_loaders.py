@@ -119,6 +119,10 @@ def _load_document(mixin, name: str) -> dict | None:
     if transport == "imap":
         return _load_imap(mixin, name, doc_config, user_type)
 
+    # SharePoint: discover site, fetch libraries/lists/calendars/pages
+    if transport == "sharepoint":
+        return _load_sharepoint(mixin, name, doc_config)
+
     # Cloud drive: list + download files from Google Drive / OneDrive
     if transport == "drive":
         return _load_drive(mixin, name, doc_config)
@@ -560,6 +564,105 @@ def _load_drive(mixin, name: str, doc_config: DocumentConfig) -> None:
         loaded += 1
 
     logger.info("[DRIVE] Loaded %d files from %s", loaded, name)
+    return None
+
+
+def _load_sharepoint(mixin, name: str, doc_config: DocumentConfig) -> None:
+    """Handle SharePoint document loading — discover site, fetch all resource types."""
+    from datetime import datetime
+    from ._sharepoint import SharePointClient
+    from ._calendar import render_event
+    from ._drive import DriveFetcher
+
+    logger.info("[SHAREPOINT] Discovering site %s", doc_config.site_url)
+    client = SharePointClient(
+        doc_config,
+        config_dir=Path(mixin.config.config_dir) if mixin.config.config_dir else None,
+    )
+    site = client.discover_site()
+    logger.info(
+        "[SHAREPOINT] Found %d libraries, %d lists, %d calendars, %d pages",
+        len(site["libraries"]),
+        len(site["lists"]),
+        len(site["calendars"]),
+        len(site["pages"]),
+    )
+
+    loaded = 0
+
+    # Libraries: list files, download, extract (reuse drive patterns)
+    for lib in site["libraries"]:
+        files = client.fetch_library_files(lib)
+        for file in files:
+            file_id = DriveFetcher.make_file_id(file)
+            file_name = f"{name}:lib:{file_id}"
+
+            data = client.download_library_file(lib, file)
+            doc_type = detect_type_from_source(file.name, file.mime_type)
+            sub_result = FetchResult(
+                data=data,
+                detected_mime=file.mime_type,
+                source_path=file.name,
+            )
+            content, doc_format = _extract_content(mixin, sub_result, doc_type, name)
+            if doc_format == "html":
+                content = _convert_html_to_markdown(content)
+                doc_format = "markdown"
+            mixin._loaded_documents[file_name] = LoadedDocument(
+                name=file_name,
+                config=doc_config,
+                content=content,
+                format=doc_format,
+                sections=_extract_markdown_sections(content, doc_format),
+                loaded_at=datetime.now().isoformat(),
+            )
+            loaded += 1
+
+    # Lists: fetch items, render as markdown
+    for sp_list in site["lists"]:
+        items = client.fetch_list_items(sp_list)
+        list_doc_name = f"{name}:list:{sp_list.name}"
+        content = client.render_list_as_markdown(sp_list, items)
+        mixin._loaded_documents[list_doc_name] = LoadedDocument(
+            name=list_doc_name,
+            config=doc_config,
+            content=content,
+            format="markdown",
+            sections=_extract_markdown_sections(content, "markdown"),
+            loaded_at=datetime.now().isoformat(),
+        )
+        loaded += 1
+
+    # Calendars: fetch events, render
+    for cal in site["calendars"]:
+        events = client.fetch_calendar_events(cal)
+        for event in events:
+            event_name = f"{name}:cal:{event.event_id}"
+            content = render_event(event)
+            mixin._loaded_documents[event_name] = LoadedDocument(
+                name=event_name,
+                config=doc_config,
+                content=content,
+                format="markdown",
+                sections=_extract_markdown_sections(content, "markdown"),
+                loaded_at=datetime.now().isoformat(),
+            )
+            loaded += 1
+
+    # Pages: store as markdown documents
+    for page in site["pages"]:
+        page_name = f"{name}:page:{page.id}"
+        mixin._loaded_documents[page_name] = LoadedDocument(
+            name=page_name,
+            config=doc_config,
+            content=page.content,
+            format="markdown",
+            sections=_extract_markdown_sections(page.content, "markdown"),
+            loaded_at=datetime.now().isoformat(),
+        )
+        loaded += 1
+
+    logger.info("[SHAREPOINT] Loaded %d resources from %s", loaded, name)
     return None
 
 

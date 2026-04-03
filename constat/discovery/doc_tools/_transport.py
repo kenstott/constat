@@ -41,6 +41,8 @@ def infer_transport(config: "DocumentConfig") -> str:
 
     Returns: inline, file, http, s3, ftp, sftp
     """
+    if config.type == "sharepoint" or config.site_url:
+        return "sharepoint"
     if config.type == "drive":
         return "drive"
     if config.content is not None:

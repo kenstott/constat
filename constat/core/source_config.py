@@ -405,6 +405,19 @@ class DocumentConfig(BaseModel):
     resource_filter: Optional[str] = None  # Regex to filter MCP resource URIs
     max_resources: int = 100  # Max resources to list from MCP server
 
+    # SharePoint source
+    site_url: Optional[str] = None  # SharePoint site URL
+    discover_libraries: bool = True  # Index document libraries
+    discover_lists: bool = False  # Index lists as tables
+    discover_calendars: bool = False  # Index calendar lists
+    discover_pages: bool = False  # Index site pages
+    library_names: Optional[list[str]] = None  # Allowlist of library names
+    list_names: Optional[list[str]] = None  # Allowlist of list names
+    calendar_names: Optional[list[str]] = None  # Allowlist of calendar names
+    max_rows: int = 5000  # Max rows per list
+    list_as_table: bool = True  # Render lists as markdown tables
+    page_types: Optional[list[str]] = None  # ["modern", "wiki"]
+
 
 class APIConfig(BaseModel):
     """External API configuration (GraphQL or OpenAPI).
