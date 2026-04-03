@@ -432,6 +432,10 @@ class SessionManager:
         from constat.server.diff_generators import EntityDiffGenerator
         self._diff_generators = [EntityDiffGenerator()]
 
+        # GraphQL subscription pub/sub
+        self._glossary_subscribers: dict[str, list[asyncio.Queue]] = {}
+        self._execution_subscribers: dict[str, list[asyncio.Queue]] = {}
+
     def get_user_db(self, user_id: str) -> "ThreadLocalDuckDB":
         """Get a DuckDB connection for a user's vault.
 
@@ -474,10 +478,6 @@ class SessionManager:
         registry.register(DataSourceKind.API, "openapi", OpenApiProvider())
         registry.register(DataSourceKind.API, "mcp", McpApiProvider())
         return registry
-
-        # GraphQL subscription pub/sub
-        self._glossary_subscribers: dict[str, list[asyncio.Queue]] = {}
-        self._execution_subscribers: dict[str, list[asyncio.Queue]] = {}
 
     # ------------------------------------------------------------------
     # GraphQL subscription pub/sub

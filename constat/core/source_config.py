@@ -405,6 +405,27 @@ class DocumentConfig(BaseModel):
     resource_filter: Optional[str] = None  # Regex to filter MCP resource URIs
     max_resources: int = 100  # Max resources to list from MCP server
 
+    # Calendar source
+    provider: Optional[str] = None  # "google" | "microsoft"
+    calendar_id: Optional[str] = None  # Calendar ID (default: primary)
+    until: Optional[str] = None  # End date for event window (ISO format)
+    max_events: int = 500
+    expand_recurring: bool = True
+    include_declined: bool = False
+    include_cancelled: bool = False
+    extract_body: bool = True  # Include event body/description
+    calendars: list[str] = Field(default_factory=list)  # Multi-calendar IDs
+
+    # Cloud drive source
+    folder_id: Optional[str] = None  # Root folder ID
+    folder_path: Optional[str] = None  # Root folder path (resolved to ID)
+    recursive: bool = True  # Recurse into subfolders
+    max_files: int = 200
+    include_types: Optional[list[str]] = None  # File extension allowlist [".pdf", ".docx"]
+    include_trashed: bool = False
+    site_id: Optional[str] = None  # SharePoint site ID (for MS Graph)
+    drive_id: Optional[str] = None  # Specific drive ID
+
     # SharePoint source
     site_url: Optional[str] = None  # SharePoint site URL
     discover_libraries: bool = True  # Index document libraries
