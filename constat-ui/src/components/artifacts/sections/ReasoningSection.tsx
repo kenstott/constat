@@ -34,7 +34,7 @@ import { DomainBadge } from '../../common/DomainBadge'
 import { apolloClient } from '@/graphql/client'
 import { MOVE_DOMAIN_SKILL, MOVE_DOMAIN_AGENT } from '@/graphql/operations/domains'
 import { getAuthHeaders } from '@/config/auth-helpers'
-import * as agentsApi from '@/api/agents'
+import { DRAFT_AGENT } from '@/graphql/operations/learnings'
 import { expandSection } from '@/graphql/ui-state'
 
 // Helper to parse YAML front-matter from markdown content
@@ -361,7 +361,8 @@ export function ReasoningSection({
     if (!newAgent.name.trim() || !newAgent.description.trim()) return
     setDraftingAgent(true)
     try {
-      const result = await agentsApi.draftAgent(sessionId, newAgent.name.trim(), newAgent.description.trim())
+      const { data } = await apolloClient.mutate({ mutation: DRAFT_AGENT, variables: { sessionId, input: { name: newAgent.name.trim(), userDescription: newAgent.description.trim() } } })
+      const result = data?.draftAgent ?? { prompt: '', description: '', skills: [] }
       setNewAgent(prev => ({ ...prev, prompt: result.prompt || '', description: result.description || prev.description, skills: result.skills || [] }))
     } catch (err) {
       console.error('Failed to draft agent:', err)

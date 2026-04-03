@@ -20,7 +20,7 @@ import { openFullscreenArtifact } from '@/graphql/ui-state'
 import { addToast } from '@/graphql/ui-state'
 import { useTestingMutations } from '@/hooks/useTesting'
 import { useSessionContext } from '@/contexts/SessionContext'
-import { createSkillFromProof } from '@/api/skills'
+import { CREATE_SKILL_FROM_PROOF } from '@/graphql/operations/learnings'
 import { apolloClient } from '@/graphql/client'
 import { EXTRACT_EXPECTATIONS, toExpectations } from '@/graphql/operations/testing'
 import { DOMAINS_QUERY } from '@/graphql/operations/domains'
@@ -1257,7 +1257,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                     if (!skillName.trim() || isSavingSkill) return
                     setIsSavingSkill(true)
                     try {
-                      await createSkillFromProof(sessionId, skillName.trim())
+                      await apolloClient.mutate({ mutation: CREATE_SKILL_FROM_PROOF, variables: { sessionId, input: { name: skillName.trim() } } })
                       setShowSkillForm(false)
                       setSkillName('')
                       onSkillCreated?.()

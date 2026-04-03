@@ -165,6 +165,96 @@ export const SET_ACTIVE_SKILLS = gql`
   }
 `
 
+export const CREATE_SKILL = gql`
+  mutation CreateSkill($input: CreateSkillInput!) {
+    createSkill(input: $input) {
+      name
+      description
+      prompt
+      filename
+      isActive
+    }
+  }
+`
+
+export const UPDATE_SKILL = gql`
+  mutation UpdateSkill($name: String!, $input: UpdateSkillInput!) {
+    updateSkill(name: $name, input: $input) {
+      status
+      name
+    }
+  }
+`
+
+export const DELETE_SKILL = gql`
+  mutation DeleteSkill($name: String!, $domain: String) {
+    deleteSkill(name: $name, domain: $domain) {
+      status
+      name
+    }
+  }
+`
+
+export const DRAFT_SKILL = gql`
+  mutation DraftSkill($sessionId: String!, $input: DraftSkillInput!) {
+    draftSkill(sessionId: $sessionId, input: $input) {
+      name
+      content
+      description
+    }
+  }
+`
+
+export const CREATE_SKILL_FROM_PROOF = gql`
+  mutation CreateSkillFromProof($sessionId: String!, $input: CreateSkillFromProofInput!) {
+    createSkillFromProof(sessionId: $sessionId, input: $input) {
+      name
+      content
+      description
+      hasScript
+    }
+  }
+`
+
+export const CREATE_AGENT = gql`
+  mutation CreateAgent($sessionId: String!, $input: CreateAgentInput!) {
+    createAgent(sessionId: $sessionId, input: $input) {
+      name
+      description
+      isActive
+    }
+  }
+`
+
+export const UPDATE_AGENT = gql`
+  mutation UpdateAgent($sessionId: String!, $name: String!, $input: UpdateAgentInput!) {
+    updateAgent(sessionId: $sessionId, name: $name, input: $input) {
+      status
+      name
+    }
+  }
+`
+
+export const DELETE_AGENT = gql`
+  mutation DeleteAgent($sessionId: String!, $name: String!) {
+    deleteAgent(sessionId: $sessionId, name: $name) {
+      status
+      name
+    }
+  }
+`
+
+export const DRAFT_AGENT = gql`
+  mutation DraftAgent($sessionId: String!, $input: DraftAgentInput!) {
+    draftAgent(sessionId: $sessionId, input: $input) {
+      name
+      prompt
+      description
+      skills
+    }
+  }
+`
+
 // -- Mappers -----------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

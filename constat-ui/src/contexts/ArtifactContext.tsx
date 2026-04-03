@@ -26,11 +26,11 @@ import {
 } from '@/graphql/operations/data'
 import {
   SKILLS_QUERY, SET_ACTIVE_SKILLS,
+  CREATE_SKILL, UPDATE_SKILL, DELETE_SKILL, DRAFT_SKILL,
   CREATE_RULE, UPDATE_RULE as UPDATE_RULE_MUTATION, DELETE_RULE as DELETE_RULE_MUTATION,
   DELETE_LEARNING as DELETE_LEARNING_MUTATION,
   toSkillInfo,
 } from '@/graphql/operations/learnings'
-import * as skillsApi from '@/api/skills'
 import {
   stepCodesVar, inferenceCodesVar, scratchpadEntriesVar,
   selectedArtifactVar, selectedTableVar, supersededStepNumbersVar,
@@ -226,18 +226,18 @@ export function ArtifactProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const createSkill = useCallback(async (name: string, prompt: string, description = '') => {
-    await skillsApi.createSkill(name, prompt, description)
+    await apolloClient.mutate({ mutation: CREATE_SKILL, variables: { input: { name, prompt, description } } })
     await apolloClient.refetchQueries({ include: ['Skills'] })
   }, [])
 
   const updateSkill = useCallback(async (name: string, content: string) => {
-    await skillsApi.updateSkillContent(name, content)
+    await apolloClient.mutate({ mutation: UPDATE_SKILL, variables: { name, input: { content } } })
     await apolloClient.refetchQueries({ include: ['Skills'] })
   }, [])
 
   const deleteSkill = useCallback(async (name: string) => {
     const skill = skillsData?.skills?.skills?.map(toSkillInfo)?.find((s: { name: string }) => s.name === name)
-    await skillsApi.deleteSkill(name, skill?.domain)
+    await apolloClient.mutate({ mutation: DELETE_SKILL, variables: { name, domain: skill?.domain } })
     await apolloClient.refetchQueries({ include: ['Skills'] })
   }, [skillsData])
 
@@ -251,8 +251,9 @@ export function ArtifactProvider({ children }: { children: ReactNode }) {
     await apolloClient.refetchQueries({ include: ['Skills', 'PromptContext'] })
   }, [skillsData])
 
-  const draftSkill = useCallback(async (_sid: string, name: string, description: string) => {
-    return await skillsApi.draftSkill(_sid, name, description)
+  const draftSkill = useCallback(async (sid: string, name: string, description: string) => {
+    const { data } = await apolloClient.mutate({ mutation: DRAFT_SKILL, variables: { sessionId: sid, input: { name, userDescription: description } } })
+    return data?.draftSkill ?? { content: '', description: '' }
   }, [])
 
   const updateSystemPrompt = useCallback(async (sid: string, systemPrompt: string) => {
