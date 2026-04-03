@@ -19,10 +19,19 @@ import strawberry
 
 from constat.server.graphql.session_context import GqlInfo as Info
 from constat.server.graphql.types import (
+    AgentContentType,
     AgentInfoType,
     CompactionResultType,
+    CreateAgentInput,
     CreateRuleInput,
+    CreateSkillFromProofInput,
+    CreateSkillFromProofResultType,
+    CreateSkillInput,
     DeleteResultType,
+    DraftAgentInput,
+    DraftAgentResultType,
+    DraftSkillInput,
+    DraftSkillResultType,
     LearningInfoType,
     LearningListType,
     RuleInfoType,
@@ -31,7 +40,9 @@ from constat.server.graphql.types import (
     SkillContentType,
     SkillInfoType,
     SkillsListType,
+    UpdateAgentInput,
     UpdateRuleInput,
+    UpdateSkillInput,
 )
 from constat.server.routes.learnings import _domain_data_dirs
 from constat.server.routes.skills import get_skill_manager
@@ -44,6 +55,16 @@ def _require_auth(info: Info) -> str:
     if not user_id:
         raise ValueError("Authentication required")
     return user_id
+
+
+def _get_session(info: Info, session_id: str, user_id: str):
+    """Get a managed session, validate ownership."""
+    managed = info.context.session_manager.get_session_or_none(session_id)
+    if not managed or managed.user_id != user_id:
+        raise ValueError("Session not found")
+    if not hasattr(managed.session, "agent_manager"):
+        raise ValueError("Agent manager not available")
+    return managed
 
 
 @strawberry.type
@@ -181,6 +202,22 @@ class Query:
                     )
                 )
         return agents
+
+    @strawberry.field
+    async def agent(self, info: Info, session_id: str, name: str) -> AgentContentType:
+        user_id = _require_auth(info)
+        managed = _get_session(info, session_id, user_id)
+        agent_manager = managed.session.agent_manager
+        agent = agent_manager.get_agent(name)
+        if not agent:
+            raise ValueError(f"Agent not found: {name}")
+        return AgentContentType(
+            name=agent.name,
+            prompt=agent.prompt,
+            description=agent.description,
+            skills=agent.skills,
+            path=str(agent_manager.agents_file_path),
+        )
 
 
 @strawberry.type
@@ -404,3 +441,121 @@ class Mutation:
         manager = get_skill_manager(user_id, server_config.data_dir)
         activated = manager.set_active_skills(skill_names)
         return SetActiveSkillsResultType(status="updated", active_skills=activated)
+
+    # --- Skill CRUD ---
+
+    @strawberry.mutation
+    async def create_skill(self, info: Info, input: CreateSkillInput) -> SkillInfoType:
+        user_id = _require_auth(info)
+        server_config = info.context.server_config
+        manager = get_skill_manager(user_id, server_config.data_dir)
+        skill = manager.create_skill(name=input.name, prompt=input.prompt, description=input.description)
+        return SkillInfoType(
+            name=skill.name, prompt=skill.prompt, description=skill.description,
+            filename=skill.filename, is_active=False,
+        )
+
+    @strawberry.mutation
+    async def update_skill(self, info: Info, name: str, input: UpdateSkillInput) -> DeleteResultType:
+        user_id = _require_auth(info)
+        server_config = info.context.server_config
+        manager = get_skill_manager(user_id, server_config.data_dir)
+        if not manager.update_skill_content(name, input.content):
+            raise ValueError(f"Skill not found: {name}")
+        return DeleteResultType(status="updated", name=name)
+
+    @strawberry.mutation
+    async def delete_skill(self, info: Info, name: str, domain: Optional[str] = None) -> DeleteResultType:
+        user_id = _require_auth(info)
+        server_config = info.context.server_config
+        manager = get_skill_manager(user_id, server_config.data_dir)
+        if not manager.delete_skill(name, domain=domain):
+            raise ValueError(f"Skill not found: {name}")
+        return DeleteResultType(status="deleted", name=name)
+
+    @strawberry.mutation
+    async def draft_skill(
+        self, info: Info, session_id: str, input: DraftSkillInput,
+    ) -> DraftSkillResultType:
+        user_id = _require_auth(info)
+        managed = info.context.session_manager.get_session_or_none(session_id)
+        if not managed or managed.user_id != user_id:
+            raise ValueError("Session not found")
+        session = managed.session
+        content, description = session.skill_manager.draft_skill(
+            name=input.name, user_description=input.user_description, llm=session.llm,
+        )
+        return DraftSkillResultType(name=input.name, content=content, description=description)
+
+    @strawberry.mutation
+    async def create_skill_from_proof(
+        self, info: Info, session_id: str, input: CreateSkillFromProofInput,
+    ) -> CreateSkillFromProofResultType:
+        user_id = _require_auth(info)
+        from constat.server.routes.skills import create_skill_from_proof_impl
+        result = await create_skill_from_proof_impl(
+            session_id=session_id, user_id=user_id, name=input.name,
+            description=input.description, info=info,
+        )
+        return CreateSkillFromProofResultType(**result)
+
+    # --- Agent CRUD ---
+
+    @strawberry.mutation
+    async def create_agent(
+        self, info: Info, session_id: str, input: CreateAgentInput,
+    ) -> AgentInfoType:
+        user_id = _require_auth(info)
+        managed = _get_session(info, session_id, user_id)
+        agent = managed.session.agent_manager.create_agent(
+            name=input.name, prompt=input.prompt,
+            description=input.description, skills=input.skills,
+        )
+        return AgentInfoType(
+            name=agent.name, description=agent.description, is_active=False,
+        )
+
+    @strawberry.mutation
+    async def update_agent(
+        self, info: Info, session_id: str, name: str, input: UpdateAgentInput,
+    ) -> DeleteResultType:
+        user_id = _require_auth(info)
+        managed = _get_session(info, session_id, user_id)
+        agent_manager = managed.session.agent_manager
+        if not agent_manager.get_agent(name):
+            raise ValueError(f"Agent not found: {name}")
+        agent_manager.update_agent(
+            name=name, prompt=input.prompt,
+            description=input.description, skills=input.skills,
+        )
+        return DeleteResultType(status="updated", name=name)
+
+    @strawberry.mutation
+    async def delete_agent(
+        self, info: Info, session_id: str, name: str,
+    ) -> DeleteResultType:
+        user_id = _require_auth(info)
+        managed = _get_session(info, session_id, user_id)
+        if not managed.session.agent_manager.delete_agent(name):
+            raise ValueError(f"Agent not found: {name}")
+        return DeleteResultType(status="deleted", name=name)
+
+    @strawberry.mutation
+    async def draft_agent(
+        self, info: Info, session_id: str, input: DraftAgentInput,
+    ) -> DraftAgentResultType:
+        user_id = _require_auth(info)
+        managed = _get_session(info, session_id, user_id)
+        session = managed.session
+        available_skills = []
+        if hasattr(session, "skill_manager"):
+            for skill in session.skill_manager.list_skills():
+                available_skills.append({"name": skill.name, "description": skill.description or ""})
+        agent = session.agent_manager.draft_agent(
+            name=input.name, user_description=input.user_description,
+            llm=session.llm, available_skills=available_skills,
+        )
+        return DraftAgentResultType(
+            name=agent.name, prompt=agent.prompt,
+            description=agent.description, skills=agent.skills,
+        )

@@ -150,9 +150,18 @@ from constat.server.graphql.types.execution_types import (  # noqa: F401
 
 # -- Learning types (Phase 8) --
 from constat.server.graphql.types.learning_types import (  # noqa: F401
+    AgentContentType,
     AgentInfoType,
     CompactionResultType,
+    CreateAgentInput,
     CreateRuleInput,
+    CreateSkillFromProofInput,
+    CreateSkillFromProofResultType,
+    CreateSkillInput,
+    DraftAgentInput,
+    DraftAgentResultType,
+    DraftSkillInput,
+    DraftSkillResultType,
     LearningInfoType,
     LearningListType,
     RuleInfoType,
@@ -161,7 +170,9 @@ from constat.server.graphql.types.learning_types import (  # noqa: F401
     SkillContentType,
     SkillInfoType,
     SkillsListType,
+    UpdateAgentInput,
     UpdateRuleInput,
+    UpdateSkillInput,
 )
 
 # -- Secondary types (Phase 9): fine-tune, feedback, testing, OAuth --

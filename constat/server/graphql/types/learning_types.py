@@ -122,3 +122,84 @@ class SetAgentResultType:
     success: bool
     current_agent: Optional[str] = None
     message: str
+
+
+# --- Skill CRUD types ---
+
+@strawberry.input
+class CreateSkillInput:
+    name: str
+    prompt: str
+    description: str = ""
+
+
+@strawberry.input
+class UpdateSkillInput:
+    content: str  # Raw YAML content
+
+
+@strawberry.input
+class DraftSkillInput:
+    name: str
+    user_description: str
+
+
+@strawberry.type
+class DraftSkillResultType:
+    name: str
+    content: str
+    description: str
+
+
+@strawberry.input
+class CreateSkillFromProofInput:
+    name: str
+    description: str = ""
+
+
+@strawberry.type
+class CreateSkillFromProofResultType:
+    name: str
+    content: str
+    description: str
+    has_script: bool
+
+
+# --- Agent CRUD types ---
+
+@strawberry.input
+class CreateAgentInput:
+    name: str
+    prompt: str
+    description: str = ""
+    skills: list[str] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
+class UpdateAgentInput:
+    prompt: str
+    description: str = ""
+    skills: list[str] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
+class DraftAgentInput:
+    name: str
+    user_description: str
+
+
+@strawberry.type
+class DraftAgentResultType:
+    name: str
+    prompt: str
+    description: str
+    skills: list[str] = strawberry.field(default_factory=list)
+
+
+@strawberry.type
+class AgentContentType:
+    name: str
+    prompt: str
+    description: str
+    skills: list[str] = strawberry.field(default_factory=list)
+    path: str
