@@ -17,6 +17,7 @@ from constat.session._core import CoreMixin
 from constat.session._dag import DagMixin
 from constat.session._execution import ExecutionMixin
 from constat.session._follow_up import FollowUpMixin
+from constat.session._handbook import HandbookMixin
 from constat.session._intents import IntentsMixin
 from constat.session._metadata import MetadataMixin
 from constat.session._plans import PlansMixin
@@ -55,6 +56,7 @@ class Session(
     ResourcesMixin,
     PromptsMixin,
     MetadataMixin,
+    HandbookMixin,
     CoreMixin,
 ):
     """Orchestrates multistep analytical plan execution."""
