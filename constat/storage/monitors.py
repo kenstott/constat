@@ -8,14 +8,10 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""Monitor storage for scheduled plan execution.
+"""Monitor storage for scheduled plan execution, backed by DuckDB.
 
 Provides persistent storage for monitors that schedule periodic re-execution
 of saved plans with trigger conditions and actions.
-
-Storage locations:
-- Monitors: .constat/<user_id>/monitors.json
-- Run history: .constat/<user_id>/monitor_runs/<monitor_id>.jsonl
 """
 
 from __future__ import annotations
@@ -27,6 +23,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
+
+from constat.storage.duckdb_pool import ThreadLocalDuckDB
 
 logger = logging.getLogger(__name__)
 
@@ -235,78 +233,97 @@ class MonitorRun:
 
 
 class MonitorStore:
-    """Persistence for monitors and run history.
-
-    Monitors are stored per-user in .constat/<user_id>/monitors.json.
-    Run history is stored in .constat/<user_id>/monitor_runs/<monitor_id>.jsonl.
-    """
+    """Persistence for monitors and run history, backed by DuckDB."""
 
     CONSTAT_BASE_DIR = Path(".constat")
 
-    def __init__(self, user_id: str, base_path: Optional[Path] = None):
+    _MONITORS_DDL = """
+    CREATE TABLE IF NOT EXISTS monitors (
+        id VARCHAR PRIMARY KEY,
+        data TEXT NOT NULL
+    )
+    """
+
+    _RUNS_DDL = """
+    CREATE TABLE IF NOT EXISTS monitor_runs (
+        id VARCHAR PRIMARY KEY,
+        monitor_id VARCHAR NOT NULL,
+        data TEXT NOT NULL,
+        started_at TIMESTAMP
+    )
+    """
+
+    def __init__(
+        self,
+        user_id: str,
+        base_path: Optional[Path] = None,
+        db: Optional[ThreadLocalDuckDB] = None,
+    ):
         """Initialize monitor store.
 
         Args:
             user_id: User ID for scoping monitors
             base_path: Override base .constat directory
+            db: Existing ThreadLocalDuckDB connection to reuse. If None,
+                opens a standalone connection to the user vault.
         """
         self.user_id = user_id
         self.base_path = base_path or self.CONSTAT_BASE_DIR
-        self._monitors: Optional[dict[str, Monitor]] = None
+        self._owns_db = db is None
+        if db is not None:
+            self._db = db
+        else:
+            from constat.core.paths import user_vault_dir, migrate_db_name
+            vault = user_vault_dir(self.base_path, user_id)
+            vault.mkdir(parents=True, exist_ok=True)
+            db_path = migrate_db_name(vault, "vectors.duckdb", "user.duckdb")
+            self._db = ThreadLocalDuckDB(str(db_path))
+        self._tables_ensured = False
 
-    def _get_monitors_file(self) -> Path:
-        """Get path to monitors file for this user."""
+    def _ensure_tables(self) -> None:
+        if self._tables_ensured:
+            return
+        self._db.execute(self._MONITORS_DDL)
+        self._db.execute(self._RUNS_DDL)
+        self._tables_ensured = True
+        self._import_json()
+
+    def _import_json(self) -> None:
+        """One-time import from legacy monitors.json + monitor_runs/*.jsonl."""
         from constat.core.paths import user_vault_dir
-        return user_vault_dir(self.base_path, self.user_id) / "monitors.json"
-
-    def _get_runs_dir(self) -> Path:
-        """Get path to monitor runs directory for this user."""
-        from constat.core.paths import user_vault_dir
-        return user_vault_dir(self.base_path, self.user_id) / "monitor_runs"
-
-    def _get_run_file(self, monitor_id: str) -> Path:
-        """Get path to run history file for a specific monitor."""
-        return self._get_runs_dir() / f"{monitor_id}.jsonl"
-
-    def _load(self) -> dict[str, Monitor]:
-        """Load monitors from JSON file."""
-        if self._monitors is not None:
-            return self._monitors
-
-        monitors_file = self._get_monitors_file()
+        vault = user_vault_dir(self.base_path, self.user_id)
+        monitors_file = vault / "monitors.json"
         if not monitors_file.exists():
-            self._monitors = {}
-            return self._monitors
-
-        try:
-            data = json.loads(monitors_file.read_text())
-            self._monitors = {
-                mid: Monitor.from_dict(mdata) for mid, mdata in data.items()
-            }
-        except (json.JSONDecodeError, OSError, KeyError) as e:
-            logger.warning(f"Could not load monitors from {monitors_file}: {e}")
-            # Backup corrupted file before discarding
-            if monitors_file.exists():
-                try:
-                    backup_path = monitors_file.with_suffix('.corrupted')
-                    monitors_file.rename(backup_path)
-                    logger.warning(f"Corrupted monitors file backed up to {backup_path}")
-                except OSError as backup_err:
-                    logger.error(f"Failed to backup corrupted monitors file: {backup_err}")
-            self._monitors = {}
-
-        return self._monitors
-
-    def _save(self) -> None:
-        """Save monitors to JSON file."""
-        if self._monitors is None:
+            return
+        count = self._db.execute("SELECT COUNT(*) FROM monitors").fetchone()[0]
+        if count > 0:
             return
 
-        monitors_file = self._get_monitors_file()
-        monitors_file.parent.mkdir(parents=True, exist_ok=True)
+        data = json.loads(monitors_file.read_text())
+        for mid, mdata in data.items():
+            self._db.execute(
+                "INSERT INTO monitors (id, data) VALUES (?, ?)",
+                [mid, json.dumps(mdata)],
+            )
 
-        data = {mid: m.to_dict() for mid, m in self._monitors.items()}
-        monitors_file.write_text(json.dumps(data, indent=2))
+        # Import run history
+        runs_dir = vault / "monitor_runs"
+        if runs_dir.exists():
+            for run_file in runs_dir.glob("*.jsonl"):
+                with open(run_file, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        run_data = json.loads(line)
+                        started = run_data.get("started_at")
+                        self._db.execute(
+                            "INSERT INTO monitor_runs (id, monitor_id, data, started_at) VALUES (?, ?, ?, ?)",
+                            [run_data["id"], run_data["monitor_id"], json.dumps(run_data), started],
+                        )
+
+        monitors_file.rename(monitors_file.with_suffix(".json.imported"))
+        logger.info("Imported monitors from %s", monitors_file)
 
     def save(self, monitor: Monitor) -> None:
         """Save a monitor (create or update).
@@ -314,9 +331,12 @@ class MonitorStore:
         Args:
             monitor: Monitor to save
         """
-        monitors = self._load()
-        monitors[monitor.id] = monitor
-        self._save()
+        self._ensure_tables()
+        self._db.execute(
+            """INSERT INTO monitors (id, data) VALUES (?, ?)
+               ON CONFLICT (id) DO UPDATE SET data = excluded.data""",
+            [monitor.id, json.dumps(monitor.to_dict())],
+        )
 
     def get(self, monitor_id: str) -> Optional[Monitor]:
         """Get a monitor by ID.
@@ -327,8 +347,13 @@ class MonitorStore:
         Returns:
             Monitor or None if not found
         """
-        monitors = self._load()
-        return monitors.get(monitor_id)
+        self._ensure_tables()
+        row = self._db.execute(
+            "SELECT data FROM monitors WHERE id = ?", [monitor_id]
+        ).fetchone()
+        if row is None:
+            return None
+        return Monitor.from_dict(json.loads(row[0]))
 
     def get_by_name(self, name: str) -> Optional[Monitor]:
         """Get a monitor by name.
@@ -339,10 +364,12 @@ class MonitorStore:
         Returns:
             Monitor or None if not found
         """
-        monitors = self._load()
-        for monitor in monitors.values():
-            if monitor.name == name:
-                return monitor
+        self._ensure_tables()
+        rows = self._db.execute("SELECT data FROM monitors").fetchall()
+        for (data_str,) in rows:
+            data = json.loads(data_str)
+            if data.get("name") == name:
+                return Monitor.from_dict(data)
         return None
 
     def list_all(self) -> list[Monitor]:
@@ -351,8 +378,9 @@ class MonitorStore:
         Returns:
             List of all monitors
         """
-        monitors = self._load()
-        return list(monitors.values())
+        self._ensure_tables()
+        rows = self._db.execute("SELECT data FROM monitors").fetchall()
+        return [Monitor.from_dict(json.loads(row[0])) for row in rows]
 
     def delete(self, monitor_id: str) -> bool:
         """Delete a monitor by ID.
@@ -363,18 +391,14 @@ class MonitorStore:
         Returns:
             True if deleted, False if not found
         """
-        monitors = self._load()
-        if monitor_id not in monitors:
+        self._ensure_tables()
+        row = self._db.execute(
+            "SELECT id FROM monitors WHERE id = ?", [monitor_id]
+        ).fetchone()
+        if row is None:
             return False
-
-        del monitors[monitor_id]
-        self._save()
-
-        # Also delete run history
-        run_file = self._get_run_file(monitor_id)
-        if run_file.exists():
-            run_file.unlink()
-
+        self._db.execute("DELETE FROM monitors WHERE id = ?", [monitor_id])
+        self._db.execute("DELETE FROM monitor_runs WHERE monitor_id = ?", [monitor_id])
         return True
 
     def delete_by_name(self, name: str) -> bool:
@@ -405,18 +429,17 @@ class MonitorStore:
         Args:
             run: MonitorRun record to save
         """
-        runs_dir = self._get_runs_dir()
-        runs_dir.mkdir(parents=True, exist_ok=True)
-
-        run_file = self._get_run_file(run.monitor_id)
-        with open(run_file, "a") as f:
-            f.write(json.dumps(run.to_dict()) + "\n")
-
+        self._ensure_tables()
+        self._db.execute(
+            "INSERT INTO monitor_runs (id, monitor_id, data, started_at) VALUES (?, ?, ?, ?)",
+            [run.id, run.monitor_id, json.dumps(run.to_dict()), run.started_at],
+        )
         # Update monitor's last_run timestamp
-        monitor = self.get(run.monitor_id)
-        if monitor and run.completed_at:
-            monitor.last_run = run.completed_at
-            self.save(monitor)
+        if run.completed_at:
+            monitor = self.get(run.monitor_id)
+            if monitor:
+                monitor.last_run = run.completed_at
+                self.save(monitor)
 
     def get_runs(self, monitor_id: str, limit: int = 10) -> list[MonitorRun]:
         """Get recent runs for a monitor.
@@ -428,23 +451,12 @@ class MonitorStore:
         Returns:
             List of MonitorRun records, most recent first
         """
-        run_file = self._get_run_file(monitor_id)
-        if not run_file.exists():
-            return []
-
-        runs = []
-        try:
-            with open(run_file, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        runs.append(MonitorRun.from_dict(json.loads(line)))
-        except (json.JSONDecodeError, OSError):
-            return []
-
-        # Return most recent first, limited
-        runs.reverse()
-        return runs[:limit]
+        self._ensure_tables()
+        rows = self._db.execute(
+            "SELECT data FROM monitor_runs WHERE monitor_id = ? ORDER BY started_at DESC LIMIT ?",
+            [monitor_id, limit],
+        ).fetchall()
+        return [MonitorRun.from_dict(json.loads(row[0])) for row in rows]
 
     def get_last_run(self, monitor_id: str) -> Optional[MonitorRun]:
         """Get the most recent run for a monitor.

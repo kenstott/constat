@@ -18,8 +18,80 @@ from typing import Optional
 
 from constat.core.models import StepResult
 from constat.session._types import StepEvent
+from constat.storage.duckdb_pool import ThreadLocalDuckDB
 
 logger = logging.getLogger(__name__)
+
+_PLANS_DDL = """
+CREATE TABLE IF NOT EXISTS saved_plans (
+    name VARCHAR NOT NULL,
+    user_id VARCHAR NOT NULL,
+    problem TEXT,
+    created_by VARCHAR,
+    shared_by VARCHAR,
+    steps TEXT,
+    shared BOOLEAN DEFAULT FALSE,
+    PRIMARY KEY (name, user_id)
+)
+"""
+
+
+def _open_standalone_db(base_dir: Path, user_id: str) -> ThreadLocalDuckDB:
+    """Open a standalone DuckDB connection to the user vault."""
+    from constat.core.paths import user_vault_dir, migrate_db_name
+    vault = user_vault_dir(base_dir, user_id)
+    vault.mkdir(parents=True, exist_ok=True)
+    db_path = migrate_db_name(vault, "vectors.duckdb", "user.duckdb")
+    return ThreadLocalDuckDB(str(db_path))
+
+
+def _ensure_plans_table(db: ThreadLocalDuckDB) -> None:
+    """Create plans table idempotently."""
+    db.execute(_PLANS_DDL)
+
+
+def _import_json_plans(db: ThreadLocalDuckDB, base_dir: Path, user_id: str) -> None:
+    """One-time import from legacy saved_plans.json (user) and shared/saved_plans.json."""
+    count = db.execute("SELECT COUNT(*) FROM saved_plans").fetchone()[0]
+    if count > 0:
+        return
+
+    from constat.core.paths import user_vault_dir
+
+    # Import user plans
+    user_file = user_vault_dir(base_dir, user_id) / "saved_plans.json"
+    if user_file.exists():
+        data = json.loads(user_file.read_text())
+        for name, plan in data.items():
+            db.execute(
+                "INSERT INTO saved_plans (name, user_id, problem, created_by, shared_by, steps, shared) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    name, user_id, plan.get("problem"),
+                    plan.get("created_by"), plan.get("shared_by"),
+                    json.dumps(plan.get("steps", [])), False,
+                ],
+            )
+        user_file.rename(user_file.with_suffix(".json.imported"))
+        logger.info("Imported user plans from %s", user_file)
+
+    # Import shared plans
+    shared_file = base_dir / "shared" / "saved_plans.json"
+    if shared_file.exists():
+        data = json.loads(shared_file.read_text())
+        shared_user = "__shared__"
+        for name, plan in data.items():
+            db.execute(
+                "INSERT INTO saved_plans (name, user_id, problem, created_by, shared_by, steps, shared) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (name, user_id) DO NOTHING",
+                [
+                    name, shared_user, plan.get("problem"),
+                    plan.get("created_by"), None,
+                    json.dumps(plan.get("steps", [])), True,
+                ],
+            )
+        shared_file.rename(shared_file.with_suffix(".json.imported"))
+        logger.info("Imported shared plans from %s", shared_file)
 
 
 # noinspection PyUnresolvedReferences
@@ -28,16 +100,27 @@ class PlansMixin:
     CONSTAT_BASE_DIR = Path(".constat")
     DEFAULT_USER_ID = "default"
 
-    @classmethod
-    def _get_user_plans_file(cls, user_id: str) -> Path:
-        """Get path to user-scoped saved plans file."""
-        from constat.core.paths import user_vault_dir
-        return user_vault_dir(cls.CONSTAT_BASE_DIR, user_id) / "saved_plans.json"
+    _plans_table_ensured: bool = False
+
+    def _get_plans_db(self) -> ThreadLocalDuckDB:
+        """Get DuckDB connection for plans storage."""
+        if hasattr(self, "_split_store") and self._split_store is not None:
+            return self._split_store.db
+        if not hasattr(self, "_plans_standalone_db"):
+            user_id = getattr(self, "user_id", self.DEFAULT_USER_ID)
+            self._plans_standalone_db = _open_standalone_db(self.CONSTAT_BASE_DIR, user_id)
+        return self._plans_standalone_db
 
     @classmethod
-    def _get_shared_plans_file(cls) -> Path:
-        """Get path to shared plans file."""
-        return cls.CONSTAT_BASE_DIR / "shared" / "saved_plans.json"
+    def _get_plans_db_standalone(cls, user_id: str) -> ThreadLocalDuckDB:
+        """Get a standalone DuckDB connection (for classmethod access)."""
+        return _open_standalone_db(cls.CONSTAT_BASE_DIR, user_id)
+
+    @classmethod
+    def _ensure_plans(cls, db: ThreadLocalDuckDB, user_id: str) -> None:
+        """Ensure plans table exists and import legacy data."""
+        _ensure_plans_table(db)
+        _import_json_plans(db, cls.CONSTAT_BASE_DIR, user_id)
 
     def save_plan(self, name: str, problem: str, user_id: Optional[str] = None, shared: bool = False) -> None:
         """
@@ -57,28 +140,29 @@ class PlansMixin:
             raise ValueError("No steps to save")
 
         user_id = user_id or self.DEFAULT_USER_ID
+        db = self._get_plans_db()
+        self._ensure_plans(db, user_id)
 
-        plan_data = {
-            "problem": problem,
-            "created_by": user_id,
-            "steps": [
-                {
-                    "step_number": e["step_number"],
-                    "goal": e["goal"],
-                    "code": e["code"],
-                }
-                for e in entries
-            ],
-        }
+        steps = [
+            {
+                "step_number": e["step_number"],
+                "goal": e["goal"],
+                "code": e["code"],
+            }
+            for e in entries
+        ]
 
-        if shared:
-            plans = self._load_shared_plans()
-            plans[name] = plan_data
-            self._save_shared_plans(plans)
-        else:
-            plans = self._load_user_plans(user_id)
-            plans[name] = plan_data
-            self._save_user_plans(user_id, plans)
+        target_user = "__shared__" if shared else user_id
+        db.execute(
+            """INSERT INTO saved_plans (name, user_id, problem, created_by, shared_by, steps, shared)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (name, user_id) DO UPDATE SET
+                   problem = excluded.problem,
+                   created_by = excluded.created_by,
+                   steps = excluded.steps,
+                   shared = excluded.shared""",
+            [name, target_user, problem, user_id, None, json.dumps(steps), shared],
+        )
 
     @classmethod
     def load_saved_plan(cls, name: str, user_id: Optional[str] = None) -> dict:
@@ -95,16 +179,34 @@ class PlansMixin:
             Dict with problem and steps
         """
         user_id = user_id or cls.DEFAULT_USER_ID
+        db = cls._get_plans_db_standalone(user_id)
+        cls._ensure_plans(db, user_id)
 
         # Check user's plans first
-        user_plans = cls._load_user_plans(user_id)
-        if name in user_plans:
-            return user_plans[name]
+        row = db.execute(
+            "SELECT problem, created_by, shared_by, steps FROM saved_plans WHERE name = ? AND user_id = ?",
+            [name, user_id],
+        ).fetchone()
+        if row is not None:
+            return {
+                "problem": row[0],
+                "created_by": row[1],
+                "shared_by": row[2],
+                "steps": json.loads(row[3]) if row[3] else [],
+            }
 
         # Check shared plans
-        shared_plans = cls._load_shared_plans()
-        if name in shared_plans:
-            return shared_plans[name]
+        row = db.execute(
+            "SELECT problem, created_by, shared_by, steps FROM saved_plans WHERE name = ? AND user_id = ?",
+            [name, "__shared__"],
+        ).fetchone()
+        if row is not None:
+            return {
+                "problem": row[0],
+                "created_by": row[1],
+                "shared_by": row[2],
+                "steps": json.loads(row[3]) if row[3] else [],
+            }
 
         raise ValueError(f"No saved plan named '{name}'")
 
@@ -121,28 +223,39 @@ class PlansMixin:
             List of dicts with name, problem, shared flag
         """
         user_id = user_id or cls.DEFAULT_USER_ID
+        db = cls._get_plans_db_standalone(user_id)
+        cls._ensure_plans(db, user_id)
+
         result = []
 
         # User's plans
-        user_plans = cls._load_user_plans(user_id)
-        for name, data in user_plans.items():
+        rows = db.execute(
+            "SELECT name, problem, steps FROM saved_plans WHERE user_id = ? AND shared = FALSE",
+            [user_id],
+        ).fetchall()
+        for name, problem, steps_json in rows:
+            steps = json.loads(steps_json) if steps_json else []
             result.append({
                 "name": name,
-                "problem": data.get("problem", ""),
+                "problem": problem or "",
                 "shared": False,
-                "steps": len(data.get("steps", [])),
+                "steps": len(steps),
             })
 
         # Shared plans
         if include_shared:
-            shared_plans = cls._load_shared_plans()
-            for name, data in shared_plans.items():
+            rows = db.execute(
+                "SELECT name, problem, created_by, steps FROM saved_plans WHERE user_id = ?",
+                ["__shared__"],
+            ).fetchall()
+            for name, problem, created_by, steps_json in rows:
+                steps = json.loads(steps_json) if steps_json else []
                 result.append({
                     "name": name,
-                    "problem": data.get("problem", ""),
+                    "problem": problem or "",
                     "shared": True,
-                    "created_by": data.get("created_by", "unknown"),
-                    "steps": len(data.get("steps", [])),
+                    "created_by": created_by or "unknown",
+                    "steps": len(steps),
                 })
 
         return result
@@ -151,13 +264,20 @@ class PlansMixin:
     def delete_saved_plan(cls, name: str, user_id: Optional[str] = None) -> bool:
         """Delete a saved plan by name (only user's own plans)."""
         user_id = user_id or cls.DEFAULT_USER_ID
-        user_plans = cls._load_user_plans(user_id)
+        db = cls._get_plans_db_standalone(user_id)
+        cls._ensure_plans(db, user_id)
 
-        if name not in user_plans:
+        row = db.execute(
+            "SELECT name FROM saved_plans WHERE name = ? AND user_id = ?",
+            [name, user_id],
+        ).fetchone()
+        if row is None:
             return False
 
-        del user_plans[name]
-        cls._save_user_plans(user_id, user_plans)
+        db.execute(
+            "DELETE FROM saved_plans WHERE name = ? AND user_id = ?",
+            [name, user_id],
+        )
         return True
 
     @classmethod
@@ -174,62 +294,36 @@ class PlansMixin:
             True if shared successfully
         """
         from_user = from_user or cls.DEFAULT_USER_ID
+        db = cls._get_plans_db_standalone(from_user)
+        cls._ensure_plans(db, from_user)
 
         # Find the plan (check user's plans first, then shared)
-        source_plans = cls._load_user_plans(from_user)
-        if name in source_plans:
-            plan_data = source_plans[name].copy()
-        else:
-            shared_plans = cls._load_shared_plans()
-            if name in shared_plans:
-                plan_data = shared_plans[name].copy()
-            else:
-                return False
+        row = db.execute(
+            "SELECT problem, created_by, steps FROM saved_plans WHERE name = ? AND user_id = ?",
+            [name, from_user],
+        ).fetchone()
+        if row is None:
+            row = db.execute(
+                "SELECT problem, created_by, steps FROM saved_plans WHERE name = ? AND user_id = ?",
+                [name, "__shared__"],
+            ).fetchone()
+        if row is None:
+            return False
+
+        problem, created_by, steps_json = row
 
         # Copy to target user's plans
-        target_plans = cls._load_user_plans(target_user)
-        plan_data["shared_by"] = from_user
-        target_plans[name] = plan_data
-        cls._save_user_plans(target_user, target_plans)
+        db.execute(
+            """INSERT INTO saved_plans (name, user_id, problem, created_by, shared_by, steps, shared)
+               VALUES (?, ?, ?, ?, ?, ?, FALSE)
+               ON CONFLICT (name, user_id) DO UPDATE SET
+                   problem = excluded.problem,
+                   created_by = excluded.created_by,
+                   shared_by = excluded.shared_by,
+                   steps = excluded.steps""",
+            [name, target_user, problem, created_by, from_user, steps_json],
+        )
         return True
-
-    @classmethod
-    def _load_user_plans(cls, user_id: str) -> dict:
-        """Load saved plans for a specific user."""
-        plans_file = cls._get_user_plans_file(user_id)
-        if not plans_file.exists():
-            return {}
-        try:
-            return json.loads(plans_file.read_text())
-        except (json.JSONDecodeError, OSError) as e:
-            logger.debug(f"Could not load user plans from {plans_file}: {e}")
-            return {}
-
-    @classmethod
-    def _save_user_plans(cls, user_id: str, plans: dict) -> None:
-        """Save plans to user-scoped file."""
-        plans_file = cls._get_user_plans_file(user_id)
-        plans_file.parent.mkdir(parents=True, exist_ok=True)
-        plans_file.write_text(json.dumps(plans, indent=2))
-
-    @classmethod
-    def _load_shared_plans(cls) -> dict:
-        """Load shared plans accessible to all users."""
-        plans_file = cls._get_shared_plans_file()
-        if not plans_file.exists():
-            return {}
-        try:
-            return json.loads(plans_file.read_text())
-        except (json.JSONDecodeError, OSError) as e:
-            logger.debug(f"Could not load shared plans from {plans_file}: {e}")
-            return {}
-
-    @classmethod
-    def _save_shared_plans(cls, plans: dict) -> None:
-        """Save shared plans."""
-        plans_file = cls._get_shared_plans_file()
-        plans_file.parent.mkdir(parents=True, exist_ok=True)
-        plans_file.write_text(json.dumps(plans, indent=2))
 
     def replay_saved(self, name: str, user_id: Optional[str] = None) -> dict:
         """
