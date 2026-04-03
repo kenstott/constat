@@ -542,6 +542,36 @@ async def create_session(
             if 'user' not in _managed.active_domains:
                 _managed.active_domains.append('user')
 
+            # Load personal accounts as user-tier document sources
+            try:
+                from constat.server.accounts import load_user_accounts, account_to_document_config
+                from constat.core.source_config import DocumentConfig
+                _server_config = _managed.session.config
+                _personal_accounts = load_user_accounts(
+                    effective_user_id,
+                    getattr(_server_config, 'data_dir', None),
+                )
+                for _acct_name, _acct in _personal_accounts.items():
+                    if _acct.active and _managed.session.doc_tools:
+                        try:
+                            _doc_kwargs = account_to_document_config(_acct, _server_config)
+                            _doc_config = DocumentConfig(**_doc_kwargs)
+                            _managed.session.doc_tools.add_document_from_config(
+                                _acct_name, _doc_config,
+                                domain_id=effective_user_id,
+                                session_id=_managed.session_id,
+                            )
+                            _managed.session.resources.add_document(
+                                name=_acct_name,
+                                description=_acct.display_name,
+                                doc_type=_acct.type,
+                                domain_id="personal",
+                            )
+                        except Exception as _acct_err:
+                            logger.warning(f"Failed to load personal account {_acct_name}: {_acct_err}")
+            except Exception as _accounts_err:
+                logger.warning(f"Failed to load personal accounts for {effective_user_id}: {_accounts_err}")
+
             # Mark init complete — heartbeat NER can now run safely
             _managed._init_complete = True
 

@@ -176,6 +176,16 @@ class ServerConfig(BaseModel):
     microsoft_email_client_secret: Optional[str] = None
     microsoft_email_tenant_id: str = "common"
 
+    # Generalized OAuth (shared across resource types: email, drive, calendar, sharepoint)
+    google_oauth_client_id: Optional[str] = None
+    google_oauth_client_secret: Optional[str] = None
+    microsoft_oauth_client_id: Optional[str] = None
+    microsoft_oauth_client_secret: Optional[str] = None
+    microsoft_oauth_tenant_id: Optional[str] = None
+
+    # Token encryption for personal accounts
+    account_encryption_secret: Optional[str] = None
+
     # Microsoft SSO (Azure AD / Entra ID)
     microsoft_auth_client_id: Optional[str] = Field(default=None, description="Azure AD app registration client ID for SSO")
     microsoft_auth_client_secret: Optional[str] = Field(default=None, description="Azure AD client secret for SSO")
@@ -242,6 +252,19 @@ class ServerConfig(BaseModel):
         microsoft_email_tenant_id_env = os.environ.get("MICROSOFT_EMAIL_TENANT_ID")
         if microsoft_email_tenant_id_env is not None:
             self.microsoft_email_tenant_id = microsoft_email_tenant_id_env
+
+        # Generalized OAuth env var overrides
+        for env_key, attr in [
+            ("GOOGLE_OAUTH_CLIENT_ID", "google_oauth_client_id"),
+            ("GOOGLE_OAUTH_CLIENT_SECRET", "google_oauth_client_secret"),
+            ("MICROSOFT_OAUTH_CLIENT_ID", "microsoft_oauth_client_id"),
+            ("MICROSOFT_OAUTH_CLIENT_SECRET", "microsoft_oauth_client_secret"),
+            ("MICROSOFT_OAUTH_TENANT_ID", "microsoft_oauth_tenant_id"),
+            ("ACCOUNT_ENCRYPTION_SECRET", "account_encryption_secret"),
+        ]:
+            val = os.environ.get(env_key)
+            if val is not None:
+                setattr(self, attr, val)
 
         for env_key, attr in [
             ("MICROSOFT_AUTH_CLIENT_ID", "microsoft_auth_client_id"),

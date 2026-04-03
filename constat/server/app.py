@@ -790,6 +790,8 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.fine_tune import router as fine_tune_router
 
     from constat.server.routes.oauth_email import router as oauth_email_router
+    from constat.server.routes.oauth import router as oauth_router
+    from constat.server.routes.accounts import router as accounts_router
     from constat.server.graphql import graphql_router
     from constat.server.routes.graphql_sse import router as graphql_sse_router
 
@@ -799,6 +801,16 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         oauth_email_router,
         prefix="/api/oauth/email",
         tags=["oauth-email"],
+    )
+    fastapi_app.include_router(
+        oauth_router,
+        prefix="/api/oauth",
+        tags=["oauth"],
+    )
+    fastapi_app.include_router(
+        accounts_router,
+        prefix="/api/accounts",
+        tags=["accounts"],
     )
     fastapi_app.include_router(
         graphql_router,
