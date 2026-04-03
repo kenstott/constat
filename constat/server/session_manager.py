@@ -605,6 +605,11 @@ class SessionManager:
             fact_store = FactStore(user_id=user_id, db=user_db)
             learning_store = LearningStore(user_id=user_id, db=user_db)
 
+            # Wire DuckDB-backed history into the session
+            from constat.storage.history import create_session_history
+            db_history = create_session_history(user_id=user_id, db=user_db)
+            session.history = db_history
+
             # Load persisted facts for this user
             fact_store.load_into_session(session)
 
