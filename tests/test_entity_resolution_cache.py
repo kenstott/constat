@@ -21,7 +21,7 @@ from constat.discovery.vector_store import DuckDBVectorStore
 @pytest.fixture
 def temp_db():
     temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test_vectors.duckdb")
+    db_path = os.path.join(temp_dir, "test_system.duckdb")
     old_path = os.environ.get("CONSTAT_VECTOR_STORE_PATH")
     os.environ["CONSTAT_VECTOR_STORE_PATH"] = db_path
     yield db_path

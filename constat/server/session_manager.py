@@ -429,6 +429,26 @@ class SessionManager:
         from constat.server.diff_generators import EntityDiffGenerator
         self._diff_generators = [EntityDiffGenerator()]
 
+    def get_user_db(self, user_id: str) -> "ThreadLocalDuckDB":
+        """Get a DuckDB connection for a user's vault.
+
+        Reuses the connection from an existing session if available,
+        otherwise opens a standalone connection.
+        """
+        for managed in self._sessions.values():
+            if managed.user_id == user_id and hasattr(managed.session, '_split_store'):
+                return managed.session._split_store.db
+        # No active session — open standalone
+        from constat.core.paths import user_vault_dir, migrate_db_name
+        from constat.storage.duckdb_pool import ThreadLocalDuckDB
+        vault = user_vault_dir(self._server_config.data_dir, user_id)
+        vault.mkdir(parents=True, exist_ok=True)
+        db_path = migrate_db_name(vault, "vectors.duckdb", "user.duckdb")
+        return ThreadLocalDuckDB(
+            str(db_path),
+            init_sql=["INSTALL vss", "LOAD vss", "INSTALL fts", "LOAD fts"],
+        )
+
         # GraphQL subscription pub/sub
         self._glossary_subscribers: dict[str, list[asyncio.Queue]] = {}
         self._execution_subscribers: dict[str, list[asyncio.Queue]] = {}
@@ -558,9 +578,10 @@ class SessionManager:
                 )
                 logger.info(f"Created session directory: {history_session_id} (server_id={session_id})")
 
-            # Create stores for API
-            fact_store = FactStore(user_id=user_id)
-            learning_store = LearningStore(user_id=user_id)
+            # Create stores for API — share the session's DuckDB connection
+            user_db = session._split_store.db
+            fact_store = FactStore(user_id=user_id, db=user_db)
+            learning_store = LearningStore(user_id=user_id, db=user_db)
 
             # Load persisted facts for this user
             fact_store.load_into_session(session)

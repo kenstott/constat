@@ -128,7 +128,8 @@ class ConstatRegistry:
         """
         self.base_dir = Path(base_dir) if base_dir else Path(".constat")
         self.db_path = self.base_dir / "registry.duckdb"
-        self._vectors_path = self.base_dir / "vectors.duckdb"
+        from constat.core.paths import migrate_db_name
+        self._vectors_path = migrate_db_name(self.base_dir, "vectors.duckdb", "system.duckdb")
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         # Use thread-local connections for thread safety
@@ -936,7 +937,7 @@ class ConstatRegistry:
     # --- Vectors DB ATTACH ---
 
     def attach_vectors(self, vectors_path: Optional[Path] = None) -> bool:
-        """ATTACH vectors.duckdb as 'vectors' (READ_ONLY) on all registry connections.
+        """ATTACH system.duckdb as 'vectors' (READ_ONLY) on all registry connections.
 
         Returns False if the vectors file does not exist.
         """

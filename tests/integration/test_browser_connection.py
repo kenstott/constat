@@ -117,7 +117,7 @@ class TestBrowserConnection:
 class TestSplitModeSession:
     """Verify session creation works with split vector store (non-default user).
 
-    When user_id != 'default' and .constat/vectors.duckdb exists, the server
+    When user_id != 'default' and .constat/system.duckdb exists, the server
     creates a per-user vault with split mode: user DB + ATTACHed system DB.
     This is the path real authenticated users take.
     """

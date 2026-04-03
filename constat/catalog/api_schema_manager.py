@@ -89,7 +89,7 @@ class APISchemaManager:
     - GraphQL schema introspection via __schema query
     - REST API metadata from config descriptions
     - OpenAPI spec parsing for REST APIs
-    - Vector embeddings for semantic search (stored in shared vectors.duckdb)
+    - Vector embeddings for semantic search (stored in shared system.duckdb)
     - Caching for performance
     """
 
@@ -237,7 +237,7 @@ class APISchemaManager:
         cache_dir = self.CACHE_DIR
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save schema metadata only (embeddings stored in vectors.duckdb)
+        # Save schema metadata only (embeddings stored in system.duckdb)
         cache_data = {
             "config_hash": config_hash,
             "endpoints": {

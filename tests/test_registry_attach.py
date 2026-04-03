@@ -24,7 +24,7 @@ def registry(tmp_path):
 
 
 def _create_vectors_db(path):
-    """Create a vectors.duckdb with a test table."""
+    """Create a system.duckdb with a test table."""
     conn = duckdb.connect(str(path))
     conn.execute("CREATE TABLE embeddings (id INTEGER, vec FLOAT[])")
     conn.execute("INSERT INTO embeddings VALUES (1, [0.1, 0.2]), (2, [0.3, 0.4])")

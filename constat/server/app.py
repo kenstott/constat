@@ -201,7 +201,7 @@ def _warmup_vector_store(config: Config) -> None:
     router = TaskRouter(config.llm)
 
     # Create doc_tools early to access vector_store for hash checks
-    # Warmup writes to .constat/vectors.duckdb (the system DB)
+    # Warmup writes to .constat/system.duckdb (the system DB)
     doc_tools = DocumentDiscoveryTools(config, skip_auto_index=True, router=router)
     vector_store = doc_tools._vector_store
 

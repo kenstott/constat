@@ -303,7 +303,7 @@ def fresh_vector_store(tmp_path):
         schema_cache_path.unlink()
 
     # Set fresh vector store path
-    vector_store_path = tmp_path / "vectors.duckdb"
+    vector_store_path = tmp_path / "system.duckdb"
     old_value = os.environ.get("CONSTAT_VECTOR_STORE_PATH")
     os.environ["CONSTAT_VECTOR_STORE_PATH"] = str(vector_store_path)
 

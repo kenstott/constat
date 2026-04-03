@@ -25,7 +25,7 @@ def temp_db():
     # Create a temp directory and use a path within it
     # Don't create the file - DuckDB will create it
     temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test_vectors.duckdb")
+    db_path = os.path.join(temp_dir, "test_system.duckdb")
 
     # Set environment variable to use this path
     old_path = os.environ.get("CONSTAT_VECTOR_STORE_PATH")

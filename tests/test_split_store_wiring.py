@@ -149,12 +149,12 @@ class TestWarmupPathAlignment:
     """Verify warmup writes to the same path the session reads from."""
 
     def test_paths_match(self):
-        """Session system_db path matches where warmup writes (vectors.duckdb)."""
+        """Session system_db path matches where warmup writes (system.duckdb)."""
         from constat.session._core import CoreMixin
         import inspect
         source = inspect.getsource(CoreMixin.__init__)
-        # Session reads system DB from data_dir / "vectors.duckdb"
-        assert '"vectors.duckdb"' in source
+        # Session reads system DB via migrate_db_name → "system.duckdb"
+        assert '"system.duckdb"' in source
 
     def test_session_wires_schema_manager_vector_store(self):
         """CoreMixin sets schema_manager._vector_store to split store."""
@@ -248,8 +248,8 @@ class TestWarmupToSessionIntegration:
 
     def test_system_chunks_visible_through_split(self, tmp_path):
         """Chunks written to system DB are visible through SplitVectorStore union views."""
-        sys_path = tmp_path / "vectors.duckdb"
-        user_path = tmp_path / "user.vault" / "vectors.duckdb"
+        sys_path = tmp_path / "system.duckdb"
+        user_path = tmp_path / "user.vault" / "user.duckdb"
         user_path.parent.mkdir(parents=True)
 
         # Simulate warmup: write chunks directly to system DB
@@ -302,8 +302,8 @@ class TestWarmupToSessionIntegration:
 
     def test_session_writes_go_to_user_db(self, tmp_path):
         """Session-generated chunks (user tier) go to user DB, not system DB."""
-        sys_path = tmp_path / "vectors.duckdb"
-        user_path = tmp_path / "user.vault" / "vectors.duckdb"
+        sys_path = tmp_path / "system.duckdb"
+        user_path = tmp_path / "user.vault" / "user.duckdb"
         user_path.parent.mkdir(parents=True)
         _init_db(sys_path)
         _init_db(user_path)
@@ -342,8 +342,8 @@ class TestWarmupToSessionIntegration:
 
     def test_mixed_search_across_both_dbs(self, tmp_path):
         """Search returns results from both system and user DBs."""
-        sys_path = tmp_path / "vectors.duckdb"
-        user_path = tmp_path / "user.vault" / "vectors.duckdb"
+        sys_path = tmp_path / "system.duckdb"
+        user_path = tmp_path / "user.vault" / "user.duckdb"
         user_path.parent.mkdir(parents=True)
         _init_db(sys_path)
         _init_db(user_path)
@@ -474,8 +474,8 @@ class TestE2ESessionLifecycle:
     def test_warmup_then_session_from_split(self, tmp_path):
         """Full warmup → session cycle: warmup writes to system DB,
         session opens split store, reads warmup chunks, writes entities."""
-        sys_path = tmp_path / "vectors.duckdb"
-        user_path = tmp_path / "user.vault" / "vectors.duckdb"
+        sys_path = tmp_path / "system.duckdb"
+        user_path = tmp_path / "user.vault" / "user.duckdb"
         user_path.parent.mkdir(parents=True)
 
         # -- Phase 1: Warmup writes to system DB --
@@ -578,8 +578,8 @@ class TestE2ESessionLifecycle:
 
     def test_domain_chunks_dedup_against_warmup(self, tmp_path):
         """Session add_chunks for domain data skips if warmup already indexed."""
-        sys_path = tmp_path / "vectors.duckdb"
-        user_path = tmp_path / "user.vault" / "vectors.duckdb"
+        sys_path = tmp_path / "system.duckdb"
+        user_path = tmp_path / "user.vault" / "user.duckdb"
         user_path.parent.mkdir(parents=True)
 
         # Warmup writes hr chunk to system DB
@@ -619,8 +619,8 @@ class TestE2ESessionLifecycle:
 
     def test_user_tier_chunks_go_to_user_db(self, tmp_path):
         """User-tier data (e.g. user documents) writes to user DB, not system."""
-        sys_path = tmp_path / "vectors.duckdb"
-        user_path = tmp_path / "user.vault" / "vectors.duckdb"
+        sys_path = tmp_path / "system.duckdb"
+        user_path = tmp_path / "user.vault" / "user.duckdb"
         user_path.parent.mkdir(parents=True)
 
         # Warmup writes base chunks
@@ -664,8 +664,8 @@ class TestE2ESessionLifecycle:
     def test_entity_references_cross_db(self, tmp_path):
         """Entity links in user DB reference chunks in system DB.
         get_entity_references must JOIN across DBs via views."""
-        sys_path = tmp_path / "vectors.duckdb"
-        user_path = tmp_path / "user.vault" / "vectors.duckdb"
+        sys_path = tmp_path / "system.duckdb"
+        user_path = tmp_path / "user.vault" / "user.duckdb"
         user_path.parent.mkdir(parents=True)
 
         # Warmup: chunks in system DB
@@ -733,8 +733,8 @@ class TestE2ESessionLifecycle:
 
     def test_ensure_sys_tables_creates_missing(self, tmp_path):
         """_ensure_sys_tables creates tables in sys that are missing."""
-        sys_path = tmp_path / "vectors.duckdb"
-        user_path = tmp_path / "user.vault" / "vectors.duckdb"
+        sys_path = tmp_path / "system.duckdb"
+        user_path = tmp_path / "user.vault" / "user.duckdb"
         user_path.parent.mkdir(parents=True)
 
         # Create minimal system DB with ONLY embeddings (simulating old DB)
@@ -783,8 +783,8 @@ class TestE2ESessionLifecycle:
         from constat.catalog.schema_manager import SchemaManager
         from constat.core.config import Config, DatabaseConfig
 
-        sys_path = tmp_path / "vectors.duckdb"
-        user_path = tmp_path / "user.vault" / "vectors.duckdb"
+        sys_path = tmp_path / "system.duckdb"
+        user_path = tmp_path / "user.vault" / "user.duckdb"
         user_path.parent.mkdir(parents=True)
 
         # Create system DB with warmup chunks

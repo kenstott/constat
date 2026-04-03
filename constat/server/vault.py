@@ -33,14 +33,17 @@ def _derive_key(key_material: bytes, salt: bytes) -> bytes:
 
 
 class UserVault:
-    """Encrypt/decrypt a user's vectors.duckdb file with AES-256-GCM.
+    """Encrypt/decrypt a user's user.duckdb file with AES-256-GCM.
 
     When encrypt=False, all operations are no-ops that return the plain path.
     """
 
     SALT_FILE = ".vault_salt"
-    PLAIN_NAME = "vectors.duckdb"
-    ENC_NAME = "vectors.duckdb.enc"
+    PLAIN_NAME = "user.duckdb"
+    ENC_NAME = "user.duckdb.enc"
+    # Legacy names for one-time migration
+    _OLD_PLAIN = "vectors.duckdb"
+    _OLD_ENC = "vectors.duckdb.enc"
 
     def __init__(self, user_dir: Path, encrypt: bool = False) -> None:
         self.user_dir = user_dir
@@ -78,17 +81,19 @@ class UserVault:
         return self.plain_path
 
     def unlock(self, key_material: bytes) -> Path:
-        """Decrypt vectors.duckdb.enc -> vectors.duckdb, return plain path."""
+        """Decrypt user.duckdb.enc -> user.duckdb, return plain path."""
         if not self._encrypt:
+            self._migrate_plain()
             return self.plain_path
 
+        self._migrate_encrypted()
         salt = self.salt_path.read_bytes()
         self._key = _derive_key(key_material, salt)
         self._decrypt_db()
         return self.plain_path
 
     def lock(self) -> None:
-        """Encrypt vectors.duckdb -> vectors.duckdb.enc, remove plaintext."""
+        """Encrypt user.duckdb -> user.duckdb.enc, remove plaintext."""
         if not self._encrypt:
             return
 
@@ -117,3 +122,15 @@ class UserVault:
         aesgcm = AESGCM(self._key)
         plaintext = aesgcm.decrypt(nonce, ciphertext, None)
         self.plain_path.write_bytes(plaintext)
+
+    def _migrate_plain(self) -> None:
+        """Rename legacy vectors.duckdb -> user.duckdb if needed."""
+        old = self.user_dir / self._OLD_PLAIN
+        if old.exists() and not self.plain_path.exists():
+            old.rename(self.plain_path)
+
+    def _migrate_encrypted(self) -> None:
+        """Rename legacy vectors.duckdb.enc -> user.duckdb.enc if needed."""
+        old = self.user_dir / self._OLD_ENC
+        if old.exists() and not self.enc_path.exists():
+            old.rename(self.enc_path)

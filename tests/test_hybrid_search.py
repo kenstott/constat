@@ -24,7 +24,7 @@ from constat.discovery.vector_store import DuckDBVectorStore
 @pytest.fixture
 def store(tmp_path):
     """Create an isolated DuckDBVectorStore in a temp directory."""
-    db_path = str(tmp_path / "test_vectors.duckdb")
+    db_path = str(tmp_path / "test_system.duckdb")
     os.environ["CONSTAT_VECTOR_STORE_PATH"] = db_path
     s = DuckDBVectorStore(db_path=db_path)
     yield s

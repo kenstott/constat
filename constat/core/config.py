@@ -586,13 +586,13 @@ class VectorStoreConfig(BaseModel):
         storage:
           vector_store:
             backend: duckdb
-            db_path: ~/.constat/vectors.duckdb
+            db_path: ~/.constat/system.duckdb
     """
     # Backend type: "duckdb" or "numpy"
     backend: str = "duckdb"
 
     # Path to DuckDB database file (only for duckdb backend)
-    # Default: ~/.constat/vectors.duckdb
+    # Default: ~/.constat/system.duckdb
     db_path: Optional[str] = None
 
     # Cross-encoder model for reranking search results.

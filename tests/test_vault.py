@@ -23,7 +23,7 @@ def db_content():
 
 def _write_plain(user_dir, content):
     user_dir.mkdir(parents=True, exist_ok=True)
-    (user_dir / "vectors.duckdb").write_bytes(content)
+    (user_dir / "user.duckdb").write_bytes(content)
 
 
 class TestEncryptMode:

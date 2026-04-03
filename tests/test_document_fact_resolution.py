@@ -352,7 +352,7 @@ class TestProductionDiscoveryPath:
     The production path involves:
     1. SchemaManager creates table chunks via _extract_entities_from_descriptions()
     2. DocumentDiscoveryTools creates document chunks
-    3. Both use the same vectors.duckdb
+    3. Both use the same system.duckdb
     4. search_enriched() should find both
     """
 
@@ -411,7 +411,7 @@ class TestProductionDiscoveryPath:
         3. search_enriched() should find both via semantic similarity
 
         In production, Session creates both SchemaManager and DocumentDiscoveryTools.
-        They share the same vectors.duckdb file but may use separate connections.
+        They share the same system.duckdb file but may use separate connections.
         This test verifies they can see each other's data.
 
         Note: This test does NOT use clear_document_embeddings fixture because
@@ -424,7 +424,7 @@ class TestProductionDiscoveryPath:
 
         # Use a temporary vector store path for isolation
         with tempfile.TemporaryDirectory() as tmpdir:
-            test_vs_path = Path(tmpdir) / "vectors.duckdb"
+            test_vs_path = Path(tmpdir) / "system.duckdb"
             old_vs_path = os.environ.get("CONSTAT_VECTOR_STORE_PATH")
             os.environ["CONSTAT_VECTOR_STORE_PATH"] = str(test_vs_path)
 

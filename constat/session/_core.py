@@ -108,8 +108,10 @@ class CoreMixin:
         from constat.discovery.vector_store import DuckDBVectorStore
         from constat.core.domain_tiers import get_domain_tier
 
-        user_db = user_vault_dir(self.data_dir, self.user_id) / "vectors.duckdb"
-        system_db = self.data_dir / "vectors.duckdb"
+        from constat.core.paths import migrate_db_name
+        user_vault = user_vault_dir(self.data_dir, self.user_id)
+        user_db = migrate_db_name(user_vault, "vectors.duckdb", "user.duckdb")
+        system_db = migrate_db_name(self.data_dir, "vectors.duckdb", "system.duckdb")
         user_db.parent.mkdir(parents=True, exist_ok=True)
 
         domain_tier_fn = lambda d: get_domain_tier(d, config, self.user_id)
@@ -131,7 +133,7 @@ class CoreMixin:
             vector_store=vector_store,
         )
         # Wire schema managers to use the same split store so domain loading
-        # writes chunks to the correct DB (not the default .constat/vectors.duckdb)
+        # writes chunks to the correct DB (not the default .constat/system.duckdb)
         self.schema_manager._vector_store = vector_store
         self.api_schema_manager._vector_store = vector_store
         logger.debug(f"Session init: DocumentDiscoveryTools took {time.time() - t0:.2f}s")

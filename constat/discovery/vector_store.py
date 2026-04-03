@@ -231,7 +231,10 @@ class DuckDBVectorStore(VectorStoreBackend):
         elif os.environ.get("CONSTAT_VECTOR_STORE_PATH"):
             self._db_path = Path(os.environ["CONSTAT_VECTOR_STORE_PATH"])
         else:
-            self._db_path = Path.cwd() / ".constat" / "vectors.duckdb"
+            from constat.core.paths import migrate_db_name
+            constat_dir = Path.cwd() / ".constat"
+            constat_dir.mkdir(parents=True, exist_ok=True)
+            self._db_path = migrate_db_name(constat_dir, "vectors.duckdb", "system.duckdb")
 
         # Ensure parent directory exists
         self._db_path.parent.mkdir(parents=True, exist_ok=True)

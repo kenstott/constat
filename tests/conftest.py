@@ -38,7 +38,7 @@ def isolated_vector_store(tmp_path_factory) -> Generator[Path, None, None]:
     """
     # Create a temporary directory for the vector store
     vector_store_dir = tmp_path_factory.mktemp("vector_store")
-    vector_store_path = vector_store_dir / "vectors.duckdb"
+    vector_store_path = vector_store_dir / "system.duckdb"
 
     # Set environment variable so DuckDBVectorStore uses this path
     old_value = os.environ.get("CONSTAT_VECTOR_STORE_PATH")

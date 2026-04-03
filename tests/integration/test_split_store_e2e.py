@@ -87,7 +87,7 @@ class TestSplitStoreE2E:
         """Create a session for a non-default user, wait for init.
 
         Non-default users trigger the split store code path:
-        user DB at .constat/{uid}.vault/vectors.duckdb + system DB ATTACHed.
+        user DB at .constat/{uid}.vault/user.duckdb + system DB ATTACHed.
         """
         session_id = str(uuid.uuid4())
         user_id = f"split_e2e_{uuid.uuid4().hex[:8]}"
