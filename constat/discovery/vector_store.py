@@ -335,6 +335,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Ensure all SPLIT_TABLES exist in the sys (attached system) schema.
 
         Clones empty table structure from main for any missing tables.
+        Skips creation for read-only sys databases (tables must already exist
+        from warmup).
         """
         from constat.storage.split_store import SPLIT_TABLES
         conn = self._conn
@@ -342,9 +344,15 @@ class DuckDBVectorStore(VectorStoreBackend):
             try:
                 conn.execute(f"SELECT 1 FROM sys.{table} LIMIT 0")
             except Exception:
-                conn.execute(
-                    f"CREATE TABLE sys.{table} AS SELECT * FROM main.{table} WHERE false"
-                )
+                try:
+                    conn.execute(
+                        f"CREATE TABLE sys.{table} AS SELECT * FROM main.{table} WHERE false"
+                    )
+                except Exception as e:
+                    if "read only" in str(e).lower() or "read-only" in str(e).lower():
+                        logger.warning(f"Cannot create sys.{table}: system DB is read-only")
+                    else:
+                        raise
 
     @property
     def _conn(self):

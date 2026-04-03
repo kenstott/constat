@@ -194,7 +194,7 @@ mutation ApprovePlan($sessionId: String!, $input: ApprovePlanInput!) {
 """
 
 ANSWER_CLARIFICATION = """
-mutation AnswerClarification($sessionId: String!, $answers: JSON!, $structuredAnswers: JSON) {
+mutation AnswerClarification($sessionId: String!, $answers: JSON!, $structuredAnswers: JSON!) {
   answerClarification(sessionId: $sessionId, answers: $answers, structuredAnswers: $structuredAnswers) {
     status message
   }
@@ -249,7 +249,7 @@ TABLES_QUERY = """
 query Tables($sessionId: String!) {
   tables(sessionId: $sessionId) {
     tables {
-      name rowCount columnCount isStarred version columns
+      name rowCount isStarred version columns
     }
     total
   }

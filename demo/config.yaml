@@ -13,7 +13,7 @@ server:
   # Generate password hashes with: constat hash-password
   local_users:
     demo:
-      password_hash: "scrypt:361e4f00c6e26f4cf259a51278d6aa43:09bcddba4646086be14ebeebc1f8fb679edebf294cf25ac6f478484837195577"
+      password_hash: "scrypt:e5371a58d7f5c57b5e68204c56f7b4de:9e90506de74a35fffe9b0389c4f651dcc558ef0518ef10f75f6712b967a329b9"
       email: demo@localhost
 
   # User permissions - include from separate file for easier management

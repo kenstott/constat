@@ -10,7 +10,7 @@
 
 // Artifact Panel container — thin orchestrator
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   ChevronRightIcon,
   EnvelopeIcon,
@@ -19,7 +19,7 @@ import { useSessionContext } from '@/contexts/SessionContext'
 import { useArtifactContext } from '@/contexts/ArtifactContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { useReactiveVar } from '@apollo/client'
-import { activeDeepLinkVar, consumeDeepLink, sourcesCollapsedVar } from '@/graphql/ui-state'
+import { activeDeepLinkVar, consumeDeepLink, expandedSectionsVar, toggleSection, expandSection } from '@/graphql/ui-state'
 import { useGlossaryData } from '@/hooks/useGlossaryData'
 import { useSkills } from '@/hooks/useLearnings'
 import { useArtifacts } from '@/hooks/useArtifacts'
@@ -50,6 +50,29 @@ import {
 } from './sections'
 
 type ModalType = 'database' | 'api' | 'document' | 'email' | 'fact' | 'rule' | null
+
+function TopLevelSection({ id, title, count, loading, children }: {
+  id: string; title: string; count?: number; loading?: boolean; children: ReactNode
+}) {
+  const expanded = useReactiveVar(expandedSectionsVar)
+  const isOpen = expanded.includes(id)
+  return (
+    <>
+      <button
+        onClick={() => toggleSection(id)}
+        className="w-full px-4 py-2.5 bg-gray-50 dark:bg-gray-800/80 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
+      >
+        <span className="text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+          {title}
+          {count !== undefined && <span className="text-gray-400 dark:text-gray-500 font-normal">({count})</span>}
+          {loading && <span className="inline-block w-2.5 h-2.5 border-[1.5px] border-gray-400 border-t-transparent rounded-full animate-spin" />}
+        </span>
+        <ChevronRightIcon className={`w-3.5 h-3.5 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+      </button>
+      {isOpen && children}
+    </>
+  )
+}
 
 export function ArtifactPanel() {
   const { session, messages, sessionReady } = useSessionContext()
@@ -82,7 +105,7 @@ export function ArtifactPanel() {
   } = useArtifactContext()
   const { loading: configLoading } = useSkills()
   const { artifacts } = useArtifacts()
-  const { totalDefined, totalSelfDescribing, loading: glossaryLoading } = useGlossaryData(session?.session_id || '')
+  const { loading: glossaryLoading } = useGlossaryData(session?.session_id || '')
   const { canSee: canSeeSection, canWrite } = useAuth()
 
   // Visibility calculations
@@ -130,18 +153,14 @@ export function ArtifactPanel() {
   const [domainList, setDomainList] = useState<{ filename: string; name: string }[]>([])
   const [movingFact, setMovingFact] = useState<string | null>(null)
 
-  // Glossary collapsible state
-  const [glossaryCollapsed, setGlossaryCollapsed] = useState(() => localStorage.getItem('constat-glossary-collapsed') === 'true')
-
   // Deep link handling
   useEffect(() => {
     if (!pendingDeepLink || !session) return
     const link = pendingDeepLink
 
-    // Source deep links (table/api/document): expand Sources section, let SourcesSection consume
+    // Source deep links (table/api/document): expand Context group, let SourcesSection consume
     if (link.type === 'table' || link.type === 'document' || link.type === 'api') {
-      sourcesCollapsedVar(false)
-      localStorage.setItem('constat-sources-collapsed', 'false')
+      expandSection('context')
       // Don't consume — SourcesSection will handle expand + scroll + consume
       return
     }
@@ -150,6 +169,7 @@ export function ArtifactPanel() {
     consumeDeepLink()
 
     if (link.type === 'glossary_term') {
+      expandSection('context')
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           const el = document.getElementById(`glossary-term-${link.termName}`)
@@ -789,103 +809,93 @@ export function ArtifactPanel() {
         </div>
       )}
 
-      {/* ═══════════════ RESULTS ═══════════════ */}
-      <ResultsSection
-        messages={messages}
-        stepCodes={stepCodes}
-        supersededStepNumbers={supersededStepNumbers}
-      />
-
-      {/* ═══════════════ SOURCES & TOOLS ═══════════════ */}
-      {sourcesVisible && (
-        <SourcesSection
-          sessionId={session.session_id}
-          sourcesVisible={sourcesVisible}
-          canSeeSection={canSeeSection}
-          canWrite={canWrite}
-          onOpenModal={openModal}
-          ingestingSource={ingestingSource}
-          ingestProgress={ingestProgress}
-          domainList={domainList}
-          movingFact={movingFact}
-          setMovingFact={setMovingFact}
+      {/* ═══════════════ ARTIFACTS ═══════════════ */}
+      <TopLevelSection id="artifacts" title="Artifacts">
+        <ResultsSection
+          messages={messages}
+          stepCodes={stepCodes}
+          supersededStepNumbers={supersededStepNumbers}
         />
-      )}
+      </TopLevelSection>
 
-      {/* ═══════════════ GLOSSARY ═══════════════ */}
-      {canSeeSection('glossary') && session && (
-      <button
-        onClick={() => {
-          const newVal = !glossaryCollapsed
-          setGlossaryCollapsed(newVal)
-          localStorage.setItem('constat-glossary-collapsed', String(newVal))
-        }}
-        className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
-      >
-        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
-          Glossary ({totalDefined + totalSelfDescribing})
-          {glossaryLoading && <span className="inline-block w-2.5 h-2.5 border-[1.5px] border-gray-400 border-t-transparent rounded-full animate-spin" />}
-        </span>
-        <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${glossaryCollapsed ? '' : 'rotate-90'}`} />
-      </button>
-      )}
-
-      {canSeeSection('glossary') && session && !glossaryCollapsed && (
-      <div id="section-glossary" className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-800">
-        <GlossaryPanel sessionId={session.session_id} />
-      </div>
-      )}
-
-      {/* ═══════════════ REASONING (wraps Config, Objectives, Improvements, Code Log) ═══════════════ */}
+      {/* ═══════════════ DEBUG ═══════════════ */}
       {reasoningVisible && (
-        <>
-          <ReasoningSection
+      <TopLevelSection id="debug" title="Debug" count={stepCodes.length + inferenceCodes.length}>
+        <CodeLogSection
+          stepCodes={stepCodes}
+          inferenceCodes={inferenceCodes}
+          scratchpadEntries={scratchpadEntries}
+          sessionDDL={sessionDDL}
+          supersededStepNumbers={supersededStepNumbers}
+          onRefreshDDL={() => { if (session) fetchDDL(session.session_id) }}
+          session={session}
+          canSeeSection={canSeeSection}
+          artifacts={artifacts}
+        />
+      </TopLevelSection>
+      )}
+
+      {/* ═══════════════ CONTEXT ═══════════════ */}
+      <TopLevelSection id="context" title="Context" loading={glossaryLoading}>
+        {sourcesVisible && (
+          <SourcesSection
             sessionId={session.session_id}
-            reasoningVisible={reasoningVisible}
-            configVisible={configVisible}
+            sourcesVisible={sourcesVisible}
             canSeeSection={canSeeSection}
             canWrite={canWrite}
-            configLoading={configLoading}
-            promptContext={promptContext}
-            taskRouting={taskRouting}
-            allAgents={allAgents}
+            onOpenModal={openModal}
+            ingestingSource={ingestingSource}
+            ingestProgress={ingestProgress}
             domainList={domainList}
-            createSkill={createSkill}
-            updateSkill={updateSkill}
-            deleteSkill={deleteSkill}
-            draftSkill={draftSkill}
-            updateSystemPrompt={updateSystemPrompt}
-            fetchAllAgents={fetchAllAgents}
+            movingFact={movingFact}
+            setMovingFact={setMovingFact}
           />
+        )}
 
-          <ObjectivesSection objectives={objectives} />
+        {canSeeSection('glossary') && session && (
+        <div id="section-glossary" className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-800">
+          <GlossaryPanel sessionId={session.session_id} />
+        </div>
+        )}
 
-          <ImprovementsSection
-            sessionId={session.session_id}
-            improvementVisible={improvementVisible}
-            canWrite={canWrite('learnings')}
-            canSeeSection={canSeeSection}
-            domainList={domainList}
-            addRule={addRule}
-            updateRule={updateRule}
-            deleteRule={deleteRule}
-            deleteLearning={deleteLearning}
-            openModal={(type: 'rule') => openModal(type)}
-          />
+        {reasoningVisible && (
+          <>
+            <ReasoningSection
+              sessionId={session.session_id}
+              reasoningVisible={reasoningVisible}
+              configVisible={configVisible}
+              canSeeSection={canSeeSection}
+              canWrite={canWrite}
+              configLoading={configLoading}
+              promptContext={promptContext}
+              taskRouting={taskRouting}
+              allAgents={allAgents}
+              domainList={domainList}
+              createSkill={createSkill}
+              updateSkill={updateSkill}
+              deleteSkill={deleteSkill}
+              draftSkill={draftSkill}
+              updateSystemPrompt={updateSystemPrompt}
+              fetchAllAgents={fetchAllAgents}
+            />
 
-          <CodeLogSection
-            stepCodes={stepCodes}
-            inferenceCodes={inferenceCodes}
-            scratchpadEntries={scratchpadEntries}
-            sessionDDL={sessionDDL}
-            supersededStepNumbers={supersededStepNumbers}
-            onRefreshDDL={() => { if (session) fetchDDL(session.session_id) }}
-            session={session}
-            canSeeSection={canSeeSection}
-            artifacts={artifacts}
-          />
-        </>
-      )}
+            <ObjectivesSection objectives={objectives} />
+
+            <ImprovementsSection
+              sessionId={session.session_id}
+              improvementVisible={improvementVisible}
+              canWrite={canWrite('learnings')}
+              canSeeSection={canSeeSection}
+              domainList={domainList}
+              addRule={addRule}
+              updateRule={updateRule}
+              deleteRule={deleteRule}
+              deleteLearning={deleteLearning}
+              openModal={(type: 'rule') => openModal(type)}
+            />
+          </>
+        )}
+      </TopLevelSection>
     </div>
   )
 }

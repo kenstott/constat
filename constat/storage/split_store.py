@@ -76,7 +76,12 @@ class SplitVectorStore:
         return self._warmup
 
     def _attach_system_db(self) -> None:
-        """ATTACH system DB as 'sys'."""
+        """ATTACH system DB as 'sys'.
+
+        Tries read-write first, falls back to read-only on file handle
+        conflicts (DuckDB enforces process-wide unique file handles for
+        read-write but permits concurrent read-only ATTACHes).
+        """
         attached = [
             row[0]
             for row in self._db.conn.execute(
@@ -91,6 +96,11 @@ class SplitVectorStore:
             )
         except Exception as e:
             if "already attached" in str(e):
+                return
+            if "file handle conflict" in str(e).lower():
+                self._db.conn.execute(
+                    f"ATTACH '{self._system_db_path}' AS sys (READ_ONLY)"
+                )
                 return
             raise
 

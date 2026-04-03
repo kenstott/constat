@@ -276,6 +276,10 @@ class Session:
                     except (json.JSONDecodeError, TypeError):
                         data = {}
 
+                # step_number lives on the event envelope, not inside data
+                if "step_number" in event and isinstance(data, dict):
+                    data.setdefault("step_number", event["step_number"])
+
                 await self._handle_event(et, data, auto_approve, result)
 
                 if et in ("query_complete", "query_error", "query_cancelled"):
@@ -339,6 +343,7 @@ class Session:
                 self._gql.query(ANSWER_CLARIFICATION, {
                     "sessionId": self.session_id,
                     "answers": answers,
+                    "structuredAnswers": answers if isinstance(answers, dict) else {},
                 })
             else:
                 self._gql.query(SKIP_CLARIFICATION, {"sessionId": self.session_id})

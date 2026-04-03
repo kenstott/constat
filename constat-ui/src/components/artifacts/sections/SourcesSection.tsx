@@ -10,7 +10,7 @@
 
 import React, { useState, useCallback, useEffect } from 'react'
 import { useReactiveVar } from '@apollo/client'
-import { sourcesCollapsedVar, activeDeepLinkVar, consumeDeepLink, expandSection } from '@/graphql/ui-state'
+import { activeDeepLinkVar, consumeDeepLink, expandSection } from '@/graphql/ui-state'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -73,12 +73,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
   const { databases, apis, documents, loading: sourcesLoading } = useDataSources()
   const { facts, loading: factsLoading } = useFacts()
 
-  // Collapsible state - reactive var (deep links can expand it)
-  const sourcesCollapsed = useReactiveVar(sourcesCollapsedVar)
-  const setSourcesCollapsed = (val: boolean) => {
-    sourcesCollapsedVar(val)
-    localStorage.setItem('constat-sources-collapsed', String(val))
-  }
+  // Sources always visible when parent Context group is open
 
   // Database expand/preview state
   const [expandedDb, setExpandedDb] = useState<string | null>(null)
@@ -107,22 +102,12 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
     if (!pendingDeepLink) return
     const link = pendingDeepLink
     console.log('[deep-link] SourcesSection received:', link.type, link)
-    console.log('[deep-link] sourcesCollapsed:', sourcesCollapsed)
-    console.log('[deep-link] available apis:', apis.map((a: { name: string }) => a.name))
-    console.log('[deep-link] available dbs:', databases.map((d: { name: string }) => d.name))
 
     if (link.type !== 'table' && link.type !== 'api' && link.type !== 'document') {
-      console.log('[deep-link] SourcesSection ignoring non-source link:', link.type)
       return
     }
 
     consumeDeepLink()
-
-    // Uncollapse the Sources section if collapsed
-    if (sourcesCollapsed) {
-      setSourcesCollapsed(false)
-      localStorage.setItem('constat-sources-collapsed', 'false')
-    }
 
     // Expand the accordion section
     const accordionId = link.type === 'api' ? 'apis' : link.type === 'table' ? 'databases' : 'documents'
@@ -177,7 +162,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
         el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       })
     })
-  }, [pendingDeepLink, sourcesCollapsed, apis, databases, expandedApi, expandedDb, session])
+  }, [pendingDeepLink, apis, databases, expandedApi, expandedDb, session])
 
   // --- Handlers ---
 
@@ -344,26 +329,8 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
 
   return (
     <>
-      {/* ═══════════════ SOURCES & TOOLS ═══════════════ */}
-      {sourcesVisible && (
-      <button
-        onClick={() => {
-          const newVal = !sourcesCollapsed
-          setSourcesCollapsed(newVal)
-          localStorage.setItem('constat-sources-collapsed', String(newVal))
-        }}
-        className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
-      >
-        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
-          Sources & Tools ({databases.length + apis.length + documents.length + facts.length})
-          {(sourcesLoading || factsLoading) && <span className="inline-block w-2.5 h-2.5 border-[1.5px] border-gray-400 border-t-transparent rounded-full animate-spin" />}
-        </span>
-        <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${sourcesCollapsed ? '' : 'rotate-90'}`} />
-      </button>
-      )}
-
       {/* Databases */}
-      {sourcesVisible && !sourcesCollapsed && (
+      {sourcesVisible && (
       <>
       {canSeeSection('databases') && (
       <AccordionSection

@@ -53,7 +53,7 @@ export function setArtifactPanelWidth(width: number) {
 // ---------- Expanded accordion sections ----------
 
 const storedSections = JSON.parse(localStorage.getItem('constat-ui-storage') || '{}')?.state?.expandedArtifactSections
-export const expandedSectionsVar = makeVar<string[]>(storedSections ?? ['charts', 'tables'])
+export const expandedSectionsVar = makeVar<string[]>(storedSections ?? ['artifacts'])
 
 export function toggleSection(section: string) {
   const current = expandedSectionsVar()
@@ -147,7 +147,16 @@ export function applyDeepLink(link: DeepLink) {
   // Show artifact panel
   artifactPanelHiddenVar(false)
 
-  // Expand the relevant accordion section
+  // Expand the parent group + relevant sub-section
+  const parentMap: Record<string, string> = {
+    table: 'context',
+    document: 'context',
+    api: 'context',
+    glossary_term: 'context',
+  }
+  const parent = parentMap[link.type]
+  if (parent) expandSection(parent)
+
   const sectionMap: Record<string, string> = {
     table: 'databases',
     document: 'documents',

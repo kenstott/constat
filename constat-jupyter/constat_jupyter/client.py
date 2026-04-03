@@ -41,8 +41,8 @@ class ConstatClient:
         self._base_url = cfg.server_url.rstrip("/")
         self._token = cfg.token
         headers = {"Authorization": f"Bearer {cfg.token}"} if cfg.token else {}
-        self._http = httpx.Client(base_url=self._base_url, headers=headers, timeout=30)
-        self._gql = GraphQLClient(self._base_url, cfg.token)
+        self._http = httpx.Client(base_url=self._base_url, headers=headers, timeout=120)
+        self._gql = GraphQLClient(self._base_url, cfg.token, timeout=120)
 
     # ── Session management ──────────────────────────────────────────────
 

@@ -154,8 +154,16 @@ class SolveResult:
 
     @staticmethod
     def _strip_trailing_json(text: str) -> str:
-        """Remove JSON arrays/objects from answer text."""
+        """Remove JSON arrays/objects and fix line breaks for Jupyter markdown.
+
+        Standard markdown treats single newlines as spaces, collapsing lines
+        together. The web UI uses CSS whitespace-pre-wrap to preserve them.
+        For Jupyter, we add markdown hard breaks (two trailing spaces) so
+        single newlines render as actual line breaks.
+        """
         import json as _json
+        import re
+
         lines = text.split('\n')
         kept = []
         for line in lines:
@@ -174,10 +182,58 @@ class SolveResult:
                     pass
             kept.append(line)
         # Collapse multiple blank lines
-        import re
         result = '\n'.join(kept)
         result = re.sub(r'\n{3,}', '\n\n', result)
-        return result.strip()
+        result = result.strip()
+
+        # Add markdown hard breaks: append two spaces before single newlines
+        # so Jupyter's markdown renderer preserves line breaks.
+        # Skip lines that are markdown block elements (headings, lists, blank,
+        # code fences, tables, HRs) — they already break naturally.
+        out_lines = result.split('\n')
+        for i in range(len(out_lines) - 1):
+            line = out_lines[i]
+            stripped = line.strip()
+            next_stripped = out_lines[i + 1].strip()
+            # Don't add hard break before blank lines (paragraph breaks)
+            if not next_stripped:
+                continue
+            # Don't add hard break to lines that are block-level elements
+            if re.match(r'^#{1,6}\s|^[-*+]\s|^\d+\.\s|^```|^\||^---$|^___$|^\*\*\*$', stripped):
+                continue
+            # Don't add if line already ends with hard break or is empty
+            if not stripped or line.endswith('  '):
+                continue
+            out_lines[i] = line + '  '
+
+        result = '\n'.join(out_lines)
+
+        # Escape dollar signs used as currency so Jupyter doesn't interpret
+        # them as LaTeX math delimiters ($...$).  We target $ followed by a
+        # digit (e.g. $4K, $6.2M) — real LaTeX would not start with a digit.
+        result = re.sub(r'\$(?=\d)', r'\\$', result)
+
+        # Fix emphasis spacing for Jupyter's markdown renderer.
+        # Jupyter's Python-Markdown collapses spaces around *italic* and
+        # **bold** markers differently than react-markdown (used by web UI).
+        # Ensure a space exists before opening and after closing emphasis
+        # markers so words don't run together when rendered.
+        def _fix_emphasis(m: re.Match) -> str:
+            pre, body, post = m.group(1), m.group(2), m.group(3)
+            if pre and pre not in ' \t\n':
+                pre = pre + ' '
+            if post and post not in ' \t\n,.)!?:;\'"]\x00':
+                post = ' ' + post
+            return f"{pre}*{body}*{post}"
+
+        # Match *italic* (not **bold**): non-* char before, content, non-* char after
+        result = re.sub(
+            r'(.)(?<!\*)\*(?!\*)((?:[^*\n])+?)\*(?!\*)(.)' if len(result) > 2 else r'$^',
+            _fix_emphasis,
+            result,
+        )
+
+        return result
 
     @staticmethod
     def _to_pandas(df: Any):

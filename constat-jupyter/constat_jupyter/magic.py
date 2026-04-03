@@ -452,22 +452,36 @@ class ConstatMagic(Magics):
         if method == "local":
             username = input("Username: ")
             password = getpass.getpass("Password: ")
-            endpoint = f"{server_url}/api/auth/login"
-            payload = {"username": username, "password": password}
         else:
             username = input("Email: ")
             password = getpass.getpass("Password: ")
-            endpoint = f"{server_url}/api/auth/firebase-login"
-            payload = {"email": username, "password": password}
 
+        query = """
+            mutation Login($email: String!, $password: String!) {
+                login(email: $email, password: $password) {
+                    token
+                    userId
+                    email
+                }
+            }
+        """
         try:
-            resp = httpx.post(endpoint, json=payload, timeout=15)
+            resp = httpx.post(
+                f"{server_url}/api/graphql",
+                json={"query": query, "variables": {"email": username, "password": password}},
+                timeout=15,
+            )
             resp.raise_for_status()
-            data = resp.json()
+            body = resp.json()
+            if "errors" in body:
+                msg = body["errors"][0].get("message", "Unknown error")
+                display(_error_html(f"Login failed: {_esc(msg)}"))
+                return
+            data = body["data"]["login"]
             os.environ["CONSTAT_AUTH_TOKEN"] = data["token"]
             _cache_token(server_url, data["token"])
             display(_success_html(
-                f"Logged in as <code>{_esc(data.get('user_id') or data.get('email', ''))}</code>. "
+                f"Logged in as <code>{_esc(data.get('userId') or data.get('email', ''))}</code>. "
                 f"Run <code>%constat connect</code> to start a session."
             ))
         except httpx.HTTPStatusError as e:
