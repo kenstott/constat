@@ -710,6 +710,28 @@ execution:
     console.print("\n[dim]Edit the file to configure your databases and API key.[/dim]")
 
 
+@cli.command()
+@click.argument("deploy_args", nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def deploy(ctx: click.Context, deploy_args: tuple[str, ...]):
+    """Deployment script generator: diff, generate, and apply config changes.
+
+    \b
+    Subcommands:
+        diff      Show diff between two config directories
+        generate  Generate a deployment script
+        apply     Apply a deployment script
+
+    \b
+    Examples:
+        constat deploy diff --source staging/ --target production/
+        constat deploy generate --source staging/ --target production/ -o deploy.yaml
+        constat deploy apply deploy.yaml --target production/ --no-dry-run
+    """
+    from constat.deploy.cli import main as deploy_main
+    deploy_main(list(deploy_args))
+
+
 @cli.command("hash-password")
 def hash_password_cmd():
     """Hash a password for config.yaml local_users."""
