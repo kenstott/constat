@@ -175,6 +175,12 @@ class ServerConfig(BaseModel):
     microsoft_email_client_id: Optional[str] = None
     microsoft_email_client_secret: Optional[str] = None
     microsoft_email_tenant_id: str = "common"
+
+    # Microsoft SSO (Azure AD / Entra ID)
+    microsoft_auth_client_id: Optional[str] = Field(default=None, description="Azure AD app registration client ID for SSO")
+    microsoft_auth_client_secret: Optional[str] = Field(default=None, description="Azure AD client secret for SSO")
+    microsoft_auth_tenant_id: str = Field(default="common", description="Azure AD tenant ID (or 'common' for multi-tenant)")
+
     source_refresh_interval_seconds: int = Field(
         default=900,
         description="Background source refresh interval in seconds",
@@ -236,6 +242,15 @@ class ServerConfig(BaseModel):
         microsoft_email_tenant_id_env = os.environ.get("MICROSOFT_EMAIL_TENANT_ID")
         if microsoft_email_tenant_id_env is not None:
             self.microsoft_email_tenant_id = microsoft_email_tenant_id_env
+
+        for env_key, attr in [
+            ("MICROSOFT_AUTH_CLIENT_ID", "microsoft_auth_client_id"),
+            ("MICROSOFT_AUTH_CLIENT_SECRET", "microsoft_auth_client_secret"),
+            ("MICROSOFT_AUTH_TENANT_ID", "microsoft_auth_tenant_id"),
+        ]:
+            val = os.environ.get(env_key)
+            if val is not None:
+                setattr(self, attr, val)
 
         source_refresh_env = os.environ.get("CONSTAT_SOURCE_REFRESH_INTERVAL")
         if source_refresh_env is not None:

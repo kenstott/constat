@@ -59,6 +59,7 @@ interface AuthContextValue {
   loginWithEmail: (email: string, password: string) => Promise<void>
   signupWithEmail: (email: string, password: string) => Promise<void>
   sendPasswordReset: (email: string) => Promise<void>
+  loginWithMicrosoft: () => Promise<void>
   sendEmailSignInLink: (email: string) => Promise<void>
   completeEmailLink: (email?: string) => Promise<void>
   isEmailLinkSignIn: () => boolean
@@ -157,6 +158,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw err
     }
   }, [authDisabled])
+
+  const loginWithMicrosoft = useCallback(async () => {
+    setLoading(true)
+    setErrorState(null)
+    try {
+      // Get Microsoft config from health endpoint
+      const healthResp = await fetch('/health')
+      const health = await healthResp.json()
+      const clientId = health?.auth?.microsoft_auth_client_id
+      const tenantId = health?.auth?.microsoft_auth_tenant_id || 'common'
+      if (!clientId) throw new Error('Microsoft SSO not configured')
+
+      const { signInWithMicrosoft: msSign } = await import('@/config/microsoft')
+      const { code: idToken } = await msSign(clientId, tenantId)
+
+      const { LOGIN_WITH_MICROSOFT_MUTATION } = await import('@/graphql/operations/auth')
+      const { data } = await apolloClient.mutate({
+        mutation: LOGIN_WITH_MICROSOFT_MUTATION,
+        variables: { idToken },
+      })
+      setToken(data.loginWithMicrosoft.token)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Microsoft sign-in failed'
+      setErrorState(message)
+      throw err
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
   const loginWithEmail = useCallback(async (email: string, password: string) => {
     if (authDisabled) return
@@ -286,6 +316,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     login,
     register,
     loginWithGoogle,
+    loginWithMicrosoft,
     loginWithEmail,
     signupWithEmail: signupWithEmailCb,
     sendPasswordReset: sendPasswordResetCb,

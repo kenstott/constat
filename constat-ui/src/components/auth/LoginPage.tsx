@@ -30,6 +30,7 @@ export function LoginPage() {
     login,
     register,
     loginWithGoogle,
+    loginWithMicrosoft,
     loginWithEmail,
     signupWithEmail,
     sendPasswordReset,
@@ -77,6 +78,16 @@ export function LoginPage() {
       window.history.replaceState({}, document.title, window.location.pathname)
     }
   }, [isEmailLinkSignIn, completeEmailLink])
+
+  const handleMicrosoftLogin = async () => {
+    clearError()
+    setSuccessMessage(null)
+    try {
+      await loginWithMicrosoft()
+    } catch {
+      // Error handled by store
+    }
+  }
 
   const handleGoogleLogin = async () => {
     clearError()
@@ -257,8 +268,9 @@ export function LoginPage() {
               {/* Microsoft SSO button (when available) */}
               {hasMicrosoft && (
                 <button
-                  disabled={true}
-                  className="mt-3 w-full flex items-center justify-center gap-3 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  onClick={handleMicrosoftLogin}
+                  disabled={loading}
+                  className="mt-3 w-full flex items-center justify-center gap-3 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   <svg className="w-5 h-5" viewBox="0 0 21 21">
                     <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
@@ -289,8 +301,9 @@ export function LoginPage() {
           {/* ═══ Microsoft-only (no Firebase) ═══ */}
           {hasMicrosoft && !hasFirebase && mode === 'login' && (
             <button
-              disabled={true}
-              className="w-full flex items-center justify-center gap-3 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mb-4"
+              onClick={handleMicrosoftLogin}
+              disabled={loading}
+              className="w-full flex items-center justify-center gap-3 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mb-4"
             >
               <svg className="w-5 h-5" viewBox="0 0 21 21">
                 <rect x="1" y="1" width="9" height="9" fill="#f25022"/>

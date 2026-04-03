@@ -189,6 +189,37 @@ class Mutation:
         return AuthPayload(token=token, user_id=username, email=email)
 
     @strawberry.mutation
+    async def login_with_microsoft(self, info: Info, id_token: str) -> AuthPayload:
+        """Validate Microsoft ID token and create local session."""
+        import json as _json
+        import base64
+
+        from constat.server.local_auth import create_local_token
+
+        server_config = info.context.server_config
+        if not server_config.microsoft_auth_client_id:
+            raise ValueError("Microsoft SSO not configured")
+
+        # Decode ID token payload (token came from MSAL popup over HTTPS)
+        parts = id_token.split(".")
+        if len(parts) < 2:
+            raise ValueError("Invalid ID token")
+        # Add padding
+        payload_b64 = parts[1] + "=" * (4 - len(parts[1]) % 4)
+        payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
+
+        # Verify audience matches our client ID
+        aud = payload.get("aud", "")
+        if aud != server_config.microsoft_auth_client_id:
+            raise ValueError("ID token audience mismatch")
+
+        email = payload.get("preferred_username") or payload.get("email", "")
+        user_id = payload.get("oid", email)
+
+        token = create_local_token(user_id, email)
+        return AuthPayload(token=token, user_id=user_id, email=email)
+
+    @strawberry.mutation
     async def passkey_register_begin(self, info: Info, user_id: str) -> PasskeyOptions:
         from constat.server.routes.passkey import (
             _load_credentials,

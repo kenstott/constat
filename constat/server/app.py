@@ -741,7 +741,11 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
                 "auth_methods": (
                     (["local"] if server_config.local_users else [])
                     + (["firebase"] if server_config.firebase_project_id else [])
+                    + (["microsoft"] if server_config.microsoft_auth_client_id else [])
                 ),
+                **({"microsoft_auth_client_id": server_config.microsoft_auth_client_id,
+                    "microsoft_auth_tenant_id": server_config.microsoft_auth_tenant_id}
+                   if server_config.microsoft_auth_client_id else {}),
             },
         }
 

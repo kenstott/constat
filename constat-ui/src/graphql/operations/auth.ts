@@ -101,6 +101,16 @@ export const PASSKEY_AUTH_COMPLETE = gql`
   }
 `
 
+export const LOGIN_WITH_MICROSOFT_MUTATION = gql`
+  mutation LoginWithMicrosoft($idToken: String!) {
+    loginWithMicrosoft(idToken: $idToken) {
+      token
+      userId
+      email
+    }
+  }
+`
+
 export const EMAIL_OAUTH_PROVIDERS_QUERY = gql`
   query EmailOAuthProviders {
     emailOAuthProviders {
