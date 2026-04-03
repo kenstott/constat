@@ -47,6 +47,10 @@ from constat.server.graphql.data_resolvers import Mutation as DataMutation
 from constat.server.graphql.data_resolvers import Query as DataQuery
 from constat.server.graphql.source_resolvers import Mutation as SourceMutation
 from constat.server.graphql.source_resolvers import Query as SourceQuery
+from constat.server.graphql.source_database_resolvers import Mutation as SourceDatabaseMutation
+from constat.server.graphql.source_database_resolvers import Query as SourceDatabaseQuery
+from constat.server.graphql.source_document_resolvers import Mutation as SourceDocumentMutation
+from constat.server.graphql.source_document_resolvers import Query as SourceDocumentQuery
 from constat.server.graphql.domain_resolvers import Mutation as DomainMutation
 from constat.server.graphql.domain_resolvers import Query as DomainQuery
 from constat.server.graphql.execution_resolvers import Mutation as ExecutionMutation
@@ -69,8 +73,8 @@ logger = logging.getLogger(__name__)
 # As new domain resolver files are added (sessions.py, tables.py, etc.), import
 # their Query/Mutation classes and add them to the tuple.
 
-Query = merge_types("Query", (GlossaryQuery, AuthQuery, SessionQuery, StateQuery, DataQuery, SourceQuery, DomainQuery, ExecutionQuery, LearningQuery, FineTuneQuery, FeedbackQuery, TestingQuery, PublicQuery))
-Mutation = merge_types("Mutation", (GlossaryMutation, AuthMutation, SessionMutation, StateMutation, DataMutation, SourceMutation, DomainMutation, ExecutionMutation, LearningMutation, FineTuneMutation, FeedbackMutation, TestingMutation))
+Query = merge_types("Query", (GlossaryQuery, AuthQuery, SessionQuery, StateQuery, DataQuery, SourceQuery, SourceDatabaseQuery, SourceDocumentQuery, DomainQuery, ExecutionQuery, LearningQuery, FineTuneQuery, FeedbackQuery, TestingQuery, PublicQuery))
+Mutation = merge_types("Mutation", (GlossaryMutation, AuthMutation, SessionMutation, StateMutation, DataMutation, SourceMutation, SourceDatabaseMutation, SourceDocumentMutation, DomainMutation, ExecutionMutation, LearningMutation, FineTuneMutation, FeedbackMutation, TestingMutation))
 Subscription = merge_types("Subscription", (GlossarySubscription, ExecutionSubscription))
 
 schema = strawberry.Schema(query=Query, mutation=Mutation, subscription=Subscription)
