@@ -90,18 +90,19 @@ def create_session_history(
     storage_dir: Optional[Path] = None,
     user_id: Optional[str] = None,
     db=None,
-) -> FileSessionHistory:
+):
     """Factory for session history backends.
 
     Args:
         storage_dir: Base directory for file-based storage.
         user_id: User ID for scoped storage.
-        db: DuckDB connection. When provided, returns DuckDBSessionHistory.
+        db: DuckDB connection (ThreadLocalDuckDB). When provided,
+            returns DuckDBSessionHistory.
 
     Returns:
         A session history instance.
     """
     if db is not None:
-        # TODO: implement DuckDBSessionHistory in history_duckdb.py
-        raise NotImplementedError("DuckDB session history backend not yet available")
+        from constat.storage.history_db import DuckDBSessionHistory
+        return DuckDBSessionHistory(db=db, user_id=user_id or "default")
     return FileSessionHistory(storage_dir=storage_dir, user_id=user_id)
