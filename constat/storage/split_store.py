@@ -34,6 +34,7 @@ SPLIT_TABLES = [
     "entity_resolution_names",
     "glossary_clusters",
     "proven_grounding",
+    "data_sources",
 ]
 
 

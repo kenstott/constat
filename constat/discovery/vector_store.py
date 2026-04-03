@@ -502,6 +502,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'mixed'",
             "ALTER TABLE entities ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'metadata'",
             "ALTER TABLE source_hashes ADD COLUMN IF NOT EXISTS er_hash VARCHAR",
+            "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS data_source_id VARCHAR",
             "ALTER TABLE entity_relationships ADD COLUMN IF NOT EXISTS user_edited BOOLEAN DEFAULT FALSE",
         ]
         schema_changed = False
@@ -525,6 +526,17 @@ class DuckDBVectorStore(VectorStoreBackend):
             from constat.storage.relational import RelationalStore
             RelationalStore._glossary_columns_cache = None
             RelationalStore._glossary_columns_list_cache = None
+
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS data_sources (
+                id VARCHAR PRIMARY KEY,
+                name VARCHAR NOT NULL,
+                type VARCHAR NOT NULL,
+                domain_id VARCHAR NOT NULL,
+                session_id VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS entity_relationships (
@@ -621,6 +633,9 @@ class DuckDBVectorStore(VectorStoreBackend):
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_rel_session ON entity_relationships(session_id)"
             )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_data_source ON embeddings(data_source_id)"
+            )
         except Exception as e:
             logger.debug(f"Index creation skipped: {e}")
 
@@ -640,6 +655,32 @@ class DuckDBVectorStore(VectorStoreBackend):
                 PRIMARY KEY (entity_name, source_pattern)
             )
         """)
+
+    # ------------------------------------------------------------------
+    # Data source normalization
+    # ------------------------------------------------------------------
+
+    def ensure_data_source(
+        self, name: str, source_type: str, domain_id: str, session_id: str = ""
+    ) -> str:
+        """Ensure a data source row exists, return its ID."""
+        source_id = f"ds_{hashlib.sha256(f'{name}:{source_type}'.encode()).hexdigest()[:12]}"
+        self._conn.execute(
+            "INSERT OR IGNORE INTO data_sources (id, name, type, domain_id, session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [source_id, name, source_type, domain_id, session_id],
+        )
+        return source_id
+
+    def get_domain_for_chunk(self, chunk_id: str) -> str | None:
+        """Get domain for a chunk via data_sources join."""
+        result = self._conn.execute(
+            "SELECT ds.domain_id FROM embeddings e "
+            "JOIN data_sources ds ON e.data_source_id = ds.id "
+            "WHERE e.chunk_id = ?",
+            [chunk_id],
+        ).fetchone()
+        return result[0] if result else None
 
     # ------------------------------------------------------------------
     # Vector operations — delegate to DuckDBVectorBackend

@@ -99,6 +99,23 @@ class DuckDBVectorBackend(VectorBackend):
         return f"{chunk.document_name}_{chunk.chunk_index}_{content_hash}"
 
     # ------------------------------------------------------------------
+    # Data source helpers
+    # ------------------------------------------------------------------
+
+    def _ensure_data_source(
+        self, name: str, source_type: str, domain_id: str, session_id: str = ""
+    ) -> str:
+        """Ensure a data source row exists, return its ID."""
+        source_id = f"ds_{hashlib.sha256(f'{name}:{source_type}'.encode()).hexdigest()[:12]}"
+        target_table = self._table("data_sources", domain_id)
+        self._conn.execute(
+            f"INSERT OR IGNORE INTO {target_table} (id, name, type, domain_id, session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [source_id, name, source_type, domain_id, session_id],
+        )
+        return source_id
+
+    # ------------------------------------------------------------------
     # Add chunks
     # ------------------------------------------------------------------
 
@@ -142,6 +159,14 @@ class DuckDBVectorBackend(VectorBackend):
         else:
             entity_class = EntityClass.MIXED
 
+        # Ensure data_source row exists and get its ID
+        data_source_id = None
+        if domain_id and doc_names:
+            representative_name = next(iter(doc_names))
+            data_source_id = self._ensure_data_source(
+                representative_name, source, domain_id, session_id or ""
+            )
+
         records = []
         for i, chunk in enumerate(new_chunks):
             chunk_id = self._generate_chunk_id(chunk)
@@ -162,13 +187,14 @@ class DuckDBVectorBackend(VectorBackend):
                 entity_class,
                 getattr(chunk, 'source_offset', None),
                 getattr(chunk, 'source_length', None),
+                data_source_id,
             ))
 
         self._conn.executemany(
             f"""
             INSERT INTO {target_table}
-            (chunk_id, document_name, source, chunk_type, section, chunk_index, content, embedding, session_id, domain_id, entity_class, source_offset, source_length)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (chunk_id, document_name, source, chunk_type, section, chunk_index, content, embedding, session_id, domain_id, entity_class, source_offset, source_length, data_source_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             records,
         )
