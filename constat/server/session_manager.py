@@ -69,6 +69,9 @@ class ManagedSession:
     # (scope cache may finish before WS connects, losing the event)
     _entity_rebuild_event: Optional[dict] = None
 
+    # Unified data source registry (providers registered at session creation)
+    registry: Optional["DataSourceRegistry"] = None
+
     # Last session_ready event — replayed on GraphQL subscription connect
     # (background init may finish before subscription connects)
     _session_ready_event: Optional[dict] = None
@@ -449,6 +452,25 @@ class SessionManager:
             init_sql=["INSTALL vss", "LOAD vss", "INSTALL fts", "LOAD fts"],
         )
 
+    @staticmethod
+    def _create_registry() -> "DataSourceRegistry":
+        """Create a DataSourceRegistry with all known providers."""
+        from constat.core.sources import DataSourceKind, DataSourceRegistry
+        from constat.providers.sql_provider import SqlDatabaseProvider
+        from constat.providers.document_providers import (
+            FileDocumentProvider, HttpDocumentProvider, ImapDocumentProvider,
+        )
+        from constat.providers.api_providers import GraphQLApiProvider, OpenApiProvider
+
+        registry = DataSourceRegistry()
+        registry.register(DataSourceKind.DATABASE, "sql", SqlDatabaseProvider())
+        registry.register(DataSourceKind.DOCUMENT, "file", FileDocumentProvider())
+        registry.register(DataSourceKind.DOCUMENT, "http", HttpDocumentProvider())
+        registry.register(DataSourceKind.DOCUMENT, "imap", ImapDocumentProvider())
+        registry.register(DataSourceKind.API, "graphql", GraphQLApiProvider())
+        registry.register(DataSourceKind.API, "openapi", OpenApiProvider())
+        return registry
+
         # GraphQL subscription pub/sub
         self._glossary_subscribers: dict[str, list[asyncio.Queue]] = {}
         self._execution_subscribers: dict[str, list[asyncio.Queue]] = {}
@@ -603,6 +625,9 @@ class SessionManager:
                 last_activity=now,
                 _history_session_id=history_session_id,
             )
+
+            # Initialize unified data source registry
+            managed.registry = self._create_registry()
 
             self._sessions[session_id] = managed
 

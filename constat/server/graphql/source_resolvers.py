@@ -47,6 +47,25 @@ from constat.server.graphql.types import (
 
 logger = logging.getLogger(__name__)
 
+from typing import Optional
+
+
+@strawberry.type
+class UnifiedSourceType:
+    """Unified view of a data source from the registry."""
+    name: str
+    kind: str
+    type: str
+    description: Optional[str] = None
+    state: str = "connected"
+    error: Optional[str] = None
+    queryable: bool = False
+    ingestible: bool = False
+    refreshable: bool = False
+    viewable: bool = False
+    item_count: Optional[int] = None
+    indexed_count: Optional[int] = None
+
 
 def _get_managed(info: Info, session_id: str):
     sm = info.context.session_manager
@@ -304,6 +323,24 @@ class Query:
             apis=_build_apis(managed),
             documents=_build_documents(managed),
         )
+
+    @strawberry.field
+    async def unified_sources(self, info: Info, session_id: str) -> list[UnifiedSourceType]:
+        """List all data sources via the unified registry."""
+        managed = _get_managed(info, session_id)
+        if not managed.registry:
+            return []
+        sources = managed.registry.list_all()
+        return [
+            UnifiedSourceType(
+                name=s.name, kind=s.kind.value, type=s.type,
+                description=s.description, state=s.state, error=s.error,
+                queryable=s.queryable, ingestible=s.ingestible,
+                refreshable=s.refreshable, viewable=s.viewable,
+                item_count=s.item_count, indexed_count=s.indexed_count,
+            )
+            for s in sources
+        ]
 
     @strawberry.field
     async def database_table_preview(
