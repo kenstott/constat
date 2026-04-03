@@ -8,22 +8,26 @@
 // machine learning models is strictly prohibited without explicit written
 // permission from the copyright holder.
 
-// Login/Signup page with Google, Email/Password, and Passwordless authentication
+// Dynamic login page — adapts UI based on available auth methods from /health
 
 import { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 
-type AuthMode = 'login' | 'signup' | 'reset' | 'emaillink'
+type AuthMode = 'login' | 'signup' | 'reset' | 'emaillink' | 'register'
 
 export function LoginPage() {
   const [mode, setMode] = useState<AuthMode>('login')
   const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [emailLinkSent, setEmailLinkSent] = useState(false)
+  const [authMethods, setAuthMethods] = useState<string[]>([])
+  const [authLoading, setAuthLoading] = useState(true)
 
   const {
+    login,
     loginWithGoogle,
     loginWithEmail,
     signupWithEmail,
@@ -37,21 +41,38 @@ export function LoginPage() {
     clearError,
   } = useAuth()
 
+  const hasLocal = authMethods.includes('local')
+  const hasFirebase = authMethods.includes('firebase')
+  const hasMicrosoft = authMethods.includes('microsoft')
+  // Fetch available auth methods from /health
+  useEffect(() => {
+    fetch('/health')
+      .then(r => r.json())
+      .then(data => {
+        const methods = data?.auth?.auth_methods ?? []
+        setAuthMethods(methods)
+        // Default to local login mode if only local is available
+        if (methods.includes('local') && !methods.includes('firebase')) {
+          setMode('login')
+        }
+      })
+      .catch(() => {
+        // If health check fails, show all methods (degraded mode)
+        setAuthMethods(['local', 'firebase'])
+      })
+      .finally(() => setAuthLoading(false))
+  }, [])
+
   // Check if user is returning from an email link
   useEffect(() => {
     if (isEmailLinkSignIn()) {
-      // Get saved email or prompt user
       const savedEmail = localStorage.getItem('emailForSignIn')
       if (savedEmail) {
-        completeEmailLink(savedEmail).catch(() => {
-          // Error handled by store
-        })
+        completeEmailLink(savedEmail).catch(() => {})
       } else {
-        // Need to ask for email
         setMode('emaillink')
         setSuccessMessage('Please enter your email to complete sign-in.')
       }
-      // Clean up URL
       window.history.replaceState({}, document.title, window.location.pathname)
     }
   }, [isEmailLinkSignIn, completeEmailLink])
@@ -61,6 +82,19 @@ export function LoginPage() {
     setSuccessMessage(null)
     try {
       await loginWithGoogle()
+    } catch {
+      // Error handled by store
+    }
+  }
+
+  const handleLocalLogin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    clearError()
+    setSuccessMessage(null)
+    const identifier = username || email
+    if (!identifier || !password) return
+    try {
+      await login(identifier, password)
     } catch {
       // Error handled by store
     }
@@ -87,7 +121,7 @@ export function LoginPage() {
     }
   }
 
-  const handleEmailSubmit = async (e: React.FormEvent) => {
+  const handleFirebaseSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     clearError()
     setSuccessMessage(null)
@@ -145,6 +179,14 @@ export function LoginPage() {
     setConfirmPassword('')
   }
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <div className="w-8 h-8 border-2 border-primary-600 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 px-4">
       <div className="max-w-md w-full space-y-8">
@@ -154,6 +196,7 @@ export function LoginPage() {
           <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
             {mode === 'login' && 'Sign in to your account'}
             {mode === 'signup' && 'Create a new account'}
+            {mode === 'register' && 'Create a local account'}
             {mode === 'reset' && 'Reset your password'}
             {mode === 'emaillink' && 'Sign in with email link'}
           </p>
@@ -161,22 +204,20 @@ export function LoginPage() {
 
         {/* Card */}
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
-          {/* Success Message */}
+          {/* Messages */}
           {successMessage && (
             <div className="mb-4 p-3 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 rounded-md">
               <p className="text-sm text-green-700 dark:text-green-300">{successMessage}</p>
             </div>
           )}
-
-          {/* Error Message */}
           {error && (
             <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md">
               <p className="text-sm text-red-700 dark:text-red-300">{error}</p>
             </div>
           )}
 
-          {/* Google Sign-In (only for login/signup) */}
-          {(mode === 'login' || mode === 'signup') && (
+          {/* ═══ Google Sign-In (Firebase) ═══ */}
+          {hasFirebase && (mode === 'login' || mode === 'signup') && (
             <>
               <button
                 onClick={handleGoogleLogin}
@@ -184,59 +225,105 @@ export function LoginPage() {
                 className="w-full flex items-center justify-center gap-3 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 <svg className="w-5 h-5" viewBox="0 0 24 24">
-                  <path
-                    fill="#4285F4"
-                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-                  />
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
                 </svg>
                 <span>{mode === 'signup' ? 'Sign up with Google' : 'Sign in with Google'}</span>
               </button>
 
-              {/* Divider */}
-              <div className="relative my-6">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-gray-300 dark:border-gray-600" />
+              {/* Microsoft SSO button (when available) */}
+              {hasMicrosoft && (
+                <button
+                  disabled={true}
+                  className="mt-3 w-full flex items-center justify-center gap-3 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <svg className="w-5 h-5" viewBox="0 0 21 21">
+                    <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+                    <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+                    <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+                    <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+                  </svg>
+                  <span>Sign in with Microsoft</span>
+                </button>
+              )}
+
+              {/* Divider if other methods exist */}
+              {(hasLocal || (hasFirebase && mode !== 'signup')) && (
+                <div className="relative my-6">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-gray-300 dark:border-gray-600" />
+                  </div>
+                  <div className="relative flex justify-center text-sm">
+                    <span className="px-2 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400">
+                      or continue with {hasLocal && !hasFirebase ? 'username' : 'email'}
+                    </span>
+                  </div>
                 </div>
-                <div className="relative flex justify-center text-sm">
-                  <span className="px-2 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400">
-                    or continue with email
-                  </span>
-                </div>
-              </div>
+              )}
             </>
           )}
 
-          {/* Email Link Sent State */}
-          {mode === 'emaillink' && emailLinkSent && (
-            <div className="text-center py-4">
-              <div className="text-4xl mb-4">📧</div>
-              <p className="text-gray-700 dark:text-gray-300 mb-4">
-                Check your inbox for the sign-in link.
-              </p>
-              <button
-                onClick={() => switchMode('login')}
-                className="text-sm text-primary-600 dark:text-primary-400 hover:underline"
-              >
-                Back to sign in
-              </button>
-            </div>
+          {/* ═══ Microsoft-only (no Firebase) ═══ */}
+          {hasMicrosoft && !hasFirebase && mode === 'login' && (
+            <button
+              disabled={true}
+              className="w-full flex items-center justify-center gap-3 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mb-4"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 21 21">
+                <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+                <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+                <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+                <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+              </svg>
+              <span>Sign in with Microsoft</span>
+            </button>
           )}
 
-          {/* Email Form */}
-          {!(mode === 'emaillink' && emailLinkSent) && (
-            <form onSubmit={handleEmailSubmit} className="space-y-4">
+          {/* ═══ Local Login Form ═══ */}
+          {hasLocal && mode === 'login' && (
+            <form onSubmit={handleLocalLogin} className="space-y-4">
+              <div>
+                <label htmlFor="username" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Username or Email
+                </label>
+                <input
+                  id="username"
+                  type="text"
+                  value={username || email}
+                  onChange={(e) => { setUsername(e.target.value); setEmail(e.target.value) }}
+                  required
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                  placeholder="username or email"
+                />
+              </div>
+              <div>
+                <label htmlFor="local-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Password
+                </label>
+                <input
+                  id="local-password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {loading ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : 'Sign in'}
+              </button>
+            </form>
+          )}
+
+          {/* ═══ Firebase Email Form ═══ */}
+          {hasFirebase && mode !== 'login' && !(mode === 'emaillink' && emailLinkSent) && (
+            <form onSubmit={handleFirebaseSubmit} className="space-y-4">
               <div>
                 <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                   Email address
@@ -251,62 +338,21 @@ export function LoginPage() {
                   placeholder="you@example.com"
                 />
               </div>
-
-              {(mode === 'login' || mode === 'signup') && (
-                <div>
-                  <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                    Password
-                  </label>
-                  <input
-                    id="password"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    minLength={6}
-                    className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                    placeholder="At least 6 characters"
-                  />
-                </div>
+              {(mode === 'signup') && (
+                <>
+                  <div>
+                    <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
+                    <input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6}
+                      className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                      placeholder="At least 6 characters" />
+                  </div>
+                  <div>
+                    <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Confirm Password</label>
+                    <input id="confirmPassword" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required minLength={6}
+                      className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                  </div>
+                </>
               )}
-
-              {mode === 'signup' && (
-                <div>
-                  <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                    Confirm Password
-                  </label>
-                  <input
-                    id="confirmPassword"
-                    type="password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    required
-                    minLength={6}
-                    className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                    placeholder="Confirm your password"
-                  />
-                </div>
-              )}
-
-              {mode === 'login' && (
-                <div className="flex justify-between text-sm">
-                  <button
-                    type="button"
-                    onClick={() => switchMode('emaillink')}
-                    className="text-primary-600 dark:text-primary-400 hover:underline"
-                  >
-                    Sign in with email link
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => switchMode('reset')}
-                    className="text-primary-600 dark:text-primary-400 hover:underline"
-                  >
-                    Forgot password?
-                  </button>
-                </div>
-              )}
-
               <button
                 type="submit"
                 disabled={loading}
@@ -314,46 +360,66 @@ export function LoginPage() {
               >
                 {loading ? (
                   <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                ) : mode === 'login' ? (
-                  'Sign in'
-                ) : mode === 'signup' ? (
-                  'Create account'
-                ) : mode === 'reset' ? (
-                  'Send reset email'
-                ) : isEmailLinkSignIn() ? (
-                  'Complete sign in'
-                ) : (
-                  'Send sign-in link'
-                )}
+                ) : mode === 'signup' ? 'Create account' : mode === 'reset' ? 'Send reset email' : isEmailLinkSignIn() ? 'Complete sign in' : 'Send sign-in link'}
               </button>
             </form>
           )}
 
+          {/* Firebase email/password login form (when Firebase AND in login mode) */}
+          {hasFirebase && mode === 'login' && !hasLocal && (
+            <form onSubmit={handleFirebaseSubmit} className="space-y-4">
+              <div>
+                <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email address</label>
+                <input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                  placeholder="you@example.com" />
+              </div>
+              <div>
+                <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
+                <input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6}
+                  className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+              </div>
+              <div className="flex justify-between text-sm">
+                <button type="button" onClick={() => switchMode('emaillink')} className="text-primary-600 dark:text-primary-400 hover:underline">Sign in with email link</button>
+                <button type="button" onClick={() => switchMode('reset')} className="text-primary-600 dark:text-primary-400 hover:underline">Forgot password?</button>
+              </div>
+              <button type="submit" disabled={loading}
+                className="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                {loading ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : 'Sign in'}
+              </button>
+            </form>
+          )}
+
+          {/* Email Link Sent State */}
+          {mode === 'emaillink' && emailLinkSent && (
+            <div className="text-center py-4">
+              <p className="text-gray-700 dark:text-gray-300 mb-4">Check your inbox for the sign-in link.</p>
+              <button onClick={() => switchMode('login')} className="text-sm text-primary-600 dark:text-primary-400 hover:underline">Back to sign in</button>
+            </div>
+          )}
+
           {/* Mode Switch */}
           <div className="mt-6 text-center text-sm">
-            {mode === 'login' && (
+            {mode === 'login' && hasFirebase && (
               <p className="text-gray-600 dark:text-gray-400">
                 Don't have an account?{' '}
-                <button onClick={() => switchMode('signup')} className="text-primary-600 dark:text-primary-400 hover:underline font-medium">
-                  Sign up
-                </button>
+                <button onClick={() => switchMode('signup')} className="text-primary-600 dark:text-primary-400 hover:underline font-medium">Sign up</button>
               </p>
             )}
             {mode === 'signup' && (
               <p className="text-gray-600 dark:text-gray-400">
                 Already have an account?{' '}
-                <button onClick={() => switchMode('login')} className="text-primary-600 dark:text-primary-400 hover:underline font-medium">
-                  Sign in
-                </button>
+                <button onClick={() => switchMode('login')} className="text-primary-600 dark:text-primary-400 hover:underline font-medium">Sign in</button>
               </p>
             )}
             {(mode === 'reset' || mode === 'emaillink') && (
               <p className="text-gray-600 dark:text-gray-400">
                 Remember your password?{' '}
-                <button onClick={() => switchMode('login')} className="text-primary-600 dark:text-primary-400 hover:underline font-medium">
-                  Sign in
-                </button>
+                <button onClick={() => switchMode('login')} className="text-primary-600 dark:text-primary-400 hover:underline font-medium">Sign in</button>
               </p>
+            )}
+            {authMethods.length === 0 && (
+              <p className="text-gray-500 dark:text-gray-400">Authentication not configured. Contact your administrator.</p>
             )}
           </div>
         </div>
