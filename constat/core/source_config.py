@@ -397,20 +397,13 @@ class DocumentConfig(BaseModel):
     language: Optional[str] = None  # Language code (None = auto-detect)
     hf_token: Optional[str] = None  # HuggingFace token for diarization (${HF_TOKEN})
 
-    # Cloud drive source
-    provider: Optional[str] = None  # "google" | "microsoft"
-    folder_id: Optional[str] = None  # Provider-specific folder ID
-    folder_path: Optional[str] = None  # Human-readable path
-    recursive: bool = True  # Traverse subfolders
-    max_files: int = 200  # Max files per sync
-    include_types: Optional[list[str]] = None  # File extension allowlist [".pdf", ".docx"]
-    include_trashed: bool = False  # Include trashed files
-    site_id: Optional[str] = None  # SharePoint site ID
-    drive_id: Optional[str] = None  # Specific drive ID
-
     # Background refresh
     auto_refresh: bool = True  # Whether this source is eligible for background refresh
     refresh_interval: Optional[int] = None  # Override default refresh interval (seconds)
+
+    # MCP resource filtering
+    resource_filter: Optional[str] = None  # Regex to filter MCP resource URIs
+    max_resources: int = 100  # Max resources to list from MCP server
 
 
 class APIConfig(BaseModel):
@@ -492,6 +485,10 @@ class APIConfig(BaseModel):
     # Schema introspection (GraphQL introspection or OpenAPI spec parsing)
     introspect: bool = True  # Fetch and cache schema at startup
     _schema_cache: Optional[dict] = None  # Cached schema (internal, not serialized)
+
+    # MCP tool filtering
+    allowed_tools: Optional[list[str]] = None  # Allowlist of MCP tool names
+    denied_tools: Optional[list[str]] = None  # Denylist of MCP tool names
 
     # Glossary generation gating
     generate_definitions: Union[bool, float, str] = True  # True/False/float threshold/"auto"

@@ -461,14 +461,18 @@ class SessionManager:
             FileDocumentProvider, HttpDocumentProvider, ImapDocumentProvider,
         )
         from constat.providers.api_providers import GraphQLApiProvider, OpenApiProvider
+        from constat.mcp.document_provider import McpDocumentProvider
+        from constat.mcp.api_provider import McpApiProvider
 
         registry = DataSourceRegistry()
         registry.register(DataSourceKind.DATABASE, "sql", SqlDatabaseProvider())
         registry.register(DataSourceKind.DOCUMENT, "file", FileDocumentProvider())
         registry.register(DataSourceKind.DOCUMENT, "http", HttpDocumentProvider())
         registry.register(DataSourceKind.DOCUMENT, "imap", ImapDocumentProvider())
+        registry.register(DataSourceKind.DOCUMENT, "mcp", McpDocumentProvider())
         registry.register(DataSourceKind.API, "graphql", GraphQLApiProvider())
         registry.register(DataSourceKind.API, "openapi", OpenApiProvider())
+        registry.register(DataSourceKind.API, "mcp", McpApiProvider())
         return registry
 
         # GraphQL subscription pub/sub
