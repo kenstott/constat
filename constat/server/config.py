@@ -241,6 +241,16 @@ class ServerConfig(BaseModel):
         if source_refresh_env is not None:
             self.source_refresh_interval_seconds = int(source_refresh_env)
 
+        # Merge persisted local_users.yaml (from self-registration) into local_users
+        users_file = self.data_dir / "local_users.yaml"
+        if users_file.exists():
+            import yaml
+            with open(users_file) as f:
+                persisted = yaml.safe_load(f) or {}
+            for uname, udata in persisted.items():
+                if uname not in self.local_users:
+                    self.local_users[uname] = LocalUser(**udata)
+
         return self
 
     @classmethod

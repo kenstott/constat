@@ -146,6 +146,49 @@ class Mutation:
         return True
 
     @strawberry.mutation
+    async def register(
+        self, info: Info, username: str, password: str, email: str = "",
+    ) -> AuthPayload:
+        """Register a new local user account."""
+        from constat.server.local_auth import hash_password, create_local_token
+        from constat.server.config import LocalUser
+
+        server_config = info.context.server_config
+
+        # Check username not taken
+        if username in server_config.local_users:
+            raise ValueError(f"Username already taken: {username}")
+        for _, user in server_config.local_users.items():
+            if email and user.email == email:
+                raise ValueError(f"Email already registered: {email}")
+
+        if len(password) < 6:
+            raise ValueError("Password must be at least 6 characters")
+
+        # Hash and persist
+        pw_hash = hash_password(password)
+        new_user = LocalUser(password_hash=pw_hash, email=email)
+
+        # Persist to local_users.yaml in data_dir
+        import yaml
+        users_file = server_config.data_dir / "local_users.yaml"
+        existing: dict = {}
+        if users_file.exists():
+            with open(users_file) as f:
+                existing = yaml.safe_load(f) or {}
+        existing[username] = {"password_hash": pw_hash, "email": email}
+        users_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(users_file, "w") as f:
+            yaml.dump(existing, f, default_flow_style=False)
+
+        # Update in-memory config
+        server_config.local_users[username] = new_user
+
+        # Auto-login
+        token = create_local_token(username, email)
+        return AuthPayload(token=token, user_id=username, email=email)
+
+    @strawberry.mutation
     async def passkey_register_begin(self, info: Info, user_id: str) -> PasskeyOptions:
         from constat.server.routes.passkey import (
             _load_credentials,

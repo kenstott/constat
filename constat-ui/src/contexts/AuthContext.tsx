@@ -11,6 +11,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useMutation, useQuery } from '@apollo/client'
 import { makeVar, useReactiveVar } from '@apollo/client'
+import { apolloClient } from '@/graphql/client'
 import { LOGIN_MUTATION, LOGOUT_MUTATION, MY_PERMISSIONS_QUERY } from '@/graphql/operations/auth'
 import {
   isAuthDisabled,
@@ -53,6 +54,7 @@ interface AuthContextValue {
   permissions: UserPermissions | null
   initialized: boolean
   login: (email: string, password: string) => Promise<void>
+  register: (username: string, password: string, email?: string) => Promise<void>
   loginWithGoogle: () => Promise<void>
   loginWithEmail: (email: string, password: string) => Promise<void>
   signupWithEmail: (email: string, password: string) => Promise<void>
@@ -123,6 +125,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false)
     }
   }, [loginMutation])
+
+  const register = useCallback(async (username: string, password: string, email?: string) => {
+    setLoading(true)
+    setErrorState(null)
+    try {
+      const { REGISTER_MUTATION } = await import('@/graphql/operations/auth')
+      const { data } = await apolloClient.mutate({
+        mutation: REGISTER_MUTATION,
+        variables: { username, password, email: email || '' },
+      })
+      setToken(data.register.token)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Registration failed'
+      setErrorState(message)
+      throw err
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
   const loginWithGoogle = useCallback(async () => {
     if (authDisabled) return
@@ -263,6 +284,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     permissions,
     initialized,
     login,
+    register,
     loginWithGoogle,
     loginWithEmail,
     signupWithEmail: signupWithEmailCb,

@@ -20,6 +20,16 @@ export const LOGIN_MUTATION = gql`
   }
 `
 
+export const REGISTER_MUTATION = gql`
+  mutation Register($username: String!, $password: String!, $email: String) {
+    register(username: $username, password: $password, email: $email) {
+      token
+      userId
+      email
+    }
+  }
+`
+
 export const LOGOUT_MUTATION = gql`
   mutation Logout {
     logout

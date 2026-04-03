@@ -28,6 +28,7 @@ export function LoginPage() {
 
   const {
     login,
+    register,
     loginWithGoogle,
     loginWithEmail,
     signupWithEmail,
@@ -95,6 +96,26 @@ export function LoginPage() {
     if (!identifier || !password) return
     try {
       await login(identifier, password)
+    } catch {
+      // Error handled by store
+    }
+  }
+
+  const handleLocalRegister = async (e: React.FormEvent) => {
+    e.preventDefault()
+    clearError()
+    setSuccessMessage(null)
+    if (!username || !password) return
+    if (password !== confirmPassword) {
+      setError('Passwords do not match')
+      return
+    }
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters')
+      return
+    }
+    try {
+      await register(username, password, email || undefined)
     } catch {
       // Error handled by store
     }
@@ -281,12 +302,12 @@ export function LoginPage() {
             </button>
           )}
 
-          {/* ═══ Local Login Form ═══ */}
-          {hasLocal && mode === 'login' && (
-            <form onSubmit={handleLocalLogin} className="space-y-4">
+          {/* ═══ Local Login / Register Form ═══ */}
+          {hasLocal && (mode === 'login' || mode === 'register') && (
+            <form onSubmit={mode === 'register' ? handleLocalRegister : handleLocalLogin} className="space-y-4">
               <div>
                 <label htmlFor="username" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Username or Email
+                  Username{mode === 'login' ? ' or Email' : ''}
                 </label>
                 <input
                   id="username"
@@ -295,9 +316,24 @@ export function LoginPage() {
                   onChange={(e) => { setUsername(e.target.value); setEmail(e.target.value) }}
                   required
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                  placeholder="username or email"
+                  placeholder={mode === 'register' ? 'Choose a username' : 'username or email'}
                 />
               </div>
+              {mode === 'register' && (
+                <div>
+                  <label htmlFor="reg-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Email (optional)
+                  </label>
+                  <input
+                    id="reg-email"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    placeholder="you@example.com"
+                  />
+                </div>
+              )}
               <div>
                 <label htmlFor="local-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                   Password
@@ -308,15 +344,32 @@ export function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
+                  minLength={6}
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                 />
               </div>
+              {mode === 'register' && (
+                <div>
+                  <label htmlFor="local-confirm" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Confirm Password
+                  </label>
+                  <input
+                    id="local-confirm"
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                  />
+                </div>
+              )}
               <button
                 type="submit"
                 disabled={loading}
                 className="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {loading ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : 'Sign in'}
+                {loading ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : mode === 'register' ? 'Create account' : 'Sign in'}
               </button>
             </form>
           )}
@@ -400,6 +453,18 @@ export function LoginPage() {
 
           {/* Mode Switch */}
           <div className="mt-6 text-center text-sm">
+            {mode === 'login' && hasLocal && !hasFirebase && (
+              <p className="text-gray-600 dark:text-gray-400">
+                Don't have an account?{' '}
+                <button onClick={() => switchMode('register')} className="text-primary-600 dark:text-primary-400 hover:underline font-medium">Create account</button>
+              </p>
+            )}
+            {mode === 'register' && (
+              <p className="text-gray-600 dark:text-gray-400">
+                Already have an account?{' '}
+                <button onClick={() => switchMode('login')} className="text-primary-600 dark:text-primary-400 hover:underline font-medium">Sign in</button>
+              </p>
+            )}
             {mode === 'login' && hasFirebase && (
               <p className="text-gray-600 dark:text-gray-400">
                 Don't have an account?{' '}
