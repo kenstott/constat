@@ -788,6 +788,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.feedback import router as feedback_router
     from constat.server.routes.testing import router as testing_router
     from constat.server.routes.fine_tune import router as fine_tune_router
+    from constat.server.routes.mcp_catalog import router as mcp_catalog_router
 
     from constat.server.routes.oauth_email import router as oauth_email_router
     from constat.server.routes.oauth import router as oauth_router
@@ -891,6 +892,11 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         fine_tune_router,
         prefix="/api",
         tags=["fine-tune"],
+    )
+    fastapi_app.include_router(
+        mcp_catalog_router,
+        prefix="/api/mcp",
+        tags=["mcp-catalog"],
     )
 
     return fastapi_app

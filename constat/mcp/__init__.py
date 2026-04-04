@@ -12,3 +12,4 @@ from constat.mcp.pool import McpClientPool
 from constat.mcp.change_probe import ChangeProbe
 from constat.mcp.document_provider import McpDocumentProvider
 from constat.mcp.api_provider import McpApiProvider
+from constat.mcp.catalog import McpCatalog

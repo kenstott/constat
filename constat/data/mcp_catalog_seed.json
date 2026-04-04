@@ -1,0 +1,11 @@
+{
+  "version": "2026-04-04",
+  "servers": [
+    {"name": "GitHub", "slug": "github", "description": "GitHub repos, issues, PRs", "category": "development", "capabilities": ["resources", "tools"]},
+    {"name": "Slack", "slug": "slack", "description": "Slack channels and messages", "category": "communication", "capabilities": ["resources", "tools"]},
+    {"name": "Google Drive", "slug": "google-drive", "description": "Google Drive files", "category": "drive", "capabilities": ["resources"]},
+    {"name": "Confluence", "slug": "confluence", "description": "Confluence pages and spaces", "category": "documents", "capabilities": ["resources", "tools"]},
+    {"name": "Jira", "slug": "jira", "description": "Jira issues and projects", "category": "project-management", "capabilities": ["resources", "tools"]},
+    {"name": "PostgreSQL", "slug": "postgresql", "description": "PostgreSQL database", "category": "database", "capabilities": ["resources", "tools"]}
+  ]
+}

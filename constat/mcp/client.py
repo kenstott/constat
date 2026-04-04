@@ -7,12 +7,14 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""MCP client — JSON-RPC 2.0 over Streamable HTTP transport."""
+"""MCP client — JSON-RPC 2.0 over Streamable HTTP and stdio transports."""
 
 from __future__ import annotations
 
 import itertools
+import json
 import logging
+import subprocess
 from typing import Any, Optional
 
 import httpx
@@ -57,6 +59,7 @@ class McpClient:
         self._session_id: Optional[str] = None
         self._capabilities: dict[str, Any] = {}
         self._http: Optional[httpx.AsyncClient] = None
+        self._process: Optional[subprocess.Popen] = None
 
     @property
     def capabilities(self) -> dict[str, Any]:
@@ -64,7 +67,14 @@ class McpClient:
         return self._capabilities
 
     @property
+    def _is_stdio(self) -> bool:
+        """True when the transport is stdio (subprocess)."""
+        return self._base_url.startswith("stdio://")
+
+    @property
     def connected(self) -> bool:
+        if self._is_stdio:
+            return self._process is not None and self._process.poll() is None
         return self._http is not None and self._session_id is not None
 
     # ------------------------------------------------------------------
@@ -80,11 +90,20 @@ class McpClient:
         3. Send ``notifications/initialized`` notification
         4. Return server capabilities dict
         """
-        self._http = httpx.AsyncClient(
-            base_url=self._base_url,
-            timeout=self._timeout,
-            headers=self._build_headers(),
-        )
+        if self._is_stdio:
+            cmd = self._base_url[len("stdio://"):]
+            self._process = subprocess.Popen(
+                cmd.split(),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        else:
+            self._http = httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                headers=self._build_headers(),
+            )
 
         result = await self._rpc("initialize", {
             "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -101,7 +120,14 @@ class McpClient:
         return self._capabilities
 
     async def disconnect(self) -> None:
-        """Clean shutdown — close the HTTP client."""
+        """Clean shutdown — close the HTTP client or terminate subprocess."""
+        if self._process is not None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+            self._process = None
         if self._http is not None:
             await self._http.aclose()
             self._http = None
@@ -168,6 +194,9 @@ class McpClient:
             McpError: If the server returns a JSON-RPC error response.
             httpx.HTTPStatusError: On non-2xx HTTP status.
         """
+        if self._is_stdio:
+            return self._rpc_stdio(method, params)
+
         if self._http is None:
             raise McpError(-32000, "Not connected — call connect() first")
 
@@ -201,6 +230,13 @@ class McpClient:
 
     async def _notify(self, method: str, params: Optional[dict] = None) -> None:
         """Send a JSON-RPC 2.0 notification (no id, no response expected)."""
+        if self._is_stdio:
+            payload: dict[str, Any] = {"jsonrpc": JSONRPC_VERSION, "method": method}
+            if params is not None:
+                payload["params"] = params
+            self._send_stdio(payload)
+            return
+
         if self._http is None:
             raise McpError(-32000, "Not connected — call connect() first")
 
@@ -217,6 +253,47 @@ class McpClient:
 
         response = await self._http.post("/", json=payload, headers=headers)
         response.raise_for_status()
+
+    # ------------------------------------------------------------------
+    # Stdio transport helpers
+    # ------------------------------------------------------------------
+
+    def _send_stdio(self, payload: dict[str, Any]) -> None:
+        """Write a JSON-RPC message to the subprocess stdin."""
+        if self._process is None or self._process.stdin is None:
+            raise McpError(-32000, "Stdio process not running")
+        line = json.dumps(payload) + "\n"
+        self._process.stdin.write(line.encode())
+        self._process.stdin.flush()
+
+    def _recv_stdio(self) -> dict[str, Any]:
+        """Read a JSON-RPC response line from the subprocess stdout."""
+        if self._process is None or self._process.stdout is None:
+            raise McpError(-32000, "Stdio process not running")
+        line = self._process.stdout.readline()
+        if not line:
+            raise McpError(-32000, "Stdio process closed stdout")
+        return json.loads(line)
+
+    def _rpc_stdio(self, method: str, params: Optional[dict] = None) -> dict:
+        """Send a JSON-RPC request over stdio and return the result."""
+        request_id = next(self._id_counter)
+        payload: dict[str, Any] = {
+            "jsonrpc": JSONRPC_VERSION,
+            "id": request_id,
+            "method": method,
+        }
+        if params is not None:
+            payload["params"] = params
+
+        self._send_stdio(payload)
+        body = self._recv_stdio()
+
+        if "error" in body:
+            err = body["error"]
+            raise McpError(err["code"], err["message"])
+
+        return body.get("result", {})
 
     def _build_headers(self) -> dict[str, str]:
         """Build default headers including auth if configured."""
