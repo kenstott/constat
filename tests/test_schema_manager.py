@@ -302,6 +302,11 @@ def fresh_vector_store(tmp_path):
         cache_backup = schema_cache_path.read_text()
         schema_cache_path.unlink()
 
+    # Clear process-level in-memory cache so re-introspection is forced
+    from constat.catalog.schema_manager import _process_schema_cache, _process_schema_lock
+    with _process_schema_lock:
+        _process_schema_cache.clear()
+
     # Set fresh vector store path
     vector_store_path = tmp_path / "system.duckdb"
     old_value = os.environ.get("CONSTAT_VECTOR_STORE_PATH")

@@ -12,11 +12,17 @@
 
 import logging
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
 
 from constat.discovery.entity_extractor import EntityExtractor
 from constat.discovery.models import DocumentChunk, ChunkEntity
 
 logger = logging.getLogger(__name__)
+
+# Persistent thread pool for parallel domain NER.
+# Module-level so threads are reused (and their thread-local spaCy models too).
+_NER_POOL_WORKERS = 3
+_ner_pool = ThreadPoolExecutor(max_workers=_NER_POOL_WORKERS, thread_name_prefix="ner-domain")
 
 
 def _deduplicate_chunk_links(all_links: list[ChunkEntity]) -> list[ChunkEntity]:
@@ -154,7 +160,7 @@ class _EntityMixin:
         all_links: list[ChunkEntity] = []
         all_entities = []
 
-        for domain_id, domain_chunks in chunks_by_domain.items():
+        def _extract_domain(domain_id, domain_chunks):
             extractor = EntityExtractor(
                 session_id=session_id,
                 domain_id=domain_id,
@@ -165,11 +171,29 @@ class _EntityMixin:
                 entity_terms=entity_terms,
             )
             links = _extract_links_from_chunks(extractor, domain_chunks)
-            all_links.extend(links)
-            # Filter enumerated data values (e.g., "User0025", "Order12345")
             extractor.filter_pattern_noise()
-            all_entities.extend(extractor.get_all_entities())
-            logger.info(f"extract_entities_for_session({session_id}): domain={domain_id} -> {len(domain_chunks)} chunks, {len(links)} links, {len(extractor.get_all_entities())} unique entities")
+            entities = extractor.get_all_entities()
+            logger.info(
+                f"extract_entities_for_session({session_id}): domain={domain_id} -> "
+                f"{len(domain_chunks)} chunks, {len(links)} links, {len(entities)} unique entities"
+            )
+            return links, entities
+
+        domain_items = list(chunks_by_domain.items())
+        if len(domain_items) <= 1:
+            for domain_id, domain_chunks in domain_items:
+                links, entities = _extract_domain(domain_id, domain_chunks)
+                all_links.extend(links)
+                all_entities.extend(entities)
+        else:
+            futures = {
+                _ner_pool.submit(_extract_domain, domain_id, domain_chunks): domain_id
+                for domain_id, domain_chunks in domain_items
+            }
+            for future in _as_completed(futures):
+                links, entities = future.result()
+                all_links.extend(links)
+                all_entities.extend(entities)
 
         # Snapshot existing entity IDs for diff
         old_ids: set[str] = set()

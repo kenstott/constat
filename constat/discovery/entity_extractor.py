@@ -21,6 +21,7 @@ Uses a single spaCy pipeline with:
 import hashlib
 import logging
 import re
+import threading as _threading
 from typing import Optional
 
 import spacy
@@ -37,16 +38,16 @@ from constat.discovery.models import (
 
 logger = logging.getLogger(__name__)
 
-# Load spaCy model once at module level
-_nlp: Optional[Language] = None
+# Thread-local spaCy models — each thread gets its own instance so concurrent
+# EntityExtractor creation (which mutates the pipeline) is safe.
+_nlp_local = _threading.local()
 
 
 def get_nlp() -> Language:
-    """Get or load the spaCy model."""
-    global _nlp
-    if _nlp is None:
-        _nlp = spacy.load("en_core_web_lg")
-    return _nlp
+    """Get or load the thread-local spaCy model."""
+    if not hasattr(_nlp_local, 'nlp'):
+        _nlp_local.nlp = spacy.load("en_core_web_lg")
+    return _nlp_local.nlp
 
 
 class EntityExtractor:

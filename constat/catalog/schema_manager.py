@@ -13,12 +13,19 @@
 import hashlib
 import json
 import logging
+import threading as _sm_threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Iterable
 from typing import Callable, Optional, Union, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
+
+# Process-level schema metadata cache — avoids redundant JSON disk reads when
+# multiple sessions share the same base config. Keyed by config hash.
+# Each session gets a shallow copy of the dict (its own dict, shared TableMetadata objects).
+_process_schema_cache: dict[str, dict] = {}
+_process_schema_lock = _sm_threading.Lock()
 
 if TYPE_CHECKING:
     from constat.discovery.doc_tools import DocumentDiscoveryTools
@@ -844,6 +851,12 @@ class SchemaManager:
         Returns:
             True if cache was loaded successfully, False otherwise
         """
+        # Check process-level in-memory cache first (avoids disk I/O)
+        with _process_schema_lock:
+            if expected_hash in _process_schema_cache:
+                self.metadata_cache = dict(_process_schema_cache[expected_hash])
+                return True
+
         cache_path = self._get_schema_cache_path()
         if not cache_path.exists():
             return False
@@ -895,6 +908,8 @@ class SchemaManager:
                     database_type=table_dict.get("database_type", ""),
                 )
 
+            with _process_schema_lock:
+                _process_schema_cache[expected_hash] = dict(self.metadata_cache)
             return True
         except (json.JSONDecodeError, KeyError, OSError):
             return False
@@ -943,6 +958,9 @@ class SchemaManager:
 
             with open(cache_path, "w") as f:
                 json.dump(cache_data, f, indent=2)
+
+            with _process_schema_lock:
+                _process_schema_cache[config_hash] = dict(self.metadata_cache)
         except OSError:
             # Silently ignore cache save failures
             pass
