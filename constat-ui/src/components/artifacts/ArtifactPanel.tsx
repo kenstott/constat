@@ -48,8 +48,10 @@ import {
   ImprovementsSection,
   CodeLogSection,
 } from './sections'
+import { PersonalResourcePicker } from './PersonalResourcePicker'
+import { AccountManager } from './AccountManager'
 
-type ModalType = 'database' | 'api' | 'document' | 'email' | 'fact' | 'rule' | null
+type ModalType = 'database' | 'api' | 'document' | 'email' | 'fact' | 'rule' | 'personal' | 'accounts' | null
 
 function TopLevelSection({ id, title, count, loading, children }: {
   id: string; title: string; count?: number; loading?: boolean; children: ReactNode
@@ -355,8 +357,21 @@ export function ArtifactPanel() {
 
   return (
     <div className="flex-1 overflow-y-auto">
+      {/* Personal Resource Picker */}
+      <PersonalResourcePicker
+        isOpen={showModal === 'personal'}
+        onClose={() => setShowModal(null)}
+        sessionId={session.session_id}
+      />
+
+      {/* Account Manager */}
+      <AccountManager
+        isOpen={showModal === 'accounts'}
+        onClose={() => setShowModal(null)}
+      />
+
       {/* Add Modal */}
-      {showModal && (
+      {showModal && showModal !== 'personal' && showModal !== 'accounts' && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-80 shadow-xl">
             <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">

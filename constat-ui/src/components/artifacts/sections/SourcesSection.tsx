@@ -28,6 +28,8 @@ import {
   ChevronDownIcon,
   EnvelopeIcon,
   XMarkIcon,
+  UserPlusIcon,
+  Cog6ToothIcon,
 } from '@heroicons/react/24/outline'
 import { AccordionSection } from '../ArtifactAccordion'
 import { SkeletonLoader } from '../../common/SkeletonLoader'
@@ -48,7 +50,7 @@ interface SourcesSectionProps {
   sourcesVisible: boolean
   canSeeSection: (section: string) => boolean
   canWrite: (section: string) => boolean
-  onOpenModal: (type: 'database' | 'api' | 'document' | 'email' | 'fact') => void
+  onOpenModal: (type: 'database' | 'api' | 'document' | 'email' | 'fact' | 'personal' | 'accounts') => void
   ingestingSource: string | null
   ingestProgress: { current: number; total: number } | null
   domainList: { filename: string; name: string }[]
@@ -739,6 +741,20 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                 title="Add email source"
               >
                 <EnvelopeIcon className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => onOpenModal('personal')}
+                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                title="Connect personal resource"
+              >
+                <UserPlusIcon className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => onOpenModal('accounts')}
+                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                title="Manage accounts"
+              >
+                <Cog6ToothIcon className="w-4 h-4" />
               </button>
             </div>
           ) : <div className="w-6 h-6" />
