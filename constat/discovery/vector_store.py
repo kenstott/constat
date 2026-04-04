@@ -504,6 +504,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             "ALTER TABLE source_hashes ADD COLUMN IF NOT EXISTS er_hash VARCHAR",
             "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS data_source_id VARCHAR",
             "ALTER TABLE entity_relationships ADD COLUMN IF NOT EXISTS user_edited BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE entity_relationships ADD COLUMN IF NOT EXISTS domain VARCHAR",
         ]
         schema_changed = False
         for stmt in _alter_stmts:
@@ -549,6 +550,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 verb_category VARCHAR DEFAULT 'other',
                 session_id VARCHAR,
                 user_edited BOOLEAN DEFAULT FALSE,
+                domain VARCHAR,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(subject_name, verb, object_name, session_id)
             )

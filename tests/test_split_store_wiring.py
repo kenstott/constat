@@ -707,7 +707,7 @@ class TestE2ESessionLifecycle:
 
         vs.add_entities([Entity(
             id="e_orders", name="orders", display_name="Orders",
-            semantic_type="table", session_id="sess1",
+            semantic_type="table", session_id="sess1", domain_id="sales-analytics",
         )], session_id="sess1")
         vs.link_chunk_entities([ChunkEntity(
             chunk_id=warmup_chunk_id, entity_id="e_orders", confidence=0.95,

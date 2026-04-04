@@ -397,7 +397,7 @@ def vector_store(temp_db):
     return DuckDBVectorStore(db_path=temp_db)
 
 
-def _make_entity(name, session_id="sess-1", domain_id=None):
+def _make_entity(name, session_id="sess-1", domain_id="test-domain"):
     """Helper to create an Entity with a deterministic ID."""
     import hashlib
     eid = hashlib.sha256(f"{name}:{session_id}".encode()).hexdigest()[:12]

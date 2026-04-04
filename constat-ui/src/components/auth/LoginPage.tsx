@@ -12,8 +12,22 @@
 
 import { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
+import { apolloClient } from '@/graphql/client'
+import {
+  PASSKEY_AUTH_BEGIN,
+  PASSKEY_AUTH_COMPLETE,
+} from '@/graphql/operations/auth'
 
 type AuthMode = 'login' | 'signup' | 'reset' | 'emaillink' | 'register'
+
+// Inline key icon to avoid heroicons dependency
+function KeyIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z" />
+    </svg>
+  )
+}
 
 export function LoginPage() {
   const [mode, setMode] = useState<AuthMode>('login')
@@ -25,6 +39,11 @@ export function LoginPage() {
   const [emailLinkSent, setEmailLinkSent] = useState(false)
   const [authMethods, setAuthMethods] = useState<string[]>([])
   const [authLoading, setAuthLoading] = useState(true)
+  const [hasWebAuthn, setHasWebAuthn] = useState(false)
+
+  useEffect(() => {
+    setHasWebAuthn(!!window.PublicKeyCredential)
+  }, [])
 
   const {
     login,
@@ -202,6 +221,79 @@ export function LoginPage() {
     }
   }
 
+  const handlePasskeyLogin = async () => {
+    clearError()
+    setSuccessMessage(null)
+    const identifier = username || email
+    if (!identifier) {
+      setError('Please enter your username or email first')
+      return
+    }
+    try {
+      // 1. Get challenge from server
+      const { data: beginData } = await apolloClient.mutate({
+        mutation: PASSKEY_AUTH_BEGIN,
+        variables: { userId: identifier },
+      })
+      const options = beginData.passkeyAuthBegin.optionsJson
+
+      // 2. Get credential from browser
+      const credential = await navigator.credentials.get({
+        publicKey: {
+          challenge: Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
+          rpId: options.rpId,
+          allowCredentials: (options.allowCredentials || []).map((c: { type: string; id: string }) => ({
+            type: c.type,
+            id: Uint8Array.from(atob(c.id.replace(/-/g, '+').replace(/_/g, '/')), ch => ch.charCodeAt(0)),
+          })),
+          userVerification: options.userVerification || 'preferred',
+        },
+      }) as PublicKeyCredential | null
+
+      if (!credential) {
+        setError('Passkey authentication was cancelled')
+        return
+      }
+
+      // 3. Send credential to server
+      const response = credential.response as AuthenticatorAssertionResponse
+      const toB64 = (buf: ArrayBuffer) => {
+        const bytes = new Uint8Array(buf)
+        let binary = ''
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+        return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+      }
+
+      const { data: completeData } = await apolloClient.mutate({
+        mutation: PASSKEY_AUTH_COMPLETE,
+        variables: {
+          userId: identifier,
+          credential: {
+            id: credential.id,
+            rawId: toB64(credential.rawId),
+            type: credential.type,
+            response: {
+              authenticatorData: toB64(response.authenticatorData),
+              clientDataJSON: toB64(response.clientDataJSON),
+              signature: toB64(response.signature),
+              userHandle: response.userHandle ? toB64(response.userHandle) : null,
+            },
+          },
+        },
+      })
+
+      // 4. Token is set via the mutation response; trigger page reload to pick up auth
+      const token = completeData.passkeyAuthComplete.token
+      if (token) {
+        localStorage.setItem('auth_token', token)
+        window.location.reload()
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Passkey authentication failed'
+      setError(message)
+    }
+  }
+
   const switchMode = (newMode: AuthMode) => {
     setMode(newMode)
     clearError()
@@ -282,6 +374,18 @@ export function LoginPage() {
                 </button>
               )}
 
+              {/* Passkey button (when WebAuthn available) */}
+              {hasWebAuthn && mode === 'login' && (
+                <button
+                  onClick={handlePasskeyLogin}
+                  disabled={loading}
+                  className="mt-3 w-full flex items-center justify-center gap-3 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <KeyIcon className="w-5 h-5" />
+                  <span>Sign in with Passkey</span>
+                </button>
+              )}
+
               {/* Divider if other methods exist */}
               {(hasLocal || (hasFirebase && mode !== 'signup')) && (
                 <div className="relative my-6">
@@ -312,6 +416,18 @@ export function LoginPage() {
                 <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
               </svg>
               <span>Sign in with Microsoft</span>
+            </button>
+          )}
+
+          {/* Passkey button for non-Firebase login */}
+          {!hasFirebase && hasWebAuthn && mode === 'login' && (
+            <button
+              onClick={handlePasskeyLogin}
+              disabled={loading}
+              className="mt-3 w-full flex items-center justify-center gap-3 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <KeyIcon className="w-5 h-5" />
+              <span>Sign in with Passkey</span>
             </button>
           )}
 

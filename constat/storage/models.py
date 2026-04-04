@@ -91,6 +91,7 @@ class EntityRelationshipModel(Base):
     verb_category = Column(Text, default="other")
     session_id = Column(Text)
     user_edited = Column(Boolean, default=False)
+    domain = Column(Text)
     created_at = Column(TIMESTAMP)
 
     __table_args__ = (

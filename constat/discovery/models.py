@@ -318,6 +318,7 @@ class EntityRelationship:
     verb_category: str = "other"
     session_id: str = ""
     user_edited: bool = False
+    domain: Optional[str] = None
     created_at: Optional[datetime] = None
 
     def __post_init__(self):

@@ -134,6 +134,8 @@ class RelationalStore:
         seen_ids = set()
         records = []
         for entity in entities:
+            if not entity.domain_id:
+                raise ValueError("Entity domain_id is required")
             if entity.id not in seen_ids:
                 seen_ids.add(entity.id)
                 records.append((
@@ -1209,8 +1211,8 @@ class RelationalStore:
             """
             INSERT INTO entity_relationships
                 (id, subject_name, verb, object_name,
-                 sentence, confidence, verb_category, session_id, user_edited)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 sentence, confidence, verb_category, session_id, user_edited, domain)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             [
@@ -1218,6 +1220,7 @@ class RelationalStore:
                 rel.object_name, rel.sentence,
                 rel.confidence, rel.verb_category, rel.session_id,
                 getattr(rel, 'user_edited', False),
+                getattr(rel, 'domain', None),
             ],
         )
 

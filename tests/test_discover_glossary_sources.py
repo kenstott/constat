@@ -71,6 +71,7 @@ def vs():
         display_name="Cat Fact",
         semantic_type="concept",
         session_id=SESSION_ID,
+        domain_id=SESSION_ID,
     )
     store.add_entities([entity], SESSION_ID)
 
