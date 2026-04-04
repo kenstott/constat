@@ -324,11 +324,23 @@ export function CodeLogSection({
     }
   }, [inferenceCodes])
 
-  const codeLogVisible = canSeeSection('code') || canSeeSection('inference_code') || scratchpadEntries.length > 0
+  const codeLogVisible = canSeeSection('code') || canSeeSection('inference_code')
 
   return (
     <>
-      {/* --- Code Log sub-group --- */}
+      {/* Scratchpad - directly under Debug, not gated by Code Log toggle */}
+      {scratchpadEntries.length > 0 && (
+        <AccordionSection
+          id="scratchpad"
+          title="Scratchpad"
+          count={scratchpadEntries.length}
+          icon={<DocumentTextIcon className="w-4 h-4" />}
+        >
+          <ScratchpadList entries={scratchpadEntries} supersededStepNumbers={supersededStepNumbers} tables={tables} />
+        </AccordionSection>
+      )}
+
+      {/* --- Code Log sub-group (Exploratory Code + Inference Code only) --- */}
       {codeLogVisible && (
       <button
         onClick={() => {
@@ -347,18 +359,6 @@ export function CodeLogSection({
 
       {codeLogVisible && !codeLogCollapsed && (
       <>
-
-      {/* Scratchpad - execution narrative per step */}
-      {scratchpadEntries.length > 0 && (
-        <AccordionSection
-          id="scratchpad"
-          title="Scratchpad"
-          count={scratchpadEntries.length}
-          icon={<DocumentTextIcon className="w-4 h-4" />}
-        >
-          <ScratchpadList entries={scratchpadEntries} supersededStepNumbers={supersededStepNumbers} tables={tables} />
-        </AccordionSection>
-      )}
 
       {/* Code - only show when there's code and user can see it */}
       {canSeeSection('code') && stepCodes.length > 0 && (
@@ -514,7 +514,10 @@ export function CodeLogSection({
         </AccordionSection>
       )}
 
-      {/* Session Store DDL */}
+      </>
+      )}
+
+      {/* Session Store DDL - directly under Debug, not gated by Code Log toggle */}
       {sessionDDL && (
         <AccordionSection
           id="session-ddl"
@@ -534,9 +537,6 @@ export function CodeLogSection({
             {sessionDDL}
           </pre>
         </AccordionSection>
-      )}
-
-      </>
       )}
     </>
   )
