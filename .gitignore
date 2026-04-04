@@ -68,3 +68,4 @@ Screenshot*
 constat-ui/coverage/
 .claude/worktrees/
 .claude/projects/
+/constat-ui/.vite.test.config.mts

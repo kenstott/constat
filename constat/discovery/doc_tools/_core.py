@@ -219,12 +219,14 @@ class _CoreMixin:
             return
 
         # Parallel chunking — CPU bound, per-doc independent
+        logger.info(f"[DOC_INDEX] Chunking {len(docs)} documents")
         if len(docs) <= 2:
             chunk_results = [
                 (name, self._chunk_document(name, doc.content)) for name, doc in docs
             ]
         else:
             max_workers = min(len(docs), 8)
+            logger.info(f"[DOC_INDEX] Parallel chunking with {max_workers} threads")
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {
                     pool.submit(self._chunk_document, name, doc.content): name
@@ -246,6 +248,7 @@ class _CoreMixin:
             return
 
         # Generate embeddings (batched — model handles internal vectorization)
+        logger.info(f"[DOC_INDEX] Embedding {len(chunks)} chunks from {len(docs)} documents")
         texts = [chunk.content for chunk in chunks]
         with self._model_lock:
             embeddings = self._model.encode(texts, convert_to_numpy=True)
@@ -904,6 +907,7 @@ class _CoreMixin:
         chunks = self._chunk_document(doc_name, doc.content)
         if not chunks:
             return 0
+        logger.info(f"[DOC_INDEX] {doc_name}: {len(chunks)} chunks, embedding...")
         texts = [c.content for c in chunks]
         with self._model_lock:
             embeddings = self._model.encode(texts, convert_to_numpy=True)
@@ -919,6 +923,64 @@ class _CoreMixin:
             else:
                 self._extract_and_store_entities(chunks, self._schema_entities)
         return len(chunks)
+
+    def _index_loaded_docs_batch(
+        self,
+        doc_names: list[str],
+        domain_id: str | None,
+        session_id: str | None,
+        skip_entity_extraction: bool,
+    ) -> int:
+        """Chunk (parallel) then batch-embed multiple loaded documents. Returns total chunk count.
+
+        Use instead of calling _index_loaded_doc in a loop when indexing many docs
+        (e.g. crawled URL pages) — a single model.encode() call is far faster than N calls.
+        """
+        valid_names = [n for n in doc_names if n in self._loaded_documents]
+        if not valid_names:
+            return 0
+
+        # Parallel chunking — CPU-bound, independent per doc
+        max_workers = min(len(valid_names), 8)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(self._chunk_document, name, self._loaded_documents[name].content): name
+                for name in valid_names
+            }
+            chunks_by_doc: dict[str, list] = {}
+            for future in as_completed(futures):
+                name = futures[future]
+                chunks_by_doc[name] = future.result()
+
+        # Flat list preserving doc order
+        all_chunks = []
+        for name in valid_names:
+            all_chunks.extend(chunks_by_doc.get(name, []))
+
+        if not all_chunks:
+            return 0
+
+        logger.info(
+            f"[DOC_INDEX] Batch embedding {len(all_chunks)} chunks from {len(valid_names)} documents"
+        )
+        texts = [c.content for c in all_chunks]
+        with self._model_lock:
+            embeddings = self._model.encode(texts, convert_to_numpy=True)
+
+        self._vector_store.add_chunks(
+            all_chunks, embeddings, source="document",
+            domain_id=domain_id, session_id=session_id,
+        )
+
+        if not skip_entity_extraction:
+            if domain_id:
+                self._extract_and_store_entities_domain(all_chunks, domain_id)
+            elif session_id:
+                self._extract_and_store_entities_session(all_chunks, session_id)
+            else:
+                self._extract_and_store_entities(all_chunks, self._schema_entities)
+
+        return len(all_chunks)
 
     def _chunk_document(self, name: str, content: str) -> list[DocumentChunk]:
         """Split a document into chunks for embedding.

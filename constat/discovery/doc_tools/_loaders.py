@@ -195,32 +195,48 @@ def _load_document(mixin, name: str) -> dict | None:
         _, root_result = results[0]
         result = root_result
 
-        # Store linked docs as sub-documents
-        for i, (url, linked_result) in enumerate(results[1:], 1):
+        # Extract content from linked docs in parallel (CPU-bound: HTML→markdown, text extraction)
+        def _extract_linked(i_url_result):
+            i, url, linked_result = i_url_result
             linked_type = user_type if user_type != "auto" else detect_type_from_source(
                 linked_result.source_path, linked_result.detected_mime
             )
             if is_binary_type(linked_type):
                 logger.debug(f"Skipping binary linked doc: {url}")
-                continue
+                return None
             try:
                 linked_content, linked_format = _extract_content(mixin, linked_result, linked_type, name)
             except (UnicodeDecodeError, ValueError) as e:
                 logger.debug(f"Skipping non-decodable linked doc {url}: {e}")
-                continue
+                return None
             if linked_format == "html":
                 linked_content = _convert_html_to_markdown(linked_content)
                 linked_format = "markdown"
             sub_name = f"{name}:crawled_{i}"
-            mixin._loaded_documents[sub_name] = LoadedDocument(
-                name=sub_name,
-                config=doc_config,
-                content=linked_content,
+            return LoadedDocument(
+                name=sub_name, config=doc_config, content=linked_content,
                 format=linked_format,
                 sections=_extract_markdown_sections(linked_content, linked_format),
-                loaded_at=datetime.now().isoformat(),
-                source_url=url,
+                loaded_at=datetime.now().isoformat(), source_url=url,
             )
+
+        linked_items = [(i, url, lr) for i, (url, lr) in enumerate(results[1:], 1)]
+        logger.info(f"[DOC_INIT] Extracting content from {len(linked_items)} crawled pages")
+        if len(linked_items) <= 2:
+            for item in linked_items:
+                doc = _extract_linked(item)
+                if doc:
+                    mixin._loaded_documents[doc.name] = doc
+        else:
+            max_workers = min(len(linked_items), 8)
+            logger.info(f"[DOC_INIT] Parallel extraction with {max_workers} threads")
+            extracted = 0
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                for doc in pool.map(_extract_linked, linked_items):
+                    if doc:
+                        mixin._loaded_documents[doc.name] = doc
+                        extracted += 1
+            logger.info(f"[DOC_INIT] Extracted {extracted}/{len(linked_items)} crawled pages")
     else:
         result = fetch_document(doc_config, mixin.config.config_dir)
 
@@ -743,15 +759,25 @@ def add_document_from_config(
             if n == name or n.startswith(f"{name}:")
         ]
 
-        total_chunks = 0
-        for doc_name in loaded_names:
-            total_chunks += mixin._index_loaded_doc(
-                doc_name, domain_id, session_id, skip_entity_extraction,
+        logger.info(f"[DOC_ADD] Indexing {len(loaded_names)} documents for '{name}'")
+
+        if len(loaded_names) > 1:
+            total_chunks = mixin._index_loaded_docs_batch(
+                loaded_names, domain_id, session_id, skip_entity_extraction,
             )
+        else:
+            total_chunks = 0
+            for doc_name in loaded_names:
+                total_chunks += mixin._index_loaded_doc(
+                    doc_name, domain_id, session_id, skip_entity_extraction,
+                )
+
+        for doc_name in loaded_names:
             doc = mixin._loaded_documents.get(doc_name)
             if doc and getattr(doc, 'source_url', None) and hasattr(mixin._vector_store, 'store_document_url'):
                 mixin._vector_store.store_document_url(doc_name, doc.source_url)
 
+        logger.info(f"[DOC_ADD] Indexed {total_chunks} chunks from {len(loaded_names)} documents")
         return True, f"Added {len(loaded_names)} document(s) from '{name}' ({total_chunks} chunks)"
     except Exception as e:
         return False, f"Failed to load document from config: {e}"

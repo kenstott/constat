@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Callable
 from urllib.parse import urljoin, urlparse
 
@@ -157,53 +158,74 @@ def crawl_document(
             queue.append((link, 1))
             visited.add(normalized)
 
-    # BFS traversal
+    # BFS traversal — fetch each wave of URLs in parallel
     while queue and len(results) < max_documents:
-        url, depth = queue.popleft()
-
-        # Apply filters
-        if same_domain_only and root_domain:
-            if urlparse(url).netloc != root_domain:
+        # Collect current wave: all queued URLs at same or mixed depths
+        budget = max_documents - len(results)
+        wave: list[tuple[str, int]] = []
+        while queue and len(wave) < budget:
+            url, depth = queue.popleft()
+            # Apply filters
+            if same_domain_only and root_domain:
+                if urlparse(url).netloc != root_domain:
+                    continue
+            if link_pattern and not link_pattern.search(url):
                 continue
-        if link_pattern and not link_pattern.search(url):
-            continue
-        if any(ep.search(url) for ep in exclude_res):
-            logger.debug(f"Crawler: excluded by pattern: {url}")
-            continue
-
-        # Fetch linked document
-        linked_config = copy(config)
-        linked_config.url = url
-        linked_config.content = None
-        linked_config.path = None
-
-        try:
-            result = fetch_fn(linked_config, config_dir)
-        except Exception as e:
-            logger.warning(f"Crawler: failed to fetch {url}: {e}")
-            continue
-
-        # Skip responses with unloadable MIME types (images, fonts, etc.)
-        if not is_loadable_mime(result.detected_mime):
-            logger.debug(f"Crawler: skipping unloadable mime {result.detected_mime} for {url}")
-            continue
-
-        results.append((url, result))
-
-        # Extract links for next depth level
-        if depth < max_depth:
-            link_type = detect_type_from_source(result.source_path, result.detected_mime)
-            try:
-                link_content = result.data.decode("utf-8")
-            except UnicodeDecodeError:
+            if any(ep.search(url) for ep in exclude_res):
+                logger.debug(f"Crawler: excluded by pattern: {url}")
                 continue
+            wave.append((url, depth))
 
-            child_links = extract_links(link_content, link_type, url)
-            for child_link in child_links:
-                normalized = _normalize_url(child_link)
-                if normalized not in visited:
-                    queue.append((child_link, depth + 1))
-                    visited.add(normalized)
+        if not wave:
+            break
+
+        def _fetch_one(url: str) -> tuple[str, "FetchResult"]:
+            linked_config = copy(config)
+            linked_config.url = url
+            linked_config.content = None
+            linked_config.path = None
+            return url, fetch_fn(linked_config, config_dir)
+
+        # Fetch wave in parallel (I/O bound — HTTP requests)
+        max_workers = min(len(wave), 8)
+        wave_results: list[tuple[str, int, "FetchResult"]] = []
+        logger.info(f"Crawler: fetching wave of {len(wave)} URLs ({max_workers} threads)")
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_fetch_one, url): (url, depth)
+                for url, depth in wave
+            }
+            for future in as_completed(futures):
+                url, depth = futures[future]
+                try:
+                    _, result = future.result()
+                except Exception as e:
+                    logger.warning(f"Crawler: failed to fetch {url}: {e}")
+                    continue
+                if not is_loadable_mime(result.detected_mime):
+                    logger.debug(f"Crawler: skipping unloadable mime {result.detected_mime} for {url}")
+                    continue
+                wave_results.append((url, depth, result))
+                logger.info(f"Crawler: fetched {url} ({len(results) + len(wave_results)}/{max_documents})")
+
+        # Process results: append and extract links for next wave
+        for url, depth, result in wave_results:
+            if len(results) >= max_documents:
+                break
+            results.append((url, result))
+
+            if depth < max_depth:
+                link_type = detect_type_from_source(result.source_path, result.detected_mime)
+                try:
+                    link_content = result.data.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                child_links = extract_links(link_content, link_type, url)
+                for child_link in child_links:
+                    normalized = _normalize_url(child_link)
+                    if normalized not in visited:
+                        queue.append((child_link, depth + 1))
+                        visited.add(normalized)
 
     return results
 
