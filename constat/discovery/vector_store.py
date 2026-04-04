@@ -505,6 +505,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS data_source_id VARCHAR",
             "ALTER TABLE entity_relationships ADD COLUMN IF NOT EXISTS user_edited BOOLEAN DEFAULT FALSE",
             "ALTER TABLE entity_relationships ADD COLUMN IF NOT EXISTS domain VARCHAR",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_name_domain_user ON glossary_terms(name, domain, user_id)",
         ]
         schema_changed = False
         for stmt in _alter_stmts:
@@ -823,7 +824,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         return self._relational.clear_chunk_entity_links(*a, **kw)
 
     def add_glossary_term(self, *a, **kw):
-        return self._relational.add_glossary_term(*a, **kw)
+        return self._relational.upsert_glossary_term(*a, **kw)
 
     def update_glossary_term(self, *a, **kw):
         return self._relational.update_glossary_term(*a, **kw)

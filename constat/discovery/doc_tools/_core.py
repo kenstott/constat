@@ -857,11 +857,12 @@ class _CoreMixin:
         # Extract entities from each chunk
         all_links = _extract_links_from_chunks(extractor, chunks)
 
-        # Store all unique entities
+        # Store all unique entities (skip those without domain_id — relational store requires it)
         entities = extractor.get_all_entities()
-        logger.debug(f"Entity extraction: {len(entities)} unique entities, {len(all_links)} links from {len(chunks)} chunks")
-        if entities:
-            self._vector_store.add_entities(entities, session_id="__document__")
+        storable = [e for e in entities if e.domain_id]
+        logger.debug(f"Entity extraction: {len(entities)} unique entities ({len(storable)} with domain_id), {len(all_links)} links from {len(chunks)} chunks")
+        if storable:
+            self._vector_store.add_entities(storable, session_id="__document__")
 
         # Store all chunk-entity links (deduplicated by chunk_id + entity_id)
         if all_links:

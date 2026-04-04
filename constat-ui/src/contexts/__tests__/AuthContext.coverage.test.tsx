@@ -14,20 +14,20 @@ const mockCheckEmailLink = vi.fn(() => false)
 const mockCompleteEmailLinkSignIn = vi.fn()
 const mockLogOut = vi.fn()
 const mockGetIdToken = vi.fn()
-const mockSubscribeToAuthChanges = vi.fn(() => vi.fn())
+const mockSubscribeToAuthChanges = vi.fn((_cb: any) => vi.fn())
 
 vi.mock('@/config/firebase', () => ({
   isAuthDisabled: true,
-  subscribeToAuthChanges: (...args: unknown[]) => mockSubscribeToAuthChanges(...args),
-  signInWithGoogle: (...args: unknown[]) => mockSignInWithGoogle(...args),
-  signInWithEmail: (...args: unknown[]) => mockSignInWithEmail(...args),
-  signUpWithEmail: (...args: unknown[]) => mockSignUpWithEmail(...args),
-  resetPassword: (...args: unknown[]) => mockResetPassword(...args),
-  sendEmailLink: (...args: unknown[]) => mockSendEmailLink(...args),
+  subscribeToAuthChanges: (cb: any) => mockSubscribeToAuthChanges(cb),
+  signInWithGoogle: (...args: any[]) => mockSignInWithGoogle(...args),
+  signInWithEmail: (...args: any[]) => mockSignInWithEmail(...args),
+  signUpWithEmail: (...args: any[]) => mockSignUpWithEmail(...args),
+  resetPassword: (...args: any[]) => mockResetPassword(...args),
+  sendEmailLink: (...args: any[]) => mockSendEmailLink(...args),
   checkEmailLink: () => mockCheckEmailLink(),
-  completeEmailLinkSignIn: (...args: unknown[]) => mockCompleteEmailLinkSignIn(...args),
-  logOut: (...args: unknown[]) => mockLogOut(...args),
-  getIdToken: (...args: unknown[]) => mockGetIdToken(...args),
+  completeEmailLinkSignIn: (...args: any[]) => mockCompleteEmailLinkSignIn(...args),
+  logOut: (...args: any[]) => mockLogOut(...args),
+  getIdToken: (...args: any[]) => mockGetIdToken(...args),
 }))
 
 // Mock apollo client for register / microsoft
@@ -781,11 +781,11 @@ describe('AuthContext coverage - firebase auth state subscription', () => {
   it('subscribes to auth changes when auth enabled', async () => {
     isAuthDisabledVar(false)
     const unsubFn = vi.fn()
-    mockSubscribeToAuthChanges.mockImplementation((cb: (user: any) => void) => {
+    mockSubscribeToAuthChanges.mockImplementation(((cb: (user: any) => void) => {
       // Simulate a user being signed in
       setTimeout(() => cb({ uid: 'fb-user', emailVerified: true }), 0)
       return unsubFn
-    })
+    }) as any)
     mockGetIdToken.mockResolvedValue('firebase-token')
 
     render(
@@ -806,10 +806,10 @@ describe('AuthContext coverage - firebase auth state subscription', () => {
 
   it('sets token to null when firebase user is null', async () => {
     isAuthDisabledVar(false)
-    mockSubscribeToAuthChanges.mockImplementation((cb: (user: any) => void) => {
+    mockSubscribeToAuthChanges.mockImplementation(((cb: (user: any) => void) => {
       setTimeout(() => cb(null), 0)
       return vi.fn()
-    })
+    }) as any)
 
     render(
       <MockedProvider mocks={[]} addTypename={false}>

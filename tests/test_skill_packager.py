@@ -20,7 +20,7 @@ from constat.core.skill_packager import (
 
 def _make_skill(tmp_path, user_id, name, content, script_content=None, refs=None):
     """Helper to create a skill directory with SKILL.md and optional scripts."""
-    skills_dir = tmp_path / user_id / "skills" / name
+    skills_dir = tmp_path / f"{user_id}.vault" / "skills" / name
     skills_dir.mkdir(parents=True, exist_ok=True)
     (skills_dir / "SKILL.md").write_text(content)
     if script_content:

@@ -37,7 +37,7 @@ class TestCredentialStorage:
 
     def test_cred_path(self, data_dir):
         path = _cred_path(data_dir, "user1")
-        assert path == data_dir / "user1" / ".passkey_credentials"
+        assert path == data_dir / "user1.vault" / ".passkey_credentials"
 
     def test_save_creates_parent_dirs(self, data_dir):
         _save_credentials(data_dir, "deep/user", [{"id": "x"}])

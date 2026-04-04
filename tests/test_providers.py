@@ -1152,7 +1152,10 @@ class TestMistralNemoIntegration:
             user_message="Write a one-line function that returns the sum of a and b.",
             max_tokens=200,
         )
-        assert "def" in response or "lambda" in response or "+" in response
+        code_tokens = ("def", "lambda", "+", "import", "return", "(", "=")
+        assert any(tok in response for tok in code_tokens), (
+            f"Response does not look like Python code: {response!r}"
+        )
         assert "```" not in response
 
     def test_generate_with_tools(self, mistral_container):

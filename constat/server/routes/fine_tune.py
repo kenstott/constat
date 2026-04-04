@@ -54,10 +54,14 @@ class FineTuneJobResponse(BaseModel):
     training_data_path: str | None = None
 
 
-def _get_manager(request: Request) -> FineTuneManager:
+def _get_manager(request: Request, user_id: str = "default") -> FineTuneManager:
     manager = getattr(request.app.state, "fine_tune_manager", None)
     if not manager:
-        raise HTTPException(status_code=503, detail="Fine-tune manager not initialized")
+        from constat.learning.fine_tune_registry import FineTuneRegistry
+        from constat.storage.learnings import LearningStore
+
+        manager = FineTuneManager(FineTuneRegistry(), LearningStore(user_id=user_id))
+        request.app.state.fine_tune_manager = manager
     return manager
 
 

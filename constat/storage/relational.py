@@ -587,7 +587,34 @@ class RelationalStore:
         vals = [v for c, v in all_pairs if c in actual_cols]
         placeholders = ", ".join("?" for _ in cols)
         self._conn.execute(
-            f"INSERT OR REPLACE INTO glossary_terms ({', '.join(cols)}) VALUES ({placeholders})",
+            f"INSERT INTO glossary_terms ({', '.join(cols)}) VALUES ({placeholders})",
+            vals,
+        )
+        self._clusters_dirty = True
+
+    def upsert_glossary_term(self, term: GlossaryTerm) -> None:
+        import json
+        _ = self._GLOSSARY_COLUMNS
+        actual_cols = set((self._glossary_columns_list_cache or self._ALL_GLOSSARY_COLUMNS))
+        all_pairs = [
+            ("id", term.id), ("name", term.name), ("display_name", term.display_name),
+            ("definition", term.definition), ("domain", term.domain),
+            ("parent_id", term.parent_id), ("parent_verb", term.parent_verb),
+            ("aliases", json.dumps(term.aliases)), ("semantic_type", term.semantic_type),
+            ("cardinality", term.cardinality), ("plural", term.plural),
+            ("tags", json.dumps(term.tags)), ("owner", term.owner),
+            ("status", term.status), ("provenance", term.provenance),
+            ("session_id", term.session_id), ("user_id", term.user_id or "default"),
+            ("created_at", term.created_at), ("updated_at", term.updated_at),
+            ("ignored", term.ignored), ("canonical_source", term.canonical_source),
+        ]
+        cols = [c for c, _ in all_pairs if c in actual_cols]
+        vals = [v for c, v in all_pairs if c in actual_cols]
+        placeholders = ", ".join("?" for _ in cols)
+        update_sets = ", ".join(f"{c} = excluded.{c}" for c in cols if c != "id")
+        self._conn.execute(
+            f"INSERT INTO glossary_terms ({', '.join(cols)}) VALUES ({placeholders})"
+            f" ON CONFLICT (id) DO UPDATE SET {update_sets}",
             vals,
         )
         self._clusters_dirty = True
@@ -671,7 +698,7 @@ class RelationalStore:
             sql = f"SELECT {self._GLOSSARY_COLUMNS} FROM {tbl} WHERE LOWER(name) = LOWER(?) AND session_id = ?"
             params = [name, session_id]
         if domain:
-            sql += " AND domain_id = ?"
+            sql += " AND domain = ?"
             params.append(domain)
         row = self._conn.execute(sql, params).fetchone()
         return self._term_from_row(row) if row else None
@@ -1117,26 +1144,35 @@ class RelationalStore:
         ).fetchall()
         return [self._term_from_row(r) for r in rows]
 
+    def term_source_schema(self, name: str, session_id: str, *, user_id: str | None = None, domain: str | None = None) -> str:
+        term = self.get_glossary_term(name, session_id, user_id=user_id, domain=domain)
+        if term is None:
+            return "main"
+        return self._schema_for_domain(term.domain)
+
     def get_glossary_term_by_name_or_alias(
-        self, name: str, session_id: str, *, user_id: str | None = None,
+        self, name: str, session_id: str, *, user_id: str | None = None, domain: str | None = None,
     ) -> GlossaryTerm | None:
         import json
 
         scope_col = "user_id" if user_id else "session_id"
         scope_val = user_id if user_id else session_id
 
+        domain_clause = " AND domain = ?" if domain is not None else ""
+        domain_params = [domain] if domain is not None else []
+
         row = self._conn.execute(
             f"SELECT {self._GLOSSARY_COLUMNS} FROM {self._view('glossary_terms')} "
-            f"WHERE LOWER(name) = LOWER(?) AND {scope_col} = ?",
-            [name, scope_val],
+            f"WHERE LOWER(name) = LOWER(?) AND {scope_col} = ?{domain_clause}",
+            [name, scope_val] + domain_params,
         ).fetchone()
         if row:
             return self._term_from_row(row)
 
         rows = self._conn.execute(
             f"SELECT {self._GLOSSARY_COLUMNS} FROM {self._view('glossary_terms')} "
-            f"WHERE LOWER(aliases) LIKE ? AND {scope_col} = ?",
-            [f"%{name.lower()}%", scope_val],
+            f"WHERE LOWER(aliases) LIKE ? AND {scope_col} = ?{domain_clause}",
+            [f"%{name.lower()}%", scope_val] + domain_params,
         ).fetchall()
         for row in rows:
             term = self._term_from_row(row)
@@ -1144,6 +1180,36 @@ class RelationalStore:
                 return term
 
         return None
+
+    def get_glossary_terms_by_name_or_alias(
+        self, name: str, session_id: str, *, user_id: str | None = None, domain: str | None = None,
+    ) -> list[GlossaryTerm]:
+        scope_col = "user_id" if user_id else "session_id"
+        scope_val = user_id if user_id else session_id
+
+        domain_clause = " AND domain = ?" if domain is not None else ""
+        domain_params = [domain] if domain is not None else []
+
+        rows = self._conn.execute(
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM {self._view('glossary_terms')} "
+            f"WHERE LOWER(name) = LOWER(?) AND {scope_col} = ?{domain_clause}",
+            [name, scope_val] + domain_params,
+        ).fetchall()
+        results = [self._term_from_row(r) for r in rows]
+
+        alias_rows = self._conn.execute(
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM {self._view('glossary_terms')} "
+            f"WHERE LOWER(aliases) LIKE ? AND {scope_col} = ?{domain_clause}",
+            [f"%{name.lower()}%", scope_val] + domain_params,
+        ).fetchall()
+        seen_ids = {t.id for t in results}
+        for row in alias_rows:
+            term = self._term_from_row(row)
+            if term.id not in seen_ids and any(a.lower() == name.lower() for a in (term.aliases or [])):
+                results.append(term)
+                seen_ids.add(term.id)
+
+        return results
 
     def get_child_terms(self, parent_id: str, *extra_ids: str) -> list[GlossaryTerm]:
         all_ids = [parent_id] + [i for i in extra_ids if i]

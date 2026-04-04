@@ -191,6 +191,10 @@ class ServerConfig(BaseModel):
     microsoft_auth_client_secret: Optional[str] = Field(default=None, description="Azure AD client secret for SSO")
     microsoft_auth_tenant_id: str = Field(default="common", description="Azure AD tenant ID (or 'common' for multi-tenant)")
 
+    vault_encrypt: bool = Field(
+        default=False,
+        description="Enable AES-256-GCM encryption of per-user DuckDB files",
+    )
     source_refresh_interval_seconds: int = Field(
         default=900,
         description="Background source refresh interval in seconds",
@@ -274,6 +278,10 @@ class ServerConfig(BaseModel):
             val = os.environ.get(env_key)
             if val is not None:
                 setattr(self, attr, val)
+
+        vault_encrypt_env = _get_bool_env("CONSTAT_VAULT_ENCRYPT")
+        if vault_encrypt_env is not None:
+            self.vault_encrypt = vault_encrypt_env
 
         source_refresh_env = os.environ.get("CONSTAT_SOURCE_REFRESH_INTERVAL")
         if source_refresh_env is not None:

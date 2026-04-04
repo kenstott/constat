@@ -575,15 +575,9 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
             from constat.embedding_loader import EmbeddingModelLoader
             EmbeddingModelLoader.get_instance().start_loading()
 
-            # Startup: Initialize fine-tune manager
-            from constat.learning.fine_tune_registry import FineTuneRegistry
-            from constat.learning.fine_tune_manager import FineTuneManager
-            from constat.storage.learnings import LearningStore
-
-            ft_registry = FineTuneRegistry()
-            ft_learning_store = LearningStore(user_id="default")
-            ft_manager = FineTuneManager(ft_registry, ft_learning_store)
-            _fastapi_app.state.fine_tune_manager = ft_manager
+            # Fine-tune manager is created lazily on first request
+            # (avoids opening user vault DB at startup)
+            _fastapi_app.state.fine_tune_manager = None
 
             # Startup: Start cleanup task
             await session_manager.start_cleanup_task()
@@ -613,7 +607,10 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
                 while True:
                     try:
                         await asyncio.sleep(60)
-                        updated = await asyncio.to_thread(ft_manager.check_all_training)
+                        manager = getattr(_fastapi_app.state, "fine_tune_manager", None)
+                        if manager is None:
+                            continue  # No manager yet — skip until first request creates one
+                        updated = await asyncio.to_thread(manager.check_all_training)
                         for model in updated:
                             if model.status in ("ready", "failed"):
                                 logger.info(f"Fine-tune {model.name}: {model.status}")

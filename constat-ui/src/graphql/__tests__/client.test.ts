@@ -19,6 +19,8 @@ vi.mock('idb', () => ({
   })),
 }))
 
+// indexedDB stub provided by test-setup.ts
+
 describe('Apollo client', () => {
   it('exists and is an ApolloClient instance', async () => {
     const { ApolloClient } = await import('@apollo/client')

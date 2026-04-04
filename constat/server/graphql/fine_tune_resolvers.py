@@ -40,7 +40,12 @@ def _get_manager(info: Info):
 
     manager = getattr(info.context.request.app.state, "fine_tune_manager", None)
     if not manager:
-        raise ValueError("Fine-tune manager not initialized")
+        from constat.learning.fine_tune_registry import FineTuneRegistry
+        from constat.storage.learnings import LearningStore
+
+        user_id = info.context.user_id or "default"
+        manager = FineTuneManager(FineTuneRegistry(), LearningStore(user_id=user_id))
+        info.context.request.app.state.fine_tune_manager = manager
     return manager
 
 

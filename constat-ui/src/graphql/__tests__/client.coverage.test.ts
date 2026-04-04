@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 
 // Mock idb for entityCache (transitive dependency)
 vi.mock('idb', () => ({
@@ -9,31 +9,7 @@ vi.mock('idb', () => ({
   })),
 }))
 
-// Provide a minimal indexedDB stub so IDBStorage constructor doesn't throw
-beforeAll(() => {
-  if (typeof globalThis.indexedDB === 'undefined') {
-    const fakeRequest: any = { result: { createObjectStore: vi.fn(), close: vi.fn() } }
-    fakeRequest.onsuccess = null
-    fakeRequest.onerror = null
-    fakeRequest.onupgradeneeded = null
-    const fakeIDB = {
-      open: vi.fn(() => {
-        // Fire onupgradeneeded + onsuccess async
-        setTimeout(() => {
-          fakeRequest.onupgradeneeded?.()
-          fakeRequest.onsuccess?.()
-        }, 0)
-        return fakeRequest
-      }),
-      deleteDatabase: vi.fn(() => {
-        const req: any = {}
-        setTimeout(() => req.onsuccess?.(), 0)
-        return req
-      }),
-    }
-    vi.stubGlobal('indexedDB', fakeIDB)
-  }
-})
+// indexedDB stub provided by test-setup.ts
 
 describe('Apollo client exports', () => {
   it('apolloClient is an ApolloClient instance', async () => {

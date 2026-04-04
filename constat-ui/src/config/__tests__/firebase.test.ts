@@ -16,22 +16,22 @@ const mockSignOut = vi.fn()
 const mockOnAuthStateChanged = vi.fn()
 
 vi.mock('firebase/app', () => ({
-  initializeApp: (...args: unknown[]) => mockInitializeApp(...args),
+  initializeApp: (...args: any[]) => (mockInitializeApp as (...a: any[]) => any)(...args),
 }))
 
 vi.mock('firebase/auth', () => ({
-  getAuth: (...args: unknown[]) => mockGetAuth(...args),
+  getAuth: (...args: any[]) => (mockGetAuth as (...a: any[]) => any)(...args),
   GoogleAuthProvider: mockGoogleAuthProvider,
-  signInWithPopup: (...args: unknown[]) => mockSignInWithPopup(...args),
-  signInWithEmailAndPassword: (...args: unknown[]) => mockSignInWithEmailAndPassword(...args),
-  createUserWithEmailAndPassword: (...args: unknown[]) => mockCreateUserWithEmailAndPassword(...args),
-  sendEmailVerification: (...args: unknown[]) => mockSendEmailVerification(...args),
-  sendPasswordResetEmail: (...args: unknown[]) => mockSendPasswordResetEmail(...args),
-  sendSignInLinkToEmail: (...args: unknown[]) => mockSendSignInLinkToEmail(...args),
-  isSignInWithEmailLink: (...args: unknown[]) => mockIsSignInWithEmailLink(...args),
-  signInWithEmailLink: (...args: unknown[]) => mockSignInWithEmailLink(...args),
-  signOut: (...args: unknown[]) => mockSignOut(...args),
-  onAuthStateChanged: (...args: unknown[]) => mockOnAuthStateChanged(...args),
+  signInWithPopup: (...args: any[]) => (mockSignInWithPopup as (...a: any[]) => any)(...args),
+  signInWithEmailAndPassword: (...args: any[]) => (mockSignInWithEmailAndPassword as (...a: any[]) => any)(...args),
+  createUserWithEmailAndPassword: (...args: any[]) => (mockCreateUserWithEmailAndPassword as (...a: any[]) => any)(...args),
+  sendEmailVerification: (...args: any[]) => (mockSendEmailVerification as (...a: any[]) => any)(...args),
+  sendPasswordResetEmail: (...args: any[]) => (mockSendPasswordResetEmail as (...a: any[]) => any)(...args),
+  sendSignInLinkToEmail: (...args: any[]) => (mockSendSignInLinkToEmail as (...a: any[]) => any)(...args),
+  isSignInWithEmailLink: (...args: any[]) => (mockIsSignInWithEmailLink as (...a: any[]) => any)(...args),
+  signInWithEmailLink: (...args: any[]) => (mockSignInWithEmailLink as (...a: any[]) => any)(...args),
+  signOut: (...args: any[]) => (mockSignOut as (...a: any[]) => any)(...args),
+  onAuthStateChanged: (...args: any[]) => (mockOnAuthStateChanged as (...a: any[]) => any)(...args),
 }))
 
 describe('firebase (auth disabled)', () => {
@@ -136,7 +136,7 @@ describe('firebase (auth enabled)', () => {
     vi.stubEnv('VITE_FIREBASE_API_KEY', 'test-key')
     vi.stubEnv('VITE_FIREBASE_AUTH_DOMAIN', 'test.firebaseapp.com')
     vi.stubEnv('VITE_FIREBASE_PROJECT_ID', 'test-project')
-    mockGetAuth.mockReturnValue(mockAuth)
+    mockGetAuth.mockReturnValue(mockAuth as any)
     mockInitializeApp.mockReturnValue({ name: 'test-app' })
     mockSignInWithPopup.mockReset()
     mockSignInWithEmailAndPassword.mockReset()

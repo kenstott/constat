@@ -372,7 +372,10 @@ CRITICAL INTENT RULES (apply in order):
                         break
 
             # Parse CACHED_ANSWER
-            if "CACHED_ANSWER:" in response:
+            # Only trust cached answers for non-data-analysis questions.
+            # If question_type is DATA_ANALYSIS (original or overridden via safety check),
+            # the LLM may have hallucinated the answer; require actual code execution.
+            if "CACHED_ANSWER:" in response and question_type != QuestionType.DATA_ANALYSIS:
                 answer_section = response.split("CACHED_ANSWER:", 1)[1].split("---")[0].strip()
                 if answer_section and not answer_section.upper().startswith("NONE"):
                     cached_answer = answer_section

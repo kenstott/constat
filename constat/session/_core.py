@@ -201,7 +201,7 @@ class CoreMixin:
         )
 
         # Learning store for corrections and patterns
-        self.learning_store = LearningStore(user_id=self.user_id)
+        self.learning_store = LearningStore(base_dir=self.data_dir, user_id=self.user_id)
 
         # Pass learning store to planner for injecting learned rules
         self.planner.set_learning_store(self.learning_store)

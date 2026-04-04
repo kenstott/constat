@@ -174,10 +174,34 @@ def stop_container(name: str) -> None:
 
 # Pytest markers
 def pytest_sessionfinish(session, exitstatus):
-    """Close all DuckDB connections before process exit to avoid SIGABRT."""
+    """Close all DuckDB connections and clean up Docker containers."""
     try:
         from constat.storage.duckdb_pool import close_all_pools
         close_all_pools()
+    except Exception:
+        pass
+
+    # Clean up any orphaned constat test containers (except shared Ollama)
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "-a", "-q", "--filter", "name=constat_test_"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.stdout.strip():
+            container_ids = result.stdout.strip().split("\n")
+            # Get names to skip the shared Ollama container
+            for cid in container_ids:
+                name_result = subprocess.run(
+                    ["docker", "inspect", "--format", "{{.Name}}", cid],
+                    capture_output=True, text=True, timeout=5,
+                )
+                name = name_result.stdout.strip().lstrip("/")
+                if name == "constat_ollama_shared":
+                    continue
+                subprocess.run(
+                    ["docker", "rm", "-f", cid],
+                    capture_output=True, timeout=15,
+                )
     except Exception:
         pass
 

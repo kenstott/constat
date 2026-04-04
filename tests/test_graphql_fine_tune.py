@@ -153,17 +153,31 @@ class TestFineTuneJobsQuery:
             await Query().fine_tune_jobs(info)
 
     @pytest.mark.asyncio
-    async def test_fine_tune_jobs_no_manager_raises(self):
+    async def test_fine_tune_jobs_no_manager_auto_initializes(self):
         from constat.server.graphql.fine_tune_resolvers import Query
+        from unittest.mock import patch, MagicMock
 
         ctx = _make_context()
         ctx.request.app.state.fine_tune_manager = None
 
+        mock_manager = MagicMock()
+        mock_manager.registry.list.return_value = []
+
         info = MagicMock()
         info.context = ctx
 
-        with pytest.raises(ValueError, match="not initialized"):
-            await Query().fine_tune_jobs(info)
+        with patch(
+            "constat.learning.fine_tune_manager.FineTuneManager",
+            side_effect=lambda *a, **kw: mock_manager,
+        ), patch(
+            "constat.learning.fine_tune_registry.FineTuneRegistry"
+        ), patch(
+            "constat.storage.learnings.LearningStore"
+        ):
+            # When manager is None, _get_manager auto-initializes one
+            result = await Query().fine_tune_jobs(info)
+            assert result == []
+            assert ctx.request.app.state.fine_tune_manager is not None
 
 
 class TestFineTuneJobQuery:

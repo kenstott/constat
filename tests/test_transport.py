@@ -21,6 +21,8 @@ class _FakeConfig:
     """Minimal stand-in for DocumentConfig for testing."""
 
     def __init__(self, **kwargs):
+        self.type = kwargs.get("type")
+        self.site_url = kwargs.get("site_url")
         self.content = kwargs.get("content")
         self.path = kwargs.get("path")
         self.url = kwargs.get("url")
