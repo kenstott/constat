@@ -28,6 +28,7 @@ _SCHEMA_DDL = {
             embedding FLOAT[{EMBEDDING_DIM}] NOT NULL,
             session_id VARCHAR,
             domain_id VARCHAR,
+            data_source_id VARCHAR,
             entity_class VARCHAR DEFAULT 'mixed',
             source_offset INTEGER,
             source_length INTEGER
@@ -141,6 +142,13 @@ _SCHEMA_DDL = {
             entity_name TEXT NOT NULL,
             source_pattern TEXT NOT NULL,
             PRIMARY KEY (entity_name, source_pattern)
+        )
+    """,
+    "data_sources": """
+        CREATE TABLE IF NOT EXISTS data_sources (
+            id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
+            type VARCHAR NOT NULL, domain_id VARCHAR NOT NULL,
+            session_id VARCHAR, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """,
 }
