@@ -4,6 +4,9 @@ CRITICAL: Maximum brevity. No pleasantries. No explanations unless asked. Code a
 CRITICAL: Files must stay under 1000 lines. If a file approaches or exceeds this, split it by separation of concerns. This applies to all languages (Python, TypeScript, etc.).
 CRITICAL: "Audit" for UI features must include browser rendering and functionality testing (vitest + Playwright), not just code review.
 CRITICAL: When the user asks to "audit" code, always spawn the `code-reviewer` agent (subagent_type: code-reviewer). Do not perform audits inline.
+CRITICAL: All test errors must be resolved, whether they are new failures or preexisting conditions. Never skip or ignore a failing test.
+CRITICAL: Tests that pass individually but fail in the full suite (or vice versa) indicate improper test isolation and must be fixed. Every test must pass both in isolation and as part of the full suite.
+CRITICAL: Tests involving LLM responses must include a retry loop (up to 3 attempts) to account for probabilistic output. If a test still fails after retries, revise the LLM instructions/prompts to improve result reliability. Assertions may be loosened only if they retain probative value — e.g., accepting multiple valid phrasings is fine, but asserting "returned a string" is not meaningful.
 
 # Requirements Tracking
 When the user states a new requirement, constraint, feature request, or design decision, spawn a general-purpose agent (model: haiku) in the background to append it to `docs/arch/requirements.md`. The agent should first read `.claude/agents/requirements-tracker.md` for format rules, then read the current requirements file, then append the new requirement(s). Do this silently — no confirmation needed. Do NOT spawn for implementation details, bug reports, or questions.

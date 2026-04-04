@@ -172,6 +172,78 @@ outer()
         assert "after" not in result.stdout
 
 
+class TestEnginePromptConsistency:
+    """Test that the engine system prompt matches the actual execution environment."""
+
+    def test_engine_system_prompt_does_not_instruct_store(self):
+        """engine_system.md must not instruct LLM to use store.* — store is not injected in engine."""
+        from constat.prompts import load_prompt
+        prompt = load_prompt("engine_system.md")
+        # store.query() and store.create_view() are session-only — not available in QueryEngine
+        assert "store.query" not in prompt, (
+            "engine_system.md instructs 'store.query()' but store is not in engine execution globals. "
+            "LLM will generate code that fails at runtime with NameError: store."
+        )
+        assert "store.create_view" not in prompt, (
+            "engine_system.md instructs 'store.create_view()' but store is not in engine execution globals."
+        )
+
+    def test_engine_system_prompt_provides_correct_sql_access(self):
+        """engine_system.md must tell LLM to use pd.read_sql(sql, db_<name>.engine)."""
+        from constat.prompts import load_prompt
+        prompt = load_prompt("engine_system.md")
+        # The correct pattern for the engine is pd.read_sql with .engine attribute
+        assert "db_<name>.engine" in prompt or "db_chinook.engine" in prompt or ".engine" in prompt, (
+            "engine_system.md does not show how to use db_<name>.engine for SQL access. "
+            "pd.read_sql(sql, db_<name>.engine) is the correct pattern."
+        )
+
+    def test_engine_execution_globals_has_no_store(self):
+        """QueryEngine execution globals must not include store — confirming store is absent."""
+        from pathlib import Path
+        from constat.core.config import Config
+        from constat.catalog.schema_manager import SchemaManager
+        from constat.execution.engine import QueryEngine
+
+        CHINOOK_DB = Path(__file__).parent.parent / "data" / "chinook.db"
+        config = Config(
+            databases={"chinook": {"uri": f"sqlite:///{CHINOOK_DB}"}},
+        )
+        schema_manager = SchemaManager(config)
+        schema_manager.initialize()
+        engine = QueryEngine(config, schema_manager, max_retries=1)
+        globals_dict = engine._get_execution_globals()
+
+        assert "store" not in globals_dict, (
+            "store is unexpectedly present in engine execution globals"
+        )
+        assert "db_chinook" in globals_dict, (
+            "db_chinook must be present in engine execution globals"
+        )
+
+    def test_engine_db_connection_supports_pd_read_sql_via_engine_attr(self):
+        """db_<name>.engine must support pd.read_sql — the correct engine access pattern."""
+        import pandas as pd
+        from pathlib import Path
+        from constat.core.config import Config
+        from constat.catalog.schema_manager import SchemaManager
+        from constat.execution.engine import QueryEngine
+
+        CHINOOK_DB = Path(__file__).parent.parent / "data" / "chinook.db"
+        config = Config(
+            databases={"chinook": {"uri": f"sqlite:///{CHINOOK_DB}"}},
+        )
+        schema_manager = SchemaManager(config)
+        schema_manager.initialize()
+        engine = QueryEngine(config, schema_manager, max_retries=1)
+        globals_dict = engine._get_execution_globals()
+
+        db_chinook = globals_dict["db_chinook"]
+        df = pd.read_sql("SELECT TrackId, Name FROM Track LIMIT 3", db_chinook.engine)
+        assert len(df) == 3
+        assert "TrackId" in df.columns
+
+
 class TestErrorFormatting:
     """Test error message formatting for LLM retry."""
 

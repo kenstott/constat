@@ -24,6 +24,9 @@ t- Mistral: Skipped by default (requires MISTRAL_API_KEY)
 import os
 
 import pytest
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from constat.providers import (
     AnthropicProvider,

@@ -58,13 +58,13 @@ class McpDocumentProvider:
         client = McpClient(url, auth=auth, timeout=config.get("timeout", 30))
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
+            try:
+                asyncio.get_running_loop()
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as pool:
                     capabilities = pool.submit(asyncio.run, client.connect()).result()
-            else:
-                capabilities = loop.run_until_complete(client.connect())
+            except RuntimeError:
+                capabilities = asyncio.run(client.connect())
         except Exception as exc:
             return ConnectionResult(success=False, error=str(exc))
 
@@ -79,7 +79,10 @@ class McpDocumentProvider:
         client = self._clients.pop(name, None)
         if client is not None:
             try:
-                asyncio.get_event_loop().run_until_complete(client.disconnect())
+                asyncio.get_running_loop()
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    pool.submit(asyncio.run, client.disconnect()).result()
             except RuntimeError:
                 asyncio.run(client.disconnect())
         self._configs.pop(name, None)
@@ -198,11 +201,9 @@ class McpDocumentProvider:
     def _run_async(coro: object) -> dict:
         """Run an async coroutine from sync context."""
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    return pool.submit(asyncio.run, coro).result()
-            return loop.run_until_complete(coro)
+            asyncio.get_running_loop()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(asyncio.run, coro).result()
         except RuntimeError:
             return asyncio.run(coro)

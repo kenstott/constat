@@ -115,7 +115,7 @@ class TogetherProvider(OpenAIProvider):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        model: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
         timeout: Optional[float] = None,
     ):
         """
@@ -123,10 +123,9 @@ class TogetherProvider(OpenAIProvider):
 
         Args:
             api_key: Together AI API key (or uses TOGETHER_API_KEY env var)
-            model: Model to use. Popular options:
-                - meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo
-                - meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
-                - codellama/CodeLlama-70b-Instruct-hf
+            model: Model to use. Popular serverless options:
+                - meta-llama/Llama-3.3-70B-Instruct-Turbo (default)
+                - meta-llama/Llama-3.2-1B-Instruct
             timeout: Client-level timeout in seconds
         """
         import os

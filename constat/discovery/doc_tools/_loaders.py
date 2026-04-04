@@ -11,6 +11,7 @@
 """Document loading dispatch logic — IMAP, file/directory, crawler, HTTP fetch."""
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -95,6 +96,27 @@ def _extract_content(mixin, result: FetchResult, doc_type: str, name: str = "") 
             temp_path.unlink(missing_ok=True)
     else:
         return result.data.decode("utf-8"), doc_type
+
+
+def _load_documents_parallel(mixin, doc_names: list[str]) -> None:
+    """Load multiple documents in parallel using threads (I/O bound)."""
+    if len(doc_names) <= 1:
+        for name in doc_names:
+            try:
+                _load_document(mixin, name)
+            except Exception as e:
+                logger.warning(f"[DOC_INIT] Failed to load {name}: {e}")
+        return
+
+    max_workers = min(len(doc_names), 8)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_load_document, mixin, name): name for name in doc_names}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                logger.warning(f"[DOC_INIT] Failed to load {name}: {e}")
 
 
 def _load_document(mixin, name: str) -> dict | None:

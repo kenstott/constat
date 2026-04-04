@@ -13,6 +13,7 @@
 import hashlib
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -33,6 +34,7 @@ from ._chunking import (  # noqa: F401 — re-exported for backward compatibilit
 from ._loaders import (
     _extract_content as _extract_content_impl,
     _load_document as _load_document_impl,
+    _load_documents_parallel as _load_documents_parallel_impl,
     _load_file_directly as _load_file_directly_impl,
     add_document_from_config as _add_document_from_config_impl,
 )
@@ -143,11 +145,7 @@ class _CoreMixin:
             unindexed_docs = self._get_unindexed_documents()
             if unindexed_docs:
                 logger.info(f"[DOC_INIT] Indexing {len(unindexed_docs)} documents...")
-                for name in unindexed_docs:
-                    try:
-                        self._load_document(name)
-                    except Exception as e:
-                        logger.warning(f"[DOC_INIT] Failed to load {name}: {e}")
+                self._load_documents_parallel(unindexed_docs)
                 # Incrementally add new documents (don't clear existing chunks)
                 self._index_loaded_documents(self._schema_entities)
                 logger.info(f"[DOC_INIT] Indexing complete, count={self._vector_store.count()}")
@@ -197,11 +195,16 @@ class _CoreMixin:
         # Return documents in config that are not yet indexed
         return [name for name in self.config.documents if name not in indexed_docs]
 
+    def _load_documents_parallel(self, doc_names: list[str]) -> None:
+        """Load multiple documents in parallel using threads (I/O bound)."""
+        _load_documents_parallel_impl(self, doc_names)
+
     def _index_loaded_documents(self, schema_entities: Optional[list[str]] = None) -> None:
         """Add document chunks to the vector store (incremental).
 
         This is the core indexing method for the DOCUMENT resource type.
         It adds chunks for all loaded documents without clearing existing data.
+        Chunking is parallelized across documents; embedding is batched.
 
         Vector store chunk naming:
         - Documents: document_name = "<doc_name>" (e.g., "business_rules")
@@ -211,18 +214,38 @@ class _CoreMixin:
         Args:
             schema_entities: Optional list of known schema entity names for entity extraction
         """
+        docs = list(self._loaded_documents.items())
+        if not docs:
+            return
+
+        # Parallel chunking — CPU bound, per-doc independent
+        if len(docs) <= 2:
+            chunk_results = [
+                (name, self._chunk_document(name, doc.content)) for name, doc in docs
+            ]
+        else:
+            max_workers = min(len(docs), 8)
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(self._chunk_document, name, doc.content): name
+                    for name, doc in docs
+                }
+                chunk_results = []
+                for future in as_completed(futures):
+                    name = futures[future]
+                    chunk_results.append((name, future.result()))
+
         chunks = []
-        for name, doc in self._loaded_documents.items():
-            doc_chunks = self._chunk_document(name, doc.content)
+        for name, doc_chunks in chunk_results:
             chunks.extend(doc_chunks)
-            # Persist source_url for crawled sub-documents
-            if getattr(doc, 'source_url', None) and hasattr(self._vector_store, 'store_document_url'):
+            doc = self._loaded_documents.get(name)
+            if doc and getattr(doc, 'source_url', None) and hasattr(self._vector_store, 'store_document_url'):
                 self._vector_store.store_document_url(name, doc.source_url)
 
         if not chunks:
             return
 
-        # Generate embeddings
+        # Generate embeddings (batched — model handles internal vectorization)
         texts = [chunk.content for chunk in chunks]
         with self._model_lock:
             embeddings = self._model.encode(texts, convert_to_numpy=True)

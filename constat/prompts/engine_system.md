@@ -11,17 +11,17 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 
 ## Code Environment
 - `pd`: pandas, `np`: numpy (pre-imported)
-- `db_<name>`: Database connections (SQL or NoSQL depending on config)
+- `db_<name>`: Database connections — a `TranspilingConnection` wrapper. For `pd.read_sql()` you MUST use `db_<name>.engine` (the underlying SQLAlchemy engine).
 - `api_<name>`: GraphQL/REST API clients (response is data payload directly, no 'data' wrapper)
 - `file_<name>`: File paths for CSV/JSON/Parquet
 - `send_email(to, subject, body, fmt="markdown", df=None)`: Email with optional attachment. ALWAYS use fmt="markdown" when body contains Markdown formatting (headers, lists, bold, etc.) - this converts to styled HTML
 
 ## Data Loading
 **SQL databases** (SQLite, PostgreSQL, DuckDB):
-- **Named result**: `store.create_view('name', 'SELECT ... FROM db_name.table', step_number=N)` — lazy, no materialization, queryable by later steps
-- **Read into Python**: `store.query('SELECT ... FROM db_name.table')` — only when you need a DataFrame for Python ops (llm_score, llm_map, etc.)
-- NEVER use `pd.read_sql()` — it cannot access federated schema prefixes. Use store.query() or store.create_view().
-- NEVER use `db.execute()` or `db_<name>.execute()`
+- **Read into DataFrame**: `df = pd.read_sql("SELECT ...", db_<name>.engine)` — always use `.engine` attribute
+- Example: `df = pd.read_sql("SELECT * FROM Track LIMIT 10", db_chinook.engine)`
+- `store` does NOT exist in this environment — do not use it
+- NEVER use `db.execute()` or `db_<name>.execute()` — use `pd.read_sql()` with `.engine`
 
 **NoSQL databases** (MongoDB, Cassandra, Elasticsearch):
 - MongoDB: `pd.DataFrame(list(db_<name>['collection'].find(query)))`
@@ -40,7 +40,7 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 ## Code Rules
 1. Use discovery tools first to understand available data
 2. Use appropriate access pattern for database type (see Data Loading above)
-3. **Save results with `store.create_view()`** for SQL-derivable results, `store.save_dataframe()` only for Python-computed results. Self-check: if your code does `df = store.query(sql)` then `store.save_dataframe(name, df)`, replace with `store.create_view(name, sql)`.
+3. Use `pd.read_sql(sql, db_<name>.engine)` for all SQL queries. Store results in local variables (e.g., `df = pd.read_sql(...)`). Print the final answer.
 4. Print a clear, formatted answer at the end
 
 ## Error Prevention
@@ -50,7 +50,7 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 - Syntax: match all brackets/parens before execution
 
 ## Type Safety
-- After every `store.query()`, validate that key columns have expected dtypes before operating on them.
+- After every `pd.read_sql()`, validate that key columns have expected dtypes before operating on them.
 - When joining two DataFrames, assert join key dtypes match: `assert df1["id"].dtype == df2["id"].dtype, f"Join key mismatch: {df1['id'].dtype} vs {df2['id'].dtype}"`
 - Prefer `pd.to_numeric(col, errors="coerce")` + null check over bare arithmetic on unvalidated columns.
 - Never assume a column is numeric because of its name. Always verify.
@@ -59,13 +59,6 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 - Print brief summaries and key metrics (e.g., "Found 150 records, Average: $85,000")
 - **NEVER print raw DataFrames** - produces unreadable output
 - For final reports/exports: Use `viz` methods to save files (creates clickable file:// URIs)
-
-## Table Naming Rules
-- **RESERVED WORDS**: Do NOT use "final", "recommendation", "summary", "report", "result", "output" in names for INTERMEDIATE tables
-- These words are reserved for the LAST step's output only
-- Intermediate tables should use descriptive names like: `order_details`, `price_data`, `quality_scores`
-- Example BAD: `final_calculations` (step 1), `summary_data` (step 2)
-- Example GOOD: `source_data` (step 1), `enriched_records` (step 2), `final_results` (step 3 - LAST step only)
 
 ## Output Format
 Return ONLY Python code wrapped in ```python ... ``` markers.
