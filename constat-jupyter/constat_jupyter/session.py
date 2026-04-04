@@ -41,6 +41,8 @@ from .graphql import (
     TOGGLE_TABLE_STAR, DELETE_TABLE, TOGGLE_ARTIFACT_STAR, DELETE_ARTIFACT,
     ADD_DATABASE, REMOVE_DATABASE, ADD_API, REMOVE_API, ADD_DOCUMENT_URI,
     SET_ACTIVE_DOMAINS, RESET_CONTEXT, FLAG_ANSWER,
+    CREATE_AGENT, UPDATE_AGENT, DELETE_AGENT, DRAFT_AGENT,
+    HANDBOOK_QUERY,
 )
 from .models import Artifact, ConstatError, SolveResult, StepInfo
 from .progress import PrintProgress
@@ -749,7 +751,7 @@ class Session:
         resp = self._http.delete(f"/api/sessions/{self.session_id}/files/{file_id}")
         resp.raise_for_status()
 
-    # ── Agents (stay REST — no GQL CRUD mutations yet) ──────────────────
+    # ── Agents (GraphQL CRUD) ─────────────────────────────────────────────
 
     def agent(self, name: str) -> dict:
         resp = self._http.get(f"/api/sessions/{self.session_id}/agents/{name}")
@@ -760,24 +762,46 @@ class Session:
         resp = self._http.put(f"/api/sessions/{self.session_id}/agents/current", json={"agent_name": name})
         resp.raise_for_status()
 
-    def create_agent(self, name: str, content: str) -> dict:
-        resp = self._http.post(f"/api/sessions/{self.session_id}/agents", json={"name": name, "content": content})
-        resp.raise_for_status()
-        return resp.json()
+    def create_agent(self, name: str, prompt: str, description: str = "", skills: list[str] | None = None) -> dict:
+        """Create a new agent via GraphQL."""
+        data = self._gql.query(CREATE_AGENT, {
+            "sessionId": self.session_id,
+            "input": {"name": name, "prompt": prompt, "description": description, "skills": skills or []},
+        })
+        return data.get("create_agent", {})
 
-    def edit_agent(self, name: str, content: str) -> dict:
-        resp = self._http.put(f"/api/sessions/{self.session_id}/agents/{name}", json={"content": content})
-        resp.raise_for_status()
-        return resp.json()
+    def edit_agent(self, name: str, prompt: str, description: str = "", skills: list[str] | None = None) -> dict:
+        """Update an agent via GraphQL."""
+        data = self._gql.query(UPDATE_AGENT, {
+            "sessionId": self.session_id,
+            "name": name,
+            "input": {"prompt": prompt, "description": description, "skills": skills or []},
+        })
+        return data.get("update_agent", {})
 
     def delete_agent(self, name: str) -> None:
-        resp = self._http.delete(f"/api/sessions/{self.session_id}/agents/{name}")
-        resp.raise_for_status()
+        """Delete an agent via GraphQL."""
+        self._gql.query(DELETE_AGENT, {
+            "sessionId": self.session_id, "name": name,
+        })
 
     def draft_agent(self, name: str, description: str) -> dict:
-        resp = self._http.post(f"/api/sessions/{self.session_id}/agents/draft", json={"name": name, "description": description})
-        resp.raise_for_status()
-        return resp.json()
+        """Draft an agent via GraphQL."""
+        data = self._gql.query(DRAFT_AGENT, {
+            "sessionId": self.session_id,
+            "input": {"name": name, "userDescription": description},
+        })
+        return data.get("draft_agent", {})
+
+    # ── Handbook ───────────────────────────────────────────────────────────
+
+    def handbook(self, domain: str | None = None) -> dict:
+        """Get the domain handbook for the current session."""
+        result = self._gql.query(HANDBOOK_QUERY, {
+            "sessionId": self.session_id,
+            "domain": domain,
+        })
+        return result.get("handbook", {})
 
     # ── Regression testing (stay REST — SSE streaming) ──────────────────
 

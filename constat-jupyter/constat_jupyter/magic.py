@@ -165,6 +165,7 @@ _USAGE = dedent("""\
     <code>%constat login</code> — Authenticate (auto-detects local or Firebase)<br>
     <code>%constat login local</code> — Authenticate with username/password<br>
     <code>%constat login firebase</code> — Authenticate with Firebase email/password<br>
+    <code>%constat register</code> — Register a new local account<br>
     <code>%constat status</code> — Show session info<br>
     <code>%constat domains</code> — List available domains<br>
     <code>%constat domains active</code> — Show active domains<br>
@@ -292,6 +293,7 @@ class ConstatMagic(Magics):
         dispatch = {
             "connect": self._connect_cmd,
             "login": self._login_cmd,
+            "register": self._register_cmd,
             "status": self._status_cmd,
             "domains": self._domains_cmd,
             "sources": self._sources_cmd,
@@ -456,19 +458,11 @@ class ConstatMagic(Magics):
             username = input("Email: ")
             password = getpass.getpass("Password: ")
 
-        query = """
-            mutation Login($email: String!, $password: String!) {
-                login(email: $email, password: $password) {
-                    token
-                    userId
-                    email
-                }
-            }
-        """
+        from constat_jupyter.graphql import LOGIN
         try:
             resp = httpx.post(
                 f"{server_url}/api/graphql",
-                json={"query": query, "variables": {"email": username, "password": password}},
+                json={"query": LOGIN, "variables": {"email": username, "password": password}},
                 timeout=15,
             )
             resp.raise_for_status()
@@ -493,6 +487,52 @@ class ConstatMagic(Magics):
             display(_error_html(f"Login failed: {_esc(detail or str(e))}"))
         except Exception as e:
             display(_error_html(f"Login failed: {_esc(str(e))}"))
+
+    def _register_cmd(self, args: list[str]):
+        import os
+        import getpass
+        import httpx
+
+        server_url = os.environ.get("CONSTAT_SERVER_URL", "http://localhost:8000").rstrip("/")
+        username = input("Username: ")
+        email = input("Email (optional): ").strip() or ""
+        password = getpass.getpass("Password: ")
+        confirm = getpass.getpass("Confirm password: ")
+        if password != confirm:
+            display(_error_html("Passwords do not match."))
+            return
+
+        from constat_jupyter.graphql import REGISTER
+        try:
+            resp = httpx.post(
+                f"{server_url}/api/graphql",
+                json={"query": REGISTER, "variables": {
+                    "username": username, "password": password, "email": email or None,
+                }},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            if "errors" in body:
+                msg = body["errors"][0].get("message", "Unknown error")
+                display(_error_html(f"Registration failed: {_esc(msg)}"))
+                return
+            data = body["data"]["register"]
+            os.environ["CONSTAT_AUTH_TOKEN"] = data["token"]
+            _cache_token(server_url, data["token"])
+            display(_success_html(
+                f"Registered as <code>{_esc(data.get('userId') or username)}</code>. "
+                f"Run <code>%constat connect</code> to start a session."
+            ))
+        except httpx.HTTPStatusError as e:
+            detail = ""
+            try:
+                detail = e.response.json().get("detail", "")
+            except Exception:
+                pass
+            display(_error_html(f"Registration failed: {_esc(detail or str(e))}"))
+        except Exception as e:
+            display(_error_html(f"Registration failed: {_esc(str(e))}"))
 
     def _status_cmd(self, args: list[str]):
         if not self._ensure_connected():

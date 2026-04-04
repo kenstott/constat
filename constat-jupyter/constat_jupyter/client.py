@@ -22,6 +22,7 @@ from .graphql import (
     CREATE_SESSION, DELETE_SESSION, SESSIONS_QUERY, SESSION_QUERY,
     DOMAINS_QUERY, SKILLS_QUERY, SKILL_QUERY, LEARNINGS_QUERY,
     COMPACT_LEARNINGS, CREATE_RULE, UPDATE_RULE, DELETE_RULE,
+    CREATE_SKILL, UPDATE_SKILL, DELETE_SKILL, DRAFT_SKILL,
 )
 from .session import Session
 
@@ -90,24 +91,31 @@ class ConstatClient:
         data = self._gql.query(SKILL_QUERY, {"name": name})
         return data.get("skill", {})
 
-    def create_skill(self, name: str, content: str) -> dict:
-        resp = self._http.post("/api/skills", json={"name": name, "content": content})
-        resp.raise_for_status()
-        return resp.json()
+    def create_skill(self, name: str, prompt: str, description: str = "") -> dict:
+        """Create a new skill via GraphQL."""
+        data = self._gql.query(CREATE_SKILL, {
+            "input": {"name": name, "prompt": prompt, "description": description},
+        })
+        return data.get("create_skill", {})
 
     def edit_skill(self, name: str, content: str) -> dict:
-        resp = self._http.put(f"/api/skills/{name}", json={"content": content})
-        resp.raise_for_status()
-        return resp.json()
+        """Update skill content via GraphQL."""
+        data = self._gql.query(UPDATE_SKILL, {
+            "name": name, "input": {"content": content},
+        })
+        return data.get("update_skill", {})
 
-    def delete_skill(self, name: str) -> None:
-        resp = self._http.delete(f"/api/skills/{name}")
-        resp.raise_for_status()
+    def delete_skill(self, name: str, domain: str | None = None) -> None:
+        """Delete a skill via GraphQL."""
+        self._gql.query(DELETE_SKILL, {"name": name, "domain": domain})
 
-    def draft_skill(self, name: str, description: str) -> dict:
-        resp = self._http.post("/api/skills/draft", json={"name": name, "description": description})
-        resp.raise_for_status()
-        return resp.json()
+    def draft_skill(self, session_id: str, name: str, description: str) -> dict:
+        """Draft a skill via GraphQL (requires a session for LLM access)."""
+        data = self._gql.query(DRAFT_SKILL, {
+            "sessionId": session_id,
+            "input": {"name": name, "userDescription": description},
+        })
+        return data.get("draft_skill", {})
 
     def download_skill(self, name: str) -> bytes:
         resp = self._http.get(f"/api/skills/{name}/download")

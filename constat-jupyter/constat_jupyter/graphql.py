@@ -598,3 +598,115 @@ mutation DeleteRule($ruleId: Int!) {
   deleteRule(ruleId: $ruleId) { status }
 }
 """
+
+# ---------------------------------------------------------------------------
+# Skill CRUD
+# ---------------------------------------------------------------------------
+
+CREATE_SKILL = """
+mutation CreateSkill($input: CreateSkillInput!) {
+  createSkill(input: $input) {
+    name description prompt filename isActive
+  }
+}
+"""
+
+UPDATE_SKILL = """
+mutation UpdateSkill($name: String!, $input: UpdateSkillInput!) {
+  updateSkill(name: $name, input: $input) {
+    status name
+  }
+}
+"""
+
+DELETE_SKILL = """
+mutation DeleteSkill($name: String!, $domain: String) {
+  deleteSkill(name: $name, domain: $domain) {
+    status name
+  }
+}
+"""
+
+DRAFT_SKILL = """
+mutation DraftSkill($sessionId: String!, $input: DraftSkillInput!) {
+  draftSkill(sessionId: $sessionId, input: $input) {
+    name content description
+  }
+}
+"""
+
+CREATE_SKILL_FROM_PROOF = """
+mutation CreateSkillFromProof($sessionId: String!, $input: CreateSkillFromProofInput!) {
+  createSkillFromProof(sessionId: $sessionId, input: $input) {
+    name content description hasScript
+  }
+}
+"""
+
+# ---------------------------------------------------------------------------
+# Agent CRUD
+# ---------------------------------------------------------------------------
+
+CREATE_AGENT = """
+mutation CreateAgent($sessionId: String!, $input: CreateAgentInput!) {
+  createAgent(sessionId: $sessionId, input: $input) {
+    name description isActive
+  }
+}
+"""
+
+UPDATE_AGENT = """
+mutation UpdateAgent($sessionId: String!, $name: String!, $input: UpdateAgentInput!) {
+  updateAgent(sessionId: $sessionId, name: $name, input: $input) {
+    status name
+  }
+}
+"""
+
+DELETE_AGENT = """
+mutation DeleteAgent($sessionId: String!, $name: String!) {
+  deleteAgent(sessionId: $sessionId, name: $name) {
+    status name
+  }
+}
+"""
+
+DRAFT_AGENT = """
+mutation DraftAgent($sessionId: String!, $input: DraftAgentInput!) {
+  draftAgent(sessionId: $sessionId, input: $input) {
+    name prompt description skills
+  }
+}
+"""
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+LOGIN = """
+mutation Login($email: String!, $password: String!) {
+  login(email: $email, password: $password) {
+    token userId email
+  }
+}
+"""
+
+REGISTER = """
+mutation Register($username: String!, $password: String!, $email: String) {
+  register(username: $username, password: $password, email: $email) {
+    token userId email
+  }
+}
+"""
+
+# ---------------------------------------------------------------------------
+# Handbook
+# ---------------------------------------------------------------------------
+
+HANDBOOK_QUERY = """
+query Handbook($sessionId: String!, $domain: String) {
+  handbook(sessionId: $sessionId, domain: $domain) {
+    domain generatedAt summary sections
+  }
+}
+"""
