@@ -95,9 +95,68 @@ class SharePointClient:
 
         return AzureOAuth2Provider(self._config).get_access_token()
 
+    def _get_auth_headers(self) -> dict[str, str]:
+        """Build auth headers based on auth_type (ntlm, basic, or bearer)."""
+        auth_type = getattr(self._config, "auth_type", "bearer")
+        if auth_type in ("ntlm", "basic"):
+            import base64
+            username = getattr(self._config, "username", "") or ""
+            password = getattr(self._config, "password", "") or ""
+            creds = base64.b64encode(f"{username}:{password}".encode()).decode()
+            return {"Authorization": f"Basic {creds}"}
+        return {"Authorization": f"Bearer {self._get_access_token()}"}
+
     def _headers(self, token: str) -> dict[str, str]:
         """Build standard authorization headers."""
         return {"Authorization": f"Bearer {token}"}
+
+    # ------------------------------------------------------------------
+    # REST API methods (on-premises)
+    # ------------------------------------------------------------------
+
+    def _discover_rest(self, headers: dict[str, str]) -> dict:
+        """SharePoint REST API discovery via /_api/web/lists."""
+        url = f"{self._site_url.rstrip('/')}/_api/web/lists"
+        resp = httpx.get(
+            url,
+            headers={**headers, "Accept": "application/json;odata=verbose"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("d", {}).get("results", [])
+        return {"lists": results}
+
+    def _list_items_rest(self, list_title: str, headers: dict[str, str]) -> list[dict]:
+        """Fetch list items via /_api/web/lists/getbytitle()."""
+        encoded_title = list_title.replace("'", "''")
+        url = (
+            f"{self._site_url.rstrip('/')}/_api/web/lists"
+            f"/getbytitle('{encoded_title}')/items"
+        )
+        resp = httpx.get(
+            url,
+            headers={**headers, "Accept": "application/json;odata=verbose"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("d", {}).get("results", [])
+
+    def _list_files_rest(self, library_path: str, headers: dict[str, str]) -> list[dict]:
+        """List files via /_api/web/GetFolderByServerRelativeUrl()."""
+        url = (
+            f"{self._site_url.rstrip('/')}/_api/web"
+            f"/GetFolderByServerRelativeUrl('{library_path}')/Files"
+        )
+        resp = httpx.get(
+            url,
+            headers={**headers, "Accept": "application/json;odata=verbose"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("d", {}).get("results", [])
 
     # ------------------------------------------------------------------
     # Site resolution
