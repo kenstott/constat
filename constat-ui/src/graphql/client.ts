@@ -99,12 +99,28 @@ const splitLink = split(
 
 export const cache = new InMemoryCache({ typePolicies })
 
-export const cachePersistor = new CachePersistor({
-  cache,
-  storage: new IDBStorage(),
-  maxSize: false,
-  trigger: 'write',
-})
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _cachePersistor: CachePersistor<any> | null = null
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getCachePersistor(): CachePersistor<any> {
+  if (!_cachePersistor) {
+    _cachePersistor = new CachePersistor({
+      cache,
+      storage: new IDBStorage(),
+      maxSize: false,
+      trigger: 'write',
+    })
+  }
+  return _cachePersistor
+}
+
+/** Lazy proxy — callers that need persist/purge/restore get them on first access */
+export const cachePersistor = {
+  get persist() { return getCachePersistor().persist.bind(getCachePersistor()) },
+  get purge() { return getCachePersistor().purge.bind(getCachePersistor()) },
+  get restore() { return getCachePersistor().restore.bind(getCachePersistor()) },
+}
 
 export const apolloClient = new ApolloClient({
   link: splitLink,

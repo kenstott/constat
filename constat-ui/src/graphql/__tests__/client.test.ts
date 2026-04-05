@@ -19,10 +19,36 @@ vi.mock('idb', () => ({
   })),
 }))
 
+// Mock CachePersistor to avoid IDB hanging in full test suite
+vi.mock('apollo3-cache-persist', () => ({
+  CachePersistor: class {
+    persist() { return Promise.resolve() }
+    purge() { return Promise.resolve() }
+    restore() { return Promise.resolve() }
+  },
+}))
+
+// Mock graphql-ws to prevent WebSocket connection attempts
+vi.mock('graphql-ws', () => ({
+  createClient: vi.fn(() => ({
+    subscribe: vi.fn(),
+    dispose: vi.fn(),
+    on: vi.fn(),
+    terminate: vi.fn(),
+  })),
+}))
+
+// Mock GraphQLWsLink to prevent WebSocket setup
+vi.mock('@apollo/client/link/subscriptions', () => ({
+  GraphQLWsLink: class {
+    request() { return null }
+  },
+}))
+
 // indexedDB stub provided by test-setup.ts
 
 describe('Apollo client', () => {
-  it('exists and is an ApolloClient instance', async () => {
+  it('exists and is an ApolloClient instance', { timeout: 30000 }, async () => {
     const { ApolloClient } = await import('@apollo/client')
     const { apolloClient } = await import('@/graphql/client')
     expect(apolloClient).toBeInstanceOf(ApolloClient)

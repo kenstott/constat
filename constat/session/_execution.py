@@ -357,24 +357,39 @@ class ExecutionMixin:
         """
         def publish(name: str, title: str = None, _description: str = None) -> bool:
             """
-            Mark an artifact as published for the artifacts panel.
+            Promote an artifact to the Results panel (visible to the user as a key output).
 
-            Call this for artifacts that are consequential outputs (final deliverables)
-            rather than intermediate results. Published artifacts appear prominently
-            in the artifacts panel.
+            WHEN TO PUBLISH:
+            - Final answer tables (rankings, recommendations, summaries)
+            - The definitive result the user asked for
+            - Charts or visualizations that directly answer the question
+            - Executive-level summary tables with human-readable labels
+
+            DO NOT PUBLISH intermediate working tables such as:
+            - Raw data extracts or joined staging tables
+            - Aggregations that feed into a further calculation
+            - Temporary or helper tables created mid-analysis
+            - Tables with cryptic column names or technical detail
+            Intermediate tables are automatically placed in the Debug panel.
+
+            RULE: Publish only tables you would include in a final report or
+            present directly to a non-technical stakeholder.
 
             Args:
                 name: The table or artifact name to publish
-                title: Optional human-friendly display title
-                _description: Optional description (unused)
+                title: Human-friendly display title (use a clear, descriptive name)
 
             Returns:
                 True if published successfully, False if artifact not found
 
             Example:
-                # After creating a final summary table
-                store.save_dataframe('executive_summary', summary_df)
-                publish('executive_summary', title='Executive Summary Report')
+                # Right: final deliverable with a clear title
+                store.save_dataframe('top_opportunities', summary_df)
+                publish('top_opportunities', title='Top 10 Sales Opportunities')
+
+                # Wrong: intermediate staging table — do not publish
+                # store.save_dataframe('joined_raw', joined_df)
+                # publish('joined_raw')
             """
             if not self.registry:
                 return False

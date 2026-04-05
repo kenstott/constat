@@ -21,8 +21,6 @@ import {
   expandedSectionsVar,
   collapsedResultStepsVar,
   toggleResultStep as toggleResultStepFn,
-  resultsShowPublishedOnlyVar,
-  setResultsShowPublishedOnly,
   toggleSection,
 } from '@/graphql/ui-state'
 import { useTables } from '@/hooks/useTables'
@@ -194,8 +192,6 @@ export function ResultsSection({ messages, stepCodes, supersededStepNumbers: _su
   const expandedArtifactSections = useReactiveVar(expandedSectionsVar)
   const collapsedResultSteps = useReactiveVar(collapsedResultStepsVar)
   const toggleResultStep = toggleResultStepFn
-  const showPublishedOnly = useReactiveVar(resultsShowPublishedOnlyVar)
-  const setShowPublishedOnly = setResultsShowPublishedOnly
 
   const [resultsCollapsed, setResultsCollapsed] = useState(() => {
     return localStorage.getItem('constat-results-collapsed') === 'true'
@@ -209,10 +205,6 @@ export function ResultsSection({ messages, stepCodes, supersededStepNumbers: _su
       toggleSection('results')
     }
   }, [expandedArtifactSections, resultsCollapsed])
-
-  const toggleResultsFilter = () => {
-    setShowPublishedOnly(!showPublishedOnly)
-  }
 
   // Unified Results: combine tables and artifacts into a flat list
   type ResultItem =
@@ -254,10 +246,8 @@ export function ResultsSection({ messages, stepCodes, supersededStepNumbers: _su
     return a.data.name.localeCompare(b.data.name)
   })
 
-  // Filter based on toggle
-  const displayedResults = showPublishedOnly
-    ? allResults.filter((r) => r.is_published)
-    : allResults
+  // Show only starred (published) results — intermediates live in Debug
+  const displayedResults = allResults.filter((r) => r.is_published)
 
   // Group results by step_number
   const resultsByStep: { stepNumber: number; goal: string | undefined; items: ResultItem[] }[] = []
@@ -273,7 +263,7 @@ export function ResultsSection({ messages, stepCodes, supersededStepNumbers: _su
     resultsByStep.push({ stepNumber, goal: stepGoalMap.get(stepNumber), items })
   }
 
-  const totalCount = allResults.length
+  const totalCount = displayedResults.length
 
   // Auto-expand: find best item to expand
   const isResultsSectionExpanded = expandedArtifactSections.includes('results')
@@ -310,7 +300,7 @@ export function ResultsSection({ messages, stepCodes, supersededStepNumbers: _su
         className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
       >
         <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-          Results ({displayedResults.length})
+          Results ({totalCount})
         </span>
         <div className="flex items-center gap-1.5">
           {totalElapsedMs != null && totalElapsedMs > 0 && (
@@ -318,18 +308,6 @@ export function ResultsSection({ messages, stepCodes, supersededStepNumbers: _su
               {formatMs(totalElapsedMs)}
             </span>
           )}
-          <span
-            role="button"
-            onClick={(e) => { e.stopPropagation(); toggleResultsFilter(); }}
-            className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
-              showPublishedOnly
-                ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
-                : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
-            }`}
-            title={showPublishedOnly ? 'Showing published only. Click to show all.' : 'Showing all. Click to show published only.'}
-          >
-            {showPublishedOnly ? 'published' : 'all'}
-          </span>
           <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${resultsCollapsed ? '' : 'rotate-90'}`} />
         </div>
       </button>
@@ -338,9 +316,7 @@ export function ResultsSection({ messages, stepCodes, supersededStepNumbers: _su
       <div id="section-results" className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-800">
         {displayedResults.length === 0 ? (
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            {showPublishedOnly && totalCount > 0
-              ? 'No published results yet. Click toggle to show all.'
-              : 'No results yet'}
+            No results yet. Star a table in Debug to promote it here.
           </p>
         ) : (
           <div className="space-y-3">

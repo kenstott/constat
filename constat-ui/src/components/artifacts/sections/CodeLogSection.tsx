@@ -22,8 +22,10 @@ import {
 } from '@heroicons/react/24/outline'
 import { AccordionSection } from '../ArtifactAccordion'
 import { CodeViewer } from '../CodeViewer'
+import { TableAccordion } from '../TableAccordion'
 import { useTables } from '@/hooks/useTables'
 import { getAuthHeaders } from '@/config/auth-helpers'
+import type { TableInfo } from '@/types/api'
 
 interface StepCode {
   step_number: number
@@ -313,6 +315,7 @@ export function CodeLogSection({
   artifacts,
 }: CodeLogSectionProps) {
   const { tables } = useTables()
+  const intermediateTables = tables.filter((t: TableInfo) => !t.is_starred)
   const [codeLogCollapsed, setCodeLogCollapsed] = useState(() => localStorage.getItem('constat-codelog-collapsed') === 'true')
   const [collapsedInferences, setCollapsedInferences] = useState<Set<string>>(new Set<string>())
   const [showInferencePrompt, setShowInferencePrompt] = useState<Set<string>>(new Set())
@@ -515,6 +518,22 @@ export function CodeLogSection({
       )}
 
       </>
+      )}
+
+      {/* Intermediate Results - unstarred tables, star to promote to Results */}
+      {intermediateTables.length > 0 && (
+        <AccordionSection
+          id="intermediate-results"
+          title="Intermediate Results"
+          count={intermediateTables.length}
+          icon={<CircleStackIcon className="w-4 h-4" />}
+        >
+          <div className="space-y-2">
+            {intermediateTables.map((table: TableInfo) => (
+              <TableAccordion key={table.name} table={table} />
+            ))}
+          </div>
+        </AccordionSection>
       )}
 
       {/* Session Store DDL - directly under Debug, not gated by Code Log toggle */}
