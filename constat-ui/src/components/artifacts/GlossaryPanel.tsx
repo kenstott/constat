@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Kenneth Stott
+2// Copyright (c) 2025 Kenneth Stott
 // Canary: 2f433f5f-0683-4378-85b2-985232307180
 //
 // This source code is licensed under the Business Source License 1.1
@@ -150,7 +150,7 @@ interface TreeNode {
   children: TreeNode[]
 }
 
-function buildTree(terms: GlossaryTerm[]): { roots: TreeNode[]; orphans: GlossaryTerm[] } {
+function buildTree(terms: GlossaryTerm[], userId?: string): { roots: TreeNode[]; orphans: GlossaryTerm[] } {
   // Map all possible IDs to terms for parent lookup
   // parent_id can be a glossary_id (glossary term hash) or entity_id
   const byId = new Map<string, GlossaryTerm>()
@@ -192,7 +192,7 @@ function buildTree(terms: GlossaryTerm[]): { roots: TreeNode[]; orphans: Glossar
     return { roots: domainRoots.get(domains[0] || '(user)') || [], orphans }
   }
 
-  const bucketLabel = (d: string) => d === 'system' || d === '(system)' ? 'System' : d === '(user)' ? 'User' : d === 'cross-domain' ? 'Cross-domain' : d
+  const bucketLabel = (d: string) => d === 'system' || d === '(system)' ? 'System' : d === '(user)' || (userId && d === userId) ? 'User' : d === 'cross-domain' ? 'Cross-domain' : d
 
   // Multiple domains: create domain folder nodes
   const roots: TreeNode[] = domains.sort().map(domain => ({
@@ -3589,6 +3589,8 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     setViewMode,
   } = useGlossaryState()
 
+  const { userId } = useAuth()
+
   const [showConfirm, setShowConfirm] = useState(false)
   const [taxonomyPhases, setTaxonomyPhases] = useState<Record<string, boolean>>({
     early_relationships: true,
@@ -3672,8 +3674,8 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
   // Build tree for tree view
   const tree = useMemo(() => {
     if (viewMode !== 'tree') return null
-    return buildTree(displayTerms)
-  }, [displayTerms, viewMode])
+    return buildTree(displayTerms, userId)
+  }, [displayTerms, viewMode, userId])
 
   // Build tag groups for tag view
   const tagGroups = useMemo(() => {
