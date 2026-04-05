@@ -11,8 +11,6 @@
 import React, { useState, useCallback, useEffect } from 'react'
 import { useReactiveVar } from '@apollo/client'
 import { activeDeepLinkVar, consumeDeepLink, expandSection } from '@/graphql/ui-state'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import {
   CircleStackIcon,
   GlobeAltIcon,
@@ -26,16 +24,17 @@ import {
   ArrowDownTrayIcon,
   ChevronRightIcon,
   ChevronDownIcon,
-  XMarkIcon,
+  PencilIcon,
   UserPlusIcon,
   Cog6ToothIcon,
 } from '@heroicons/react/24/outline'
 import { AccordionSection } from '../ArtifactAccordion'
 import { SkeletonLoader } from '../../common/SkeletonLoader'
 import { DomainBadge } from '../../common/DomainBadge'
+import { DocumentViewerModal } from '../DocumentViewerModal'
 import { apolloClient } from '@/graphql/client'
 import { DATABASE_SCHEMA_QUERY, API_SCHEMA_QUERY, toDatabaseTable, toApiEndpoint } from '@/graphql/operations/state'
-import { FORGET_FACT, PERSIST_FACT, MOVE_FACT } from '@/graphql/operations/data'
+import { FORGET_FACT, PERSIST_FACT, MOVE_FACT, EDIT_FACT } from '@/graphql/operations/data'
 import { REMOVE_API, REMOVE_DATABASE, DELETE_FILE_REF, DATABASE_TABLE_PREVIEW_QUERY, toDatabaseTablePreview } from '@/graphql/operations/sources'
 import { useDataSources } from '@/hooks/useDataSources'
 import { useFacts } from '@/hooks/useFacts'
@@ -43,6 +42,8 @@ import { useSessionContext } from '@/contexts/SessionContext'
 import { getDocument } from '@/api/sessions'
 import type { DatabaseTableInfo, DatabaseTablePreview, ApiEndpointInfo, SessionDatabase, ApiSourceInfo, DocumentSourceInfo } from '@/types/api'
 import { toFact } from '@/graphql/operations/data'
+import type { ViewingDocument } from '../DocumentViewerModal'
+import { ApiEndpointPanel } from '../ApiEndpointPanel'
 
 interface SourcesSectionProps {
   sessionId: string
@@ -102,9 +103,12 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
   const [expandedEndpoint, setExpandedEndpoint] = useState<string | null>(null)
 
   // Document viewer state
-  const [viewingDocument, setViewingDocument] = useState<{ name: string; content: string; format?: string; url?: string; imageUrl?: string } | null>(null)
-  const [iframeBlocked, setIframeBlocked] = useState(false)
+  const [viewingDocument, setViewingDocument] = useState<ViewingDocument | null>(null)
   const [loadingDocument, setLoadingDocument] = useState(false)
+
+  // Fact inline edit state
+  const [editingFact, setEditingFact] = useState<string | null>(null)
+  const [editingFactValue, setEditingFactValue] = useState('')
 
   // Deep link handling — expand the target source, scroll, consume
   const pendingDeepLink = useReactiveVar(activeDeepLinkVar)
@@ -145,7 +149,6 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
         getDocument(session.session_id, link.documentName)
           .then(doc => {
             const httpUrl = doc.url && /^https?:\/\//i.test(doc.url) ? doc.url : undefined
-            setIframeBlocked(false)
             setViewingDocument({
               name: doc.name || link.documentName!,
               content: doc.content || '',
@@ -292,7 +295,6 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
       }
 
       // For content types (markdown, text), show in modal
-      setIframeBlocked(false)
       const imageUrl = doc.image_path && session
         ? `/api/sessions/${session.session_id}/file?path=${encodeURIComponent(doc.image_path)}`
         : undefined
@@ -336,6 +338,14 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
     setMovingFact(null)
     apolloClient.refetchQueries({ include: ['Facts'] })
   }, [session, setMovingFact])
+
+  const handleEditFact = useCallback(async (factName: string, value: string) => {
+    if (!session) return
+    await apolloClient.mutate({ mutation: EDIT_FACT, variables: { sessionId: session.session_id, factName, value } })
+    setEditingFact(null)
+    setEditingFactValue('')
+    apolloClient.refetchQueries({ include: ['Facts'] })
+  }, [session])
 
   return (
     <>
@@ -395,7 +405,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                     <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
                       {db.type}
                     </span>
-                    {db.is_dynamic && (
+                    {db.is_dynamic && canWrite('sources') && (
                       <button
                         onClick={async () => {
                           if (!session) return
@@ -403,7 +413,6 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                           try {
                             await apolloClient.mutate({ mutation: REMOVE_DATABASE, variables: { sessionId: session.session_id, name: db.name } })
                             await apolloClient.refetchQueries({ include: ['DataSources'] })
-                            // Entities refresh via entity_rebuild_complete WS event
                           } catch (err) {
                             console.error('Failed to remove database:', err)
                             alert('Failed to remove database. Please try again.')
@@ -591,7 +600,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                     >
                       {api.connected ? 'Available' : 'Pending'}
                     </span>
-                    {api.source === 'session' && (
+                    {api.source === 'session' && canWrite('sources') && (
                       <button
                         onClick={() => handleDeleteApi(api.name)}
                         className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
@@ -623,99 +632,13 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                       </div>
                     ) : (apiEndpoints[api.name] || []).length === 0 ? (
                       <p className="text-xs text-gray-500">No endpoints found</p>
-                    ) : (() => {
-                      const allEps = apiEndpoints[api.name] || []
-
-                      const renderEndpoint = (ep: ApiEndpointInfo) => (
-                        <div key={ep.name}>
-                          <button
-                            onClick={() => setExpandedEndpoint(expandedEndpoint === ep.name ? null : ep.name)}
-                            className={`w-full text-left text-xs px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${
-                              expandedEndpoint === ep.name
-                                ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                                : 'text-gray-600 dark:text-gray-400'
-                            }`}
-                          >
-                            <div className="flex items-center gap-1.5">
-                              {expandedEndpoint === ep.name ? (
-                                <ChevronDownIcon className="w-2.5 h-2.5 flex-shrink-0" />
-                              ) : (
-                                <ChevronRightIcon className="w-2.5 h-2.5 flex-shrink-0" />
-                              )}
-                              <span className="font-medium">{ep.name}</span>
-                              {ep.return_type && (
-                                <span className="font-mono text-[10px] text-purple-600 dark:text-purple-400">{ep.return_type}</span>
-                              )}
-                            </div>
-                            {ep.description && (
-                              <p className="text-[10px] text-gray-400 mt-0.5 ml-4">{ep.description}</p>
-                            )}
-                          </button>
-
-                          {expandedEndpoint === ep.name && ep.fields.length > 0 && (
-                            <div className="ml-6 mt-1 mb-2 border-l-2 border-gray-200 dark:border-gray-700 pl-2 space-y-0.5">
-                              <p className="text-[10px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Fields</p>
-                              {ep.fields.map((f) => (
-                                <div key={f.name} className="text-xs flex items-baseline gap-1.5">
-                                  <span className="font-medium text-gray-700 dark:text-gray-300">{f.name}</span>
-                                  <span className="font-mono text-[10px] text-purple-600 dark:text-purple-400">{f.type}</span>
-                                  {f.is_required && (
-                                    <span className="text-[9px] text-red-500">required</span>
-                                  )}
-                                  {f.description && (
-                                    <span className="text-gray-400 truncate">{f.description}</span>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )
-
-                      const renderSection = (label: string, items: ApiEndpointInfo[]) => (
-                        items.length > 0 ? (
-                          <div key={label}>
-                            <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                              {label} <span className="font-normal">({items.length})</span>
-                            </p>
-                            <div className="space-y-0.5">
-                              {items.map(renderEndpoint)}
-                            </div>
-                          </div>
-                        ) : null
-                      )
-
-                      // GraphQL: group by operation type + types
-                      const gqlKinds: Record<string, string> = {
-                        graphql_query: 'Queries',
-                        graphql_mutation: 'Mutations',
-                        graphql_subscription: 'Subscriptions',
-                        graphql_type: 'Types',
-                      }
-                      const gqlGroups = Object.entries(gqlKinds)
-                        .map(([kind, label]) => ({ label, items: allEps.filter((ep) => ep.kind === kind) }))
-                        .filter((g) => g.items.length > 0)
-
-                      // REST: operations grouped by HTTP method, then schema types
-                      const restOps = allEps.filter((ep) => ep.kind === 'rest' || (!ep.kind?.startsWith('graphql_') && !ep.kind?.includes('/') && ep.http_method))
-                      const restTypes = allEps.filter((ep) => ep.kind === 'openapi/model')
-                      const restOther = allEps.filter((ep) => !ep.kind?.startsWith('graphql_') && ep.kind !== 'rest' && ep.kind !== 'openapi/model' && !ep.http_method)
-                      const methodOrder = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
-                      const restMethods = [...new Set(restOps.map((ep) => ep.http_method || 'OTHER'))]
-                        .sort((a, b) => (methodOrder.indexOf(a) === -1 ? 99 : methodOrder.indexOf(a)) - (methodOrder.indexOf(b) === -1 ? 99 : methodOrder.indexOf(b)))
-                      const restGroups = [
-                        ...restMethods.map((method) => ({ label: method, items: restOps.filter((ep) => (ep.http_method || 'OTHER') === method) })),
-                        ...(restTypes.length > 0 ? [{ label: 'Types', items: restTypes }] : []),
-                        ...(restOther.length > 0 ? [{ label: 'Other', items: restOther }] : []),
-                      ].filter((g) => g.items.length > 0)
-
-                      return (
-                        <div className="space-y-2">
-                          {gqlGroups.map((g) => renderSection(g.label, g.items))}
-                          {restGroups.map((g) => renderSection(g.label, g.items))}
-                        </div>
-                      )
-                    })()}
+                    ) : (
+                      <ApiEndpointPanel
+                        endpoints={apiEndpoints[api.name] || []}
+                        expandedEndpoint={expandedEndpoint}
+                        setExpandedEndpoint={setExpandedEndpoint}
+                      />
+                    )}
                   </div>
                 )}
               </div>
@@ -811,8 +734,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                     >
                       {doc.indexed ? 'Indexed' : 'Pending'}
                     </span>
-                    {/* Only show delete for session-added documents (not from_config) */}
-                    {!doc.from_config && (
+                    {!doc.from_config && canWrite('sources') && (
                       <button
                         onClick={() => handleDeleteDocument(doc.name)}
                         className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
@@ -875,13 +797,15 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                 <ArrowDownTrayIcon className="w-4 h-4" />
               </button>
             )}
-            <button
-              onClick={() => onOpenModal('fact')}
-              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-              title="Add fact"
-            >
-              <PlusIcon className="w-4 h-4" />
-            </button>
+            {canWrite('sources') && (
+              <button
+                onClick={() => onOpenModal('fact')}
+                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                title="Add fact"
+              >
+                <PlusIcon className="w-4 h-4" />
+              </button>
+            )}
           </div>
         }
       >
@@ -910,13 +834,39 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                         {fact.role_id && <DomainBadge domain={fact.role_id} />}
                       </span>
                     </td>
-                    <td className="py-2 px-1 text-gray-600 dark:text-gray-400">{String(fact.value)}</td>
+                    <td className="py-2 px-1 text-gray-600 dark:text-gray-400">
+                      {editingFact === fact.name ? (
+                        <span className="flex items-center gap-1">
+                          <input
+                            autoFocus
+                            className="text-xs border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5 bg-white dark:bg-gray-800 w-32"
+                            value={editingFactValue}
+                            onChange={(e) => setEditingFactValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleEditFact(fact.name, editingFactValue)
+                              if (e.key === 'Escape') { setEditingFact(null); setEditingFactValue('') }
+                            }}
+                          />
+                          <button onClick={() => handleEditFact(fact.name, editingFactValue)} className="text-[10px] text-primary-600 hover:underline">Save</button>
+                          <button onClick={() => { setEditingFact(null); setEditingFactValue('') }} className="text-[10px] text-gray-400 hover:underline">Cancel</button>
+                        </span>
+                      ) : (
+                        String(fact.value)
+                      )}
+                    </td>
                     <td className="py-2 px-1 text-xs text-gray-400 dark:text-gray-500">
                       <DomainBadge domain={fact.source === 'config' ? 'system' : fact.source} />
                     </td>
                     <td className="py-2 px-1 flex items-center gap-1">
-                      {fact.source !== 'config' && (
+                      {fact.source !== 'config' && canWrite('sources') && (
                         <>
+                          <button
+                            onClick={() => { setEditingFact(fact.name); setEditingFactValue(String(fact.value)) }}
+                            className="p-1 text-gray-300 dark:text-gray-600 hover:text-primary-600 dark:hover:text-primary-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Edit value"
+                          >
+                            <PencilIcon className="w-3 h-3" />
+                          </button>
                           {!fact.is_persisted && (
                             <button onClick={() => handlePersistFact(fact.name)} className="p-1 text-gray-300 dark:text-gray-600 hover:text-amber-500 dark:hover:text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity" title="Save permanently">
                               <ArrowUpTrayIcon className="w-3 h-3" />
@@ -962,95 +912,11 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
       </>
       )}
 
-      {/* Document Viewer Modal */}
-      {(viewingDocument || loadingDocument) && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className={`bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full flex flex-col ${
-            viewingDocument?.url && !iframeBlocked ? 'max-w-5xl max-h-[90vh]' : 'max-w-3xl max-h-[80vh]'
-          }`}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                  {loadingDocument ? 'Loading...' : viewingDocument?.name}
-                </h3>
-                {viewingDocument?.format && (
-                  <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded">
-                    {viewingDocument.format}
-                  </span>
-                )}
-                {viewingDocument?.url && (
-                  <a
-                    href={viewingDocument.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[10px] px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded hover:underline"
-                  >
-                    Open in browser
-                  </a>
-                )}
-              </div>
-              <button
-                onClick={() => setViewingDocument(null)}
-                className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded transition-colors"
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              {loadingDocument ? (
-                <div className="flex items-center justify-center py-8">
-                  <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
-                </div>
-              ) : viewingDocument?.url && !iframeBlocked ? (
-                <iframe
-                  src={viewingDocument.url}
-                  className="w-full h-[75vh] border-0 rounded"
-                  sandbox="allow-scripts allow-same-origin allow-popups"
-                  onError={() => setIframeBlocked(true)}
-                  onLoad={(e) => {
-                    // Detect X-Frame-Options blocking: iframe loads but content is blank
-                    try {
-                      const iframe = e.target as HTMLIFrameElement
-                      // Cross-origin iframes throw on contentDocument access
-                      // If it doesn't throw, check if it's a blank error page
-                      if (iframe.contentDocument?.title === '') {
-                        setIframeBlocked(true)
-                      }
-                    } catch {
-                      // Cross-origin = loaded successfully (can't inspect but content is there)
-                    }
-                  }}
-                />
-              ) : viewingDocument?.content ? (
-                <div>
-                  {viewingDocument.imageUrl && (
-                    <div className="mb-4 flex justify-center">
-                      <img
-                        src={viewingDocument.imageUrl}
-                        alt={viewingDocument.name}
-                        className="max-w-full max-h-[40vh] object-contain rounded border border-gray-200 dark:border-gray-700"
-                      />
-                    </div>
-                  )}
-                  {viewingDocument.format === 'markdown' ? (
-                    <div className="prose prose-sm dark:prose-invert max-w-none">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {viewingDocument.content}
-                      </ReactMarkdown>
-                    </div>
-                  ) : (
-                    <pre className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap font-mono">
-                      {viewingDocument.content}
-                    </pre>
-                  )}
-                </div>
-              ) : (
-                <p className="text-sm text-gray-500 dark:text-gray-400">No content available</p>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <DocumentViewerModal
+        viewingDocument={viewingDocument}
+        loadingDocument={loadingDocument}
+        onClose={() => setViewingDocument(null)}
+      />
     </>
   )
 }
