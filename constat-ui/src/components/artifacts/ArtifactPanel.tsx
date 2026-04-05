@@ -50,6 +50,7 @@ import {
 } from './sections'
 import { PersonalResourcePicker } from './PersonalResourcePicker'
 import { AccountManager } from './AccountManager'
+import { AddDatabaseModal } from './AddDatabaseModal'
 
 type ModalType = 'database' | 'api' | 'document' | 'email' | 'fact' | 'rule' | 'personal' | 'accounts' | null
 
@@ -247,14 +248,6 @@ export function ArtifactPanel() {
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
   }
 
-  const handleAddDatabase = async () => {
-    if (!session || !modalInput.name || !modalInput.uri) return
-    await apolloClient.mutate({ mutation: ADD_DATABASE, variables: { sessionId: session.session_id, input: { name: modalInput.name, uri: modalInput.uri, type: modalInput.type || 'duckdb' } } })
-    apolloClient.refetchQueries({ include: ['DataSources'] })
-    setShowModal(null)
-    setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
-  }
-
   const handleAddApi = async () => {
     if (!session || !modalInput.name || !modalInput.uri) return
     await apolloClient.mutate({ mutation: ADD_API, variables: { sessionId: session.session_id, input: { name: modalInput.name, baseUrl: modalInput.uri, type: modalInput.type || 'rest' } } })
@@ -378,7 +371,18 @@ export function ArtifactPanel() {
               Add {showModal === 'fact' ? 'Fact' : showModal === 'database' ? 'Database' : showModal === 'api' ? 'API' : showModal === 'rule' ? 'Rule' : showModal === 'email' ? 'Email Source' : 'Document'}
             </h3>
             <div className="space-y-3">
-              {showModal === 'email' ? (
+              {showModal === 'database' ? (
+                <AddDatabaseModal
+                  onAdd={async (name, uri, type) => {
+                    if (!session) return
+                    await apolloClient.mutate({ mutation: ADD_DATABASE, variables: { sessionId: session.session_id, input: { name, uri, type } } })
+                    apolloClient.refetchQueries({ include: ['DataSources'] })
+                    setShowModal(null)
+                  }}
+                  onCancel={() => setShowModal(null)}
+                  uploading={uploading}
+                />
+              ) : showModal === 'email' ? (
                 <div className="space-y-3">
                   {/* Step 1: Choose provider */}
                   {!emailProvider && (
@@ -769,19 +773,6 @@ export function ArtifactPanel() {
                   )}
                 </>
               )}
-              {showModal === 'database' && (
-                <select
-                  value={modalInput.type || ''}
-                  onChange={(e) => setModalInput({ ...modalInput, type: e.target.value })}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                >
-                  <option value="">Type (optional)</option>
-                  <option value="duckdb">DuckDB</option>
-                  <option value="sqlite">SQLite</option>
-                  <option value="postgresql">PostgreSQL</option>
-                  <option value="mysql">MySQL</option>
-                </select>
-              )}
               {showModal === 'api' && (
                 <select
                   value={modalInput.type || ''}
@@ -795,6 +786,7 @@ export function ArtifactPanel() {
                 </select>
               )}
             </div>
+            {showModal !== 'database' && (
             <div className="flex justify-end gap-2 mt-4">
               <button
                 onClick={() => { setShowModal(null); setEmailOAuthToken(null); setEmailProvider(null) }}
@@ -805,7 +797,6 @@ export function ArtifactPanel() {
               <button
                 onClick={() => {
                   if (showModal === 'fact') handleAddFact()
-                  else if (showModal === 'database') handleAddDatabase()
                   else if (showModal === 'document') handleAddDocument()
                   else if (showModal === 'email') handleAddEmail()
                   else if (showModal === 'rule') handleAddRule()
@@ -820,6 +811,7 @@ export function ArtifactPanel() {
                 {uploading ? 'Uploading...' : 'Add'}
               </button>
             </div>
+            )}
           </div>
         </div>
       )}
