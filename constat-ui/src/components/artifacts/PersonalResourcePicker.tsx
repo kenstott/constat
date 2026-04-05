@@ -7,7 +7,7 @@
 // machine learning models is strictly prohibited without explicit written
 // permission from the copyright holder.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   XMarkIcon,
   EnvelopeIcon,
@@ -15,6 +15,7 @@ import {
   CalendarDaysIcon,
   GlobeAltIcon,
 } from '@heroicons/react/24/outline'
+import { useAuth } from '@/contexts/AuthContext'
 
 interface PersonalResourcePickerProps {
   isOpen: boolean
@@ -60,8 +61,19 @@ const MicrosoftIcon = () => (
 )
 
 export function PersonalResourcePicker({ isOpen, onClose, sessionId: _sessionId }: PersonalResourcePickerProps) {
+  const { user, isAuthDisabled } = useAuth()
   const [connecting, setConnecting] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  const availableResources = useMemo(() => {
+    if (isAuthDisabled) return RESOURCE_TYPES
+    const linkedProviderIds = new Set(user?.providerData.map((p) => p.providerId) ?? [])
+    return RESOURCE_TYPES.filter((r) => {
+      if (r.provider === 'google') return linkedProviderIds.has('google.com')
+      if (r.provider === 'microsoft') return linkedProviderIds.has('microsoft.com')
+      return false
+    })
+  }, [isAuthDisabled, user])
 
   const handleConnect = useCallback((resource: ResourceType) => {
     setConnecting(`${resource.provider}-${resource.type}`)
@@ -156,8 +168,13 @@ export function PersonalResourcePicker({ isOpen, onClose, sessionId: _sessionId 
             </div>
           )}
 
+          {availableResources.length === 0 && (
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+              No OAuth providers are linked to your account. Sign in with Google or Microsoft to connect personal resources.
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-3">
-            {RESOURCE_TYPES.map((resource) => {
+            {availableResources.map((resource) => {
               const key = `${resource.provider}-${resource.type}`
               const isConnecting = connecting === key
               const Icon = resource.icon

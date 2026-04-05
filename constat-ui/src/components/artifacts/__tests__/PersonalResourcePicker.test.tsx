@@ -2,6 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { PersonalResourcePicker } from '../PersonalResourcePicker'
 
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: vi.fn(),
+}))
+
+import { useAuth } from '@/contexts/AuthContext'
+
+const mockUseAuth = useAuth as ReturnType<typeof vi.fn>
+
 describe('PersonalResourcePicker', () => {
   const defaultProps = {
     isOpen: true,
@@ -12,9 +20,10 @@ describe('PersonalResourcePicker', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     defaultProps.onClose = vi.fn()
+    mockUseAuth.mockReturnValue({ user: null, isAuthDisabled: true })
   })
 
-  it('renders all 7 resource cards when open', () => {
+  it('renders all 7 resource cards when auth is disabled', () => {
     render(<PersonalResourcePicker {...defaultProps} />)
 
     expect(screen.getByText('Gmail')).toBeInTheDocument()
@@ -27,6 +36,61 @@ describe('PersonalResourcePicker', () => {
 
     // 7 Connect labels (one per card)
     expect(screen.getAllByText('Connect')).toHaveLength(7)
+  })
+
+  it('shows only Google resources when only google.com provider is linked', () => {
+    mockUseAuth.mockReturnValue({
+      user: { providerData: [{ providerId: 'google.com' }] },
+      isAuthDisabled: false,
+    })
+    render(<PersonalResourcePicker {...defaultProps} />)
+
+    expect(screen.getByText('Gmail')).toBeInTheDocument()
+    expect(screen.getByText('Google Drive')).toBeInTheDocument()
+    expect(screen.getByText('Google Calendar')).toBeInTheDocument()
+    expect(screen.queryByText('Outlook')).not.toBeInTheDocument()
+    expect(screen.queryByText('OneDrive')).not.toBeInTheDocument()
+    expect(screen.queryByText('Outlook Calendar')).not.toBeInTheDocument()
+    expect(screen.queryByText('SharePoint')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Connect')).toHaveLength(3)
+  })
+
+  it('shows only Microsoft resources when only microsoft.com provider is linked', () => {
+    mockUseAuth.mockReturnValue({
+      user: { providerData: [{ providerId: 'microsoft.com' }] },
+      isAuthDisabled: false,
+    })
+    render(<PersonalResourcePicker {...defaultProps} />)
+
+    expect(screen.getByText('Outlook')).toBeInTheDocument()
+    expect(screen.getByText('OneDrive')).toBeInTheDocument()
+    expect(screen.getByText('Outlook Calendar')).toBeInTheDocument()
+    expect(screen.getByText('SharePoint')).toBeInTheDocument()
+    expect(screen.queryByText('Gmail')).not.toBeInTheDocument()
+    expect(screen.queryByText('Google Drive')).not.toBeInTheDocument()
+    expect(screen.queryByText('Google Calendar')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Connect')).toHaveLength(4)
+  })
+
+  it('shows all 7 resources when both google.com and microsoft.com are linked', () => {
+    mockUseAuth.mockReturnValue({
+      user: { providerData: [{ providerId: 'google.com' }, { providerId: 'microsoft.com' }] },
+      isAuthDisabled: false,
+    })
+    render(<PersonalResourcePicker {...defaultProps} />)
+
+    expect(screen.getAllByText('Connect')).toHaveLength(7)
+  })
+
+  it('shows empty-state message when no providers are linked', () => {
+    mockUseAuth.mockReturnValue({
+      user: { providerData: [] },
+      isAuthDisabled: false,
+    })
+    render(<PersonalResourcePicker {...defaultProps} />)
+
+    expect(screen.queryByText('Connect')).not.toBeInTheDocument()
+    expect(screen.getByText(/No OAuth providers/)).toBeInTheDocument()
   })
 
   it('does not render when isOpen is false', () => {
