@@ -216,11 +216,58 @@ def _refresh_file_source(
     return success, msg, new_chunks
 
 
+def _refresh_calendar_source(
+    managed: "ManagedSession", file_ref: dict, name: str
+) -> tuple[bool, str, int]:
+    """Refresh a calendar source by re-fetching events.
+
+    Args:
+        managed: The managed session
+        file_ref: File reference dict
+        name: Document name
+
+    Returns:
+        (success, message, new_chunk_count)
+    """
+    from constat.core.source_config import DocumentConfig
+
+    session = managed.session
+    doc_config_data = dict(file_ref["document_config"])
+
+    logger.info("[CALENDAR_REFRESH] Refreshing %s (provider=%s)",
+                name, doc_config_data.get("provider", "unknown"))
+
+    # Delete old chunks before re-fetching
+    if session.doc_tools and session.doc_tools._vector_store:
+        session.doc_tools._vector_store.delete_resource_chunks(
+            managed.session_id, "document", name
+        )
+
+    doc_config = DocumentConfig(**doc_config_data)
+    success, msg = session.doc_tools.add_document_from_config(
+        name, doc_config, session_id=managed.session_id,
+    )
+
+    new_chunks = 0
+    if success and msg:
+        import re
+        m = re.search(r"(\d+)\s*chunk", msg)
+        if m:
+            new_chunks = int(m.group(1))
+
+    logger.info("[CALENDAR_REFRESH] %s: success=%s chunks=%d msg=%s",
+                name, success, new_chunks, msg)
+    return success, msg, new_chunks
+
+
 def _classify_source(file_ref: dict) -> str | None:
-    """Classify a file_ref as 'imap', 'http', 'file', or None (unsupported)."""
+    """Classify a file_ref as 'imap', 'calendar', 'http', 'file', or None (unsupported)."""
     doc_config = file_ref.get("document_config")
     if not doc_config:
         return None
+
+    if doc_config.get("type") == "calendar":
+        return "calendar"
 
     url = doc_config.get("url", "")
     path = doc_config.get("path", "")
@@ -270,9 +317,16 @@ def refresh_session_sources(
         if not source_type:
             continue
 
+        sm._push_event(managed, EventType.SOURCE_INGEST_START, {
+            "session_id": managed.session_id,
+            "source": name,
+        })
+
         try:
             if source_type == "imap":
                 success, msg, count = _refresh_imap_source(managed, file_ref, name)
+            elif source_type == "calendar":
+                success, msg, count = _refresh_calendar_source(managed, file_ref, name)
             elif source_type == "http":
                 success, msg, count = _refresh_http_source(managed, file_ref, name)
             elif source_type == "file":
@@ -287,12 +341,12 @@ def refresh_session_sources(
                 refreshed += 1
                 if count > 0:
                     logger.info(f"Refreshed {name}: {count} new chunks")
-                    sm._push_event(managed, EventType.SOURCE_REFRESH_COMPLETE, {
-                        "session_id": managed.session_id,
-                        "source": name,
-                        "new_chunks": count,
-                        "message": msg,
-                    })
+                sm._push_event(managed, EventType.SOURCE_REFRESH_COMPLETE, {
+                    "session_id": managed.session_id,
+                    "source": name,
+                    "new_chunks": count,
+                    "message": msg,
+                })
             else:
                 logger.warning(f"Failed to refresh {name}: {msg}")
                 sm._push_event(managed, EventType.SOURCE_REFRESH_ERROR, {

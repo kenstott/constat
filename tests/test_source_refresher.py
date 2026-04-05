@@ -20,6 +20,7 @@ import pytest
 from constat.server.source_refresher import (
     _classify_source,
     _needs_refresh,
+    _refresh_calendar_source,
     _refresh_file_source,
     _refresh_http_source,
     _refresh_imap_source,
@@ -108,6 +109,15 @@ class TestClassifySource:
         ref = {"document_config": {"url": "imap://mail.example.com"}}
         assert _classify_source(ref) == "imap"
 
+    def test_calendar(self):
+        ref = {"document_config": {"type": "calendar", "auth_type": "oauth2_refresh"}}
+        assert _classify_source(ref) == "calendar"
+
+    def test_calendar_takes_precedence_over_url(self):
+        # type=calendar should be classified as calendar even if a URL is present
+        ref = {"document_config": {"type": "calendar", "url": "https://www.googleapis.com/calendar/v3"}}
+        assert _classify_source(ref) == "calendar"
+
 
 # ---------------------------------------------------------------------------
 # _refresh_file_source
@@ -164,6 +174,73 @@ class TestRefreshFileSource:
             mock_vs.delete_resource_chunks.assert_called_once()
         finally:
             os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# _refresh_calendar_source
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshCalendarSource:
+    def test_calendar_refresh_success(self):
+        ref = {
+            "document_config": {
+                "type": "calendar",
+                "auth_type": "oauth2_refresh",
+                "oauth2_client_id": "client-id",
+                "oauth2_client_secret": "secret",
+            },
+        }
+        managed = MagicMock()
+        mock_vs = MagicMock()
+        managed.session.doc_tools._vector_store = mock_vs
+        managed.session.doc_tools.add_document_from_config.return_value = (True, "7 chunks indexed")
+        managed.session_id = "test-session"
+
+        success, msg, count = _refresh_calendar_source(managed, ref, "my-calendar")
+
+        assert success is True
+        assert count == 7
+        mock_vs.delete_resource_chunks.assert_called_once_with(
+            "test-session", "document", "my-calendar"
+        )
+        managed.session.doc_tools.add_document_from_config.assert_called_once()
+
+    def test_calendar_refresh_failure(self):
+        ref = {
+            "document_config": {
+                "type": "calendar",
+                "auth_type": "oauth2_refresh",
+            },
+        }
+        managed = MagicMock()
+        mock_vs = MagicMock()
+        managed.session.doc_tools._vector_store = mock_vs
+        managed.session.doc_tools.add_document_from_config.return_value = (False, "auth error")
+        managed.session_id = "test-session"
+
+        success, msg, count = _refresh_calendar_source(managed, ref, "my-calendar")
+
+        assert success is False
+        assert count == 0
+        assert "auth error" in msg
+
+    def test_calendar_refresh_no_chunks_in_msg(self):
+        ref = {
+            "document_config": {
+                "type": "calendar",
+                "auth_type": "oauth2_refresh",
+            },
+        }
+        managed = MagicMock()
+        managed.session.doc_tools._vector_store = MagicMock()
+        managed.session.doc_tools.add_document_from_config.return_value = (True, "ok")
+        managed.session_id = "test-session"
+
+        success, msg, count = _refresh_calendar_source(managed, ref, "my-calendar")
+
+        assert success is True
+        assert count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -268,3 +345,60 @@ class TestRefreshSessionSources:
             managed.save_resources.assert_called_once()
         finally:
             os.unlink(path)
+
+    def test_publishes_ingest_start_event(self):
+        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+            f.write(b"content")
+            path = f.name
+
+        try:
+            managed = MagicMock()
+            managed.session_id = "test-session"
+            managed._file_refs = [
+                {
+                    "name": "doc",
+                    "document_config": {"path": path},
+                },
+            ]
+            mock_vs = MagicMock()
+            managed.session.doc_tools._vector_store = mock_vs
+            managed.session.doc_tools.add_document_from_config.return_value = (True, "2 chunks")
+
+            sm = MagicMock()
+            refresh_session_sources(managed, sm, 900)
+
+            from constat.server.models import EventType
+            push_calls = sm._push_event.call_args_list
+            event_types = [c.args[1] for c in push_calls]
+            assert EventType.SOURCE_INGEST_START in event_types
+        finally:
+            os.unlink(path)
+
+    def test_refreshes_calendar_source(self):
+        managed = MagicMock()
+        managed.session_id = "test-session"
+        managed._file_refs = [
+            {
+                "name": "my-cal",
+                "document_config": {
+                    "type": "calendar",
+                    "auth_type": "oauth2_refresh",
+                },
+            },
+        ]
+        mock_vs = MagicMock()
+        managed.session.doc_tools._vector_store = mock_vs
+        managed.session.doc_tools.add_document_from_config.return_value = (True, "4 chunks indexed")
+
+        sm = MagicMock()
+        count = refresh_session_sources(managed, sm, 900)
+
+        assert count == 1
+        mock_vs.delete_resource_chunks.assert_called_once()
+        managed.save_resources.assert_called_once()
+
+        from constat.server.models import EventType
+        push_calls = sm._push_event.call_args_list
+        event_types = [c.args[1] for c in push_calls]
+        assert EventType.SOURCE_INGEST_START in event_types
+        assert EventType.SOURCE_REFRESH_COMPLETE in event_types
