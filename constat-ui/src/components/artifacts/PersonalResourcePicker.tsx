@@ -7,13 +7,14 @@
 // machine learning models is strictly prohibited without explicit written
 // permission from the copyright holder.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   XMarkIcon,
   EnvelopeIcon,
   FolderIcon,
   CalendarDaysIcon,
   GlobeAltIcon,
+  ShieldExclamationIcon,
 } from '@heroicons/react/24/outline'
 import { useAuth } from '@/contexts/AuthContext'
 
@@ -64,6 +65,14 @@ export function PersonalResourcePicker({ isOpen, onClose, sessionId: _sessionId 
   const { user, isAuthDisabled } = useAuth()
   const [connecting, setConnecting] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [hasVault, setHasVault] = useState<boolean | null>(null)
+  const [vaultPassword, setVaultPassword] = useState('')
+  const [vaultConfirm, setVaultConfirm] = useState('')
+  const [vaultError, setVaultError] = useState<string | null>(null)
+  const [creatingVault, setCreatingVault] = useState(false)
+  const passwordRef = useRef<HTMLInputElement>(null)
+
+  const userId = isAuthDisabled ? 'default' : (user?.uid ?? 'default')
 
   const availableResources = useMemo(() => {
     if (isAuthDisabled) return RESOURCE_TYPES
@@ -74,6 +83,54 @@ export function PersonalResourcePicker({ isOpen, onClose, sessionId: _sessionId 
       return false
     })
   }, [isAuthDisabled, user])
+
+  // Check vault status on open
+  useEffect(() => {
+    if (!isOpen) return
+    setHasVault(null)
+    setVaultPassword('')
+    setVaultConfirm('')
+    setVaultError(null)
+
+    fetch(`/api/vault/${userId}/status`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`Vault status check failed (${r.status})`)
+        return r.json()
+      })
+      .then((data: { has_vault: boolean }) => setHasVault(data.has_vault))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Vault status check failed'))
+  }, [isOpen, userId])
+
+  const handleCreateVault = useCallback(async () => {
+    setVaultError(null)
+    if (!vaultPassword) {
+      setVaultError('Password is required.')
+      return
+    }
+    if (vaultPassword !== vaultConfirm) {
+      setVaultError('Passwords do not match.')
+      return
+    }
+    setCreatingVault(true)
+    try {
+      const resp = await fetch(`/api/vault/${userId}/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: vaultPassword }),
+      })
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}))
+        throw new Error(body.detail || `Failed to create vault (${resp.status})`)
+      }
+      setHasVault(true)
+      setVaultPassword('')
+      setVaultConfirm('')
+    } catch (err) {
+      setVaultError(err instanceof Error ? err.message : 'Failed to create vault')
+    } finally {
+      setCreatingVault(false)
+    }
+  }, [userId, vaultPassword, vaultConfirm])
 
   const handleConnect = useCallback((resource: ResourceType) => {
     setConnecting(`${resource.provider}-${resource.type}`)
@@ -134,6 +191,13 @@ export function PersonalResourcePicker({ isOpen, onClose, sessionId: _sessionId 
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [isOpen, onClose])
 
+  // Focus password field when vault warning is shown
+  useEffect(() => {
+    if (hasVault === false) {
+      setTimeout(() => passwordRef.current?.focus(), 50)
+    }
+  }, [hasVault])
+
   if (!isOpen) return null
 
   return (
@@ -160,11 +224,57 @@ export function PersonalResourcePicker({ isOpen, onClose, sessionId: _sessionId 
           </button>
         </div>
 
-        {/* Resource Grid */}
+        {/* Body */}
         <div className="p-5">
           {error && (
             <div className="mb-4 px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
               <p className="text-xs text-red-700 dark:text-red-300">{error}</p>
+            </div>
+          )}
+
+          {/* Vault not established — show warning + create form */}
+          {hasVault === false && (
+            <div
+              data-testid="vault-warning"
+              className="mb-4 px-4 py-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-md"
+            >
+              <div className="flex items-start gap-2 mb-3">
+                <ShieldExclamationIcon className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-amber-800 dark:text-amber-200">
+                  A vault password is required to securely store your credentials. Set one before connecting.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <input
+                  ref={passwordRef}
+                  type="password"
+                  placeholder="Vault password"
+                  value={vaultPassword}
+                  onChange={(e) => setVaultPassword(e.target.value)}
+                  data-testid="vault-password-input"
+                  className="w-full px-3 py-1.5 text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                />
+                <input
+                  type="password"
+                  placeholder="Confirm password"
+                  value={vaultConfirm}
+                  onChange={(e) => setVaultConfirm(e.target.value)}
+                  data-testid="vault-confirm-input"
+                  className="w-full px-3 py-1.5 text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                />
+                {vaultError && (
+                  <p className="text-xs text-red-600 dark:text-red-400">{vaultError}</p>
+                )}
+                <button
+                  onClick={handleCreateVault}
+                  disabled={creatingVault}
+                  data-testid="vault-set-password-btn"
+                  className="w-full py-1.5 text-xs font-medium bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded transition-colors"
+                >
+                  {creatingVault ? 'Setting password…' : 'Set Password'}
+                </button>
+              </div>
             </div>
           )}
 
@@ -173,7 +283,8 @@ export function PersonalResourcePicker({ isOpen, onClose, sessionId: _sessionId 
               No OAuth providers are linked to your account. Sign in with Google or Microsoft to connect personal resources.
             </p>
           )}
-          <div className="grid grid-cols-2 gap-3">
+
+          <div className={`grid grid-cols-2 gap-3 ${hasVault === false ? 'opacity-40 pointer-events-none' : ''}`}>
             {availableResources.map((resource) => {
               const key = `${resource.provider}-${resource.type}`
               const isConnecting = connecting === key
@@ -184,7 +295,7 @@ export function PersonalResourcePicker({ isOpen, onClose, sessionId: _sessionId 
                 <button
                   key={key}
                   onClick={() => handleConnect(resource)}
-                  disabled={isConnecting || connecting !== null}
+                  disabled={isConnecting || connecting !== null || hasVault !== true}
                   data-testid={`resource-card-${key}`}
                   className={`
                     group relative flex flex-col items-start gap-3 p-4 rounded-lg border border-gray-200 dark:border-gray-700
