@@ -1,4 +1,4 @@
-2// Copyright (c) 2025 Kenneth Stott
+// Copyright (c) 2025 Kenneth Stott
 // Canary: 2f433f5f-0683-4378-85b2-985232307180
 //
 // This source code is licensed under the Business Source License 1.1
@@ -3636,12 +3636,13 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     if (filters.domain) {
       const domainSet = new Set(filters.domain.split(','))
       result = result.filter(t => {
-        const d = t.domain || 'system'
+        const d = t.domain || (t.glossary_status === 'self_describing' ? '(system)' : '(user)')
+        if (d === '(user)' || (userId && d === userId)) return true
         return domainSet.has(d)
       })
     }
     return result
-  }, [terms, filters.scope, filters.domain])
+  }, [terms, filters.scope, filters.domain, userId])
 
   const localTotalDefined = useMemo(() => terms.filter(t => t.glossary_status === 'defined').length, [terms])
   const localTotalSelfDescribing = useMemo(() => terms.filter(t => t.glossary_status === 'self_describing').length, [terms])
