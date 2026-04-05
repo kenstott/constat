@@ -18,10 +18,8 @@ import {
   QuestionMarkCircleIcon,
 } from '@heroicons/react/24/outline'
 import {
-  expandedSectionsVar,
   collapsedResultStepsVar,
   toggleResultStep as toggleResultStepFn,
-  toggleSection,
 } from '@/graphql/ui-state'
 import { useTables } from '@/hooks/useTables'
 import { useArtifacts } from '@/hooks/useArtifacts'
@@ -189,22 +187,8 @@ export function ResultsSection({ messages, stepCodes, supersededStepNumbers: _su
   const { tables } = useTables()
   const { artifacts } = useArtifacts()
 
-  const expandedArtifactSections = useReactiveVar(expandedSectionsVar)
   const collapsedResultSteps = useReactiveVar(collapsedResultStepsVar)
   const toggleResultStep = toggleResultStepFn
-
-  const [resultsCollapsed, setResultsCollapsed] = useState(() => {
-    return localStorage.getItem('constat-results-collapsed') === 'true'
-  })
-
-  useEffect(() => {
-    if (expandedArtifactSections.includes('results') && resultsCollapsed) {
-      setResultsCollapsed(false)
-      localStorage.setItem('constat-results-collapsed', 'false')
-      // Consume the signal so collapsing works again
-      toggleSection('results')
-    }
-  }, [expandedArtifactSections, resultsCollapsed])
 
   // Unified Results: combine tables and artifacts into a flat list
   type ResultItem =
@@ -263,62 +247,33 @@ export function ResultsSection({ messages, stepCodes, supersededStepNumbers: _su
     resultsByStep.push({ stepNumber, goal: stepGoalMap.get(stepNumber), items })
   }
 
-  const totalCount = displayedResults.length
-
-  // Auto-expand: find best item to expand
-  const isResultsSectionExpanded = expandedArtifactSections.includes('results')
-  let bestResultId: string | null = null
-
-  if (isResultsSectionExpanded && displayedResults.length > 0) {
-    // Prefer published items with priority keywords
-    const hasPriorityKeyword = (name?: string, title?: string): boolean => {
-      const text = `${name || ''} ${title || ''}`.toLowerCase()
-      return ['final', 'recommended', 'answer', 'result', 'conclusion'].some(kw => text.includes(kw))
-    }
-
-    const withKeyword = displayedResults.find((r) => {
-      const title = r.type === 'artifact' ? r.data.title : undefined
-      return hasPriorityKeyword(r.data.name, title)
-    })
-    const best = withKeyword || displayedResults[0]
-    bestResultId = best.type === 'table' ? `table-${best.data.name}` : `artifact-${best.data.id}`
-  }
-
-  if (totalCount === 0) return null
+  if (displayedResults.length === 0) return null
 
   const finalInsight = messages.find((m) => m.isFinalInsight && m.stepDurationMs != null)
   const totalElapsedMs = finalInsight?.stepDurationMs ?? null
 
-  return (
-    <>
-      <button
-        onClick={() => {
-          const newVal = !resultsCollapsed
-          setResultsCollapsed(newVal)
-          localStorage.setItem('constat-results-collapsed', String(newVal))
-        }}
-        className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
-      >
-        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-          Results ({totalCount})
-        </span>
-        <div className="flex items-center gap-1.5">
-          {totalElapsedMs != null && totalElapsedMs > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400" title="Total elapsed time">
-              {formatMs(totalElapsedMs)}
-            </span>
-          )}
-          <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${resultsCollapsed ? '' : 'rotate-90'}`} />
-        </div>
-      </button>
+  // Auto-expand: prefer items with priority keywords
+  const hasPriorityKeyword = (name?: string, title?: string): boolean => {
+    const text = `${name || ''} ${title || ''}`.toLowerCase()
+    return ['final', 'recommended', 'answer', 'result', 'conclusion'].some(kw => text.includes(kw))
+  }
+  const withKeyword = displayedResults.find((r) => {
+    const title = r.type === 'artifact' ? r.data.title : undefined
+    return hasPriorityKeyword(r.data.name, title)
+  })
+  const best = withKeyword || displayedResults[0]
+  const bestResultId = best.type === 'table' ? `table-${best.data.name}` : `artifact-${best.data.id}`
 
-      {!resultsCollapsed && (
-      <div id="section-results" className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-800">
-        {displayedResults.length === 0 ? (
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            No results yet. Star a table in Debug to promote it here.
-          </p>
-        ) : (
+  return (
+    <div id="section-results" className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-800">
+      {totalElapsedMs != null && totalElapsedMs > 0 && (
+        <div className="flex justify-end mb-2">
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400" title="Total elapsed time">
+            {formatMs(totalElapsedMs)}
+          </span>
+        </div>
+      )}
+      {(
           <div className="space-y-3">
             {resultsByStep.map(({ stepNumber, goal, items }) => {
               const isStepCollapsed = collapsedResultSteps.has(stepNumber)
@@ -366,10 +321,8 @@ export function ResultsSection({ messages, stepCodes, supersededStepNumbers: _su
               )
             })}
           </div>
-        )}
-      </div>
       )}
-    </>
+    </div>
   )
 }
 

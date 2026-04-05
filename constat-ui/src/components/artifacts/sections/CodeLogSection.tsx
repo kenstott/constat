@@ -303,6 +303,56 @@ function StepCodeList({ stepCodes, supersededStepNumbers, tables, artifacts }: {
   )
 }
 
+function IntermediateResultsList({ tables }: { tables: TableInfo[] }) {
+  const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(new Set())
+
+  // Group by step_number
+  const stepMap = new Map<number, TableInfo[]>()
+  for (const t of tables) {
+    const sn = t.step_number || 0
+    if (!stepMap.has(sn)) stepMap.set(sn, [])
+    stepMap.get(sn)!.push(t)
+  }
+  const groups = Array.from(stepMap.entries()).sort(([a], [b]) => a - b)
+
+  const toggleStep = (sn: number) => {
+    setCollapsedSteps((prev) => {
+      const next = new Set(prev)
+      if (next.has(sn)) next.delete(sn); else next.add(sn)
+      return next
+    })
+  }
+
+  return (
+    <div className="space-y-3">
+      {groups.map(([stepNumber, stepTables]) => {
+        const isCollapsed = collapsedSteps.has(stepNumber)
+        return (
+          <div key={`istep-${stepNumber}`}>
+            {stepNumber !== 0 && (
+              <button
+                onClick={() => toggleStep(stepNumber)}
+                className="flex items-center gap-1 text-[10px] font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-1 px-1 hover:text-gray-600 dark:hover:text-gray-300 transition-colors w-full text-left"
+              >
+                <ChevronDownIcon className={`w-3 h-3 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
+                {stepNumber < 0 ? `Inference ${Math.abs(stepNumber)}` : `Step ${stepNumber}`}
+                <span className="text-gray-300 dark:text-gray-600 ml-auto normal-case">{stepTables.length}</span>
+              </button>
+            )}
+            {(!isCollapsed || stepNumber === 0) && (
+              <div className="space-y-2">
+                {stepTables.map((table: TableInfo) => (
+                  <TableAccordion key={table.name} table={table} />
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export function CodeLogSection({
   stepCodes,
   inferenceCodes,
@@ -520,7 +570,7 @@ export function CodeLogSection({
       </>
       )}
 
-      {/* Intermediate Results - unstarred tables, star to promote to Results */}
+      {/* Intermediate Results - unstarred tables grouped by step, star to promote to Results */}
       {intermediateTables.length > 0 && (
         <AccordionSection
           id="intermediate-results"
@@ -528,11 +578,7 @@ export function CodeLogSection({
           count={intermediateTables.length}
           icon={<CircleStackIcon className="w-4 h-4" />}
         >
-          <div className="space-y-2">
-            {intermediateTables.map((table: TableInfo) => (
-              <TableAccordion key={table.name} table={table} />
-            ))}
-          </div>
+          <IntermediateResultsList tables={intermediateTables} />
         </AccordionSection>
       )}
 
