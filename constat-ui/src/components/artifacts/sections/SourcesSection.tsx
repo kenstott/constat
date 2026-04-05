@@ -26,7 +26,6 @@ import {
   ArrowDownTrayIcon,
   ChevronRightIcon,
   ChevronDownIcon,
-  EnvelopeIcon,
   XMarkIcon,
   UserPlusIcon,
   Cog6ToothIcon,
@@ -86,6 +85,15 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
   const [previewData, setPreviewData] = useState<DatabaseTablePreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewPage, setPreviewPage] = useState(1)
+
+  // Document source picker dropdown
+  const [docPickerOpen, setDocPickerOpen] = useState(false)
+  useEffect(() => {
+    if (!docPickerOpen) return
+    const close = () => setDocPickerOpen(false)
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [docPickerOpen])
 
   // API expand state
   const [expandedApi, setExpandedApi] = useState<string | null>(null)
@@ -727,35 +735,34 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
         command="/docs"
         action={
           canWrite('sources') ? (
-            <div className="flex items-center gap-0.5">
+            <div className="relative">
               <button
-                onClick={() => onOpenModal('document')}
+                onClick={(e) => { e.stopPropagation(); setDocPickerOpen((v) => !v) }}
                 className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-                title="Add document"
+                title="Add source"
               >
                 <PlusIcon className="w-4 h-4" />
               </button>
-              <button
-                onClick={() => onOpenModal('email')}
-                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-                title="Add email source"
-              >
-                <EnvelopeIcon className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => onOpenModal('personal')}
-                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-                title="Connect personal resource"
-              >
-                <UserPlusIcon className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => onOpenModal('accounts')}
-                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-                title="Manage accounts"
-              >
-                <Cog6ToothIcon className="w-4 h-4" />
-              </button>
+              {docPickerOpen && (
+                <div
+                  className="absolute right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded shadow-lg min-w-[160px] py-1"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {[
+                    { label: 'File / URI', icon: <DocumentTextIcon className="w-4 h-4" />, type: 'document' as const },
+                    { label: 'Personal resource', icon: <UserPlusIcon className="w-4 h-4" />, type: 'personal' as const },
+                    { label: 'Manage accounts', icon: <Cog6ToothIcon className="w-4 h-4" />, type: 'accounts' as const },
+                  ].map(({ label, icon, type }) => (
+                    <button
+                      key={type}
+                      onClick={() => { setDocPickerOpen(false); onOpenModal(type) }}
+                      className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      {icon}{label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           ) : <div className="w-6 h-6" />
         }

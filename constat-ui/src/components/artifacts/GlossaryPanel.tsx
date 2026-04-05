@@ -780,6 +780,15 @@ function ConnectedResources({
   const hasContent = resources.length > 0 || hasConnections || !!domain || Object.keys(tags).length > 0
   if (!hasContent && resourcesLoaded) return null
 
+  if (!resourcesLoaded) {
+    return (
+      <div className="mt-1.5 flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
+        <span className="inline-block w-3 h-3 border-[1.5px] border-gray-400 border-t-transparent rounded-full animate-spin" />
+        Loading…
+      </div>
+    )
+  }
+
   return (
     <div className="mt-1.5 space-y-1.5">
       <TagEditor
