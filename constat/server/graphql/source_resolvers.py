@@ -264,6 +264,33 @@ def _build_documents(managed) -> list[SessionDocumentType]:
             from_config=False,
             tier=_get_tier(managed, "documents", ref["name"]),
         ))
+        seen.add(ref["name"])
+
+    # Personal accounts (calendar, drive, etc.) connected via OAuth
+    user_id = getattr(managed, "user_id", None)
+    if user_id:
+        from constat.server.accounts import load_user_accounts
+        data_dir = getattr(config, "data_dir", None)
+        personal_accounts = load_user_accounts(user_id, data_dir)
+        indexed_names: set[str] = set(
+            managed.session.resources.document_names
+        ) if managed.session.resources else set()
+        for acct_name, acct in personal_accounts.items():
+            if not acct.active or acct.type not in ("calendar", "drive", "sharepoint"):
+                continue
+            if acct_name in seen:
+                continue
+            documents.append(SessionDocumentType(
+                name=acct_name,
+                type=acct.type,
+                description=acct.display_name,
+                path=None,
+                indexed=acct_name in indexed_names,
+                from_config=False,
+                source="personal",
+                tier=None,
+            ))
+            seen.add(acct_name)
 
     return documents
 

@@ -114,3 +114,56 @@ class TestBuildDomainMapsUserSource:
 
         _, source_to_domain = _build_domain_maps(config, session)
         assert source_to_domain["hr-docs"] == "hr-reporting"
+
+
+class TestLoadPersonalAccountsRegistersResource:
+    def test_personal_account_registered_with_user_source(self):
+        """_load_personal_accounts registers documents with source=f'user:{user_id}'
+        so _build_domain_maps can map them to the user UUID for glossary display.
+
+        Regression test for #12: domain_id='personal' was passed to add_document()
+        which does not accept domain_id — causing TypeError, resource not registered,
+        and user entities losing their '(user)' bucket in the glossary.
+        """
+        from constat.core.resources import SessionResources
+        from constat.server.routes.sessions import _load_personal_accounts
+
+        user_id = "alice-uuid"
+
+        # Build a real SessionResources so add_document type errors are caught
+        resources = SessionResources()
+
+        acct = MagicMock()
+        acct.active = True
+        acct.display_name = "My Calendar"
+        acct.type = "calendar"
+
+        managed = MagicMock()
+        managed.session_id = "sess-1"
+        managed.user_id = user_id
+        managed.session.config.data_dir = None
+        managed.session.doc_tools.add_document_from_config.return_value = (True, "ok")
+        managed.session.resources = resources
+
+        sm = MagicMock()
+
+        with patch(
+            "constat.server.accounts.load_user_accounts",
+            return_value={"my_calendar": acct},
+        ), patch(
+            "constat.server.accounts.account_to_document_config",
+            return_value={"type": "calendar", "description": "My Calendar"},
+        ), patch(
+            "constat.core.source_config.DocumentConfig",
+        ) as MockDocConfig:
+            MockDocConfig.return_value = MagicMock()
+            _load_personal_accounts(sm, managed, user_id)
+
+        # The personal account must be registered in resources
+        assert "my_calendar" in resources.documents, (
+            "Personal account not registered in session resources"
+        )
+        doc_info = resources.documents["my_calendar"]
+        assert doc_info.source == f"user:{user_id}", (
+            f"Expected source='user:{user_id}', got source='{doc_info.source}'"
+        )

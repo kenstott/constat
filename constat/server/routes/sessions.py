@@ -440,7 +440,7 @@ def _load_personal_accounts(
                         name=acct_name,
                         description=acct.display_name,
                         doc_type=acct.type,
-                        domain_id="personal",
+                        source=f"user:{user_id}",
                     )
                     loaded_any = True
                     session_manager._push_event(managed, EventType.SOURCE_INGEST_COMPLETE, {"name": acct_name})
