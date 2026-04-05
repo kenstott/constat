@@ -61,6 +61,7 @@ def _make_managed(session_id="s1", user_id="test-user"):
     managed.session.config.apis = {}
     managed.session.config.documents = {}
     managed.session.config.load_domain.return_value = None
+    managed.session.config.data_dir = None
     managed.session.schema_manager = None
     managed.session.doc_tools = None
     managed.session.api_schema_manager = None
