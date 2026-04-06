@@ -308,6 +308,19 @@ class Mutation:
             ref["description"] = input.description
         if input.uri is not None:
             ref["uri"] = input.uri
+            doc_config = ref.get("document_config") or {}
+            uri = input.uri
+            is_url_scheme = any(uri.startswith(s) for s in (
+                "http://", "https://", "s3://", "s3a://", "ftp://", "sftp://", "file://"
+            ))
+            if is_url_scheme:
+                doc_config["url"] = uri
+                doc_config.pop("path", None)
+            else:
+                doc_config["path"] = uri
+                doc_config.pop("url", None)
+            if doc_config:
+                ref["document_config"] = doc_config
 
         doc_config = ref.get("document_config")
         if doc_config is not None:

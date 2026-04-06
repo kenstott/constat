@@ -235,7 +235,7 @@ def _build_documents(managed) -> list[SessionDocumentType]:
             name=name,
             type=doc_config.type,
             description=doc_config.description,
-            path=doc_config.path,
+            path=doc_config.url or doc_config.path,
             indexed=True,
             from_config=True,
             source="config",
@@ -253,7 +253,7 @@ def _build_documents(managed) -> list[SessionDocumentType]:
                     name=name,
                     type=doc_config.type,
                     description=doc_config.description,
-                    path=doc_config.path,
+                    path=doc_config.url or doc_config.path,
                     indexed=True,
                     from_config=False,
                     source=domain_filename,
@@ -688,9 +688,10 @@ class Mutation:
     @strawberry.field
     async def validate_uri(self, info: Info, uri: str) -> UriValidationResult:
         """Check whether a URI is reachable (web URL) or exists on disk (file path)."""
-        if uri.startswith("http://") or uri.startswith("https://"):
+        stripped = uri.strip()
+        if stripped.startswith(("http://", "https://")):
             try:
-                req = urllib.request.Request(uri, method="HEAD",
+                req = urllib.request.Request(stripped, method="HEAD",
                                              headers={"User-Agent": "constat/1.0"})
                 with urllib.request.urlopen(req, timeout=8):
                     pass
@@ -704,9 +705,30 @@ class Mutation:
                 return UriValidationResult(reachable=False, error=str(e.reason))
             except Exception as e:
                 return UriValidationResult(reachable=False, error=str(e))
+        elif stripped.startswith("file://"):
+            path = stripped[7:]
+            exists = os.path.exists(path)
+            return UriValidationResult(reachable=exists,
+                error=None if exists else f"Path does not exist: {path}")
+        elif stripped.startswith(("s3://", "s3a://")):
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(stripped)
+                if not parsed.netloc:
+                    return UriValidationResult(reachable=False, error="Invalid S3 URI: missing bucket name")
+                return UriValidationResult(reachable=True)
+            except Exception as e:
+                return UriValidationResult(reachable=False, error=str(e))
+        elif stripped.startswith(("ftp://", "sftp://")):
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(stripped)
+                if not parsed.hostname:
+                    return UriValidationResult(reachable=False, error="Invalid FTP/SFTP URI: missing hostname")
+                return UriValidationResult(reachable=True)
+            except Exception as e:
+                return UriValidationResult(reachable=False, error=str(e))
         else:
-            exists = os.path.exists(uri)
-            return UriValidationResult(
-                reachable=exists,
-                error=None if exists else f"Path does not exist: {uri}",
-            )
+            exists = os.path.exists(stripped)
+            return UriValidationResult(reachable=exists,
+                error=None if exists else f"Path does not exist: {stripped}")

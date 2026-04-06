@@ -25,12 +25,32 @@ interface FieldErrors {
   uri?: string
 }
 
+const URL_SCHEMES = ['http://', 'https://', 'ftp://', 'sftp://', 's3://', 's3a://', 'file://']
+
+function detectScheme(uri: string): string | null {
+  const lower = uri.toLowerCase()
+  return URL_SCHEMES.find(s => lower.startsWith(s)) ?? null
+}
+
 function isValidUri(uri: string): boolean {
-  if (uri.startsWith('http://') || uri.startsWith('https://')) {
-    try { new URL(uri); return true } catch { return false }
+  const trimmed = uri.trim()
+  if (!trimmed) return false
+  const scheme = detectScheme(trimmed)
+  if (scheme === 'http://' || scheme === 'https://') {
+    try { new URL(trimmed); return true } catch { return false }
   }
-  // local path: must be non-empty and look like a path
-  return uri.trim().length > 0
+  if (scheme === 's3://' || scheme === 's3a://') {
+    // must have bucket: s3://bucket/key
+    return trimmed.replace(/^s3a?:\/\//i, '').split('/')[0].length > 0
+  }
+  if (scheme === 'ftp://' || scheme === 'sftp://') {
+    try { new URL(trimmed); return true } catch { return false }
+  }
+  if (scheme === 'file://') {
+    return trimmed.length > 'file://'.length
+  }
+  // bare file path — non-empty is sufficient
+  return trimmed.length > 0
 }
 
 export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {
@@ -48,7 +68,7 @@ export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {
   const [updateDocument, { loading }] = useMutation(UPDATE_DOCUMENT)
   const [validateUri] = useLazyQuery(VALIDATE_URI, { fetchPolicy: 'no-cache' })
 
-  const isWeb = uri.startsWith('http://') || uri.startsWith('https://')
+  const isHttpLike = detectScheme(uri) === 'http://' || detectScheme(uri) === 'https://'
 
   function validate(): FieldErrors {
     const errors: FieldErrors = {}
@@ -57,7 +77,7 @@ export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {
     if (!uri.trim()) {
       errors.uri = 'URI or path is required'
     } else if (!isValidUri(uri)) {
-      errors.uri = 'Enter a valid URL (https://…) or file path'
+      errors.uri = `Enter a valid URI (https://…, s3://bucket/key, ftp://host/path, sftp://host/path, file:///path, or a local file path)`
     }
     return errors
   }
@@ -95,7 +115,7 @@ export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {
       uri: uri.trim(),
     }
     if (newName.trim() !== doc.name) input.new_name = newName.trim()
-    if (isWeb) {
+    if (isHttpLike) {
       input.follow_links = followLinks
       input.max_depth = parseInt(maxDepth, 10) || 3
       input.max_documents = parseInt(maxDocuments, 10) || 50
@@ -170,10 +190,24 @@ export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {
             Test
           </button>
         </div>
+        {uri.trim() && (() => {
+          const scheme = detectScheme(uri.trim())
+          const hints: Record<string, string> = {
+            'http://': 'Web page',
+            'https://': 'Web page (secure)',
+            'ftp://': 'FTP server',
+            'sftp://': 'SFTP server',
+            's3://': 'AWS S3 object',
+            's3a://': 'S3-compatible storage',
+            'file://': 'Local file',
+          }
+          const label = scheme ? hints[scheme] : 'Local file path'
+          return <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">{label}</p>
+        })()}
         {fieldErrors.uri && <p className={errMsg}>{fieldErrors.uri}</p>}
       </div>
 
-      {isWeb && (
+      {isHttpLike && (
         <>
           <div className="flex items-center gap-2">
             <input

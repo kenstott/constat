@@ -55,6 +55,8 @@ def infer_transport(config: "DocumentConfig") -> str:
             return "http"
         if scheme == "s3":
             return "s3"
+        if scheme == "s3a":
+            return "s3"
         if scheme == "ftp":
             return "ftp"
         if scheme == "sftp":
