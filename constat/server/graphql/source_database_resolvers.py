@@ -20,7 +20,9 @@ from constat.server.graphql.session_context import GqlInfo as Info
 from constat.server.graphql.source_resolvers import _get_managed
 from constat.server.graphql.types import (
     ApiAddInput,
+    ApiUpdateInput,
     DatabaseAddInput,
+    DatabaseUpdateInput,
     DatabaseTestResultType,
     DeleteResultType,
     MoveSourceResultType,
@@ -328,6 +330,118 @@ class Mutation:
         managed.save_resources()
 
         return DeleteResultType(status="deleted", name=name)
+
+    @strawberry.mutation
+    async def update_database(
+        self, info: Info, session_id: str, input: DatabaseUpdateInput,
+    ) -> SessionDatabaseType:
+        managed = _get_managed(info, session_id)
+        sm = info.context.session_manager
+
+        if input.name in managed.session.config.databases:
+            raise ValueError("Cannot update config-defined database")
+
+        for domain_filename in managed.active_domains:
+            domain = managed.session.config.load_domain(domain_filename)
+            if domain and input.name in domain.databases:
+                raise ValueError(f"Cannot update domain-defined database (from {domain_filename})")
+
+        db = next((d for d in managed._dynamic_dbs if d["name"] == input.name), None)
+        if not db:
+            raise ValueError(f"Database not found: {input.name}")
+
+        if input.new_name is not None:
+            db["name"] = input.new_name
+        if input.description is not None:
+            db["description"] = input.description
+        if input.uri is not None:
+            db["uri"] = input.uri
+        if input.extra_config is not None:
+            db["extra_config"] = dict(input.extra_config)
+
+        sm.resolve_config(session_id)
+        managed.save_resources()
+
+        return SessionDatabaseType(
+            name=db["name"],
+            type=db["type"],
+            dialect=db.get("dialect"),
+            description=db.get("description"),
+            connected=db.get("connected", False),
+            table_count=db.get("table_count", 0),
+            added_at=datetime.fromisoformat(db["added_at"]),
+            is_dynamic=True,
+            file_id=db.get("file_id"),
+            source="session",
+        )
+
+    @strawberry.mutation
+    async def update_api(
+        self, info: Info, session_id: str, input: ApiUpdateInput,
+    ) -> SessionApiType:
+        managed = _get_managed(info, session_id)
+        sm = info.context.session_manager
+
+        if input.name in managed.session.config.apis:
+            raise ValueError("Cannot update config-defined API")
+
+        for domain_filename in managed.active_domains:
+            domain = managed.session.config.load_domain(domain_filename)
+            if domain and input.name in domain.apis:
+                raise ValueError(f"Cannot update domain-defined API (from {domain_filename})")
+
+        api = next((a for a in managed._dynamic_apis if a["name"] == input.name), None)
+        if not api:
+            raise ValueError(f"API not found: {input.name}")
+
+        if input.new_name is not None:
+            api["name"] = input.new_name
+        if input.description is not None:
+            api["description"] = input.description
+        if input.base_url is not None:
+            api["base_url"] = input.base_url
+        if input.auth_type is not None:
+            api["auth_type"] = input.auth_type
+        if input.auth_header is not None:
+            api["auth_header"] = input.auth_header
+
+        if managed.session.api_schema_manager:
+            from constat.core.config import APIConfig
+            api_config = APIConfig(
+                type=api.get("type", "rest"),
+                url=api["base_url"],
+                description=api.get("description") or "",
+            )
+            effective_auth_type = input.auth_type if input.auth_type is not None else api.get("auth_type")
+            effective_token = input.auth_token if input.auth_token is not None else api.get("auth_token")
+            effective_username = input.auth_username if input.auth_username is not None else api.get("auth_username")
+            effective_password = input.auth_password if input.auth_password is not None else api.get("auth_password")
+            effective_header = input.auth_header if input.auth_header is not None else api.get("auth_header")
+
+            if effective_auth_type == "bearer" and effective_token:
+                api_config.headers = {"Authorization": f"Bearer {effective_token}"}
+            elif effective_auth_type == "basic" and effective_username:
+                import base64
+                creds = base64.b64encode(f"{effective_username}:{effective_password or ''}".encode()).decode()
+                api_config.headers = {"Authorization": f"Basic {creds}"}
+            elif effective_auth_type == "api_key" and effective_header and effective_token:
+                api_config.headers = {effective_header: effective_token}
+
+            managed.session.api_schema_manager.add_api_dynamic(api["name"], api_config)
+
+        sm.resolve_config(session_id)
+        managed.save_resources()
+
+        return SessionApiType(
+            name=api["name"],
+            type=api.get("type"),
+            description=api.get("description"),
+            base_url=api.get("base_url"),
+            connected=api.get("connected", True),
+            from_config=False,
+            source="session",
+            is_dynamic=True,
+        )
 
     @strawberry.mutation
     async def move_source(

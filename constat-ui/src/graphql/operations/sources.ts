@@ -314,6 +314,30 @@ export const MOVE_SOURCE = gql`
   }
 `
 
+export const UPDATE_DATABASE = gql`
+  mutation UpdateDatabase($input: DatabaseUpdateInput!) {
+    updateDatabase(input: $input) {
+      name description type uri isDynamic isConfigDefined
+    }
+  }
+`
+
+export const UPDATE_API = gql`
+  mutation UpdateApi($input: ApiUpdateInput!) {
+    updateApi(input: $input) {
+      name description type baseUrl isDynamic isConfigDefined
+    }
+  }
+`
+
+export const UPDATE_DOCUMENT = gql`
+  mutation UpdateDocument($input: DocumentUpdateInput!) {
+    updateDocument(input: $input) {
+      name description uri
+    }
+  }
+`
+
 // -- Mappers -----------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

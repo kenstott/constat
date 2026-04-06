@@ -111,12 +111,15 @@ from constat.server.graphql.types.data_types import (  # noqa: F401
 # -- Source types (Phase 5) --
 from constat.server.graphql.types.source_types import (  # noqa: F401
     ApiAddInput,
+    ApiUpdateInput,
     DatabaseAddInput,
+    DatabaseUpdateInput,
     DatabaseTablePreviewType,
     DatabaseTestResultType,
     DataSourcesType,
     DocumentResultType,
     DocumentUriInput,
+    DocumentUpdateInput,
     EmailSourceInput,
     FileRefInput,
     FileRefListType,

@@ -25,6 +25,7 @@ import {
   ChevronRightIcon,
   ChevronDownIcon,
   PencilIcon,
+  PencilSquareIcon,
   UserPlusIcon,
   Cog6ToothIcon,
 } from '@heroicons/react/24/outline'
@@ -36,6 +37,9 @@ import { apolloClient } from '@/graphql/client'
 import { DATABASE_SCHEMA_QUERY, API_SCHEMA_QUERY, toDatabaseTable, toApiEndpoint } from '@/graphql/operations/state'
 import { FORGET_FACT, PERSIST_FACT, MOVE_FACT, EDIT_FACT } from '@/graphql/operations/data'
 import { REMOVE_API, REMOVE_DATABASE, DELETE_FILE_REF, DATABASE_TABLE_PREVIEW_QUERY, toDatabaseTablePreview } from '@/graphql/operations/sources'
+import { EditDatabaseModal } from '../EditDatabaseModal'
+import { EditApiModal } from '../EditApiModal'
+import { EditDocumentModal } from '../EditDocumentModal'
 import { useDataSources } from '@/hooks/useDataSources'
 import { useFacts } from '@/hooks/useFacts'
 import { useSessionContext } from '@/contexts/SessionContext'
@@ -109,6 +113,11 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
   // Fact inline edit state
   const [editingFact, setEditingFact] = useState<string | null>(null)
   const [editingFactValue, setEditingFactValue] = useState('')
+
+  // Edit source modal state
+  const [editingDb, setEditingDb] = useState<SessionDatabase | null>(null)
+  const [editingApi, setEditingApi] = useState<ApiSourceInfo | null>(null)
+  const [editingDoc, setEditingDoc] = useState<DocumentSourceInfo | null>(null)
 
   // Deep link handling — expand the target source, scroll, consume
   const pendingDeepLink = useReactiveVar(activeDeepLinkVar)
@@ -406,23 +415,32 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                       {db.type}
                     </span>
                     {db.is_dynamic && canWrite('sources') && (
-                      <button
-                        onClick={async () => {
-                          if (!session) return
-                          if (!confirm(`Remove database "${db.name}" from this session?`)) return
-                          try {
-                            await apolloClient.mutate({ mutation: REMOVE_DATABASE, variables: { sessionId: session.session_id, name: db.name } })
-                            await apolloClient.refetchQueries({ include: ['DataSources'] })
-                          } catch (err) {
-                            console.error('Failed to remove database:', err)
-                            alert('Failed to remove database. Please try again.')
-                          }
-                        }}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
-                        title="Remove database"
-                      >
-                        <TrashIcon className="w-3.5 h-3.5" />
-                      </button>
+                      <>
+                        <button
+                          onClick={() => setEditingDb(db)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all"
+                          title="Edit database"
+                        >
+                          <PencilSquareIcon className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (!session) return
+                            if (!confirm(`Remove database "${db.name}" from this session?`)) return
+                            try {
+                              await apolloClient.mutate({ mutation: REMOVE_DATABASE, variables: { sessionId: session.session_id, name: db.name } })
+                              await apolloClient.refetchQueries({ include: ['DataSources'] })
+                            } catch (err) {
+                              console.error('Failed to remove database:', err)
+                              alert('Failed to remove database. Please try again.')
+                            }
+                          }}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
+                          title="Remove database"
+                        >
+                          <TrashIcon className="w-3.5 h-3.5" />
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -601,13 +619,22 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                       {api.connected ? 'Available' : 'Pending'}
                     </span>
                     {api.source === 'session' && canWrite('sources') && (
-                      <button
-                        onClick={() => handleDeleteApi(api.name)}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
-                        title="Remove API"
-                      >
-                        <TrashIcon className="w-3.5 h-3.5" />
-                      </button>
+                      <>
+                        <button
+                          onClick={() => setEditingApi(api)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all"
+                          title="Edit API"
+                        >
+                          <PencilSquareIcon className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteApi(api.name)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
+                          title="Remove API"
+                        >
+                          <TrashIcon className="w-3.5 h-3.5" />
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -735,13 +762,22 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                       {doc.indexed ? 'Indexed' : 'Pending'}
                     </span>
                     {!doc.from_config && canWrite('sources') && (
-                      <button
-                        onClick={() => handleDeleteDocument(doc.name)}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
-                        title="Remove document"
-                      >
-                        <TrashIcon className="w-3.5 h-3.5" />
-                      </button>
+                      <>
+                        <button
+                          onClick={() => setEditingDoc(doc)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all"
+                          title="Edit document"
+                        >
+                          <PencilSquareIcon className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteDocument(doc.name)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
+                          title="Remove document"
+                        >
+                          <TrashIcon className="w-3.5 h-3.5" />
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -917,6 +953,45 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
         loadingDocument={loadingDocument}
         onClose={() => setViewingDocument(null)}
       />
+
+      {editingDb && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-80 shadow-xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">Edit Database</h3>
+            <EditDatabaseModal
+              db={editingDb}
+              onSuccess={() => { setEditingDb(null); apolloClient.refetchQueries({ include: ['DataSources'] }) }}
+              onCancel={() => setEditingDb(null)}
+            />
+          </div>
+        </div>
+      )}
+
+      {editingApi && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-80 shadow-xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">Edit API</h3>
+            <EditApiModal
+              api={editingApi}
+              onSuccess={() => { setEditingApi(null); apolloClient.refetchQueries({ include: ['DataSources'] }) }}
+              onCancel={() => setEditingApi(null)}
+            />
+          </div>
+        </div>
+      )}
+
+      {editingDoc && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-80 shadow-xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">Edit Document</h3>
+            <EditDocumentModal
+              doc={editingDoc}
+              onSuccess={() => { setEditingDoc(null); apolloClient.refetchQueries({ include: ['DataSources'] }) }}
+              onCancel={() => setEditingDoc(null)}
+            />
+          </div>
+        </div>
+      )}
     </>
   )
 }

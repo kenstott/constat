@@ -20,8 +20,10 @@ from strawberry.file_uploads import Upload
 from constat.server.graphql.session_context import GqlInfo as Info
 from constat.server.graphql.source_resolvers import _get_managed
 from constat.server.graphql.types import (
+    DocumentUpdateInput,
     DocumentUriInput,
     EmailSourceInput,
+    SessionDocumentType,
     UploadDocumentResultItem,
     UploadDocumentsResultType,
     UserSourceResultType,
@@ -281,6 +283,52 @@ class Mutation:
         )
 
         return UserSourceResultType(status="started", name="all")
+
+    @strawberry.mutation
+    async def update_document(
+        self, info: Info, session_id: str, input: DocumentUpdateInput,
+    ) -> SessionDocumentType:
+        managed = _get_managed(info, session_id)
+
+        if input.name in managed.session.config.documents:
+            raise ValueError("Cannot update config-defined document")
+
+        for domain_filename in managed.active_domains:
+            domain = managed.session.config.load_domain(domain_filename)
+            if domain and input.name in domain.documents:
+                raise ValueError(f"Cannot update domain-defined document (from {domain_filename})")
+
+        ref = next((r for r in managed._file_refs if r["name"] == input.name), None)
+        if not ref:
+            raise ValueError(f"Document not found: {input.name}")
+
+        if input.new_name is not None:
+            ref["name"] = input.new_name
+        if input.description is not None:
+            ref["description"] = input.description
+        if input.uri is not None:
+            ref["uri"] = input.uri
+
+        doc_config = ref.get("document_config")
+        if doc_config is not None:
+            if input.follow_links is not None:
+                doc_config["follow_links"] = input.follow_links
+            if input.max_depth is not None:
+                doc_config["max_depth"] = input.max_depth
+            if input.max_documents is not None:
+                doc_config["max_documents"] = input.max_documents
+
+        managed.save_resources()
+
+        return SessionDocumentType(
+            name=ref["name"],
+            type=ref.get("uri", "").split(".")[-1] if ref.get("uri") else None,
+            description=ref.get("description"),
+            path=ref.get("uri"),
+            indexed=True,
+            from_config=False,
+            source="session",
+        )
 
     @strawberry.mutation
     async def remove_user_source(

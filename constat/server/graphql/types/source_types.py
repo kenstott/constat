@@ -221,6 +221,42 @@ class DocumentUriInput:
 
 
 @strawberry.input
+class DatabaseUpdateInput:
+    name: str
+    new_name: Optional[str] = None
+    description: Optional[str] = None
+    uri: Optional[str] = None
+    extra_config: Optional[strawberry.scalars.JSON] = None
+
+
+@strawberry.input
+class ApiUpdateInput:
+    name: str
+    new_name: Optional[str] = None
+    description: Optional[str] = None
+    base_url: Optional[str] = None
+    auth_type: Optional[str] = None
+    auth_header: Optional[str] = None
+    auth_token: Optional[str] = None
+    auth_username: Optional[str] = None
+    auth_password: Optional[str] = None
+    auth_client_id: Optional[str] = None
+    auth_client_secret: Optional[str] = None
+    auth_token_url: Optional[str] = None
+
+
+@strawberry.input
+class DocumentUpdateInput:
+    name: str
+    new_name: Optional[str] = None
+    description: Optional[str] = None
+    uri: Optional[str] = None
+    follow_links: Optional[bool] = None
+    max_depth: Optional[int] = None
+    max_documents: Optional[int] = None
+
+
+@strawberry.input
 class EmailSourceInput:
     name: str
     url: str
