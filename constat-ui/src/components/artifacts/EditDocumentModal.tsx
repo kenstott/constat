@@ -25,14 +25,14 @@ interface FieldErrors {
   uri?: string
 }
 
-const URL_SCHEMES = ['http://', 'https://', 'ftp://', 'sftp://', 's3://', 's3a://', 'file://']
+export const URL_SCHEMES = ['http://', 'https://', 'ftp://', 'sftp://', 's3://', 's3a://', 'file://']
 
-function detectScheme(uri: string): string | null {
+export function detectScheme(uri: string): string | null {
   const lower = uri.toLowerCase()
   return URL_SCHEMES.find(s => lower.startsWith(s)) ?? null
 }
 
-function isValidUri(uri: string): boolean {
+export function isValidUri(uri: string): boolean {
   const trimmed = uri.trim()
   if (!trimmed) return false
   const scheme = detectScheme(trimmed)
