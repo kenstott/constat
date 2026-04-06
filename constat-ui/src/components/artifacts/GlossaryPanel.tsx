@@ -170,7 +170,7 @@ function buildTree(terms: GlossaryTerm[], userId?: string): { roots: TreeNode[];
 
   for (const t of terms) {
     const node = nodeMap.get(t.name.toLowerCase())!
-    const bucket = t.domain || (t.glossary_status === 'self_describing' ? '(system)' : '(user)')
+    const bucket = t.domain || (t.glossary_status === 'self_describing' ? 'system' : '(user)')
     if (t.parent_id) {
       const parentTerm = byId.get(t.parent_id)
       const parentNode = parentTerm ? nodeMap.get(parentTerm.name.toLowerCase()) : null

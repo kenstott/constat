@@ -153,9 +153,9 @@ class _EntityMixin:
         logger.info(f"extract_entities_for_session({session_id}): extracting from {len(chunks)} chunks")
 
         # Group chunks by domain_id so each EntityExtractor gets the correct domain
-        chunks_by_domain: dict[str | None, list[DocumentChunk]] = defaultdict(list)
+        chunks_by_domain: dict[str, list[DocumentChunk]] = defaultdict(list)
         for chunk in chunks:
-            chunks_by_domain[chunk.domain_id].append(chunk)
+            chunks_by_domain[chunk.domain_id or "__base__"].append(chunk)
 
         all_links: list[ChunkEntity] = []
         all_entities = []
