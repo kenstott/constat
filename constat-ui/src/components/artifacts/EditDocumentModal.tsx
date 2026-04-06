@@ -20,7 +20,7 @@ interface Props {
 }
 
 export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {
-  const [newName, setNewName] = useState('')
+  const [newName, setNewName] = useState(doc.name)
   const [description, setDescription] = useState(doc.description ?? '')
   const [uri, setUri] = useState(doc.path ?? '')
   const [followLinks, setFollowLinks] = useState(false)
@@ -44,7 +44,7 @@ export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {
       description: description || undefined,
       uri: uri || undefined,
     }
-    if (newName.trim()) input.new_name = newName.trim()
+    if (newName.trim() && newName.trim() !== doc.name) input.new_name = newName.trim()
     if (isWeb) {
       input.follow_links = followLinks
       input.max_depth = parseInt(maxDepth, 10) || 3
@@ -61,23 +61,23 @@ export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {
   const input = 'w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100'
   const half = 'flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100'
   const lbl = 'text-xs text-gray-500 dark:text-gray-400 mb-0.5'
-  const readOnly = 'w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-md bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed'
 
   return (
     <div className="space-y-3">
       <div>
-        <p className={lbl}>Name (current identifier)</p>
-        <input type="text" value={doc.name} readOnly className={readOnly} />
-      </div>
-
-      <div>
-        <p className={lbl}>New name (optional rename)</p>
-        <input type="text" placeholder={doc.name} value={newName} onChange={(e) => setNewName(e.target.value)} className={input} />
+        <p className={lbl}>Name</p>
+        <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)} className={input} />
       </div>
 
       <div>
         <p className={lbl}>Description</p>
-        <input type="text" placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} className={input} />
+        <textarea
+          rows={2}
+          placeholder="Description"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          className={input + ' resize-y'}
+        />
       </div>
 
       <div>

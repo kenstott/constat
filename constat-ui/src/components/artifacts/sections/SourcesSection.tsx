@@ -982,8 +982,8 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
 
       {editingDoc && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-80 shadow-xl max-h-[90vh] overflow-y-auto">
-            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">Edit Document</h3>
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-[30rem] shadow-xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">Edit Document — {editingDoc.name}</h3>
             <EditDocumentModal
               doc={editingDoc}
               onSuccess={() => { setEditingDoc(null); apolloClient.refetchQueries({ include: ['DataSources'] }) }}
