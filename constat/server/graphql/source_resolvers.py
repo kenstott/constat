@@ -45,9 +45,19 @@ from constat.server.graphql.types import (
     UserSourcesType,
 )
 
+import os
+import urllib.request
+import urllib.error
+
 logger = logging.getLogger(__name__)
 
 from typing import Optional
+
+
+@strawberry.type
+class UriValidationResult:
+    reachable: bool
+    error: str | None = None
 
 
 @strawberry.type
@@ -674,3 +684,29 @@ class Mutation:
         managed._remove_doc_from_user_config(managed.user_id, name)
 
         return DeleteResultType(status="deleted", name=name)
+
+    @strawberry.field
+    async def validate_uri(self, info: Info, uri: str) -> UriValidationResult:
+        """Check whether a URI is reachable (web URL) or exists on disk (file path)."""
+        if uri.startswith("http://") or uri.startswith("https://"):
+            try:
+                req = urllib.request.Request(uri, method="HEAD",
+                                             headers={"User-Agent": "constat/1.0"})
+                with urllib.request.urlopen(req, timeout=8):
+                    pass
+                return UriValidationResult(reachable=True)
+            except urllib.error.HTTPError as e:
+                if e.code < 500:
+                    # 4xx means the server responded — URI is reachable even if auth-gated
+                    return UriValidationResult(reachable=True)
+                return UriValidationResult(reachable=False, error=f"HTTP {e.code}: {e.reason}")
+            except urllib.error.URLError as e:
+                return UriValidationResult(reachable=False, error=str(e.reason))
+            except Exception as e:
+                return UriValidationResult(reachable=False, error=str(e))
+        else:
+            exists = os.path.exists(uri)
+            return UriValidationResult(
+                reachable=exists,
+                error=None if exists else f"Path does not exist: {uri}",
+            )

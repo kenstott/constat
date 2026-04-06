@@ -338,6 +338,15 @@ export const UPDATE_DOCUMENT = gql`
   }
 `
 
+export const VALIDATE_URI = gql`
+  query ValidateUri($uri: String!) {
+    validateUri(uri: $uri) {
+      reachable
+      error
+    }
+  }
+`
+
 // -- Mappers -----------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
