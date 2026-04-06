@@ -13,6 +13,7 @@
 Uses the shared ``graphql_client`` fixture from ``conftest.py``.
 """
 
+from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock
 

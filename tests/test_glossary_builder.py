@@ -10,6 +10,7 @@
 
 """Tests for glossary_term_to_chunk with relationship enrichment."""
 
+from __future__ import annotations
 import pytest
 
 from constat.catalog.glossary_builder import glossary_term_to_chunk

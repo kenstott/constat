@@ -13,6 +13,7 @@
 These tests verify the approval mechanism without requiring API calls.
 """
 
+from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock, patch
 from dataclasses import dataclass

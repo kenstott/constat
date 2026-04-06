@@ -6,6 +6,7 @@
 
 """Tests for constat.server.routes.passkey — credential storage and endpoint logic."""
 
+from __future__ import annotations
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch

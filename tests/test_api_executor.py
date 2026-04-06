@@ -10,6 +10,7 @@
 
 """Tests for API executor - actually executing queries against external APIs."""
 
+from __future__ import annotations
 import pytest
 
 from constat.core.config import Config, APIConfig

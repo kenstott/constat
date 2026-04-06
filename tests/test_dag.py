@@ -10,6 +10,7 @@
 
 """Tests for DAG data structures and parallel execution."""
 
+from __future__ import annotations
 import pytest
 import time
 from concurrent.futures import ThreadPoolExecutor

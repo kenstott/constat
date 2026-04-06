@@ -10,6 +10,7 @@
 
 """Tests for the concept detector module."""
 
+from __future__ import annotations
 import pytest
 
 from constat.discovery.concept_detector import ConceptDetector, DetectedConcept

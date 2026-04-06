@@ -9,6 +9,7 @@
 
 """Tests for Phase 4 universal domain enforcement."""
 
+from __future__ import annotations
 import tempfile
 import pytest
 from datetime import datetime

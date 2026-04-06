@@ -1,5 +1,6 @@
 """Tests for deploy GraphQL resolvers."""
 
+from __future__ import annotations
 import os
 import tempfile
 

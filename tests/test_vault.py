@@ -6,6 +6,7 @@
 
 """Tests for constat.server.vault — AES-256-GCM file-level encryption."""
 
+from __future__ import annotations
 import pytest
 
 from constat.server.vault import UserVault

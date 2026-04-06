@@ -6,6 +6,7 @@
 
 """Tests for document crawler — link extraction and recursive fetching."""
 
+from __future__ import annotations
 import pytest
 
 from constat.discovery.doc_tools._crawler import extract_links, crawl_document, _normalize_url

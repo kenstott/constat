@@ -10,6 +10,7 @@
 
 """Tests for Scratchpad."""
 
+from __future__ import annotations
 import pytest
 from constat.execution.scratchpad import Scratchpad
 

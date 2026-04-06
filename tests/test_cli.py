@@ -14,6 +14,7 @@ These tests use Click's CliRunner to test command behavior without
 requiring API keys or real database connections.
 """
 
+from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path

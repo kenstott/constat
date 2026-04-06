@@ -4,13 +4,16 @@
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
 
-"""Playwright integration test fixtures.
+"""Integration test fixtures.
 
-Manages a real Constat server for browser-based testing.
+Manages a real Constat server for HTTP/GraphQL integration tests.
 The server runs with auth_disabled=true so no Firebase credentials are needed.
 Port is dynamically allocated to avoid conflicts.
+
+Playwright/browser fixtures live in tests/e2e/conftest.py.
 """
 
+from __future__ import annotations
 import atexit
 import os
 import signal
@@ -21,6 +24,16 @@ from pathlib import Path
 
 import pytest
 import requests
+
+from tests.integration.fixtures_docker_helpers import is_docker_available
+
+# Register Docker fixture modules so their fixtures are available to all
+# tests under tests/integration/ without explicit imports.
+pytest_plugins = [
+    "tests.integration.fixtures_docker_db",
+    "tests.integration.fixtures_docker_ai",
+    "tests.integration.fixtures_docker_search",
+]
 
 _SERVER_HOST = "127.0.0.1"
 _STARTUP_TIMEOUT = 300  # seconds (warmup includes embedding model + whisper model + image/audio processing)
@@ -86,7 +99,7 @@ def _kill_process(proc):
     try:
         proc.wait(timeout=5)
     except Exception:
-        pass
+        pass  # Teardown: proc.wait after SIGKILL may raise; swallowed intentionally
 
 
 def _clean_stale_wal_files(data_dir: Path) -> None:
@@ -96,6 +109,12 @@ def _clean_stale_wal_files(data_dir: Path) -> None:
         return
     for wal in constat_dir.rglob("*.wal"):
         wal.unlink(missing_ok=True)
+
+
+@pytest.fixture(scope="session")
+def docker_available() -> bool:
+    """Check if Docker is available."""
+    return is_docker_available()
 
 
 @pytest.fixture(scope="session")
@@ -178,103 +197,18 @@ def server_url(server_process, server_port):
     return f"http://{_SERVER_HOST}:{server_port}"
 
 
-@pytest.fixture(scope="session")
-def ui_port():
-    """Allocate a random free port for the Vite dev server."""
-    return _find_free_port()
+# ---------------------------------------------------------------------------
+# Glossary test fixtures (shared across integration test modules)
+# ---------------------------------------------------------------------------
 
-
-@pytest.fixture(scope="session")
-def ui_url(server_process, server_port, ui_port, integration_data_dir):
-    """Start a Vite dev server that proxies API calls to the test backend.
-
-    Writes a temporary vite config *inside* constat-ui/ so that Node ESM
-    module resolution can find vite and @vitejs/plugin-react in node_modules.
-    """
-    project_root = Path(__file__).parent.parent.parent
-    ui_dir = project_root / "constat-ui"
-
-    if not (ui_dir / "node_modules").is_dir():
-        pytest.skip("constat-ui/node_modules not installed")
-
-    # Config must live inside constat-ui/ for ESM resolution of dependencies
-    tmp_config = ui_dir / ".vite.test.config.mts"
-    tmp_config.write_text(f"""\
-import {{ defineConfig }} from 'vite'
-import react from '@vitejs/plugin-react'
-import path from 'path'
-
-export default defineConfig({{
-  plugins: [react()],
-  resolve: {{
-    alias: {{
-      '@': path.resolve(__dirname, './src'),
-    }},
-  }},
-  server: {{
-    host: '{_SERVER_HOST}',
-    port: {ui_port},
-    strictPort: true,
-    proxy: {{
-      '/api': {{
-        target: 'http://{_SERVER_HOST}:{server_port}',
-        changeOrigin: true,
-        ws: true,
-      }},
-      '/health': {{
-        target: 'http://{_SERVER_HOST}:{server_port}',
-        changeOrigin: true,
-      }},
-    }},
-  }},
-}})
-""")
-
-    vite_log = integration_data_dir / "vite.log"
-    log_fh = open(vite_log, "w")
-    vite_env = {**os.environ, "VITE_AUTH_DISABLED": "true"}
-    proc = subprocess.Popen(
-        ["npx", "vite", "--config", str(tmp_config)],
-        cwd=str(ui_dir),
-        env=vite_env,
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-        preexec_fn=os.setsid,
-    )
-    atexit.register(_kill_process, proc)
-
-    ui_base = f"http://{_SERVER_HOST}:{ui_port}"
-    if not _wait_for_http(ui_base, timeout=30):
-        _kill_process(proc)
-        log_fh.close()
-        output = vite_log.read_text(errors="replace")
-        tmp_config.unlink(missing_ok=True)
-        pytest.fail(f"Vite dev server failed to start.\nOutput:\n{output}")
-
-    yield ui_base
-
-    _kill_process(proc)
-    log_fh.close()
-    tmp_config.unlink(missing_ok=True)
-
-
-@pytest.fixture(scope="session")
-def browser_context():
-    """Create a Playwright browser context for the test session."""
-    from playwright.sync_api import sync_playwright
-
-    pw = sync_playwright().start()
-    browser = pw.chromium.launch(headless=True)
-    context = browser.new_context()
-    yield context
-    context.close()
-    browser.close()
-    pw.stop()
-
-
-@pytest.fixture
-def page(browser_context):
-    """Create a fresh page for each test."""
-    pg = browser_context.new_page()
-    yield pg
-    pg.close()
+@pytest.fixture(scope="class")
+def session_id(server_url):
+    """Create a session shared across tests in a class."""
+    import uuid
+    import requests as _requests
+    body = {"session_id": str(uuid.uuid4())}
+    resp = _requests.post(f"{server_url}/api/sessions", json=body)
+    assert resp.status_code == 200, f"Create session failed: {resp.text}"
+    sid = resp.json()["session_id"]
+    yield sid
+    _requests.delete(f"{server_url}/api/sessions/{sid}")

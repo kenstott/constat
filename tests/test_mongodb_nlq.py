@@ -17,21 +17,20 @@ These tests require:
 Tests the full flow: MongoDB data source -> NL query -> LLM planning -> code execution -> answer
 """
 
+from __future__ import annotations
 import os
 import pytest
 import tempfile
 import uuid
 from pathlib import Path
 
-# Skip all tests if API key not set
-pytestmark = [
-    pytest.mark.slow,
-    pytest.mark.skipif(
-        not os.environ.get("ANTHROPIC_API_KEY"),
-        reason="ANTHROPIC_API_KEY not set"
-    ),
-    pytest.mark.requires_mongodb,
-]
+pytestmark = [pytest.mark.slow, pytest.mark.requires_mongodb]
+
+
+@pytest.fixture
+def require_anthropic_key():
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.fail("ANTHROPIC_API_KEY not set — required for this test")
 
 
 @pytest.fixture(scope="module")
@@ -40,7 +39,7 @@ def mongodb_ecommerce_data(mongodb_container):
     try:
         import pymongo
     except ImportError:
-        pytest.skip("pymongo not installed")
+        pytest.fail("Required dependency not installed: pymongo")
 
     client = pymongo.MongoClient(mongodb_container["uri"])
     db = client["ecommerce"]
@@ -185,203 +184,345 @@ df = pd.DataFrame(docs)
 class TestMongoDBNaturalLanguageQueries:
     """End-to-end tests for natural language queries against MongoDB."""
 
-    def test_simple_count_query(self, mongodb_session):
+    def test_simple_count_query(self, require_anthropic_key, mongodb_session):
         """Test a simple count query against MongoDB."""
-        result = mongodb_session.solve(
-            "How many customers are in the database?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "How many customers are in the database?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # The output should mention 5 customers
-        assert "5" in result["output"], f"Expected '5' in output: {result['output']}"
-        print(f"\n--- Simple Count Query ---")
-        print(f"Output: {result['output']}")
-
-    def test_aggregation_query(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # The output should mention 5 customers
+                assert "5" in result["output"], f"Expected '5' in output: {result['output']}"
+                print(f"\n--- Simple Count Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_aggregation_query(self, require_anthropic_key, mongodb_session):
         """Test an aggregation query against MongoDB."""
-        result = mongodb_session.solve(
-            "What is the total revenue from all orders? Sum up the 'total' field from all orders."
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "What is the total revenue from all orders? Sum up the 'total' field from all orders."
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Total should be 4389.89 (sum of all order totals)
-        # 1299.99 + 59.98 + 249.99 + 1299.99 + 149.97 + 129.99 + 599.99 + 599.99 = 4389.89
-        print(f"\n--- Aggregation Query ---")
-        print(f"Output: {result['output']}")
-
-    def test_filter_query(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Total should be 4389.89 (sum of all order totals)
+                # 1299.99 + 59.98 + 249.99 + 1299.99 + 149.97 + 129.99 + 599.99 + 599.99 = 4389.89
+                print(f"\n--- Aggregation Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_filter_query(self, require_anthropic_key, mongodb_session):
         """Test a filter query against MongoDB."""
-        result = mongodb_session.solve(
-            "List all products in the Electronics category. Show their names and prices."
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "List all products in the Electronics category. Show their names and prices."
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Should include Laptop Pro, Wireless Mouse, USB-C Hub, Mechanical Keyboard
-        output_lower = result["output"].lower()
-        assert "laptop" in output_lower or "electronics" in output_lower, \
-            f"Expected electronics products in output: {result['output']}"
-        print(f"\n--- Filter Query ---")
-        print(f"Output: {result['output']}")
-
-    def test_join_like_query(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Should include Laptop Pro, Wireless Mouse, USB-C Hub, Mechanical Keyboard
+                output_lower = result["output"].lower()
+                assert "laptop" in output_lower or "electronics" in output_lower, \
+                    f"Expected electronics products in output: {result['output']}"
+                print(f"\n--- Filter Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_join_like_query(self, require_anthropic_key, mongodb_session):
         """Test a query that requires joining data from multiple collections."""
-        result = mongodb_session.solve(
-            "Which customer has placed the most orders? Show their name and order count."
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "Which customer has placed the most orders? Show their name and order count."
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Alice (customer_id=1) has 3 orders, Carol has 2, others have 1
-        output_lower = result["output"].lower()
-        assert "alice" in output_lower or "3" in result["output"], \
-            f"Expected Alice with 3 orders: {result['output']}"
-        print(f"\n--- Join-like Query ---")
-        print(f"Output: {result['output']}")
-
-    def test_multi_step_analysis(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Alice (customer_id=1) has 3 orders, Carol has 2, others have 1
+                output_lower = result["output"].lower()
+                assert "alice" in output_lower or "3" in result["output"], \
+                    f"Expected Alice with 3 orders: {result['output']}"
+                print(f"\n--- Join-like Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_multi_step_analysis(self, require_anthropic_key, mongodb_session):
         """Test a multi-step analytical query."""
-        result = mongodb_session.solve(
-            "First find the average order value. Then identify which customers "
-            "have placed orders above that average. List their names."
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "First find the average order value. Then identify which customers "
+                    "have placed orders above that average. List their names."
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        assert result["plan"] is not None
-        assert len(result["plan"].steps) >= 2, "Expected at least 2 steps"
+                assert result["success"], f"Query failed: {result.get('error')}"
+                assert result["plan"] is not None
+                assert len(result["plan"].steps) >= 2, "Expected at least 2 steps"
 
-        print(f"\n--- Multi-Step Analysis ---")
-        print(f"Plan: {len(result['plan'].steps)} steps")
-        for step in result["plan"].steps:
-            print(f"  Step {step.number}: {step.goal}")
-        print(f"\nOutput: {result['output']}")
-
-    def test_gold_tier_customers(self, mongodb_session):
+                print(f"\n--- Multi-Step Analysis ---")
+                print(f"Plan: {len(result['plan'].steps)} steps")
+                for step in result["plan"].steps:
+                    print(f"  Step {step.number}: {step.goal}")
+                print(f"\nOutput: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_gold_tier_customers(self, require_anthropic_key, mongodb_session):
         """Test a query about customer tiers."""
-        result = mongodb_session.solve(
-            "How many gold tier customers are there and what are their names?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "How many gold tier customers are there and what are their names?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Alice and Carol are gold tier
-        output_lower = result["output"].lower()
-        assert "2" in result["output"] or "two" in output_lower, \
-            f"Expected 2 gold customers: {result['output']}"
-        print(f"\n--- Gold Tier Query ---")
-        print(f"Output: {result['output']}")
-
-
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Alice and Carol are gold tier
+                output_lower = result["output"].lower()
+                assert "2" in result["output"] or "two" in output_lower, \
+                    f"Expected 2 gold customers: {result['output']}"
+                print(f"\n--- Gold Tier Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 class TestMongoDBNLQEdgeCases:
     """Edge case tests for MongoDB NLQ queries."""
 
-    def test_query_with_special_characters(self, mongodb_session):
+    def test_query_with_special_characters(self, require_anthropic_key, mongodb_session):
         """NLQ should handle queries about names with special characters."""
-        result = mongodb_session.solve(
-            "Find all customers from the USA"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "Find all customers from the USA"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Should find Alice and David
-        output_lower = result["output"].lower()
-        assert "alice" in output_lower or "david" in output_lower or "2" in result["output"]
-
-    def test_query_numeric_comparison(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Should find Alice and David
+                output_lower = result["output"].lower()
+                assert "alice" in output_lower or "david" in output_lower or "2" in result["output"]
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_query_numeric_comparison(self, require_anthropic_key, mongodb_session):
         """NLQ should handle numeric comparisons correctly."""
-        result = mongodb_session.solve(
-            "Which products cost more than $100?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "Which products cost more than $100?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Should include Laptop Pro ($1299.99), Desk Chair ($249.99), Standing Desk ($599.99)
-        # Mechanical Keyboard ($129.99) also qualifies
-        output_lower = result["output"].lower()
-        # At least one expensive product name or its price should appear
-        # The LLM may return product names or aggregate stats (price range, count)
-        assert any(p in output_lower for p in [
-            "laptop", "desk", "standing", "keyboard", "mechanical",
-            "1299", "249", "599", "129",  # prices of qualifying products
-            "4",  # count of qualifying products (all 4 above $100)
-        ]), f"Expected product name or price in output: {result['output']}"
-
-    def test_query_with_multiple_conditions(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Should include Laptop Pro ($1299.99), Desk Chair ($249.99), Standing Desk ($599.99)
+                # Mechanical Keyboard ($129.99) also qualifies
+                output_lower = result["output"].lower()
+                # At least one expensive product name or its price should appear
+                # The LLM may return product names or aggregate stats (price range, count)
+                assert any(p in output_lower for p in [
+                    "laptop", "desk", "standing", "keyboard", "mechanical",
+                    "1299", "249", "599", "129",  # prices of qualifying products
+                    "4",  # count of qualifying products (all 4 above $100)
+                ]), f"Expected product name or price in output: {result['output']}"
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_query_with_multiple_conditions(self, require_anthropic_key, mongodb_session):
         """NLQ should handle multiple filter conditions."""
-        result = mongodb_session.solve(
-            "Find all orders with status 'delivered' that have a total greater than $200"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "Find all orders with status 'delivered' that have a total greater than $200"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Orders 1001 ($1299.99) and 1008 ($599.99) match
-
-    def test_count_with_filter(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Orders 1001 ($1299.99) and 1008 ($599.99) match
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_count_with_filter(self, require_anthropic_key, mongodb_session):
         """NLQ should handle filtered counts."""
-        result = mongodb_session.solve(
-            "How many products are in the Electronics category?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "How many products are in the Electronics category?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # 4 electronics products
-        assert "4" in result["output"]
-
-    def test_aggregation_with_grouping(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # 4 electronics products
+                assert "4" in result["output"]
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_aggregation_with_grouping(self, require_anthropic_key, mongodb_session):
         """NLQ should handle GROUP BY equivalent."""
-        result = mongodb_session.solve(
-            "How many products are in each category?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "How many products are in each category?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Should show Electronics: 4, Furniture: 2
-
-    def test_query_maximum_value(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Should show Electronics: 4, Furniture: 2
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_query_maximum_value(self, require_anthropic_key, mongodb_session):
         """NLQ should handle finding maximum values."""
-        result = mongodb_session.solve(
-            "What is the most expensive product and its price?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "What is the most expensive product and its price?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        output_lower = result["output"].lower()
-        # Laptop Pro at $1299.99 is the most expensive
-        assert "laptop" in output_lower or "1299" in result["output"]
-
-    def test_query_minimum_value(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                output_lower = result["output"].lower()
+                # Laptop Pro at $1299.99 is the most expensive
+                assert "laptop" in output_lower or "1299" in result["output"]
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_query_minimum_value(self, require_anthropic_key, mongodb_session):
         """NLQ should handle finding minimum values."""
-        result = mongodb_session.solve(
-            "What is the cheapest product?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "What is the cheapest product?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        output_lower = result["output"].lower()
-        # Wireless Mouse at $29.99 is the cheapest
-        assert "mouse" in output_lower or "wireless" in output_lower or "29" in result["output"]
-
-
+                assert result["success"], f"Query failed: {result.get('error')}"
+                output_lower = result["output"].lower()
+                # Wireless Mouse at $29.99 is the cheapest
+                assert "mouse" in output_lower or "wireless" in output_lower or "29" in result["output"]
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 class TestMongoDBComplexAggregations:
     """Tests for complex MongoDB aggregation pipelines via NLQ."""
 
-    def test_average_calculation(self, mongodb_session):
+    def test_average_calculation(self, require_anthropic_key, mongodb_session):
         """NLQ should handle average calculations."""
-        result = mongodb_session.solve(
-            "What is the average product price?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "What is the average product price?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Average: (1299.99+29.99+249.99+49.99+599.99+129.99)/6 = 393.32
-
-    def test_sum_by_category(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Average: (1299.99+29.99+249.99+49.99+599.99+129.99)/6 = 393.32
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_sum_by_category(self, require_anthropic_key, mongodb_session):
         """NLQ should handle sum with grouping."""
-        result = mongodb_session.solve(
-            "What is the total stock value for each product category? "
-            "Multiply price by stock for each product."
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "What is the total stock value for each product category? "
+                    "Multiply price by stock for each product."
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-
-    def test_customer_order_summary(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_customer_order_summary(self, require_anthropic_key, mongodb_session):
         """NLQ should handle customer-order joins."""
-        result = mongodb_session.solve(
-            "For each customer tier (gold, silver, bronze), how many orders exist?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "For each customer tier (gold, silver, bronze), how many orders exist?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-
-    def test_top_n_query(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_top_n_query(self, require_anthropic_key, mongodb_session):
         """NLQ should handle TOP N queries."""
         # Accept product names OR their prices (top 3: Laptop Pro=$1299.99, Standing Desk=$599.99, Desk Chair=$249.99)
         top_products = ["laptop", "standing desk", "desk chair", "1299", "599", "249"]
@@ -405,35 +546,61 @@ class TestMongoDBComplexAggregations:
 class TestMongoDBDataIntegrity:
     """Tests for data type handling in MongoDB NLQ."""
 
-    def test_decimal_precision_in_sum(self, mongodb_session):
+    def test_decimal_precision_in_sum(self, require_anthropic_key, mongodb_session):
         """Sum calculations should maintain decimal precision."""
-        result = mongodb_session.solve(
-            "What is the total price of all products? Sum the price field."
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "What is the total price of all products? Sum the price field."
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Sum: 1299.99+29.99+249.99+49.99+599.99+129.99 = 2359.94
-
-    def test_integer_count(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Sum: 1299.99+29.99+249.99+49.99+599.99+129.99 = 2359.94
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_integer_count(self, require_anthropic_key, mongodb_session):
         """Count should return integer values."""
-        result = mongodb_session.solve(
-            "How many orders are there in total?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "How many orders are there in total?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        assert "8" in result["output"]
-
-    def test_string_equality(self, mongodb_session):
+                assert result["success"], f"Query failed: {result.get('error')}"
+                assert "8" in result["output"]
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+    def test_string_equality(self, require_anthropic_key, mongodb_session):
         """String equality should be exact match."""
-        result = mongodb_session.solve(
-            "Find the customer with email 'alice@example.com'"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = mongodb_session.solve(
+                    "Find the customer with email 'alice@example.com'"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        output_lower = result["output"].lower()
-        assert "alice" in output_lower
-
-
+                assert result["success"], f"Query failed: {result.get('error')}"
+                output_lower = result["output"].lower()
+                assert "alice" in output_lower
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 class TestMongoDBSchemaDiscovery:
     """Tests for MongoDB schema discovery and introspection."""
 

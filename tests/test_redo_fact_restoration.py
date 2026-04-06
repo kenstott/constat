@@ -16,6 +16,7 @@ This tests the scenario where:
 3. Cached facts should be found without re-resolution
 """
 
+from __future__ import annotations
 import json
 import pytest
 from unittest.mock import MagicMock, patch

@@ -6,6 +6,7 @@
 
 """Tests for constat.core.resource_validation."""
 
+from __future__ import annotations
 import pytest
 
 from constat.core.config import DomainConfig

@@ -1,5 +1,6 @@
 """Tests for SharePoint on-premises NTLM authentication (mock-based)."""
 
+from __future__ import annotations
 import base64
 from unittest.mock import MagicMock, patch
 

@@ -3,6 +3,7 @@
 #
 # Tests for constat.core.skill_packager
 
+from __future__ import annotations
 import zipfile
 import io
 
@@ -277,9 +278,9 @@ Instructions here""",
 
     mgr = SkillManager("u1", base_dir=tmp_path)
     zip_bytes = package_skill("test-pkg", mgr)
-    assert len(zip_bytes) > 0
 
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        assert "test-pkg/SKILL.md" in zf.namelist(), f"Expected SKILL.md in archive, got: {zf.namelist()}"
         names = zf.namelist()
         assert "test-pkg/SKILL.md" in names
         assert "test-pkg/scripts/proof.py" in names

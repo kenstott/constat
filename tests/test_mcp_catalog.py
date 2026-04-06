@@ -49,7 +49,8 @@ class TestSeedLoading:
     def test_load_seed_returns_servers(self, catalog: McpCatalog) -> None:
         """Seed file should load and return a non-empty list."""
         servers = catalog._load_seed()
-        assert len(servers) > 0
+        slugs = [s["slug"] for s in servers]
+        assert "github" in slugs, f"Expected 'github' in seed slugs, got: {slugs}"
         assert servers[0]["slug"] == "github"
 
     def test_load_seed_has_expected_fields(self, catalog: McpCatalog) -> None:
@@ -154,7 +155,8 @@ class TestFallbackChain:
         with patch("constat.mcp.catalog.httpx.get", side_effect=Exception("down")):
             servers = catalog.list_servers()
 
-        assert len(servers) > 0
+        slugs = [s["slug"] for s in servers]
+        assert "github" in slugs, f"Expected 'github' in fallback seed slugs, got: {slugs}"
         assert servers[0]["slug"] == "github"  # from seed
 
     def test_remote_down_stale_cache_used(self, catalog: McpCatalog, tmp_cache: Path) -> None:

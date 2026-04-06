@@ -6,6 +6,7 @@
 
 """Tests for SQL transpilation functionality."""
 
+from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -187,7 +188,6 @@ class TestTranspilingConnection:
 class TestIntegration:
     """Integration tests with real databases."""
 
-    @pytest.mark.skipif(True, reason="Requires SQLite database")
     def test_with_real_sqlite(self):
         """Test transpilation with a real SQLite database."""
         from sqlalchemy import create_engine

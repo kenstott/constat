@@ -10,6 +10,7 @@
 
 """Integration tests for Elasticsearch connector (requires Docker)."""
 
+from __future__ import annotations
 import pytest
 
 from constat.catalog.nosql.elasticsearch import ElasticsearchConnector

@@ -6,6 +6,7 @@
 
 """Tests for DuckDBSessionStore."""
 
+from __future__ import annotations
 import json
 import sqlite3
 import tempfile

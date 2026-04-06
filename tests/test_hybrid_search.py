@@ -10,6 +10,7 @@
 
 """Tests for hybrid BM25 + vector search with Reciprocal Rank Fusion."""
 
+from __future__ import annotations
 import os
 import tempfile
 from unittest.mock import patch, MagicMock
@@ -169,7 +170,7 @@ class TestHybridSearch:
         hybrid_ids = [cid for cid, _, _ in results_hybrid]
         # doc_0 contains "ACME" and "widget" and "manufacturing"
         acme_chunk_ids = [cid for cid, _, c in results_hybrid if "ACME" in c.content]
-        assert len(acme_chunk_ids) > 0
+        assert len(acme_chunk_ids) == 1, f"Expected exactly 1 ACME chunk, got {len(acme_chunk_ids)}"
 
     def test_hybrid_fallback_on_empty(self, store):
         """Empty store should not crash with hybrid search."""
@@ -408,7 +409,7 @@ class TestBM25Search:
         store.add_chunks(chunks, embeddings)
 
         results = store._bm25_search("quick brown fox", limit=2)
-        assert len(results) > 0
+        assert len(results) >= 1, f"Expected BM25 to return at least 1 result for 'quick brown fox', got {len(results)}"
         # First result should contain "quick brown fox"
         assert "quick brown fox" in results[0][2].content
 

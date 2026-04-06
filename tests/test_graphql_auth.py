@@ -104,7 +104,7 @@ class TestAuthResolvers:
         data = result.data["login"]
         assert data["userId"] == "alice"
         assert data["email"] == "alice@example.com"
-        assert len(data["token"]) > 0
+        assert len(data["token"]) >= 20, f"Token too short to be valid: {data['token']!r}"
 
     @pytest.mark.asyncio
     async def test_login_local_invalid_password(self):

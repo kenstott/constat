@@ -6,6 +6,7 @@
 
 """Tests for scope-aware source persistence and OAuth token management."""
 
+from __future__ import annotations
 import yaml
 import pytest
 

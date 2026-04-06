@@ -1,3 +1,4 @@
+from __future__ import annotations
 # Copyright (c) 2025 Kenneth Stott
 # Canary: b4475994-c4ba-4885-89e5-5e931ec602bc
 #

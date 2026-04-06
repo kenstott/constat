@@ -10,6 +10,7 @@
 
 """Tests for IntentClassifier embedding-based intent classification."""
 
+from __future__ import annotations
 import pytest
 from unittest.mock import Mock, patch
 import numpy as np

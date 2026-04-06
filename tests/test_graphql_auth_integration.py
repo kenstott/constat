@@ -14,6 +14,7 @@ Uses the shared ``graphql_client`` fixture from ``conftest.py`` plus
 custom apps with auth enabled for token-based tests.
 """
 
+from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -70,7 +71,7 @@ class TestAuthIntegration:
         data = resp.json()["data"]["login"]
         assert data["userId"] == "alice"
         assert data["email"] == "alice@example.com"
-        assert len(data["token"]) > 0
+        assert len(data["token"]) >= 20, f"Token too short to be valid: {data['token']!r}"
 
     def test_login_then_query_with_token(self):
         """Login via mutation, then use returned token for subsequent query."""

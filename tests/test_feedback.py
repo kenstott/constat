@@ -21,6 +21,7 @@ Test Strategy:
 - SessionFeedbackHandler: Mock display to verify event routing
 """
 
+from __future__ import annotations
 from dataclasses import dataclass, field
 from io import StringIO
 from unittest.mock import Mock, patch, MagicMock

@@ -3,6 +3,7 @@
 
 """Test that /discover glossary terms include connected resources."""
 
+from __future__ import annotations
 import numpy as np
 import pytest
 

@@ -10,6 +10,7 @@
 
 """Tests for table-aware chunking and new LLM extract primitives."""
 
+from __future__ import annotations
 import json
 import pytest
 from unittest.mock import patch

@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -50,14 +49,14 @@ class FakeGlossaryTerm:
     name: str
     display_name: str
     definition: str
-    domain: Optional[str] = None
+    domain: str | None = None
     aliases: list = field(default_factory=list)
-    semantic_type: Optional[str] = None
+    semantic_type: str | None = None
     status: str = "draft"
     provenance: str = "llm"
     session_id: str = "sess-1"
     user_id: str = "default"
-    grounded_in: Optional[str] = None
+    grounded_in: str | None = None
 
 
 @dataclass

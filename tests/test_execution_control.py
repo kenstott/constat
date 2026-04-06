@@ -17,6 +17,7 @@ Tests cover:
 - Queue processing after execution
 """
 
+from __future__ import annotations
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 from dataclasses import dataclass

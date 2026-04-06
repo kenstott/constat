@@ -10,7 +10,11 @@ Uses the ``server_url`` fixture from conftest.py which starts
 a full server process with ``auth_disabled=true`` and waits for warmup.
 """
 
+from __future__ import annotations
+import pytest
 import requests
+
+pytestmark = pytest.mark.e2e
 
 
 class TestAuthE2E:

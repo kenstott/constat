@@ -10,6 +10,7 @@
 
 """Tests for tiered fact resolution."""
 
+from __future__ import annotations
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 import pandas as pd

@@ -10,6 +10,7 @@
 
 """Tests for ConstatRegistry ATTACH vectors functionality."""
 
+from __future__ import annotations
 import duckdb
 import pytest
 

@@ -10,6 +10,7 @@
 
 """Tests for constat.server.entity_state — compact state builder and JSON Patch differ."""
 
+from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest

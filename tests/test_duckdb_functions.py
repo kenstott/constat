@@ -6,6 +6,7 @@
 
 """Tests for DuckDBSessionStore fuzzy_map and extract_table methods."""
 
+from __future__ import annotations
 import tempfile
 from pathlib import Path
 from unittest.mock import patch

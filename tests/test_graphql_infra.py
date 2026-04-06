@@ -10,6 +10,7 @@
 
 """Unit tests for GraphQL infrastructure — schema, context, pub/sub."""
 
+from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock
 

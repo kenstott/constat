@@ -14,6 +14,7 @@ These tests verify that facts can be extracted from unstructured documents
 (markdown, text, PDF) via semantic search and used in analysis.
 """
 
+from __future__ import annotations
 import pytest
 from pathlib import Path
 
@@ -293,7 +294,7 @@ class TestPerformanceReviewIntegration:
 
         # Skip if demo database doesn't exist
         if not hr_db_path.exists():
-            pytest.skip("Demo HR database not found - run demo/setup_demo.py first")
+            pytest.fail("Demo HR database not found — start the demo environment")
 
         # Step 1: Get the rating guidelines from documents
         results = doc_tools.search_documents(
@@ -361,7 +362,7 @@ class TestProductionDiscoveryPath:
         """Config mimicking production setup with both documents and databases."""
         hr_db_path = Path(__file__).parent.parent / "demo" / "data" / "hr.db"
         if not hr_db_path.exists():
-            pytest.skip("Demo HR database not found - run demo/setup_demo.py first")
+            pytest.fail("Demo HR database not found — start the demo environment")
 
         return Config(
             llm={"provider": "anthropic", "model": "test"},
@@ -505,7 +506,7 @@ class TestUnifiedDiscovery:
         # Check if HR database exists
         hr_db_path = Path(__file__).parent.parent / "demo" / "data" / "hr.db"
         if not hr_db_path.exists():
-            pytest.skip("Demo HR database not found - run demo/setup_demo.py first")
+            pytest.fail("Demo HR database not found — start the demo environment")
 
         # Add a schema chunk for the performance_reviews table
         # This simulates what SchemaManager._extract_entities_from_descriptions() does

@@ -10,6 +10,7 @@
 
 """Tests for the discovery tools module."""
 
+from __future__ import annotations
 import pytest
 from pathlib import Path
 

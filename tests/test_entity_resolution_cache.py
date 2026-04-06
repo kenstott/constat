@@ -10,6 +10,7 @@
 
 """Tests for entity resolution name cache (warmup + session read)."""
 
+from __future__ import annotations
 import os
 import tempfile
 

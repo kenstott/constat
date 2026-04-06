@@ -21,6 +21,7 @@ Markers:
     @pytest.mark.requires_postgresql - Tests requiring PostgreSQL
 """
 
+from __future__ import annotations
 import pytest
 import pandas as pd
 
@@ -34,7 +35,7 @@ class TestMongoDBIntegration:
         try:
             import pymongo
         except ImportError:
-            pytest.skip("pymongo not installed")
+            pytest.fail("Required dependency not installed: pymongo")
 
         client = pymongo.MongoClient(mongodb_container["uri"])
 
@@ -50,7 +51,7 @@ class TestMongoDBIntegration:
         try:
             import pymongo
         except ImportError:
-            pytest.skip("pymongo not installed")
+            pytest.fail("Required dependency not installed: pymongo")
 
         client = pymongo.MongoClient(mongodb_container["uri"])
         db = client["constat_test"]
@@ -89,7 +90,7 @@ class TestMongoDBIntegration:
         try:
             import pymongo
         except ImportError:
-            pytest.skip("pymongo not installed")
+            pytest.fail("Required dependency not installed: pymongo")
 
         from constat.catalog.nosql import MongoDBConnector
 
@@ -140,7 +141,7 @@ class TestPostgreSQLIntegration:
         try:
             import psycopg2
         except ImportError:
-            pytest.skip("psycopg2 not installed")
+            pytest.fail("Required dependency not installed: psycopg2")
 
         conn = psycopg2.connect(
             host=postgresql_container["host"],
@@ -164,7 +165,7 @@ class TestPostgreSQLIntegration:
         try:
             import psycopg2
         except ImportError:
-            pytest.skip("psycopg2 not installed")
+            pytest.fail("Required dependency not installed: psycopg2")
 
         conn = psycopg2.connect(
             host=postgresql_container["host"],
@@ -226,12 +227,12 @@ class TestPostgreSQLIntegration:
         try:
             from sqlalchemy import create_engine, text
         except ImportError:
-            pytest.skip("sqlalchemy not installed")
+            pytest.fail("Required dependency not installed: sqlalchemy")
 
         try:
             import psycopg2
         except ImportError:
-            pytest.skip("psycopg2 not installed")
+            pytest.fail("Required dependency not installed: psycopg2")
 
         engine = create_engine(postgresql_container["dsn"])
 
@@ -249,7 +250,7 @@ class TestSampleDataFixtures:
         try:
             import pymongo
         except ImportError:
-            pytest.skip("pymongo not installed")
+            pytest.fail("Required dependency not installed: pymongo")
 
         client = pymongo.MongoClient(mongodb_with_sample_data["uri"])
         db = client[mongodb_with_sample_data["database"]]
@@ -282,7 +283,7 @@ class TestSampleDataFixtures:
         try:
             import psycopg2
         except ImportError:
-            pytest.skip("psycopg2 not installed")
+            pytest.fail("Required dependency not installed: psycopg2")
 
         conn = psycopg2.connect(postgresql_with_sample_data["dsn"])
         cur = conn.cursor()

@@ -10,6 +10,7 @@
 
 """Tests for entity resolution — Phase 1."""
 
+from __future__ import annotations
 import pytest
 
 from constat.core.config import EntityResolutionConfig

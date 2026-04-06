@@ -6,6 +6,7 @@
 
 """Tests for constat.core.sources — registry, types, auth."""
 
+from __future__ import annotations
 import pytest
 
 from constat.core.sources import (

@@ -6,6 +6,7 @@
 
 """Tests for SplitVectorStore — ATTACH + UNION views across user/system DBs."""
 
+from __future__ import annotations
 import duckdb
 import pytest
 from pathlib import Path

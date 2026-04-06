@@ -10,6 +10,7 @@
 
 """Unit tests for Cassandra connector (mock-based, no Docker required)."""
 
+from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 
@@ -103,12 +104,10 @@ class TestCassandraInitialization:
 # Test Connection
 # =============================================================================
 
-# Check if cassandra-driver is available
 try:
     import cassandra
-    CASSANDRA_AVAILABLE = True
 except ImportError:
-    CASSANDRA_AVAILABLE = False
+    pytest.fail("cassandra-driver is required but not installed — run: pip install cassandra-driver")
 
 
 class TestCassandraConnection:
@@ -133,7 +132,6 @@ class TestCassandraConnection:
         assert "cassandra-driver" in source
         assert "pip install cassandra-driver" in source
 
-    @pytest.mark.skipif(not CASSANDRA_AVAILABLE, reason="cassandra-driver not installed")
     @patch("cassandra.cluster.Cluster")
     @patch("cassandra.auth.PlainTextAuthProvider")
     def test_connect_with_auth(self, mock_auth_provider, mock_cluster_class):
@@ -153,7 +151,6 @@ class TestCassandraConnection:
         mock_auth_provider.assert_called_once_with(username="user", password="pass")
         assert connector._connected is True
 
-    @pytest.mark.skipif(not CASSANDRA_AVAILABLE, reason="cassandra-driver not installed")
     @patch("cassandra.cluster.Cluster")
     def test_connect_with_cloud_config(self, mock_cluster_class):
         """Test connecting with cloud config (DataStax Astra)."""
@@ -176,7 +173,6 @@ class TestCassandraConnection:
         )
         assert connector._connected is True
 
-    @pytest.mark.skipif(not CASSANDRA_AVAILABLE, reason="cassandra-driver not installed")
     @patch("cassandra.cluster.Cluster")
     def test_connect_local_no_auth(self, mock_cluster_class):
         """Test connecting locally without authentication."""

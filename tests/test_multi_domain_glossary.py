@@ -3,6 +3,7 @@
 
 """Tests for multi-domain glossary support (Gap 1 + Gap 5)."""
 
+from __future__ import annotations
 import uuid
 
 import duckdb

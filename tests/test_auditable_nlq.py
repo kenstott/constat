@@ -20,20 +20,20 @@ Requires:
 - ANTHROPIC_API_KEY (for LLM queries)
 """
 
+from __future__ import annotations
 import os
 import pytest
 import tempfile
 import uuid
 from pathlib import Path
 
-# Skip all tests if API key not set
-pytestmark = [
-    pytest.mark.slow,
-    pytest.mark.skipif(
-        not os.environ.get("ANTHROPIC_API_KEY"),
-        reason="ANTHROPIC_API_KEY not set"
-    ),
-]
+pytestmark = [pytest.mark.slow]
+
+
+@pytest.fixture
+def require_anthropic_key():
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.fail("ANTHROPIC_API_KEY not set — required for this test")
 
 
 @pytest.fixture(scope="module")
@@ -172,7 +172,7 @@ class TestAuditableBasicQueries:
     Uses "verify" or "prove" keywords to trigger auditable mode explicitly.
     """
 
-    def test_simple_count(self, auditable_session):
+    def test_simple_count(self, require_anthropic_key, auditable_session):
         """Test simple count query in auditable mode."""
         result = auditable_session.solve(
             "Verify: How many customers do we have?"
@@ -187,7 +187,7 @@ class TestAuditableBasicQueries:
         print(f"Mode: {result.get('mode', 'unknown')}")
         print(f"Output: {output}")
 
-    def test_simple_sum(self, auditable_session):
+    def test_simple_sum(self, require_anthropic_key, auditable_session):
         """Test simple sum query in auditable mode."""
         result = auditable_session.solve(
             "Verify: What is the total sum of all order amounts?"
@@ -204,7 +204,7 @@ class TestAuditableBasicQueries:
         print(f"Mode: {result.get('mode', 'unknown')}")
         print(f"Output: {output}")
 
-    def test_group_by_tier(self, auditable_session):
+    def test_group_by_tier(self, require_anthropic_key, auditable_session):
         """Test grouping by customer tier."""
         result = auditable_session.solve(
             "Verify: How many customers are in each tier?"
@@ -227,7 +227,7 @@ class TestAuditableComplexQueries:
     Uses "verify" or "prove" keywords to trigger auditable mode explicitly.
     """
 
-    def test_revenue_by_tier(self, auditable_session):
+    def test_revenue_by_tier(self, require_anthropic_key, auditable_session):
         """Test revenue breakdown by customer tier."""
         result = auditable_session.solve(
             "Verify: What is the total revenue by customer tier?"
@@ -243,43 +243,62 @@ class TestAuditableComplexQueries:
         print(f"Mode: {result.get('mode', 'unknown')}")
         print(f"Output: {output}")
 
-    @pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
-    def test_monthly_revenue_trend(self, auditable_session):
+    def test_monthly_revenue_trend(self, require_anthropic_key, auditable_session):
         """Test monthly revenue trend query - the user's actual use case."""
-        result = auditable_session.solve(
-            "Prove: What is our monthly revenue trend and how does it break down by customer tier?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = auditable_session.solve(
+                    "Prove: What is our monthly revenue trend and how does it break down by customer tier?"
+                )
 
-        assert result.get("success"), f"Query failed: {result.get('error')}"
+                assert result.get("success"), f"Query failed: {result.get('error')}"
 
-        output = result.get("output", "")
-        # Should have some content
-        assert len(output) > 20, f"Expected substantial output: {output}"
-        print(f"\n--- Monthly Revenue Trend Query ---")
-        print(f"Mode: {result.get('mode', 'unknown')}")
-        print(f"Output: {output}")
+                output = result.get("output", "")
+                # Should mention revenue or tier data
+                assert any(kw in output.lower() for kw in ["revenue", "tier", "platinum", "gold", "month", "january", "february"]), \
+                    f"Expected revenue/tier content in output: {output}"
+                print(f"\n--- Monthly Revenue Trend Query ---")
+                print(f"Mode: {result.get('mode', 'unknown')}")
+                print(f"Output: {output}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
-    @pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
-    def test_average_order_by_tier(self, auditable_session):
+    def test_average_order_by_tier(self, require_anthropic_key, auditable_session):
         """Test average order value by tier."""
-        result = auditable_session.solve(
-            "Verify: What is the average order value for each customer tier?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = auditable_session.solve(
+                    "Verify: What is the average order value for each customer tier?"
+                )
 
-        assert result.get("success"), f"Query failed: {result.get('error')}"
+                assert result.get("success"), f"Query failed: {result.get('error')}"
 
-        output = result.get("output", "").lower()
-        assert "average" in output or "avg" in output or "platinum" in output or "tier" in output, \
-            f"Expected average values in output: {output}"
-        print(f"\n--- Average Order by Tier Query ---")
-        print(f"Mode: {result.get('mode', 'unknown')}")
-        print(f"Output: {output}")
+                output = result.get("output", "").lower()
+                assert "average" in output or "avg" in output or "platinum" in output or "tier" in output, \
+                    f"Expected average values in output: {output}"
+                print(f"\n--- Average Order by Tier Query ---")
+                print(f"Mode: {result.get('mode', 'unknown')}")
+                print(f"Output: {output}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
 
 class TestAuditableDerivationTrace:
     """Tests for auditable mode derivation traces."""
 
-    def test_has_derivation_output(self, auditable_session):
+    def test_has_derivation_output(self, require_anthropic_key, auditable_session):
         """Test that auditable mode returns derivation information."""
         result = auditable_session.solve(
             "Verify: How many platinum tier customers do we have?"
@@ -301,24 +320,37 @@ class TestAuditableDerivationTrace:
 class TestAuditableErrorRecovery:
     """Tests for error recovery in auditable mode."""
 
-    def test_handles_complex_query(self, auditable_session):
+    def test_handles_complex_query(self, require_anthropic_key, auditable_session):
         """Test that complex queries with potential errors are handled."""
-        result = auditable_session.solve(
-            "Prove: For each month in 2024, calculate the revenue from platinum customers "
-            "compared to total revenue as a percentage."
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = auditable_session.solve(
+                    "Prove: For each month in 2024, calculate the revenue from platinum customers "
+                    "compared to total revenue as a percentage."
+                )
 
-        # Should either succeed or fail gracefully
-        output = result.get("output", "")
-        error = result.get("error", "")
+                # Should either succeed or fail gracefully
+                output = result.get("output", "")
+                error = result.get("error", "")
 
-        # Should have some response
-        assert len(output) > 0 or len(error) > 0, \
-            "Expected either output or error message"
+                # If successful, output must mention relevant content; if failed, must have an error message.
+                if result.get("success"):
+                    assert any(kw in output.lower() for kw in ["platinum", "revenue", "percent", "%", "2024"]), \
+                        f"Successful result must mention platinum/revenue/percentage: {output}"
+                else:
+                    assert len(error) > 0, "Failed result must include an error message"
 
-        print(f"\n--- Complex Query Error Recovery ---")
-        print(f"Mode: {result.get('mode', 'unknown')}")
-        print(f"Success: {result.get('success')}")
-        print(f"Output: {output}")
-        if error:
-            print(f"Error: {error}")
+                print(f"\n--- Complex Query Error Recovery ---")
+                print(f"Mode: {result.get('mode', 'unknown')}")
+                print(f"Success: {result.get('success')}")
+                print(f"Output: {output}")
+                if error:
+                    print(f"Error: {error}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc

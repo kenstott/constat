@@ -10,6 +10,7 @@
 
 """Tests for OAuth2 email browser authentication flow."""
 
+from __future__ import annotations
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 

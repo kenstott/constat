@@ -18,6 +18,7 @@ Tests cover:
 - WebSocket connections
 """
 
+from __future__ import annotations
 import asyncio
 import uuid
 import pytest

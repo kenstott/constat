@@ -4,12 +4,13 @@
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
 
-"""Playwright integration tests: browser connection and session lifecycle.
+"""Playwright e2e tests: browser connection and session lifecycle.
 
 Validates that the frontend can connect to the backend, create a session,
 and establish a WebSocket connection for real-time communication.
 """
 
+from __future__ import annotations
 import json
 import uuid
 
@@ -17,7 +18,7 @@ import pytest
 import requests
 
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.e2e
 
 
 def _create_session(base_url: str, user_id: str = "default") -> str:

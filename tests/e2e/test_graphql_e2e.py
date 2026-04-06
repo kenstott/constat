@@ -10,11 +10,14 @@ These tests use the ``server_url`` fixture from conftest.py which starts
 a full server process with ``auth_disabled=true`` and waits for warmup.
 """
 
+from __future__ import annotations
 import json
 
 import pytest
 import requests
 import websocket as ws_client  # websocket-client library
+
+pytestmark = pytest.mark.e2e
 
 
 class TestGraphQLIntrospection:

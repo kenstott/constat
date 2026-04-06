@@ -13,6 +13,7 @@
 Requires ANTHROPIC_API_KEY to be set.
 """
 
+from __future__ import annotations
 import os
 import pytest
 import tempfile
@@ -26,22 +27,22 @@ from constat.session import Session, SessionConfig
 from constat.catalog.schema_manager import SchemaManager
 
 
-pytestmark = [
-    pytest.mark.slow,
-    pytest.mark.skipif(
-        not os.environ.get("ANTHROPIC_API_KEY"),
-        reason="ANTHROPIC_API_KEY not set"
-    ),
-]
+pytestmark = [pytest.mark.slow]
+
+
+@pytest.fixture
+def require_anthropic_key():
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.fail("ANTHROPIC_API_KEY not set — required for this test")
 
 FIXTURES_DIR = Path(__file__).parent.parent
 CHINOOK_DB = FIXTURES_DIR / "data" / "chinook.db"
 NORTHWIND_DB = FIXTURES_DIR / "data" / "northwind.db"
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def temp_history_dir():
-    """Create temp directory for session history (module-scoped for shared tests)."""
+    """Create temp directory for session history (function-scoped for isolation)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Path(tmpdir) / "sessions"
 
@@ -53,7 +54,7 @@ def fresh_history_dir():
         yield Path(tmpdir) / "sessions"
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def session(temp_history_dir) -> Session:
     """Create a session with both databases."""
     config = Config(
@@ -86,159 +87,216 @@ def session(temp_history_dir) -> Session:
 class TestMultiStepSession:
     """Test multi-step plan execution."""
 
-    @pytest.mark.xfail(reason="LLM output is non-deterministic", strict=False)
-    def test_simple_multi_step_query(self, session: Session):
+    def test_simple_multi_step_query(self, require_anthropic_key, session: Session):
         """Test a simple multi-step query.
 
         Uses cross-database query to ensure multi-step planning.
         Single-database queries can often be optimized into one step.
         """
-        result = session.solve(
-            "Get the top 3 music genres by track count from Chinook. "
-            "Then check if Northwind has any product categories with more items than "
-            "the top Chinook genre has tracks."
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = session.solve(
+                    "Get the top 3 music genres by track count from Chinook. "
+                    "Then check if Northwind has any product categories with more items than "
+                    "the top Chinook genre has tracks."
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        assert result["plan"] is not None
-        # Cross-database queries require at least 2 steps (one per database)
-        assert len(result["plan"].steps) >= 2, (
-            f"Expected >= 2 steps for cross-database query, got {len(result['plan'].steps)}"
-        )
+                assert result["success"], f"Query failed: {result.get('error')}"
+                assert result["plan"] is not None
+                # Cross-database queries require at least 2 steps (one per database)
+                assert len(result["plan"].steps) >= 2, (
+                    f"Expected >= 2 steps for cross-database query, got {len(result['plan'].steps)}"
+                )
 
-        print(f"\n--- Multi-Step Query ---")
-        print(f"Plan: {len(result['plan'].steps)} steps")
-        for step in result["plan"].steps:
-            print(f"  Step {step.number}: {step.goal}")
-        print(f"\nOutput:\n{result['output'][:500]}")
-
-    @pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
-    def test_cross_database_multi_step(self, session: Session):
-        """Test multi-step query across databases."""
-        result = session.solve(
-            "Compare employee counts between Chinook and Northwind. "
-            "Which company has more employees? "
-            "Then list the names of all employees from the larger company."
-        )
-
-        assert result["success"], f"Query failed: {result.get('error')}"
-
-        # Should reference both databases in the plan
-        plan_text = " ".join(step.goal for step in result["plan"].steps).lower()
-        has_both = "chinook" in plan_text or "northwind" in plan_text
-
-        print(f"\n--- Cross-DB Multi-Step Query ---")
-        print(f"Plan: {len(result['plan'].steps)} steps")
-        print(f"\nOutput:\n{result['output']}")
-
-    def test_state_sharing_between_steps(self, session: Session):
-        """Test that state is properly shared between steps."""
-        result = session.solve(
-            "Analyze the Chinook database: first, count the total number of tracks. "
-            "Then, find how many tracks are in the 'Rock' genre. "
-            "Finally, summarize what percentage of tracks are Rock."
-        )
-
-        assert result["success"], f"Query failed: {result.get('error')}"
-
-        # The final step should use results from previous steps
-        output = result["output"].lower()
-        assert "rock" in output
-        assert "%" in output or "percent" in output
-
-        print(f"\n--- State Sharing Test ---")
-        if "scratchpad" in result:
-            print(f"Scratchpad:\n{result['scratchpad'][:1000]}")
+                print(f"\n--- Multi-Step Query ---")
+                print(f"Plan: {len(result['plan'].steps)} steps")
+                for step in result["plan"].steps:
+                    print(f"  Step {step.number}: {step.goal}")
+                print(f"\nOutput:\n{result['output'][:500]}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
         else:
-            print(f"Output:\n{result['output'][:1000]}")
+            raise last_exc
+
+    def test_cross_database_multi_step(self, require_anthropic_key, session: Session):
+        """Test multi-step query across databases."""
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = session.solve(
+                    "Compare employee counts between Chinook and Northwind. "
+                    "Which company has more employees? "
+                    "Then list the names of all employees from the larger company."
+                )
+
+                assert result["success"], f"Query failed: {result.get('error')}"
+
+                # Should reference both databases in the plan
+                plan_text = " ".join(step.goal for step in result["plan"].steps).lower()
+                has_both = "chinook" in plan_text or "northwind" in plan_text
+                assert has_both, f"Plan text should reference chinook or northwind, got: {plan_text[:200]}"
+
+                print(f"\n--- Cross-DB Multi-Step Query ---")
+                print(f"Plan: {len(result['plan'].steps)} steps")
+                print(f"\nOutput:\n{result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
+
+    def test_state_sharing_between_steps(self, require_anthropic_key, session: Session):
+        """Test that state is properly shared between steps."""
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = session.solve(
+                    "Analyze the Chinook database: first, count the total number of tracks. "
+                    "Then, find how many tracks are in the 'Rock' genre. "
+                    "Finally, summarize what percentage of tracks are Rock."
+                )
+
+                assert result["success"], f"Query failed: {result.get('error')}"
+
+                # The final step should use results from previous steps
+                output = result["output"].lower()
+                assert "rock" in output
+                assert "%" in output or "percent" in output
+
+                print(f"\n--- State Sharing Test ---")
+                if "scratchpad" in result:
+                    print(f"Scratchpad:\n{result['scratchpad'][:1000]}")
+                else:
+                    print(f"Output:\n{result['output'][:1000]}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
 
 class TestPlanner:
     """Test the planning phase."""
 
-    def test_plan_generation(self, session: Session):
+    def test_plan_generation(self, require_anthropic_key, session: Session):
         """Test that plans are generated correctly."""
-        planner_response = session.planner.plan(
-            "Analyze the top 5 customers by total purchase amount in Chinook"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                planner_response = session.planner.plan(
+                    "Analyze the top 5 customers by total purchase amount in Chinook"
+                )
 
-        plan = planner_response.plan
-        assert len(plan.steps) >= 1
-        assert plan.problem == "Analyze the top 5 customers by total purchase amount in Chinook"
+                plan = planner_response.plan
+                assert len(plan.steps) >= 1
+                assert plan.problem == "Analyze the top 5 customers by total purchase amount in Chinook"
 
-        # Steps should have goals
-        for step in plan.steps:
-            assert step.goal
-            assert step.number > 0
+                # Steps should have goals
+                for step in plan.steps:
+                    assert step.goal
+                    assert step.number > 0
 
-        print(f"\n--- Plan Generation ---")
-        print(f"Reasoning: {planner_response.reasoning}")
-        for step in plan.steps:
-            print(f"  Step {step.number}: {step.goal}")
-            print(f"    Inputs: {step.expected_inputs}")
-            print(f"    Outputs: {step.expected_outputs}")
+                print(f"\n--- Plan Generation ---")
+                print(f"Reasoning: {planner_response.reasoning}")
+                for step in plan.steps:
+                    print(f"  Step {step.number}: {step.goal}")
+                    print(f"    Inputs: {step.expected_inputs}")
+                    print(f"    Outputs: {step.expected_outputs}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
 
 class TestSessionHistory:
     """Test session history integration."""
 
-    def test_session_recorded(self, session: Session, temp_history_dir):
+    def test_session_recorded(self, require_anthropic_key, session: Session, temp_history_dir):
         """Test that session is recorded in history."""
-        # Run a query
-        result = session.solve("Count the number of artists in Chinook")
+        last_exc = None
+        for attempt in range(3):
+            try:
+                # Run a query
+                result = session.solve("Count the number of artists in Chinook")
 
-        assert result["success"]
-        assert session.session_id is not None
+                assert result["success"]
+                assert session.session_id is not None
 
-        # Check history
-        history = SessionHistory(storage_dir=temp_history_dir)
-        sessions = history.list_sessions()
+                # Check history
+                history = SessionHistory(storage_dir=temp_history_dir)
+                sessions = history.list_sessions()
 
-        assert len(sessions) > 0
-        # Our session should be there
-        session_ids = [s.session_id for s in sessions]
-        assert session.session_id in session_ids
+                assert len(sessions) > 0
+                # Our session should be there
+                session_ids = [s.session_id for s in sessions]
+                assert session.session_id in session_ids
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
 
 class TestEventHandling:
     """Test event emission during execution."""
 
-    @pytest.mark.flaky(reruns=2)
-    def test_events_emitted(self, session: Session):
+    def test_events_emitted(self, require_anthropic_key, session: Session):
         """Test that events are emitted during execution."""
-        events = []
+        last_exc = None
+        for attempt in range(3):
+            try:
+                events = []
 
-        def capture_event(event):
-            events.append(event)
+                def capture_event(event):
+                    events.append(event)
 
-        session.on_event(capture_event)
+                session.on_event(capture_event)
 
-        result = session.solve("Show me how many genres are in Chinook")
+                result = session.solve("Show me how many genres are in Chinook")
 
-        assert result["success"]
-        assert len(events) > 0
+                assert result["success"]
+                assert len(events) > 0
 
-        # Check that events were emitted - the specific event types depend on
-        # how the query is classified (QUERY intent gets knowledge events,
-        # PLAN_NEW intent gets step events)
-        event_types = [e.event_type for e in events]
+                # Check that events were emitted - the specific event types depend on
+                # how the query is classified (QUERY intent gets knowledge events,
+                # PLAN_NEW intent gets step events)
+                event_types = [e.event_type for e in events]
 
-        # Either step-based events (PLAN_NEW) or knowledge-based events (QUERY)
-        has_step_events = any(t in event_types for t in ["step_start", "generating", "executing", "step_complete"])
-        has_knowledge_events = any(t in event_types for t in ["progress", "searching_documents", "synthesizing", "knowledge_complete"])
+                # Either step-based events (PLAN_NEW) or knowledge-based events (QUERY)
+                has_step_events = any(t in event_types for t in ["step_start", "generating", "executing", "step_complete"])
+                has_knowledge_events = any(t in event_types for t in ["progress", "searching_documents", "synthesizing", "knowledge_complete"])
 
-        assert has_step_events or has_knowledge_events, f"Expected some events, got: {event_types}"
+                assert has_step_events or has_knowledge_events, f"Expected some events, got: {event_types}"
 
-        print(f"\n--- Events ---")
-        for event in events:
-            print(f"  {event.event_type}: step {event.step_number}")
+                print(f"\n--- Events ---")
+                for event in events:
+                    print(f"  {event.event_type}: step {event.step_number}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
 
 class TestSessionResumption:
     """Test session resumption and follow-up queries."""
 
-    @pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
-    def test_follow_up_has_context(self, fresh_history_dir):
+    def test_follow_up_has_context(self, require_anthropic_key, fresh_history_dir):
         """
         Test that follow-up queries have access to data from previous steps.
 
@@ -264,12 +322,22 @@ class TestSessionResumption:
 
         # Step 1: Initial query - get top genres and save to table
         print("\n--- Step 1: Initial Query ---")
-        result1 = session1.solve(
-            "Get the top 5 genres by track count from Chinook. "
-            "Save the result as a table called 'top_genres'."
-        )
+        _last_exc_step1 = None
+        for _attempt in range(3):
+            try:
+                result1 = session1.solve(
+                    "Get the top 5 genres by track count from Chinook. "
+                    "Save the result as a table called 'top_genres'."
+                )
+                assert result1["success"], f"Initial query failed: {result1.get('error')}"
+                break
+            except AssertionError as e:
+                _last_exc_step1 = e
+                if _attempt == 2:
+                    raise
+        else:
+            raise _last_exc_step1
 
-        assert result1["success"], f"Initial query failed: {result1.get('error')}"
         session_id = session1.session_id
         print(f"Session ID: {session_id}")
         print(f"Tables created: {result1.get('datastore_tables', [])}")
@@ -295,34 +363,44 @@ class TestSessionResumption:
 
         # Step 3: Follow-up query that uses data from step 1
         print("\n--- Step 3: Follow-up Query ---")
-        result2 = session2.follow_up(
-            "Using the top_genres data from the previous step, "
-            "what is the #1 genre and how many tracks does it have?"
-        )
+        _last_exc_step3 = None
+        for _attempt in range(3):
+            try:
+                result2 = session2.follow_up(
+                    "Using the top_genres data from the previous step, "
+                    "what is the #1 genre and how many tracks does it have?"
+                )
 
-        assert result2["success"], f"Follow-up query failed: {result2.get('error')}"
-        print(f"Follow-up output:\n{result2['output']}")
+                assert result2["success"], f"Follow-up query failed: {result2.get('error')}"
+                print(f"Follow-up output:\n{result2['output']}")
 
-        # Verify the follow-up actually used the context
-        output_lower = result2["output"].lower()
-        # The output should mention the #1 genre (likely Rock or similar)
-        assert any(genre in output_lower for genre in ["rock", "latin", "metal", "jazz", "alternative"]), \
-            "Follow-up should mention a genre from the previous data"
+                # Verify the follow-up actually used the context
+                output_lower = result2["output"].lower()
+                # The output should mention the #1 genre (likely Rock or similar)
+                assert any(genre in output_lower for genre in ["rock", "latin", "metal", "jazz", "alternative"]), \
+                    "Follow-up should mention a genre from the previous data"
 
-        # Check scratchpad shows continuity (step numbers should continue)
-        print(f"\nFull scratchpad:\n{result2['scratchpad']}")
+                # Check scratchpad shows continuity (step numbers should continue)
+                print(f"\nFull scratchpad:\n{result2['scratchpad']}")
 
-        # Verify artifacts (code) were saved for each step
-        all_artifacts = session2.datastore.get_artifacts()
-        print(f"\n--- Saved Artifacts ---")
-        for artifact in all_artifacts:
-            print(f"  Step {artifact.step_number}, Attempt {artifact.attempt}, Type: {artifact.artifact_type}")
-            if artifact.artifact_type == ArtifactType.CODE:
-                print(f"    Code preview: {artifact.content[:100]}...")
+                # Verify artifacts (code) were saved for each step
+                all_artifacts = session2.datastore.get_artifacts()
+                print(f"\n--- Saved Artifacts ---")
+                for artifact in all_artifacts:
+                    print(f"  Step {artifact.step_number}, Attempt {artifact.attempt}, Type: {artifact.artifact_type}")
+                    if artifact.artifact_type == ArtifactType.CODE:
+                        print(f"    Code preview: {artifact.content[:100]}...")
 
-        # Should have code artifacts for multiple steps
-        code_artifacts = [a for a in all_artifacts if a.artifact_type == ArtifactType.CODE]
-        assert len(code_artifacts) >= 2, "Should have code artifacts from both initial and follow-up"
+                # Should have code artifacts for multiple steps
+                code_artifacts = [a for a in all_artifacts if a.artifact_type == ArtifactType.CODE]
+                assert len(code_artifacts) >= 2, "Should have code artifacts from both initial and follow-up"
+                break
+            except AssertionError as e:
+                _last_exc_step3 = e
+                if _attempt == 2:
+                    raise
+        else:
+            raise _last_exc_step3
 
     def test_resume_nonexistent_session(self, fresh_history_dir):
         """Test that resuming a non-existent session returns False."""

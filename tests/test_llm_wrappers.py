@@ -14,6 +14,7 @@ Each wrapper must handle: str, list, Series, ndarray, single value, empty,
 duplicates, int/float coercion — and always return the simplest type.
 """
 
+from __future__ import annotations
 import base64
 import tempfile
 from pathlib import Path

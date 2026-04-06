@@ -10,6 +10,7 @@
 
 """Tests for REPL command matching."""
 
+from __future__ import annotations
 import pytest
 
 from constat.execution.repl_matcher import (

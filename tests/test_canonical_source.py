@@ -3,6 +3,7 @@
 
 """Tests for canonical_source on glossary terms."""
 
+from __future__ import annotations
 import uuid
 
 import pytest

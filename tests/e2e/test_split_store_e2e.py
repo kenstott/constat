@@ -15,6 +15,7 @@ through the real server code path:
 - Schema search returns results from system DB chunks
 """
 
+from __future__ import annotations
 import json
 import time
 import uuid
@@ -22,7 +23,7 @@ import uuid
 import pytest
 import requests
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.e2e
 
 
 def _wait_for_session_ready(server_url: str, session_id: str, timeout: int = 60) -> bool:
@@ -203,7 +204,7 @@ class TestSplitStoreE2E:
         terms = data["glossary"]["terms"]
         entity_terms = [t for t in terms if t.get("entityId")]
         if not entity_terms:
-            pytest.skip("No self-describing terms with entityId available")
+            pytest.fail("Test data precondition not met — seed required data before running this test")
 
         # Query term detail — connectedResources requires cross-DB join
         term = entity_terms[0]

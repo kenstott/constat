@@ -6,6 +6,7 @@
 
 """Tests for embedded image extraction from PDFs and Office documents."""
 
+from __future__ import annotations
 import io
 import logging
 import logging.handlers

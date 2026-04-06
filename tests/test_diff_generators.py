@@ -10,6 +10,7 @@
 
 """Tests for diff generator registry and heartbeat processing."""
 
+from __future__ import annotations
 import threading
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch

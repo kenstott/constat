@@ -10,6 +10,7 @@
 
 """Integration tests for Cassandra connector (requires Docker)."""
 
+from __future__ import annotations
 import pytest
 from datetime import datetime, timedelta
 

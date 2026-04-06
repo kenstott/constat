@@ -6,6 +6,7 @@
 
 """Tests for MIME type normalization and detection."""
 
+from __future__ import annotations
 import pytest
 
 from constat.discovery.doc_tools._mime import (

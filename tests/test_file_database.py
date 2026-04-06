@@ -14,6 +14,7 @@ Tests that CSV, JSON, and other file formats configured in the databases section
 work correctly with schema introspection and code execution.
 """
 
+from __future__ import annotations
 import csv
 import json
 import os

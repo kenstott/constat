@@ -10,6 +10,7 @@
 
 """Tests for non-blocking document indexing during session init (Fix 1)."""
 
+from __future__ import annotations
 from unittest.mock import MagicMock
 import pytest
 

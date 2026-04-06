@@ -10,6 +10,7 @@
 
 """Tests for progress callback and SOURCE_INGEST_PROGRESS event type (Fix 3)."""
 
+from __future__ import annotations
 import inspect
 import pytest
 

@@ -10,6 +10,7 @@
 
 """Tests for Python executor - compile and runtime error handling."""
 
+from __future__ import annotations
 import pytest
 
 from constat.execution.executor import PythonExecutor, format_error_for_retry

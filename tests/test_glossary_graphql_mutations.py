@@ -6,6 +6,7 @@
 
 """Unit tests for glossary GraphQL mutation types and helper functions."""
 
+from __future__ import annotations
 import pytest
 
 from constat.server.graphql.types import (

@@ -9,15 +9,16 @@
 Tests verify per-type field rendering, auth type selectors, and successful
 submission through the real Apollo Client → GraphQL backend.
 
-Requires: running Constat backend + Vite dev server (pytest.mark.integration).
+Requires: running Constat backend + Vite dev server (pytest.mark.e2e).
 """
 
+from __future__ import annotations
 import uuid
 
 import pytest
 import requests
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.e2e
 
 
 # ---------------------------------------------------------------------------
@@ -50,8 +51,8 @@ def _navigate_and_wait_sources(page, ui_url: str, session_id: str):
     if toggle_btn.count() > 0:
         try:
             toggle_btn.first.click(timeout=2000)
-        except Exception:
-            pass
+        except Exception as e:
+            pytest.fail(f"UI action failed: {e}")
     page.wait_for_selector("#section-databases", timeout=30000)
 
 

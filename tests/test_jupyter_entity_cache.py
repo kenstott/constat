@@ -10,6 +10,7 @@
 
 """Tests for constat_jupyter.entity_cache — in-memory cache + inflate."""
 
+from __future__ import annotations
 import copy
 import sys
 from pathlib import Path

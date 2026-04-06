@@ -9,6 +9,7 @@
 
 """Tests for Phase 3 data source normalization."""
 
+from __future__ import annotations
 import tempfile
 from pathlib import Path
 

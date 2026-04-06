@@ -6,6 +6,7 @@
 
 """Tests for SplitVectorStore wiring — verifies warmup and session paths align."""
 
+from __future__ import annotations
 import duckdb
 import numpy as np
 import pytest

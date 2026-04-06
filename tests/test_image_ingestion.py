@@ -6,6 +6,7 @@
 
 """Tests for image extraction and OCR pipeline."""
 
+from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -289,14 +290,18 @@ def _selective_import_error(blocked_module):
 _IMAGES_DIR = Path(__file__).resolve().parent.parent / "data" / "images"
 
 
-@pytest.mark.skipif(not _IMAGES_DIR.exists(), reason="data/images/ not present")
 class TestSampleImagePipeline:
     """End-to-end pipeline tests: file → _extract_image → _render_image_result → markdown."""
+
+    @pytest.fixture(autouse=True)
+    def require_images_dir(self):
+        if not _IMAGES_DIR.exists():
+            pytest.fail(f"data/images/ directory not found at {_IMAGES_DIR} — add test image fixtures")
 
     def test_scanned_text_extract(self):
         path = _IMAGES_DIR / "scanned_text.png"
         if not path.exists():
-            pytest.skip("scanned_text.png not found")
+            pytest.fail("Test image file not found — add test fixtures")
         with patch("constat.discovery.doc_tools._image._ocr_extract") as mock_ocr:
             # Simulate OCR finding lots of text (text-primary)
             mock_ocr.return_value = OcrResult(
@@ -320,7 +325,7 @@ class TestSampleImagePipeline:
     def test_photo_extract(self):
         path = _IMAGES_DIR / "photo.jpg"
         if not path.exists():
-            pytest.skip("photo.jpg not found")
+            pytest.fail("Test image file not found — add test fixtures")
         with patch("constat.discovery.doc_tools._image._ocr_extract") as mock_ocr:
             # Simulate OCR finding minimal text (image-primary)
             mock_ocr.return_value = OcrResult(text="", mean_confidence=0.0, word_count=0)
@@ -337,7 +342,7 @@ class TestSampleImagePipeline:
     def test_diagram_extract(self):
         path = _IMAGES_DIR / "diagram.png"
         if not path.exists():
-            pytest.skip("diagram.png not found")
+            pytest.fail("Test image file not found — add test fixtures")
         with patch("constat.discovery.doc_tools._image._ocr_extract") as mock_ocr:
             # Simulate OCR finding some labels (image-primary, not enough words)
             mock_ocr.return_value = OcrResult(
@@ -357,7 +362,7 @@ class TestSampleImagePipeline:
         """Simulate full pipeline: extract → LLM vision describe → render."""
         path = _IMAGES_DIR / "photo.jpg"
         if not path.exists():
-            pytest.skip("photo.jpg not found")
+            pytest.fail("Test image file not found — add test fixtures")
 
         with patch("constat.discovery.doc_tools._image._ocr_extract") as mock_ocr:
             mock_ocr.return_value = OcrResult(text="", mean_confidence=0.0, word_count=0)
@@ -380,7 +385,7 @@ class TestSampleImagePipeline:
 
         path = _IMAGES_DIR / "diagram.png"
         if not path.exists():
-            pytest.skip("diagram.png not found")
+            pytest.fail("Test image file not found — add test fixtures")
 
         image_bytes = path.read_bytes()
         fetch_result = FetchResult(
