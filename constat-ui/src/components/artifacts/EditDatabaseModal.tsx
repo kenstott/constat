@@ -11,18 +11,33 @@
 import { useState } from 'react'
 import { useMutation } from '@apollo/client'
 import { UPDATE_DATABASE } from '@/graphql/operations/sources'
+import { useSessionContext } from '@/contexts/SessionContext'
 import type { SessionDatabase } from '@/types/api'
 
-const FILE_TYPES = new Set(['duckdb', 'sqlite'])
+const FILE_TYPES = new Set(['duckdb', 'sqlite', 'csv', 'tsv', 'parquet', 'json', 'jsonl'])
+const FLAT_FILE_TYPES = new Set(['csv', 'tsv', 'parquet', 'json', 'jsonl'])
 const URI_TYPES = new Set(['custom'])
 const CLOUD_TYPES = new Set(['dynamodb', 'cosmosdb', 'firestore'])
+
+const FLAT_FILE_LABELS: Record<string, string> = {
+  csv: 'CSV file path (.csv)',
+  tsv: 'TSV file path (.tsv)',
+  parquet: 'Parquet file path (.parquet)',
+  json: 'JSON file path (.json)',
+  jsonl: 'JSONL file path (.jsonl)',
+}
 
 const DB_OPTIONS = [
   { value: 'postgresql', label: 'PostgreSQL' },
   { value: 'mysql', label: 'MySQL' },
   { value: 'mssql', label: 'SQL Server (MSSQL)' },
-  { value: 'duckdb', label: 'DuckDB' },
-  { value: 'sqlite', label: 'SQLite' },
+  { value: 'duckdb', label: 'DuckDB (file)' },
+  { value: 'sqlite', label: 'SQLite (file)' },
+  { value: 'csv', label: 'CSV (file)' },
+  { value: 'tsv', label: 'TSV (file)' },
+  { value: 'parquet', label: 'Parquet (file)' },
+  { value: 'json', label: 'JSON (file)' },
+  { value: 'jsonl', label: 'JSONL (file)' },
   { value: 'mongodb', label: 'MongoDB' },
   { value: 'elasticsearch', label: 'Elasticsearch' },
   { value: 'cassandra', label: 'Cassandra' },
@@ -46,6 +61,29 @@ const DEFAULT_PORTS: Record<string, string> = {
 type AuthOption = { value: string; label: string }
 
 const DB_AUTH_OPTIONS: Record<string, AuthOption[]> = {
+  postgresql: [
+    { value: 'basic', label: 'Username / Password' },
+    { value: 'none', label: 'No Auth (trust / peer)' },
+    { value: 'ssl_cert', label: 'SSL Certificate' },
+    { value: 'kerberos', label: 'Kerberos / GSSAPI' },
+    { value: 'ldap', label: 'LDAP' },
+  ],
+  mysql: [
+    { value: 'basic', label: 'Username / Password' },
+    { value: 'none', label: 'No Auth (local socket)' },
+    { value: 'ssl_cert', label: 'SSL Certificate' },
+  ],
+  mssql: [
+    { value: 'basic', label: 'Username / Password (SQL Auth)' },
+    { value: 'windows', label: 'Windows / Integrated Security' },
+    { value: 'azure_ad', label: 'Azure AD (MFA / Service Principal)' },
+  ],
+  neo4j: [
+    { value: 'basic', label: 'Username / Password' },
+    { value: 'none', label: 'No Auth' },
+    { value: 'bearer', label: 'Bearer Token' },
+    { value: 'kerberos', label: 'Kerberos' },
+  ],
   elasticsearch: [
     { value: 'none', label: 'No Auth' },
     { value: 'basic', label: 'Username / Password' },
@@ -55,10 +93,14 @@ const DB_AUTH_OPTIONS: Record<string, AuthOption[]> = {
   mongodb: [
     { value: 'none', label: 'No Auth' },
     { value: 'basic', label: 'Username / Password' },
+    { value: 'x509', label: 'X.509 Certificate' },
+    { value: 'aws', label: 'AWS IAM' },
+    { value: 'ldap', label: 'LDAP' },
   ],
   cassandra: [
     { value: 'none', label: 'No Auth' },
     { value: 'basic', label: 'Username / Password' },
+    { value: 'ssl_cert', label: 'SSL / mTLS Certificate' },
   ],
   dynamodb: [
     { value: 'env', label: 'Environment / IAM Role' },
@@ -74,17 +116,63 @@ const DB_AUTH_OPTIONS: Record<string, AuthOption[]> = {
   ],
 }
 
-function defaultAuth(dbType: string): string {
-  const opts = DB_AUTH_OPTIONS[dbType]
-  return opts ? opts[0].value : 'basic'
-}
-
 interface NetworkFields {
   host: string
   port: string
   username: string
   password: string
   database: string
+}
+
+function defaultAuth(dbType: string): string {
+  const opts = DB_AUTH_OPTIONS[dbType]
+  return opts ? opts[0].value : 'basic'
+}
+
+interface InferredState {
+  dbType: string
+  filePath: string
+  net: NetworkFields
+}
+
+function inferFromUri(uri: string | undefined, fallbackType: string): InferredState {
+  const emptyNet = (type: string): NetworkFields => ({ host: '', port: DEFAULT_PORTS[type] || '', username: '', password: '', database: '' })
+  if (!uri) return { dbType: fallbackType, filePath: '', net: emptyNet(fallbackType) }
+
+  if (uri.startsWith('sqlite:///')) return { dbType: 'sqlite', filePath: uri.slice(10), net: emptyNet('sqlite') }
+  if (uri.startsWith('duckdb:///')) return { dbType: 'duckdb', filePath: uri.slice(10), net: emptyNet('duckdb') }
+
+  // Flat file types — URI is a raw path or file:// path
+  const rawPath = uri.startsWith('file://') ? uri.slice(7) : uri
+  if (fallbackType && FLAT_FILE_TYPES.has(fallbackType)) return { dbType: fallbackType, filePath: rawPath, net: emptyNet(fallbackType) }
+  const extMatch = rawPath.match(/\.(csv|tsv|parquet|json|jsonl)$/i)
+  if (extMatch) return { dbType: extMatch[1].toLowerCase(), filePath: rawPath, net: emptyNet(extMatch[1].toLowerCase()) }
+
+  let dbType = ''
+  if (uri.startsWith('postgresql+') || uri.startsWith('postgresql://') || uri.startsWith('postgres://')) dbType = 'postgresql'
+  else if (uri.startsWith('mysql+') || uri.startsWith('mysql://')) dbType = 'mysql'
+  else if (uri.startsWith('mssql+') || uri.startsWith('mssql://')) dbType = 'mssql'
+
+  if (!dbType) return { dbType: fallbackType, filePath: '', net: emptyNet(fallbackType) }
+
+  // Strip dialect+driver prefix so regex works uniformly: scheme://[user[:pass]@]host[:port][/db][?...]
+  const stripped = uri.replace(/^[^:]+:\/\//, '')
+  const m = stripped.match(/^(?:([^:@/?]*)(?::([^@/?]*))?@)?([^/:?]+)(?::(\d+))?(?:\/([^?]*))?/)
+  if (m) {
+    const [, u, p, h, port, db] = m
+    return {
+      dbType,
+      filePath: '',
+      net: {
+        host: h || '',
+        port: port || DEFAULT_PORTS[dbType] || '',
+        username: u ? decodeURIComponent(u) : '',
+        password: p ? decodeURIComponent(p) : '',
+        database: db || '',
+      },
+    }
+  }
+  return { dbType, filePath: '', net: emptyNet(dbType) }
 }
 
 interface Props {
@@ -113,13 +201,15 @@ function buildNetworkUri(type: string, net: NetworkFields): string {
 }
 
 export function EditDatabaseModal({ db, onSuccess, onCancel }: Props) {
-  const [newName, setNewName] = useState('')
+  const { session } = useSessionContext()
+  const [newName, setNewName] = useState(db.name)
   const [description, setDescription] = useState(db.description ?? '')
-  const [dbType, setDbType] = useState(db.type ?? '')
-  const [authType, setAuthType] = useState(defaultAuth(db.type ?? ''))
-  const [filePath, setFilePath] = useState('')
+  const [{ dbType: _initType, filePath: _initPath, net: _initNet }] = useState(() => inferFromUri(db.uri, db.type ?? ''))
+  const [dbType] = useState(_initType)
+  const [authType, setAuthType] = useState(defaultAuth(_initType))
+  const [filePath, setFilePath] = useState(_initPath)
   const [customUri, setCustomUri] = useState('')
-  const [net, setNet] = useState<NetworkFields>({ host: '', port: DEFAULT_PORTS[db.type ?? ''] || '', username: '', password: '', database: '' })
+  const [net, setNet] = useState<NetworkFields>(_initNet)
   const [apiKey, setApiKey] = useState('')
   const [bearerToken, setBearerToken] = useState('')
   const [region, setRegion] = useState('')
@@ -129,6 +219,16 @@ export function EditDatabaseModal({ db, onSuccess, onCancel }: Props) {
   const [accountKey, setAccountKey] = useState('')
   const [project, setProject] = useState('')
   const [credentialsPath, setCredentialsPath] = useState('')
+  const [sslCertPath, setSslCertPath] = useState('')
+  const [sslKeyPath, setSslKeyPath] = useState('')
+  const [sslCaPath, setSslCaPath] = useState('')
+  const [tenantId, setTenantId] = useState('')
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [kerberosRealm, setKerberosRealm] = useState('')
+  const [x509CertPath, setX509CertPath] = useState('')
+  const [ldapBindDn, setLdapBindDn] = useState('')
+  const [ldapPassword, setLdapPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   const [updateDatabase, { loading }] = useMutation(UPDATE_DATABASE)
@@ -140,15 +240,7 @@ export function EditDatabaseModal({ db, onSuccess, onCancel }: Props) {
   const authOptions = DB_AUTH_OPTIONS[dbType] ?? null
   const hasAuthSelector = authOptions !== null && isNetwork
 
-  function handleTypeChange(val: string) {
-    setDbType(val)
-    setNet({ host: '', port: DEFAULT_PORTS[val] || '', username: '', password: '', database: '' })
-    setAuthType(defaultAuth(val))
-    setApiKey(''); setBearerToken(''); setRegion(''); setAccessKeyId('')
-    setSecretAccessKey(''); setEndpoint(''); setAccountKey(''); setProject(''); setCredentialsPath('')
-  }
-
-  function buildUri(): string {
+function buildUri(): string {
     if (isFile) {
       if (dbType === 'sqlite') return filePath.startsWith('sqlite:') ? filePath : `sqlite:///${filePath}`
       if (dbType === 'duckdb') return filePath.startsWith('duckdb:') ? filePath : `duckdb:///${filePath}`
@@ -158,6 +250,20 @@ export function EditDatabaseModal({ db, onSuccess, onCancel }: Props) {
     if (isCloud) {
       if (dbType === 'firestore') return `firestore://${project}`
       return endpoint
+    }
+    // Network types — auth-specific URI construction
+    const noCredNet = { ...net, username: '', password: '' }
+    if (authType === 'windows') {
+      const h = net.host || 'localhost'
+      const portPart = net.port ? `:${net.port}` : ''
+      const db = net.database ? `/${net.database}` : ''
+      return `mssql+pyodbc://${h}${portPart}${db}?driver=ODBC+Driver+18+for+SQL+Server&Trusted_Connection=yes`
+    }
+    if (authType === 'none' || authType === 'bearer' || authType === 'kerberos' || authType === 'x509' || authType === 'aws') {
+      return buildNetworkUri(dbType, noCredNet)
+    }
+    if (authType === 'ldap') {
+      return buildNetworkUri(dbType, { ...net, username: ldapBindDn, password: ldapPassword })
     }
     return buildNetworkUri(dbType, net)
   }
@@ -185,9 +291,39 @@ export function EditDatabaseModal({ db, onSuccess, onCancel }: Props) {
         if (net.database) extra.collection = net.database
       }
     }
-    if (isNetwork && dbType === 'elasticsearch') {
-      if (authType === 'api_key') extra.api_key = apiKey
-      else if (authType === 'bearer') extra.bearer_token = bearerToken
+    if (isNetwork) {
+      if (dbType === 'elasticsearch') {
+        if (authType === 'api_key') extra.api_key = apiKey
+        else if (authType === 'bearer') extra.bearer_token = bearerToken
+      }
+      if (authType === 'ssl_cert') {
+        if (sslCertPath) extra.ssl_certfile = sslCertPath
+        if (sslKeyPath) extra.ssl_keyfile = sslKeyPath
+        if (sslCaPath) extra.ssl_ca_certs = sslCaPath
+      }
+      if (authType === 'azure_ad' && dbType === 'mssql') {
+        if (tenantId) extra.tenant_id = tenantId
+        if (clientId) extra.client_id = clientId
+        if (clientSecret) extra.client_secret = clientSecret
+      }
+      if (authType === 'kerberos') {
+        if (kerberosRealm) extra.kerberos_realm = kerberosRealm
+      }
+      if (authType === 'bearer' && dbType === 'neo4j') {
+        extra.bearer_token = bearerToken
+      }
+      if (authType === 'x509' && dbType === 'mongodb') {
+        if (x509CertPath) extra.tls_certificate_key_file = x509CertPath
+        extra.auth_mechanism = 'MONGODB-X509'
+      }
+      if (authType === 'aws' && dbType === 'mongodb') {
+        if (accessKeyId) extra.aws_access_key_id = accessKeyId
+        if (secretAccessKey) extra.aws_secret_access_key = secretAccessKey
+        extra.auth_mechanism = 'MONGODB-AWS'
+      }
+      if (authType === 'ldap') {
+        extra.auth_mechanism = 'PLAIN'
+      }
     }
     return extra
   }
@@ -209,17 +345,15 @@ export function EditDatabaseModal({ db, onSuccess, onCancel }: Props) {
     setError(null)
     const uri = buildUri()
     const extra = buildExtra()
-    const effectiveType = (dbType === 'sqlite' || dbType === 'duckdb') ? 'sqlalchemy' : dbType
     const input: Record<string, unknown> = {
       name: db.name,
-      type: effectiveType,
       uri,
       description: description || undefined,
     }
-    if (newName.trim()) input.new_name = newName.trim()
+    if (newName.trim() !== db.name) input.new_name = newName.trim()
     if (Object.keys(extra).length) input.extra_config = extra
     try {
-      await updateDatabase({ variables: { input } })
+      await updateDatabase({ variables: { sessionId: session?.session_id, input } })
       onSuccess()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update database')
@@ -230,18 +364,11 @@ export function EditDatabaseModal({ db, onSuccess, onCancel }: Props) {
   const half = 'flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100'
   const lbl = 'text-xs text-gray-500 dark:text-gray-400 mb-0.5'
   const hint = 'text-xs text-gray-400 dark:text-gray-500 mt-1'
-  const readOnly = 'w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-md bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed'
-
   return (
     <div className="space-y-3">
       <div>
-        <p className={lbl}>Name (current identifier)</p>
-        <input type="text" value={db.name} readOnly className={readOnly} />
-      </div>
-
-      <div>
-        <p className={lbl}>New name (optional rename)</p>
-        <input type="text" placeholder={db.name} value={newName} onChange={(e) => setNewName(e.target.value)} className={input} />
+        <p className={lbl}>Name</p>
+        <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)} className={input} />
       </div>
 
       <div>
@@ -251,20 +378,31 @@ export function EditDatabaseModal({ db, onSuccess, onCancel }: Props) {
 
       <div>
         <p className={lbl}>Type</p>
-        <select value={dbType} onChange={(e) => handleTypeChange(e.target.value)} className={input}>
-          <option value="">Select database type</option>
-          {DB_OPTIONS.map(({ value, label }) => (
-            <option key={value} value={value}>{label}</option>
-          ))}
-        </select>
+        <input
+          type="text"
+          readOnly
+          value={DB_OPTIONS.find(o => o.value === dbType)?.label ?? dbType}
+          className={input + ' opacity-60 cursor-not-allowed'}
+        />
       </div>
 
       {isFile && (
         <div>
-          <p className={lbl}>{dbType === 'duckdb' ? 'DuckDB file path' : 'SQLite file path'}</p>
+          <p className={lbl}>
+            {FLAT_FILE_LABELS[dbType] ??
+              (dbType === 'duckdb' ? 'DuckDB file path' : 'SQLite file path')}
+          </p>
           <input
             type="text"
-            placeholder={dbType === 'duckdb' ? '/path/to/file.duckdb' : '/path/to/file.db'}
+            placeholder={
+              dbType === 'duckdb' ? '/path/to/file.duckdb' :
+              dbType === 'sqlite' ? '/path/to/file.db' :
+              dbType === 'parquet' ? '/path/to/file.parquet' :
+              dbType === 'json' ? '/path/to/file.json' :
+              dbType === 'jsonl' ? '/path/to/file.jsonl' :
+              dbType === 'tsv' ? '/path/to/file.tsv' :
+              '/path/to/file.csv'
+            }
             value={filePath}
             onChange={(e) => setFilePath(e.target.value)}
             className={input}
@@ -335,6 +473,100 @@ export function EditDatabaseModal({ db, onSuccess, onCancel }: Props) {
           <p className={lbl}>Bearer Token</p>
           <input type="password" placeholder="token" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} className={input} />
         </div>
+      )}
+
+      {isNetwork && authType === 'none' && (
+        <p className={hint}>No credentials required — using trust, peer, or socket authentication.</p>
+      )}
+
+      {isNetwork && authType === 'ssl_cert' && (
+        <>
+          <div>
+            <p className={lbl}>Certificate file path</p>
+            <input type="text" placeholder="/path/to/client.crt" value={sslCertPath} onChange={(e) => setSslCertPath(e.target.value)} className={input} />
+          </div>
+          <div>
+            <p className={lbl}>Key file path</p>
+            <input type="text" placeholder="/path/to/client.key" value={sslKeyPath} onChange={(e) => setSslKeyPath(e.target.value)} className={input} />
+          </div>
+          <div>
+            <p className={lbl}>CA certificate path (optional)</p>
+            <input type="text" placeholder="/path/to/ca.crt" value={sslCaPath} onChange={(e) => setSslCaPath(e.target.value)} className={input} />
+          </div>
+        </>
+      )}
+
+      {isNetwork && dbType === 'mssql' && authType === 'windows' && (
+        <p className={hint}>Windows Integrated Security — no credentials required. Trusted_Connection=yes is added to the connection string.</p>
+      )}
+
+      {isNetwork && dbType === 'mssql' && authType === 'azure_ad' && (
+        <>
+          <div>
+            <p className={lbl}>Tenant ID</p>
+            <input type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value={tenantId} onChange={(e) => setTenantId(e.target.value)} className={input} />
+          </div>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <p className={lbl}>Client ID</p>
+              <input type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value={clientId} onChange={(e) => setClientId(e.target.value)} className={half} />
+            </div>
+            <div className="flex-1">
+              <p className={lbl}>Client Secret</p>
+              <input type="password" placeholder="client secret" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} className={half} />
+            </div>
+          </div>
+        </>
+      )}
+
+      {isNetwork && authType === 'kerberos' && (
+        <div>
+          <p className={lbl}>Kerberos Realm / Service Principal (optional)</p>
+          <input type="text" placeholder="EXAMPLE.COM" value={kerberosRealm} onChange={(e) => setKerberosRealm(e.target.value)} className={input} />
+        </div>
+      )}
+
+      {isNetwork && dbType === 'neo4j' && authType === 'bearer' && (
+        <div>
+          <p className={lbl}>Bearer Token</p>
+          <input type="password" placeholder="token" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} className={input} />
+        </div>
+      )}
+
+      {isNetwork && dbType === 'mongodb' && authType === 'x509' && (
+        <div>
+          <p className={lbl}>Certificate + Key file path (.pem)</p>
+          <input type="text" placeholder="/path/to/client.pem" value={x509CertPath} onChange={(e) => setX509CertPath(e.target.value)} className={input} />
+        </div>
+      )}
+
+      {isNetwork && dbType === 'mongodb' && authType === 'aws' && (
+        <>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <p className={lbl}>Access Key ID (optional)</p>
+              <input type="text" placeholder="AKIAIOSFODNN7EXAMPLE" value={accessKeyId} onChange={(e) => setAccessKeyId(e.target.value)} className={half} />
+            </div>
+            <div className="flex-1">
+              <p className={lbl}>Secret Access Key (optional)</p>
+              <input type="password" placeholder="secret" value={secretAccessKey} onChange={(e) => setSecretAccessKey(e.target.value)} className={half} />
+            </div>
+          </div>
+          <p className={hint}>Leave blank to use AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars or instance role.</p>
+        </>
+      )}
+
+      {isNetwork && authType === 'ldap' && (
+        <>
+          <div>
+            <p className={lbl}>Bind DN / Username</p>
+            <input type="text" placeholder="cn=admin,dc=example,dc=com" value={ldapBindDn} onChange={(e) => setLdapBindDn(e.target.value)} className={input} />
+          </div>
+          <div>
+            <p className={lbl}>Bind Password</p>
+            <input type="password" placeholder="password" value={ldapPassword} onChange={(e) => setLdapPassword(e.target.value)} className={input} />
+          </div>
+        </>
       )}
 
       {isCloud && dbType === 'dynamodb' && (

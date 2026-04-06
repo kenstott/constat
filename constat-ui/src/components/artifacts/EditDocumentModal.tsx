@@ -11,6 +11,7 @@
 import { useState } from 'react'
 import { useMutation, useLazyQuery } from '@apollo/client'
 import { UPDATE_DOCUMENT, VALIDATE_URI } from '@/graphql/operations/sources'
+import { useSessionContext } from '@/contexts/SessionContext'
 import type { DocumentSourceInfo } from '@/types/api'
 
 interface Props {
@@ -54,12 +55,15 @@ export function isValidUri(uri: string): boolean {
 }
 
 export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {
+  const { sessionId } = useSessionContext()
   const [newName, setNewName] = useState(doc.name)
   const [description, setDescription] = useState(doc.description ?? '')
   const [uri, setUri] = useState(doc.path ?? '')
-  const [followLinks, setFollowLinks] = useState(false)
-  const [maxDepth, setMaxDepth] = useState('3')
-  const [maxDocuments, setMaxDocuments] = useState('50')
+  const [followLinks, setFollowLinks] = useState(doc.follow_links ?? false)
+  const [maxDepth, setMaxDepth] = useState(String(doc.max_depth ?? 2))
+  const [maxDocuments, setMaxDocuments] = useState(String(doc.max_documents ?? 50))
+  const [sameDomainOnly, setSameDomainOnly] = useState(doc.same_domain_only ?? true)
+  const [excludePatterns, setExcludePatterns] = useState((doc.exclude_patterns ?? []).join('\n'))
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [uriChecking, setUriChecking] = useState(false)
@@ -117,11 +121,13 @@ export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {
     if (newName.trim() !== doc.name) input.new_name = newName.trim()
     if (isHttpLike) {
       input.follow_links = followLinks
-      input.max_depth = parseInt(maxDepth, 10) || 3
+      input.max_depth = parseInt(maxDepth, 10) || 2
       input.max_documents = parseInt(maxDocuments, 10) || 50
+      input.same_domain_only = sameDomainOnly
+      input.exclude_patterns = excludePatterns.split('\n').map(s => s.trim()).filter(Boolean)
     }
     try {
-      await updateDocument({ variables: { input } })
+      await updateDocument({ variables: { sessionId: sessionId!, input } })
       onSuccess()
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to update document')
@@ -221,16 +227,38 @@ export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {
           </div>
 
           {followLinks && (
-            <div className="flex gap-2">
-              <div className="flex-1">
-                <p className={lbl}>Max depth</p>
-                <input type="number" min="1" max="10" value={maxDepth} onChange={(e) => setMaxDepth(e.target.value)} className={half} />
+            <>
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <p className={lbl}>Max depth</p>
+                  <input type="number" min="1" max="10" value={maxDepth} onChange={(e) => setMaxDepth(e.target.value)} className={half} />
+                </div>
+                <div className="flex-1">
+                  <p className={lbl}>Max documents</p>
+                  <input type="number" min="1" max="500" value={maxDocuments} onChange={(e) => setMaxDocuments(e.target.value)} className={half} />
+                </div>
               </div>
-              <div className="flex-1">
-                <p className={lbl}>Max documents</p>
-                <input type="number" min="1" max="500" value={maxDocuments} onChange={(e) => setMaxDocuments(e.target.value)} className={half} />
+              <div className="flex items-center gap-2">
+                <input
+                  id="same-domain-only"
+                  type="checkbox"
+                  checked={sameDomainOnly}
+                  onChange={(e) => setSameDomainOnly(e.target.checked)}
+                  className="w-4 h-4 text-primary-600 border-gray-300 rounded"
+                />
+                <label htmlFor="same-domain-only" className="text-xs text-gray-600 dark:text-gray-400">Same domain only</label>
               </div>
-            </div>
+              <div>
+                <p className={lbl}>Exclude patterns (one per line)</p>
+                <textarea
+                  rows={3}
+                  value={excludePatterns}
+                  onChange={(e) => setExcludePatterns(e.target.value)}
+                  className={inputCls(false) + ' resize-y font-mono text-xs'}
+                  placeholder="/wiki/Special:\n\.(png|jpg)(\?|$)"
+                />
+              </div>
+            </>
           )}
         </>
       )}

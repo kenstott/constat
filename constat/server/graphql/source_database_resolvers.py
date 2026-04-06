@@ -367,6 +367,7 @@ class Mutation:
             type=db["type"],
             dialect=db.get("dialect"),
             description=db.get("description"),
+            uri=db.get("uri"),
             connected=db.get("connected", False),
             table_count=db.get("table_count", 0),
             added_at=datetime.fromisoformat(db["added_at"]),

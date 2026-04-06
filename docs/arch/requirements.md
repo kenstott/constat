@@ -85,6 +85,7 @@
 - **REQ-064** (2026-03-29): Session actions (approve, reject, cancel, replan_from, edit_objective, etc.) executed via GraphQL mutations.
 - **REQ-100** (2026-04-01): Replace custom artifactStore (createStore.ts) with direct Apollo Client cache usage. Remove artifactStore Zustand store; components use useQuery() directly instead of fetch methods. Real-time updates via apolloClient.writeQuery() or cache.modify() instead of custom set() calls.
 - **REQ-101** (2026-04-02): 3-section accordion panel for artifacts: (1) **Artifacts** — published/starred final output (charts, tables, answer), expanded by default, auto-expands during execution; (2) **Debug** — step code, intermediate tables, unpublished artifacts, raw output, collapsed by default for power users; (3) **Context** — sources, glossary, reasoning, configuration, collapsed by default for clean knowledge/config surface. Replaces 2-section design, separating "the answer" / "how it got there" / "what it knows."
+- **REQ-102** (2026-04-06): Every source type needs a CRUD UI with operations gated by user rights/permissions.
 
 ## Infrastructure & Configuration
 - **REQ-065** (2026-03-29): Demo config at `demo/config.yaml` with domains `sales-analytics` and `hr-reporting`.
@@ -105,6 +106,9 @@
 - **REQ-079** (2026-03-29): Frontend build via `cd constat-ui && npm run build`.
 - **REQ-080** (2026-03-29): Frontend lint via `cd constat-ui && npm run lint`.
 - **REQ-081** (2026-03-29): Frontend type check via `cd constat-ui && npx tsc --noEmit`.
+- **REQ-103** (2026-04-06): Tests organized in three tiers: `tests/unit/` (pure logic, zero I/O), `tests/integration/` (real services via Docker), `tests/e2e/` (full HTTP via Playwright). New tests must be placed in the correct tier.
+- **REQ-104** (2026-04-06): `pytest.skip()` for infrastructure reasons is forbidden. Tests requiring services must start them via Docker in the fixture or call `pytest.fail()` if Docker is unavailable.
+- **REQ-105** (2026-04-06): E2E test directory is `tests/e2e/` (Playwright tests requiring running backend + Vite dev server), distinct from `tests/integration/` (service-level tests without HTTP app layer).
 
 ## Architecture & Design Patterns
 - **REQ-082** (2026-03-29): Learnings table combines corrections + archive (`archived_at IS NOT NULL` = archived).

@@ -27,10 +27,13 @@ pip install -e ".[dev]"
 
 ## Verification
 ```bash
-python -m pytest tests/ -x -q        # backend tests
-cd constat-ui && npm run build        # frontend build
-cd constat-ui && npm run lint         # frontend lint
-cd constat-ui && npx tsc --noEmit     # type check
+python -m pytest tests/unit/ -x -q           # unit tests (fast, no services)
+python -m pytest tests/integration/ -x -q    # integration tests (requires Docker)
+python -m pytest tests/e2e/ -x -q            # e2e tests (requires backend + Vite)
+python -m pytest tests/ -x -q               # all backend tests
+cd constat-ui && npm run build               # frontend build
+cd constat-ui && npm run lint                # frontend lint
+cd constat-ui && npx tsc --noEmit            # type check
 ```
 
 ## Server

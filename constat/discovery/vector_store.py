@@ -296,6 +296,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         inst = cls.__new__(cls)
         inst._db = split_store.db
         inst._db_path = split_store._user_db_path
+        inst._system_db_path = getattr(split_store, '_system_db_path', None)
         inst._reranker_model = reranker_model
         inst._store_chunk_text = store_chunk_text
 
@@ -334,6 +335,31 @@ class DuckDBVectorStore(VectorStoreBackend):
         )
         return inst
 
+    def _reattach_sys_if_missing(self, conn) -> bool:
+        """Attempt to re-attach the system DB as 'sys' if it's not attached.
+
+        Returns True if sys is attached (or was successfully re-attached).
+        """
+        import os
+        system_db_path = getattr(self, '_system_db_path', None)
+        if not system_db_path or not os.path.exists(str(system_db_path)):
+            return False
+        # Try attaching read-write, fall back to read-only
+        for mode in ("", " (READ_ONLY)"):
+            try:
+                conn.execute(f"ATTACH '{system_db_path}' AS sys{mode}")
+                logger.info(f"_reattach_sys_if_missing: attached sys{mode} from {system_db_path}")
+                return True
+            except Exception as e:
+                err = str(e).lower()
+                if "already attached" in err:
+                    return True
+                if mode == "" and ("conflict" in err or "lock" in err or "read" in err):
+                    continue  # try read-only
+                logger.warning(f"_reattach_sys_if_missing: attach{mode} failed: {e}")
+                return False
+        return False
+
     def _ensure_sys_tables(self) -> None:
         """Ensure all SPLIT_TABLES exist in the sys (attached system) schema.
 
@@ -343,10 +369,19 @@ class DuckDBVectorStore(VectorStoreBackend):
         """
         from constat.storage.split_store import SPLIT_TABLES
         conn = self._conn
+
         for table in SPLIT_TABLES:
             try:
                 conn.execute(f"SELECT 1 FROM sys.{table} LIMIT 0")
-            except Exception:
+            except Exception as sel_err:
+                if "sys" in str(sel_err).lower() and "does not exist" in str(sel_err).lower():
+                    # sys schema missing — try re-attaching before giving up
+                    if self._reattach_sys_if_missing(conn):
+                        try:
+                            conn.execute(f"SELECT 1 FROM sys.{table} LIMIT 0")
+                            continue  # table exists in sys
+                        except Exception:
+                            pass  # fall through to CREATE TABLE
                 try:
                     conn.execute(
                         f"CREATE TABLE sys.{table} AS SELECT * FROM main.{table} WHERE false"

@@ -40,6 +40,7 @@ export const DATA_SOURCES_QUERY = gql`
         type
         dialect
         description
+        uri
         connected
         tableCount
         addedAt
@@ -64,6 +65,11 @@ export const DATA_SOURCES_QUERY = gql`
         indexed
         fromConfig
         source
+        followLinks
+        maxDepth
+        maxDocuments
+        sameDomainOnly
+        excludePatterns
       }
     }
   }
@@ -315,25 +321,25 @@ export const MOVE_SOURCE = gql`
 `
 
 export const UPDATE_DATABASE = gql`
-  mutation UpdateDatabase($input: DatabaseUpdateInput!) {
-    updateDatabase(input: $input) {
-      name description type uri isDynamic isConfigDefined
+  mutation UpdateDatabase($sessionId: String!, $input: DatabaseUpdateInput!) {
+    updateDatabase(sessionId: $sessionId, input: $input) {
+      name description type uri isDynamic source
     }
   }
 `
 
 export const UPDATE_API = gql`
-  mutation UpdateApi($input: ApiUpdateInput!) {
-    updateApi(input: $input) {
-      name description type baseUrl isDynamic isConfigDefined
+  mutation UpdateApi($sessionId: String!, $input: ApiUpdateInput!) {
+    updateApi(sessionId: $sessionId, input: $input) {
+      name description type baseUrl isDynamic fromConfig source
     }
   }
 `
 
 export const UPDATE_DOCUMENT = gql`
-  mutation UpdateDocument($input: DocumentUpdateInput!) {
-    updateDocument(input: $input) {
-      name description uri
+  mutation UpdateDocument($sessionId: String!, $input: DocumentUpdateInput!) {
+    updateDocument(sessionId: $sessionId, input: $input) {
+      name description path followLinks maxDepth maxDocuments sameDomainOnly excludePatterns
     }
   }
 `
@@ -362,6 +368,7 @@ export function toSessionDatabase(gql: any) {
     is_dynamic: gql.isDynamic,
     file_id: gql.fileId ?? undefined,
     source: gql.source ?? undefined,
+    uri: gql.uri ?? undefined,
   }
 }
 
@@ -388,6 +395,11 @@ export function toSessionDocument(gql: any) {
     indexed: gql.indexed,
     from_config: gql.fromConfig,
     source: gql.source,
+    follow_links: gql.followLinks ?? false,
+    max_depth: gql.maxDepth ?? 2,
+    max_documents: gql.maxDocuments ?? 50,
+    same_domain_only: gql.sameDomainOnly ?? true,
+    exclude_patterns: gql.excludePatterns ?? [],
   }
 }
 

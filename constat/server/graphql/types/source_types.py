@@ -57,6 +57,7 @@ class SessionDatabaseType:
     type: str
     dialect: Optional[str] = None
     description: Optional[str] = None
+    uri: Optional[str] = None
     connected: bool = False
     table_count: Optional[int] = None
     added_at: Optional[datetime] = None
@@ -115,6 +116,11 @@ class SessionDocumentType:
     from_config: bool = False
     source: str = "config"
     tier: Optional[str] = None
+    follow_links: bool = False
+    max_depth: int = 2
+    max_documents: int = 50
+    same_domain_only: bool = True
+    exclude_patterns: list[str] = strawberry.field(default_factory=list)
 
 
 @strawberry.type
@@ -254,6 +260,8 @@ class DocumentUpdateInput:
     follow_links: Optional[bool] = None
     max_depth: Optional[int] = None
     max_documents: Optional[int] = None
+    same_domain_only: Optional[bool] = None
+    exclude_patterns: Optional[list[str]] = None
 
 
 @strawberry.input

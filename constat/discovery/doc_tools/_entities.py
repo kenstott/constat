@@ -309,6 +309,7 @@ class _EntityMixin:
         # Use "__metadata__" as session_id for metadata processing
         extractor = EntityExtractor(
             session_id="__metadata__",
+            domain_id="__base__",
             schema_terms=self._schema_entities,
             api_terms=self._collect_api_terms(),
             stop_list=self._stop_list,

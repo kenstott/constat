@@ -43,6 +43,7 @@ import { EditDocumentModal } from '../EditDocumentModal'
 import { useDataSources } from '@/hooks/useDataSources'
 import { useFacts } from '@/hooks/useFacts'
 import { useSessionContext } from '@/contexts/SessionContext'
+import { useAuth } from '@/contexts/AuthContext'
 import { getDocument } from '@/api/sessions'
 import type { DatabaseTableInfo, DatabaseTablePreview, ApiEndpointInfo, SessionDatabase, ApiSourceInfo, DocumentSourceInfo } from '@/types/api'
 import { toFact } from '@/graphql/operations/data'
@@ -76,6 +77,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
   setMovingFact,
 }) => {
   const { session } = useSessionContext()
+  const { canModify } = useAuth()
   const { databases, apis, documents, loading: sourcesLoading } = useDataSources()
   const { facts, loading: factsLoading } = useFacts()
 
@@ -275,12 +277,17 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
     }
   }, [session])
 
-  const handleDeleteDocument = useCallback(async (docName: string) => {
+  const handleDeleteDocument = useCallback(async (doc: DocumentSourceInfo) => {
     if (!session) return
-    if (!confirm(`Delete document "${docName}" and its extracted entities?`)) return
+    if (!confirm(`Delete document "${doc.name}" and its extracted entities?`)) return
 
     try {
-      await apolloClient.mutate({ mutation: DELETE_FILE_REF, variables: { sessionId: session.session_id, name: docName } })
+      if (doc.source === 'personal') {
+        const resp = await fetch(`/api/accounts/${encodeURIComponent(doc.name)}?user_id=default`, { method: 'DELETE' })
+        if (!resp.ok) throw new Error('Failed to remove account')
+      } else {
+        await apolloClient.mutate({ mutation: DELETE_FILE_REF, variables: { sessionId: session.session_id, name: doc.name } })
+      }
       apolloClient.refetchQueries({ include: ['DataSources'] })
       // Entities refresh via entity_rebuild_complete WS event
     } catch (err) {
@@ -414,11 +421,11 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                     <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
                       {db.type}
                     </span>
-                    {db.is_dynamic && canWrite('sources') && (
+                    {canModify('sources', db) && (
                       <>
                         <button
                           onClick={() => setEditingDb(db)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all"
+                          className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all"
                           title="Edit database"
                         >
                           <PencilSquareIcon className="w-3.5 h-3.5" />
@@ -435,7 +442,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                               alert('Failed to remove database. Please try again.')
                             }
                           }}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
+                          className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
                           title="Remove database"
                         >
                           <TrashIcon className="w-3.5 h-3.5" />
@@ -618,18 +625,18 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                     >
                       {api.connected ? 'Available' : 'Pending'}
                     </span>
-                    {api.source === 'session' && canWrite('sources') && (
+                    {canModify('sources', api) && (
                       <>
                         <button
                           onClick={() => setEditingApi(api)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all"
+                          className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all"
                           title="Edit API"
                         >
                           <PencilSquareIcon className="w-3.5 h-3.5" />
                         </button>
                         <button
                           onClick={() => handleDeleteApi(api.name)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
+                          className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
                           title="Remove API"
                         >
                           <TrashIcon className="w-3.5 h-3.5" />
@@ -761,18 +768,18 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                     >
                       {doc.indexed ? 'Indexed' : 'Pending'}
                     </span>
-                    {!doc.from_config && canWrite('sources') && (
+                    {canModify('sources', doc) && (
                       <>
                         <button
                           onClick={() => setEditingDoc(doc)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all"
+                          className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all"
                           title="Edit document"
                         >
                           <PencilSquareIcon className="w-3.5 h-3.5" />
                         </button>
                         <button
-                          onClick={() => handleDeleteDocument(doc.name)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
+                          onClick={() => handleDeleteDocument(doc)}
+                          className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
                           title="Remove document"
                         >
                           <TrashIcon className="w-3.5 h-3.5" />
@@ -894,7 +901,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                       <DomainBadge domain={fact.source === 'config' ? 'system' : fact.source} />
                     </td>
                     <td className="py-2 px-1 flex items-center gap-1">
-                      {fact.source !== 'config' && canWrite('sources') && (
+                      {canModify('sources', fact) && (
                         <>
                           <button
                             onClick={() => { setEditingFact(fact.name); setEditingFactValue(String(fact.value)) }}
@@ -956,7 +963,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
 
       {editingDb && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-80 shadow-xl max-h-[90vh] overflow-y-auto">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-[30rem] shadow-xl max-h-[90vh] overflow-y-auto">
             <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">Edit Database</h3>
             <EditDatabaseModal
               db={editingDb}
@@ -969,7 +976,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
 
       {editingApi && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-80 shadow-xl max-h-[90vh] overflow-y-auto">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-[30rem] shadow-xl max-h-[90vh] overflow-y-auto">
             <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">Edit API</h3>
             <EditApiModal
               api={editingApi}

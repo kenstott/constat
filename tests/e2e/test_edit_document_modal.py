@@ -195,20 +195,30 @@ class TestEditDocumentModalValidation:
             timeout=5000,
         )
 
+    def test_uri_field_prepopulated(self, page, ui_url, doc_session):
+        """URI field must be pre-populated with the document's URL when modal opens."""
+        _navigate_and_expand_documents(page, ui_url, doc_session["session_id"])
+        _open_edit_document_modal(page, doc_session["doc_name"])
+
+        uri_input = page.locator("input[placeholder*='https://example.com or']")
+        actual_uri = uri_input.input_value()
+        assert actual_uri == "https://example.com", (
+            f"URI field must be pre-populated with the document URL; got: {actual_uri!r}"
+        )
+
     def test_valid_form_enables_save(self, page, ui_url, doc_session):
         """With all fields filled validly, Save is enabled and shows no errors."""
         _navigate_and_expand_documents(page, ui_url, doc_session["session_id"])
         _open_edit_document_modal(page, doc_session["doc_name"])
 
-        # Name should be pre-filled; ensure description + URI are non-empty
+        # All fields must be pre-filled (Name, Description, URI)
         desc = page.locator("textarea").first
-        if not desc.input_value():
-            desc.fill("A valid description")
+        assert desc.input_value(), "Description must be pre-populated when modal opens"
 
         uri_input = page.locator("input[placeholder*='https://example.com or']")
-        current_uri = uri_input.input_value()
-        if not current_uri:
-            uri_input.fill("https://example.com")
+        assert uri_input.input_value() == "https://example.com", (
+            "URI must be pre-populated with 'https://example.com' when modal opens"
+        )
 
         save_btn = page.locator("button:has-text('Save')")
         assert save_btn.get_attribute("disabled") is None, "Save must be enabled when form is valid"

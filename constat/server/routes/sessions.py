@@ -558,6 +558,26 @@ async def create_session(
         from constat.server.routes.learnings import _ensure_user_domain_config
         _ensure_user_domain_config(effective_user_id, existing.session.config)
         existing.touch()
+
+        # If the session was restored without domains (no state.json), reload from preferences
+        if not existing.active_domains:
+            import threading
+            from constat.server.models import EventType
+
+            def _reload_domains():
+                preferred_domains = get_selected_domains(effective_user_id)
+                if preferred_domains:
+                    loaded, _ = _load_domains_into_session(existing, preferred_domains)
+                    logger.info(f"[reconnect] reloaded domains for {client_session_id}: {loaded}")
+                if 'user' not in existing.active_domains:
+                    existing.active_domains.append('user')
+                session_manager._push_event(
+                    existing, EventType.SESSION_READY,
+                    {"session_id": client_session_id, "active_domains": existing.active_domains},
+                )
+
+            threading.Thread(target=_reload_domains, name=f"domain-reload-{client_session_id[:8]}", daemon=True).start()
+
         return _session_to_response(existing)
 
     # Create session synchronously so it exists for subsequent API calls,

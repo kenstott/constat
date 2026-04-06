@@ -20,6 +20,10 @@ vi.mock('@apollo/client', async (importOriginal) => {
   }
 })
 
+vi.mock('@/contexts/SessionContext', () => ({
+  useSessionContext: () => ({ sessionId: 'test-session-id' }),
+}))
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

@@ -351,6 +351,7 @@ export interface SessionDatabase {
   type: string
   dialect?: string
   description?: string
+  uri?: string
   connected: boolean
   table_count?: number
   added_at: string
@@ -443,6 +444,11 @@ export interface DocumentSourceInfo {
   indexed: boolean
   from_config?: boolean  // true if from config file (cannot be removed)
   source?: string  // 'config', project filename, or 'session'
+  follow_links?: boolean
+  max_depth?: number
+  max_documents?: number
+  same_domain_only?: boolean
+  exclude_patterns?: string[]
 }
 
 // Autocomplete

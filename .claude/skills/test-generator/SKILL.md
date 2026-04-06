@@ -62,25 +62,26 @@ Map the module name to its source root, test root, and sub-packages.
 
 ### Known Module Lookup Table
 
-| Module | Source Root | Test Pattern | Notes |
+| Module | Source Root | Unit Tests | Integration/E2E |
 |---|---|---|---|
-| `api` | `constat/api/` | `tests/test_api_*.py` | API factory, protocol, implementation |
-| `catalog` | `constat/catalog/` | `tests/test_*glossary*.py`, `tests/test_schema*.py` | Schema discovery, API catalog, glossary |
-| `commands` | `constat/commands/` | `tests/test_commands.py` | Shared REPL/UI command handlers |
-| `core` | `constat/core/` | `tests/test_models.py`, `tests/test_config.py` | Config, models, types, domain tiers |
-| `discovery` | `constat/discovery/` | `tests/test_discovery*.py`, `tests/test_doc_tools.py`, `tests/test_hybrid_search.py` | Schema/API/doc/fact discovery, vector store |
-| `execution` | `constat/execution/` | `tests/test_dag.py`, `tests/test_executor.py`, `tests/test_fact_resolver.py` | Planning, code execution, DAG |
-| `learning` | `constat/learning/` | `tests/test_exemplar*.py` | Rule compaction, fine-tune |
-| `llm` | `constat/llm/` | `tests/test_llm*.py` | LLM primitives (enrich/score/summarize) |
-| `providers` | `constat/providers/` | `tests/test_providers*.py` | LLM provider integrations |
-| `server` | `constat/server/` | `tests/test_server*.py`, `tests/integration/` | FastAPI server, routes, websocket, GraphQL |
-| `session` | `constat/session/` | `tests/test_session*.py`, `tests/test_auditable*.py` | Session orchestration (12+ mixins) |
-| `storage` | `constat/storage/` | `tests/test_duckdb*.py`, `tests/test_datastore*.py`, `tests/test_split_store*.py` | DuckDB session store, vector backend, history |
-| `repl` | `constat/repl/` | `tests/test_repl*.py` | REPL/CLI interface |
-| `textual_repl` | `constat/textual_repl/` | `tests/test_textual*.py` | Textual TUI interface |
-| `visualization` | `constat/visualization/` | `tests/test_viz*.py`, `tests/test_output*.py` | Chart/output rendering |
-| `testing` | `constat/testing/` | — | Test infrastructure (not tested itself) |
-| `prompts` | `constat/prompts/` | `tests/test_prompt*.py` | Prompt/template loading |
+| `api` | `constat/api/` | `tests/unit/test_api_*.py` | — |
+| `catalog` | `constat/catalog/` | `tests/unit/test_*glossary*.py`, `tests/unit/test_schema*.py` | — |
+| `commands` | `constat/commands/` | `tests/unit/test_commands.py` | — |
+| `core` | `constat/core/` | `tests/unit/test_models.py`, `tests/unit/test_config.py` | — |
+| `discovery` | `constat/discovery/` | `tests/unit/test_discovery*.py`, `tests/unit/test_doc_tools.py` | — |
+| `execution` | `constat/execution/` | `tests/unit/test_dag.py`, `tests/unit/test_executor.py` | — |
+| `learning` | `constat/learning/` | `tests/unit/test_exemplar*.py` | — |
+| `llm` | `constat/llm/` | `tests/unit/test_llm*.py` | — |
+| `providers` | `constat/providers/` | `tests/unit/test_providers*.py` | — |
+| `server` | `constat/server/` | `tests/unit/test_server*.py` | `tests/integration/`, `tests/e2e/` |
+| `session` | `constat/session/` | `tests/unit/test_session*.py` | — |
+| `storage` | `constat/storage/` | `tests/unit/test_duckdb*.py`, `tests/unit/test_datastore*.py` | `tests/integration/` |
+| `repl` | `constat/repl/` | `tests/unit/test_repl*.py` | — |
+| `visualization` | `constat/visualization/` | `tests/unit/test_viz*.py` | — |
+| `testing` | `constat/testing/` | — | — |
+| `prompts` | `constat/prompts/` | `tests/unit/test_prompt*.py` | — |
+
+> **Legacy:** Flat tests in `tests/test_*.py` exist from before the tier structure. Tolerated but new tests go in the correct subdirectory.
 
 ### Fallback Convention (Unknown Modules)
 
@@ -226,7 +227,7 @@ Read 2-3 existing test files for this module to determine conventions. Check for
 | **Parametrize** | `@pytest.mark.parametrize` for data-driven tests | Used across modules |
 | **DuckDB patterns** | `duckdb.connect()` with yield teardown | Storage module tests |
 | **Docker markers** | `@pytest.mark.requires_*` for external services | Provider/integration tests |
-| **Skipif guards** | `@pytest.mark.skipif(not os.environ.get(...))` | LLM-dependent tests |
+| **API key tests** | Real-API integration tests require key in env; use `pytest.fail()` if absent, never `pytest.skip()` | Integration tests only — unit tests must mock the client |
 | **xfail** | `@pytest.mark.xfail(reason="LLM non-deterministic")` | Session/LLM tests |
 
 Store detected patterns for use in generation.
@@ -248,35 +249,32 @@ Store detected patterns for use in generation.
 
 ### Unit Tests
 
-- **Location**: `tests/test_<name>.py`
+- **Location**: `tests/unit/test_<name>.py`
 - **Marker**: None (default) or `@pytest.mark.slow` for LLM-touching tests
-- **Scope**: Single class or function in isolation
-- **Dependencies**: Mocked (unittest.mock or pytest-mock)
-- **Database**: In-memory DuckDB (`duckdb.connect()`) or `tmp_path` file
-- **Run**: `python -m pytest tests/test_<name>.py -x -q`
+- **Scope**: Single class or function in isolation. Zero I/O — no network, no file system (except `tmp_path` when testing I/O logic directly), no DB connections
+- **Dependencies**: Mocked at boundaries (unittest.mock or pytest-mock)
+- **Database**: In-memory DuckDB (`duckdb.connect()`) only — not a real file DB
+- **Run**: `python -m pytest tests/unit/ -x -q`
 
 ### Integration Tests
 
 - **Location**: `tests/integration/test_<name>.py`
 - **Marker**: `pytestmark = pytest.mark.integration` (module-level)
-- **Scope**: Multiple components working together with real dependencies
-- **Dependencies**: Real server process, real database, real HTTP calls
+- **Scope**: Multiple components working together with real services (DB, queues, external APIs). Does NOT require a running HTTP app server — that's e2e.
+- **Dependencies**: Docker-started containers (MongoDB, Elasticsearch, Cassandra, PostgreSQL). If Docker is unavailable the fixture calls `pytest.fail()`, never `pytest.skip()`.
 - **Fixtures**: From `tests/integration/conftest.py` — `server_url`, `server_port`, `integration_data_dir`
-- **Guards**: `@pytest.mark.requires_docker`, `@pytest.mark.requires_postgresql`, etc.
-- **Run**: `python -m pytest tests/integration/ -v`
+- **Run**: `python -m pytest tests/integration/ -x -q`
 
-Integration test fixtures provide:
+Integration fixture rule — **never skip, always fail**:
 ```python
 @pytest.fixture(scope="session")
-def server_process(server_port, integration_data_dir):
-    """Spawns real constat server on dynamic port."""
-    # python -m constat.cli serve -c demo/config.yaml --port {port}
-    # Waits for HTTP readiness + warmup completion
-    ...
-
-@pytest.fixture(scope="session")
-def server_url(server_port):
-    return f"http://localhost:{server_port}"
+def elasticsearch_container():
+    if not is_docker_available():
+        pytest.fail("Docker is required. Run: docker info")
+    if not start_container("constat_test_es", "elasticsearch:8.13.0", "9200:9200"):
+        pytest.fail("Elasticsearch container failed to start")
+    yield {"host": "localhost", "port": 9200}
+    stop_container("constat_test_es")
 ```
 
 Integration test structure:
@@ -291,65 +289,30 @@ class TestGlossaryAPI:
         query = {"query": "{ __schema { queryType { name } } }"}
         resp = requests.post(f"{server_url}/api/graphql", json=query)
         assert resp.status_code == 200
-
-    def test_glossary_crud(self, server_url):
-        # Create → Read → Update → Delete lifecycle
-        ...
 ```
 
 ### E2E Tests (Playwright)
 
-- **Location**: `tests/integration/test_*_ui.py`
-- **Marker**: `pytestmark = pytest.mark.integration` (same marker, UI suffix distinguishes)
-- **Scope**: Full browser-driven user workflows
-- **Dependencies**: Real server + Vite dev server + Chromium browser
-- **Fixtures**: From `tests/integration/conftest.py` — `page`, `browser_context`, `ui_url`
-- **Run**: `python -m pytest tests/integration/test_*_ui.py -v`
+- **Location**: `tests/e2e/test_<panel_or_feature>.py` — organized by UI panel or user workflow
+- **Marker**: `pytestmark = pytest.mark.e2e` (module-level)
+- **Scope**: Full browser-driven user workflows through the running app
+- **Dependencies**: Running backend server + Vite dev server + Chromium browser
+- **Fixtures**: From `tests/e2e/conftest.py` (or `tests/integration/conftest.py` until migrated) — `page`, `browser_context`, `ui_url`
+- **Run**: `python -m pytest tests/e2e/ -x -q`
 
-E2E fixtures provide:
-```python
-@pytest.fixture(scope="session")
-def browser_context():
-    """Headless Chromium via Playwright."""
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        yield context
-        browser.close()
-
-@pytest.fixture
-def page(browser_context):
-    """Fresh browser page per test."""
-    page = browser_context.new_page()
-    yield page
-    page.close()
-
-@pytest.fixture(scope="session")
-def ui_url(ui_port):
-    return f"http://localhost:{ui_port}"
-```
+> **Note:** Existing Playwright tests live in `tests/integration/test_*_ui.py` — a legacy location. New e2e tests go in `tests/e2e/`. Migrate existing ones when touched.
 
 E2E test structure:
 ```python
 import pytest
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.e2e
 
 class TestGlossaryUI:
     def test_glossary_panel_loads(self, page, ui_url):
         page.goto(f"{ui_url}")
-        page.wait_for_selector("[data-testid='glossary-panel']")
-        assert page.locator("[data-testid='glossary-panel']").is_visible()
-
-    def test_add_glossary_term(self, page, ui_url):
-        page.goto(f"{ui_url}")
-        page.click("[data-testid='add-term-button']")
-        page.fill("[data-testid='term-name-input']", "Revenue")
-        page.fill("[data-testid='term-definition-input']", "Total sales amount")
-        page.click("[data-testid='save-term-button']")
-        page.wait_for_selector("text=Revenue")
-        assert page.locator("text=Revenue").is_visible()
+        page.wait_for_selector("#section-glossary")
+        assert page.locator("#section-glossary").is_visible()
 ```
 
 ## Generate Test Files (Step 5)
@@ -374,12 +337,14 @@ For each source file, determine which test types to generate:
 | Source Characteristic | Unit Test | Integration Test | E2E Test |
 |---|---|---|---|
 | Pure logic, dataclasses, utilities | Yes | No | No |
-| Database reads/writes (DuckDB, SQLite) | Yes (in-memory) | Yes (if complex queries) | No |
-| HTTP/API endpoints (FastAPI routes) | Yes (TestClient) | Yes (real server) | No |
-| WebSocket handlers | Yes (mock) | Yes (real server) | No |
-| UI-facing features (glossary, artifacts) | No | Maybe | Yes |
-| LLM provider calls | Yes (mocked) | Skip (needs API key) | No |
-| External service calls (Docker DBs) | Yes (mocked) | Yes (with marker) | No |
+| Database reads/writes (DuckDB, SQLite) | Yes (in-memory mock) | **Yes — required** | No |
+| HTTP/API endpoints (FastAPI routes) | Yes (TestClient mock) | **Yes — required** (real server) | No |
+| WebSocket handlers | Yes (mock) | **Yes — required** (real server) | No |
+| UI-facing features (glossary, artifacts) | No | No | **Yes — required** |
+| LLM provider calls | Yes (mocked client) | **Yes — required** if real API path exists | No |
+| External service calls (Elasticsearch, MongoDB, etc.) | Yes (mocked) | **Yes — required** (Docker-started service) | No |
+
+**Rule:** A mocked unit test does NOT replace the integration test. Both rows must be filled for any component that touches a real service. The unit test gives fast CI feedback; the integration test proves the real boundary works.
 
 ### 5c. Generate Unit Test File
 
@@ -445,21 +410,23 @@ All generated tests MUST use modern Python:
 Create `tests/integration/test_<feature_name>.py`:
 
 - Set `pytestmark = pytest.mark.integration` at module level
-- Use `server_url` fixture for HTTP calls
+- Use `server_url` fixture for HTTP/GraphQL calls
 - Use `requests` or `httpx` for API calls
-- Add appropriate `@pytest.mark.requires_*` markers for external services
+- If a test needs a service (Elasticsearch, MongoDB, etc.), start it via Docker in the fixture — call `pytest.fail()` if Docker is unavailable, **never** `pytest.skip()`
 - Test real interactions (not mocked)
 
 #### If Generating E2E Tests
 
-Create `tests/integration/test_<feature_name>_ui.py`:
+Create `tests/e2e/test_<panel_or_feature>.py`:
 
-- Set `pytestmark = pytest.mark.integration` at module level
-- Use `page` and `ui_url` fixtures from integration conftest
-- Use Playwright selectors (`data-testid` preferred, then `text=`, then CSS)
+- Set `pytestmark = pytest.mark.e2e` at module level
+- Use `page` and `ui_url` fixtures
+- Use Playwright selectors (prefer `#section-<id>`, `button[title='...']`, `text=` over fragile CSS)
+- Pre-inject localStorage state before `page.reload()` to set session context and expand accordion sections
 - Wait for elements before asserting (`wait_for_selector`)
 - Test user-visible workflows end-to-end
 - Keep tests independent (fresh `page` per test via fixture)
+- LLM-driven assertions must include a retry loop (up to 3 attempts)
 
 ### 5d. Write the File
 
@@ -591,3 +558,5 @@ Report a summary of coverage percentages.
 11. **No Parquet references** — all storage is native DuckDB tables
 12. **Mock LLM calls** — never make real API calls in unit tests
 13. **`tmp_path` for temp files** — never write to the project directory in tests
+14. **Test tier placement is mandatory** — unit → `tests/unit/`, integration → `tests/integration/`, e2e → `tests/e2e/`
+15. **Never `pytest.skip()` for infra** — if a service is required, start it via Docker or call `pytest.fail()`. Skipped infra tests are silent coverage lies.

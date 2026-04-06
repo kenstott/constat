@@ -113,6 +113,7 @@ def _build_databases(managed, session_id: str) -> list[SessionDatabaseType]:
             name=name,
             type=db_config.type,
             description=db_config.description,
+            uri=db_config.uri or None,
             connected=connected,
             table_count=table_count,
             added_at=managed.created_at,
@@ -142,6 +143,7 @@ def _build_databases(managed, session_id: str) -> list[SessionDatabaseType]:
                     name=name,
                     type=db_config.type,
                     description=db_config.description,
+                    uri=db_config.uri or None,
                     connected=connected,
                     table_count=table_count,
                     added_at=managed.created_at,
@@ -160,6 +162,7 @@ def _build_databases(managed, session_id: str) -> list[SessionDatabaseType]:
             type=db["type"],
             dialect=db.get("dialect"),
             description=db.get("description"),
+            uri=db.get("uri"),
             connected=db.get("connected", False),
             table_count=db.get("table_count", 0),
             added_at=datetime.fromisoformat(db["added_at"]),
@@ -240,6 +243,11 @@ def _build_documents(managed) -> list[SessionDocumentType]:
             from_config=True,
             source="config",
             tier=_get_tier(managed, "documents", name),
+            follow_links=getattr(doc_config, 'follow_links', False),
+            max_depth=getattr(doc_config, 'max_depth', 2),
+            max_documents=getattr(doc_config, 'max_documents', 50),
+            same_domain_only=getattr(doc_config, 'same_domain_only', True),
+            exclude_patterns=list(getattr(doc_config, 'exclude_patterns', None) or []),
         ))
         seen.add(name)
 
@@ -258,17 +266,27 @@ def _build_documents(managed) -> list[SessionDocumentType]:
                     from_config=False,
                     source=domain_filename,
                     tier=_get_tier(managed, "documents", name),
+                    follow_links=getattr(doc_config, 'follow_links', False),
+                    max_depth=getattr(doc_config, 'max_depth', 2),
+                    max_documents=getattr(doc_config, 'max_documents', 50),
+                    same_domain_only=getattr(doc_config, 'same_domain_only', True),
+                    exclude_patterns=list(getattr(doc_config, 'exclude_patterns', None) or []),
                 ))
                 seen.add(name)
 
     for ref in managed._file_refs:
         if ref["name"] in seen:
             continue
+        uri = ref.get("uri") or ""
+        if uri.lower().startswith(("imap://", "imaps://")):
+            ref_type = "email"
+        else:
+            ref_type = uri.split(".")[-1] if uri else None
         documents.append(SessionDocumentType(
             name=ref["name"],
-            type=ref.get("uri", "").split(".")[-1] if ref.get("uri") else None,
+            type=ref_type,
             description=ref.get("description"),
-            path=ref.get("uri"),
+            path=uri or None,
             indexed=True,
             source="session",
             from_config=False,
@@ -286,7 +304,7 @@ def _build_documents(managed) -> list[SessionDocumentType]:
             managed.session.resources.document_names
         ) if managed.session.resources else set()
         for acct_name, acct in personal_accounts.items():
-            if not acct.active or acct.type not in ("calendar", "drive", "sharepoint"):
+            if acct.type not in ("calendar", "drive", "sharepoint", "imap"):
                 continue
             if acct_name in seen:
                 continue
@@ -481,6 +499,53 @@ class Query:
             documents={k: v for k, v in config.get("documents", {}).items() if v.get("source") == "user"},
             apis={k: v for k, v in config.get("apis", {}).items() if v.get("source") == "user"},
         )
+
+    @strawberry.field
+    async def validate_uri(self, info: Info, uri: str) -> UriValidationResult:
+        """Check whether a URI is reachable (web URL) or exists on disk (file path)."""
+        stripped = uri.strip()
+        if stripped.startswith(("http://", "https://")):
+            try:
+                from constat.discovery.doc_tools._transport import _get_http_session
+                session = _get_http_session()
+                resp = session.head(stripped, timeout=8, allow_redirects=True)
+                if resp.status_code < 500:
+                    return UriValidationResult(reachable=True)
+                # HEAD blocked — try GET with stream to avoid downloading body
+                resp = session.get(stripped, timeout=8, stream=True)
+                resp.close()
+                if resp.status_code < 500:
+                    return UriValidationResult(reachable=True)
+                return UriValidationResult(reachable=False, error=f"HTTP {resp.status_code}")
+            except Exception as e:
+                return UriValidationResult(reachable=False, error=str(e))
+        elif stripped.startswith("file://"):
+            path = stripped[7:]
+            exists = os.path.exists(path)
+            return UriValidationResult(reachable=exists,
+                error=None if exists else f"Path does not exist: {path}")
+        elif stripped.startswith(("s3://", "s3a://")):
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(stripped)
+                if not parsed.netloc:
+                    return UriValidationResult(reachable=False, error="Invalid S3 URI: missing bucket name")
+                return UriValidationResult(reachable=True)
+            except Exception as e:
+                return UriValidationResult(reachable=False, error=str(e))
+        elif stripped.startswith(("ftp://", "sftp://")):
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(stripped)
+                if not parsed.hostname:
+                    return UriValidationResult(reachable=False, error="Invalid FTP/SFTP URI: missing hostname")
+                return UriValidationResult(reachable=True)
+            except Exception as e:
+                return UriValidationResult(reachable=False, error=str(e))
+        else:
+            exists = os.path.exists(stripped)
+            return UriValidationResult(reachable=exists,
+                error=None if exists else f"Path does not exist: {stripped}")
 
 
 @strawberry.type
@@ -684,51 +749,3 @@ class Mutation:
         managed._remove_doc_from_user_config(managed.user_id, name)
 
         return DeleteResultType(status="deleted", name=name)
-
-    @strawberry.field
-    async def validate_uri(self, info: Info, uri: str) -> UriValidationResult:
-        """Check whether a URI is reachable (web URL) or exists on disk (file path)."""
-        stripped = uri.strip()
-        if stripped.startswith(("http://", "https://")):
-            try:
-                req = urllib.request.Request(stripped, method="HEAD",
-                                             headers={"User-Agent": "constat/1.0"})
-                with urllib.request.urlopen(req, timeout=8):
-                    pass
-                return UriValidationResult(reachable=True)
-            except urllib.error.HTTPError as e:
-                if e.code < 500:
-                    # 4xx means the server responded — URI is reachable even if auth-gated
-                    return UriValidationResult(reachable=True)
-                return UriValidationResult(reachable=False, error=f"HTTP {e.code}: {e.reason}")
-            except urllib.error.URLError as e:
-                return UriValidationResult(reachable=False, error=str(e.reason))
-            except Exception as e:
-                return UriValidationResult(reachable=False, error=str(e))
-        elif stripped.startswith("file://"):
-            path = stripped[7:]
-            exists = os.path.exists(path)
-            return UriValidationResult(reachable=exists,
-                error=None if exists else f"Path does not exist: {path}")
-        elif stripped.startswith(("s3://", "s3a://")):
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(stripped)
-                if not parsed.netloc:
-                    return UriValidationResult(reachable=False, error="Invalid S3 URI: missing bucket name")
-                return UriValidationResult(reachable=True)
-            except Exception as e:
-                return UriValidationResult(reachable=False, error=str(e))
-        elif stripped.startswith(("ftp://", "sftp://")):
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(stripped)
-                if not parsed.hostname:
-                    return UriValidationResult(reachable=False, error="Invalid FTP/SFTP URI: missing hostname")
-                return UriValidationResult(reachable=True)
-            except Exception as e:
-                return UriValidationResult(reachable=False, error=str(e))
-        else:
-            exists = os.path.exists(stripped)
-            return UriValidationResult(reachable=exists,
-                error=None if exists else f"Path does not exist: {stripped}")

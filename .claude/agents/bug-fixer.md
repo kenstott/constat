@@ -51,6 +51,8 @@ Every bug fix starts with a failing test that proves the bug exists. The fix is 
 6. **WRITE FAILING TEST** — Before touching production code, write a test that reproduces the bug:
    - Test must fail with the current code (RED step)
    - Test must be minimal — isolate the exact broken behavior
+   - Place in the correct tier: `tests/unit/` (no I/O), `tests/integration/` (needs services), `tests/e2e/` (Playwright)
+   - Never use `pytest.skip()` for infra reasons — use `pytest.fail()` if a required service is absent
    - Follow pytest-patterns conventions
 
 7. **FIX** — Write the minimum code change to make the test pass (GREEN step):

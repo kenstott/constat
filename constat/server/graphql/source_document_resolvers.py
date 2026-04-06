@@ -330,9 +330,14 @@ class Mutation:
                 doc_config["max_depth"] = input.max_depth
             if input.max_documents is not None:
                 doc_config["max_documents"] = input.max_documents
+            if input.same_domain_only is not None:
+                doc_config["same_domain_only"] = input.same_domain_only
+            if input.exclude_patterns is not None:
+                doc_config["exclude_patterns"] = input.exclude_patterns
 
         managed.save_resources()
 
+        dc = ref.get("document_config") or {}
         return SessionDocumentType(
             name=ref["name"],
             type=ref.get("uri", "").split(".")[-1] if ref.get("uri") else None,
@@ -341,6 +346,11 @@ class Mutation:
             indexed=True,
             from_config=False,
             source="session",
+            follow_links=dc.get("follow_links", False),
+            max_depth=dc.get("max_depth", 2),
+            max_documents=dc.get("max_documents", 50),
+            same_domain_only=dc.get("same_domain_only", True),
+            exclude_patterns=dc.get("exclude_patterns") or [],
         )
 
     @strawberry.mutation

@@ -66,6 +66,7 @@ interface AuthContextValue {
   logout: () => Promise<void>
   canSee: (section: string) => boolean
   canWrite: (resource: string) => boolean
+  canModify: (resource: string, entity?: { from_config?: boolean; source?: string }) => boolean
   loading: boolean
   error: string | null
   setError: (msg: string) => void
@@ -301,6 +302,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return permissions?.writes?.[resource] ?? false
   }, [authDisabled, permissions])
 
+  const adminFlag = authDisabled || (permissions?.persona === 'platform_admin')
+
+  const canModify = useCallback((resource: string, entity?: { from_config?: boolean; source?: string }) => {
+    if (!canWrite(resource)) return false
+    if (!entity) return true
+    return adminFlag || (!entity.from_config && entity.source !== 'config')
+  }, [canWrite, adminFlag])
+
   const setError = useCallback((msg: string) => setErrorState(msg), [])
   const clearError = useCallback(() => setErrorState(null), [])
 
@@ -326,6 +335,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     logout,
     canSee,
     canWrite,
+    canModify,
     loading,
     error,
     setError,

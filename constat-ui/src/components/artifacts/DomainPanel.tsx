@@ -179,9 +179,9 @@ function DomainTreeNodeView({
           <input
             type="checkbox"
             checked={isActive}
-            disabled={isSystem || togglingDomain !== null}
-            onChange={() => !isSystem && onToggle(node.filename)}
-            className={`w-3.5 h-3.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500 ${isSystem || togglingDomain !== null ? 'opacity-50 cursor-default' : 'cursor-pointer'}`}
+            disabled={isSynthetic || togglingDomain !== null}
+            onChange={() => !isSynthetic && onToggle(node.filename)}
+            className={`w-3.5 h-3.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500 ${isSynthetic || togglingDomain !== null ? 'opacity-50 cursor-default' : 'cursor-pointer'}`}
           />
         )}
 
