@@ -359,6 +359,96 @@ class TestUpdateDocument:
         assert managed._file_refs[0]["uri"] == "file:///new.pdf"
 
     @pytest.mark.asyncio
+    async def test_update_document_http_uri_routes_to_url(self):
+        from constat.server.graphql import schema
+
+        managed = _make_managed()
+        managed._file_refs = [_dynamic_doc("mydoc", document_config={})]
+        ctx = _make_context()
+        ctx.session_manager.get_session_or_none.return_value = managed
+
+        result = await schema.execute(
+            """mutation {
+                updateDocument(sessionId: "s1", input: {name: "mydoc", uri: "https://example.com/new"}) {
+                    name path
+                }
+            }""",
+            context_value=ctx,
+        )
+        assert result.errors is None
+        ref = managed._file_refs[0]
+        assert ref["document_config"]["url"] == "https://example.com/new"
+        assert "path" not in ref["document_config"]
+
+    @pytest.mark.asyncio
+    async def test_update_document_s3_uri_routes_to_url(self):
+        from constat.server.graphql import schema
+
+        managed = _make_managed()
+        managed._file_refs = [_dynamic_doc("mydoc", document_config={})]
+        ctx = _make_context()
+        ctx.session_manager.get_session_or_none.return_value = managed
+
+        result = await schema.execute(
+            """mutation {
+                updateDocument(sessionId: "s1", input: {name: "mydoc", uri: "s3://bucket/key.pdf"}) {
+                    name path
+                }
+            }""",
+            context_value=ctx,
+        )
+        assert result.errors is None
+        ref = managed._file_refs[0]
+        assert ref["document_config"]["url"] == "s3://bucket/key.pdf"
+        assert "path" not in ref["document_config"]
+
+    @pytest.mark.asyncio
+    async def test_update_document_bare_path_routes_to_path(self):
+        from constat.server.graphql import schema
+
+        managed = _make_managed()
+        managed._file_refs = [_dynamic_doc("mydoc", document_config={})]
+        ctx = _make_context()
+        ctx.session_manager.get_session_or_none.return_value = managed
+
+        result = await schema.execute(
+            """mutation {
+                updateDocument(sessionId: "s1", input: {name: "mydoc", uri: "/data/rules.md"}) {
+                    name path
+                }
+            }""",
+            context_value=ctx,
+        )
+        assert result.errors is None
+        ref = managed._file_refs[0]
+        assert ref["document_config"]["path"] == "/data/rules.md"
+        assert "url" not in ref["document_config"]
+
+    @pytest.mark.asyncio
+    async def test_update_document_clears_old_url_when_switching_to_path(self):
+        from constat.server.graphql import schema
+
+        managed = _make_managed()
+        managed._file_refs = [
+            _dynamic_doc("mydoc", document_config={"url": "https://old.com"})
+        ]
+        ctx = _make_context()
+        ctx.session_manager.get_session_or_none.return_value = managed
+
+        result = await schema.execute(
+            """mutation {
+                updateDocument(sessionId: "s1", input: {name: "mydoc", uri: "/new/file.md"}) {
+                    name path
+                }
+            }""",
+            context_value=ctx,
+        )
+        assert result.errors is None
+        ref = managed._file_refs[0]
+        assert "url" not in ref["document_config"]
+        assert ref["document_config"]["path"] == "/new/file.md"
+
+    @pytest.mark.asyncio
     async def test_update_document_rejects_config_defined(self):
         from constat.server.graphql import schema
 

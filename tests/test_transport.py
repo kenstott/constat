@@ -59,6 +59,9 @@ class TestInferTransport:
         """content set overrides path and url."""
         assert infer_transport(_FakeConfig(content="x", path="/y", url="https://z")) == "inline"
 
+    def test_s3a_scheme(self):
+        assert infer_transport(_FakeConfig(url="s3a://bucket/key.pdf")) == "s3"
+
     def test_no_source_raises(self):
         with pytest.raises(ValueError, match="no content, path, or url"):
             infer_transport(_FakeConfig())
