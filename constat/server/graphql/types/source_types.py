@@ -188,8 +188,14 @@ class ApiAddInput:
     type: str = "rest"
     base_url: str = ""
     description: Optional[str] = None
-    auth_type: Optional[str] = None
-    auth_header: Optional[str] = None
+    auth_type: Optional[str] = None       # none | bearer | basic | api_key | oauth2
+    auth_header: Optional[str] = None     # header name for api_key auth
+    auth_token: Optional[str] = None      # bearer token or api key value
+    auth_username: Optional[str] = None   # basic auth username
+    auth_password: Optional[str] = None   # basic auth password
+    auth_client_id: Optional[str] = None  # oauth2 client id
+    auth_client_secret: Optional[str] = None  # oauth2 client secret
+    auth_token_url: Optional[str] = None  # oauth2 token endpoint
 
 
 @strawberry.input

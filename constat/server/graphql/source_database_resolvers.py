@@ -278,8 +278,14 @@ class Mutation:
                 url=input.base_url,
                 description=input.description or "",
             )
-            if input.auth_type and input.auth_header:
-                api_config.headers = {input.auth_header: ""}
+            if input.auth_type == "bearer" and input.auth_token:
+                api_config.headers = {"Authorization": f"Bearer {input.auth_token}"}
+            elif input.auth_type == "basic" and input.auth_username:
+                import base64
+                creds = base64.b64encode(f"{input.auth_username}:{input.auth_password or ''}".encode()).decode()
+                api_config.headers = {"Authorization": f"Basic {creds}"}
+            elif input.auth_type == "api_key" and input.auth_header and input.auth_token:
+                api_config.headers = {input.auth_header: input.auth_token}
             managed.session.api_schema_manager.add_api_dynamic(input.name, api_config)
 
         sm.resolve_config(session_id)

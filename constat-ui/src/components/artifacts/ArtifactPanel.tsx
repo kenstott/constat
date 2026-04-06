@@ -51,6 +51,7 @@ import {
 import { PersonalResourcePicker } from './PersonalResourcePicker'
 import { AccountManager } from './AccountManager'
 import { AddDatabaseModal } from './AddDatabaseModal'
+import { AddApiModal } from './AddApiModal'
 
 type ModalType = 'database' | 'api' | 'document' | 'email' | 'fact' | 'rule' | 'personal' | 'accounts' | null
 
@@ -376,6 +377,17 @@ export function ArtifactPanel() {
                   onAdd={async (name, uri, type, extraConfig) => {
                     if (!session) return
                     await apolloClient.mutate({ mutation: ADD_DATABASE, variables: { sessionId: session.session_id, input: { name, uri, type, extraConfig } } })
+                    apolloClient.refetchQueries({ include: ['DataSources'] })
+                    setShowModal(null)
+                  }}
+                  onCancel={() => setShowModal(null)}
+                  uploading={uploading}
+                />
+              ) : showModal === 'api' ? (
+                <AddApiModal
+                  onAdd={async (fields) => {
+                    if (!session) return
+                    await apolloClient.mutate({ mutation: ADD_API, variables: { sessionId: session.session_id, input: { name: fields.name, baseUrl: fields.baseUrl, type: fields.type, description: fields.description, authType: fields.authType !== 'none' ? fields.authType : null, authToken: fields.authToken || null, authUsername: fields.authUsername || null, authPassword: fields.authPassword || null, authHeader: fields.authHeader || null, authClientId: fields.authClientId || null, authClientSecret: fields.authClientSecret || null, authTokenUrl: fields.authTokenUrl || null } } })
                     apolloClient.refetchQueries({ include: ['DataSources'] })
                     setShowModal(null)
                   }}
@@ -773,20 +785,8 @@ export function ArtifactPanel() {
                   )}
                 </>
               )}
-              {showModal === 'api' && (
-                <select
-                  value={modalInput.type || ''}
-                  onChange={(e) => setModalInput({ ...modalInput, type: e.target.value })}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                >
-                  <option value="">Type (optional)</option>
-                  <option value="rest">REST</option>
-                  <option value="graphql">GraphQL</option>
-                  <option value="openapi">OpenAPI</option>
-                </select>
-              )}
             </div>
-            {showModal !== 'database' && (
+            {showModal !== 'database' && showModal !== 'api' && (
             <div className="flex justify-end gap-2 mt-4">
               <button
                 onClick={() => { setShowModal(null); setEmailOAuthToken(null); setEmailProvider(null) }}
