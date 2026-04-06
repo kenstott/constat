@@ -1194,3 +1194,226 @@ class TestSecurityHardening:
             )
         assert result.errors is not None
         assert "Failed to delete file" in str(result.errors[0])
+
+
+# ============================================================================
+# TestDatabaseExtraConfig
+# ============================================================================
+
+
+class TestDatabaseExtraConfig:
+    @pytest.mark.asyncio
+    async def test_add_database_with_extra_config(self):
+        from constat.server.graphql import schema
+
+        managed = _make_managed()
+        managed.session.add_database = MagicMock()
+        managed.session.session_databases = {}
+        mock_sm = MagicMock()
+        mock_sm.metadata_cache = {}
+        managed.session.schema_manager = mock_sm
+        ctx = _make_context()
+        ctx.session_manager.get_session_or_none.return_value = managed
+
+        with patch("constat.core.config.DatabaseConfig") as mock_db_config:
+            mock_db_config.return_value = MagicMock()
+            result = await schema.execute(
+                """mutation AddDB($input: DatabaseAddInput!) {
+                    addDatabase(sessionId: "s1", input: $input) { name connected }
+                }""",
+                variable_values={"input": {
+                    "name": "dynamo",
+                    "uri": "dynamodb://us-east-1",
+                    "type": "dynamodb",
+                    "extraConfig": {"region": "us-east-1", "awsAccessKeyId": "AKIA123"},
+                }},
+                context_value=ctx,
+            )
+        assert result.errors is None
+        assert result.data["addDatabase"]["connected"] is True
+        call_kwargs = mock_db_config.call_args[1]
+        assert call_kwargs.get("region") == "us-east-1"
+        assert call_kwargs.get("awsAccessKeyId") == "AKIA123"
+
+    @pytest.mark.asyncio
+    async def test_add_database_extra_config_none(self):
+        from constat.server.graphql import schema
+
+        managed = _make_managed()
+        managed.session.add_database = MagicMock()
+        managed.session.session_databases = {}
+        ctx = _make_context()
+        ctx.session_manager.get_session_or_none.return_value = managed
+
+        result = await schema.execute(
+            """mutation AddDB($input: DatabaseAddInput!) {
+                addDatabase(sessionId: "s1", input: $input) { name connected }
+            }""",
+            variable_values={"input": {
+                "name": "mydb",
+                "uri": "sqlite:///test.db",
+                "type": "sqlalchemy",
+            }},
+            context_value=ctx,
+        )
+        assert result.errors is None
+        assert result.data["addDatabase"]["name"] == "mydb"
+
+    @pytest.mark.asyncio
+    async def test_add_database_extra_config_merged_into_db_config(self):
+        from constat.server.graphql import schema
+
+        managed = _make_managed()
+        managed.session.add_database = MagicMock()
+        managed.session.session_databases = {}
+        mock_sm = MagicMock()
+        mock_sm.metadata_cache = {}
+        managed.session.schema_manager = mock_sm
+        ctx = _make_context()
+        ctx.session_manager.get_session_or_none.return_value = managed
+
+        with patch("constat.core.config.DatabaseConfig") as mock_db_config:
+            mock_db_config.return_value = MagicMock()
+            result = await schema.execute(
+                """mutation AddDB($input: DatabaseAddInput!) {
+                    addDatabase(sessionId: "s1", input: $input) { name connected }
+                }""",
+                variable_values={"input": {
+                    "name": "elastic",
+                    "uri": "http://localhost:9200",
+                    "type": "elasticsearch",
+                    "extraConfig": {"apiKey": "mykey"},
+                }},
+                context_value=ctx,
+            )
+        assert result.errors is None
+        call_kwargs = mock_db_config.call_args[1]
+        assert call_kwargs.get("apiKey") == "mykey"
+
+
+# ============================================================================
+# TestApiAuthMutations
+# ============================================================================
+
+
+class TestApiAuthMutations:
+    @pytest.mark.asyncio
+    async def test_add_api_bearer_auth(self):
+        from constat.server.graphql import schema
+
+        managed = _make_managed()
+        managed.session.resources = MagicMock()
+        managed.session.api_schema_manager = MagicMock()
+        ctx = _make_context()
+        ctx.session_manager.get_session_or_none.return_value = managed
+
+        result = await schema.execute(
+            """mutation {
+                addApi(sessionId: "s1", input: {
+                    name: "testapi",
+                    baseUrl: "https://api.example.com",
+                    type: "rest",
+                    authType: "bearer",
+                    authToken: "mytoken"
+                }) { name connected }
+            }""",
+            context_value=ctx,
+        )
+        assert result.errors is None
+        assert result.data["addApi"]["connected"] is True
+        call_args = managed.session.api_schema_manager.add_api_dynamic.call_args
+        api_config = call_args[0][1]
+        assert api_config.headers == {"Authorization": "Bearer mytoken"}
+
+    @pytest.mark.asyncio
+    async def test_add_api_basic_auth(self):
+        import base64
+        from constat.server.graphql import schema
+
+        managed = _make_managed()
+        managed.session.resources = MagicMock()
+        managed.session.api_schema_manager = MagicMock()
+        ctx = _make_context()
+        ctx.session_manager.get_session_or_none.return_value = managed
+
+        result = await schema.execute(
+            """mutation {
+                addApi(sessionId: "s1", input: {
+                    name: "basicapi",
+                    baseUrl: "https://api.example.com",
+                    type: "rest",
+                    authType: "basic",
+                    authUsername: "user",
+                    authPassword: "pass"
+                }) { name connected }
+            }""",
+            context_value=ctx,
+        )
+        assert result.errors is None
+        call_args = managed.session.api_schema_manager.add_api_dynamic.call_args
+        api_config = call_args[0][1]
+        expected = base64.b64encode(b"user:pass").decode()
+        assert api_config.headers == {"Authorization": f"Basic {expected}"}
+
+    @pytest.mark.asyncio
+    async def test_add_api_api_key_auth(self):
+        from constat.server.graphql import schema
+
+        managed = _make_managed()
+        managed.session.resources = MagicMock()
+        managed.session.api_schema_manager = MagicMock()
+        ctx = _make_context()
+        ctx.session_manager.get_session_or_none.return_value = managed
+
+        result = await schema.execute(
+            """mutation {
+                addApi(sessionId: "s1", input: {
+                    name: "apikeyapi",
+                    baseUrl: "https://api.example.com",
+                    type: "rest",
+                    authType: "api_key",
+                    authHeader: "X-API-Key",
+                    authToken: "secret"
+                }) { name connected }
+            }""",
+            context_value=ctx,
+        )
+        assert result.errors is None
+        call_args = managed.session.api_schema_manager.add_api_dynamic.call_args
+        api_config = call_args[0][1]
+        assert api_config.headers == {"X-API-Key": "secret"}
+
+    @pytest.mark.asyncio
+    async def test_add_api_no_auth(self):
+        from constat.server.graphql import schema
+
+        managed = _make_managed()
+        managed.session.resources = MagicMock()
+        managed.session.api_schema_manager = MagicMock()
+        ctx = _make_context()
+        ctx.session_manager.get_session_or_none.return_value = managed
+
+        result = await schema.execute(
+            """mutation {
+                addApi(sessionId: "s1", input: {
+                    name: "noauthapi",
+                    baseUrl: "https://api.example.com",
+                    type: "rest"
+                }) { name connected }
+            }""",
+            context_value=ctx,
+        )
+        assert result.errors is None
+        call_args = managed.session.api_schema_manager.add_api_dynamic.call_args
+        api_config = call_args[0][1]
+        assert not api_config.headers
+
+    def test_add_api_auth_fields_in_sdl(self):
+        from constat.server.graphql import schema
+        sdl = schema.as_str()
+        assert "authToken" in sdl
+        assert "authUsername" in sdl
+        assert "authPassword" in sdl
+        assert "authClientId" in sdl
+        assert "authClientSecret" in sdl
+        assert "authTokenUrl" in sdl
