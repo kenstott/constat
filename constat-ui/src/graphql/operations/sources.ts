@@ -145,6 +145,15 @@ export const ADD_DATABASE = gql`
   }
 `
 
+export type DatabaseAddInput = {
+  name: string
+  type?: string
+  uri?: string
+  fileId?: string
+  description?: string
+  extraConfig?: Record<string, unknown>
+}
+
 export const REMOVE_DATABASE = gql`
   mutation RemoveDatabase($sessionId: String!, $name: String!) {
     removeDatabase(sessionId: $sessionId, name: $name) {

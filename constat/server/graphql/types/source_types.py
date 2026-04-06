@@ -179,6 +179,7 @@ class DatabaseAddInput:
     uri: Optional[str] = None
     file_id: Optional[str] = None
     description: Optional[str] = None
+    extra_config: Optional[strawberry.scalars.JSON] = None
 
 
 @strawberry.input

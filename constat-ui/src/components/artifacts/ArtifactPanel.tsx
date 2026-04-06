@@ -373,9 +373,9 @@ export function ArtifactPanel() {
             <div className="space-y-3">
               {showModal === 'database' ? (
                 <AddDatabaseModal
-                  onAdd={async (name, uri, type) => {
+                  onAdd={async (name, uri, type, extraConfig) => {
                     if (!session) return
-                    await apolloClient.mutate({ mutation: ADD_DATABASE, variables: { sessionId: session.session_id, input: { name, uri, type } } })
+                    await apolloClient.mutate({ mutation: ADD_DATABASE, variables: { sessionId: session.session_id, input: { name, uri, type, extraConfig } } })
                     apolloClient.refetchQueries({ include: ['DataSources'] })
                     setShowModal(null)
                   }}

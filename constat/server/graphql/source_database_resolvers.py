@@ -106,11 +106,13 @@ class Mutation:
                 if managed.session.schema_manager:
                     from constat.core.config import DatabaseConfig
                     is_file_source = effective_type in ('csv', 'json', 'jsonl', 'parquet', 'arrow', 'feather')
+                    extra = dict(input.extra_config) if input.extra_config else {}
                     db_config = DatabaseConfig(
                         type=effective_type,
                         path=uri if is_file_source else None,
                         uri=uri if not is_file_source else None,
                         description=input.description,
+                        **extra,
                     )
                     managed.session.schema_manager.add_database_dynamic(input.name, db_config)
                     table_count = sum(1 for k in managed.session.schema_manager.metadata_cache if k.startswith(f"{input.name}."))
