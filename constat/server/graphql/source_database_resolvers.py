@@ -107,11 +107,13 @@ class Mutation:
                     from constat.core.config import DatabaseConfig
                     is_file_source = effective_type in ('csv', 'json', 'jsonl', 'parquet', 'arrow', 'feather')
                     extra = dict(input.extra_config) if input.extra_config else {}
+                    # Normalize type: 'sqlalchemy' is a UI alias for 'sql'
+                    config_type = "sql" if effective_type in ("sqlalchemy", "sql") else effective_type
                     db_config = DatabaseConfig(
-                        type=effective_type,
+                        type=config_type,
                         path=uri if is_file_source else None,
                         uri=uri if not is_file_source else None,
-                        description=input.description,
+                        description=input.description or "",
                         **extra,
                     )
                     managed.session.schema_manager.add_database_dynamic(input.name, db_config)

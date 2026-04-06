@@ -75,7 +75,7 @@ describe('AddDatabaseModal', () => {
     selectType('duckdb')
     fireEvent.change(screen.getByPlaceholderText(/\.duckdb/), { target: { value: '/data/duck.db' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
-    expect(onAdd).toHaveBeenCalledWith('duck1', '/data/duck.db', 'duckdb', undefined)
+    expect(onAdd).toHaveBeenCalledWith('duck1', 'duckdb:////data/duck.db', 'sqlalchemy', undefined)  // mapped to sqlalchemy; URI contains duckdb:/// for dialect detection
   })
 
   // ---------------------------------------------------------------------------

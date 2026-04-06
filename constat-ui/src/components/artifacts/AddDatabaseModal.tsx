@@ -145,7 +145,18 @@ export function AddDatabaseModal({ onAdd, onCancel, uploading }: Props) {
   function buildResult(): { uri: string; extra: Record<string, unknown> } {
     const extra: Record<string, unknown> = {}
 
-    if (isFile) return { uri: filePath, extra }
+    if (isFile) {
+      // Build SQLAlchemy-compatible URIs: sqlite:///relative.db or sqlite:////absolute/path.db
+      if (dbType === 'sqlite') {
+        const uri = filePath.startsWith('sqlite:') ? filePath : `sqlite:///${filePath}`
+        return { uri, extra }
+      }
+      if (dbType === 'duckdb') {
+        const uri = filePath.startsWith('duckdb:') ? filePath : `duckdb:///${filePath}`
+        return { uri, extra }
+      }
+      return { uri: filePath, extra }
+    }
     if (isUri) return { uri: customUri, extra }
 
     if (isCloud) {
@@ -186,7 +197,9 @@ export function AddDatabaseModal({ onAdd, onCancel, uploading }: Props) {
     if (!name || !dbType) return
     const { uri, extra } = buildResult()
     if (!uri && !isCloud) return
-    onAdd(name, uri, dbType, Object.keys(extra).length ? extra : undefined)
+    // SQLite/DuckDB use SQLAlchemy driver — report as 'sqlalchemy' so backend accepts the URI
+    const effectiveType = (dbType === 'sqlite' || dbType === 'duckdb') ? 'sqlalchemy' : dbType
+    onAdd(name, uri, effectiveType, Object.keys(extra).length ? extra : undefined)
   }
 
   function canSubmit() {
