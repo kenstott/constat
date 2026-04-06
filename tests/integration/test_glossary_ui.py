@@ -174,25 +174,29 @@ def seeded_session(server_url):
 # ---------------------------------------------------------------------------
 
 def _navigate_and_wait(page, ui_url: str, session_id: str):
-    """Navigate to the app, open the artifact panel, and wait for Glossary."""
-    page.goto(f"{ui_url}/?session={session_id}")
-    # Wait for app to hydrate — the conversation area loads first
+    """Navigate to the app with the given session, open the artifact panel, and wait for Glossary section."""
+    # Navigate to root so localStorage is accessible
+    page.goto(f"{ui_url}/")
+    # Inject the session_id into localStorage so the app picks it up on reload
+    page.evaluate(f"localStorage.setItem('constat-session-id', '{session_id}');")
+    # Reload so React re-initializes with the injected session_id
+    page.reload()
+    # Wait for app hydration — the greeting appears once session + subscription are ready
     page.wait_for_selector("text=What can I help you with?", timeout=30000)
-    # Open the artifact/details panel (hidden by default)
-    toggle = page.locator("button[title='Show details panel']")
-    if toggle.count() > 0 and toggle.first.is_visible():
-        toggle.first.click()
+    # If the artifact panel is hidden, click the toggle button to show it
+    toggle_btn = page.locator("button[title='Show details panel']")
+    if toggle_btn.count() > 0:
+        try:
+            toggle_btn.first.click(timeout=2000)
+        except Exception:
+            pass
     # Wait for the Glossary section to appear in the artifact panel
-    page.wait_for_selector("text=Glossary", timeout=15000)
+    page.wait_for_selector("#section-glossary", timeout=30000)
 
 
 def _expand_glossary(page):
-    """Ensure the Glossary section is expanded (content visible)."""
-    content = page.locator("#section-glossary")
-    if content.count() == 0 or not content.first.is_visible():
-        glossary_btn = page.locator("button:has-text('Glossary')").first
-        glossary_btn.click()
-        content.first.wait_for(timeout=5000)
+    """Wait for the Glossary section to be visible (panel is always expanded)."""
+    page.locator("#section-glossary").first.wait_for(timeout=5000)
     page.wait_for_timeout(500)
 
 
@@ -204,9 +208,9 @@ class TestGlossaryPanelLoads:
     """Verify the glossary panel loads and displays terms from Apollo."""
 
     def test_glossary_section_visible(self, page, ui_url, server_url, session_id):
-        """Glossary section header appears in the sidebar."""
+        """Glossary section is present in the artifact panel."""
         _navigate_and_wait(page, ui_url, session_id)
-        assert page.locator("text=Glossary").first.is_visible()
+        assert page.locator("#section-glossary").first.is_visible()
 
     def test_glossary_terms_render(self, page, ui_url, seeded_session):
         """Terms seeded via GraphQL appear in the glossary panel."""

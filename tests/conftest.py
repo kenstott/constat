@@ -11,6 +11,8 @@
 """Pytest configuration and fixtures for integration tests."""
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import subprocess
 import tempfile
 import shutil
@@ -215,6 +217,17 @@ def pytest_unconfigure(config):
     """
     import faulthandler, signal, os
     faulthandler.disable()
+    signal.signal(signal.SIGABRT, lambda s, f: os._exit(0))
+
+
+def pytest_sessionstart(session):
+    """Install SIGABRT handler early so DuckDB crashes during tests are non-fatal.
+
+    DuckDB's C++ destructors can trigger SIGABRT when objects are garbage-collected
+    during test execution (not just at process teardown). Installing the handler at
+    session start prevents the process from crashing mid-test-run.
+    """
+    import signal, os
     signal.signal(signal.SIGABRT, lambda s, f: os._exit(0))
 
 

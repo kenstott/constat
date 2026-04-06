@@ -1557,6 +1557,26 @@ class SessionManager:
 
         self.publish_execution_event(managed.session_id, event_dict)
 
+        # Also publish glossary generation events to the glossaryChanged subscription
+        from constat.server.graphql.types.glossary_types import GlossaryChangeAction, GlossaryChangeEvent
+        _glossary_action_map = {
+            EventType.GLOSSARY_REBUILD_START: GlossaryChangeAction.GENERATION_STARTED,
+            EventType.GLOSSARY_GENERATION_PROGRESS: GlossaryChangeAction.GENERATION_PROGRESS,
+            EventType.GLOSSARY_REBUILD_COMPLETE: GlossaryChangeAction.GENERATION_COMPLETE,
+        }
+        if event_type in _glossary_action_map:
+            glossary_event = GlossaryChangeEvent(
+                session_id=managed.session_id,
+                action=_glossary_action_map[event_type],
+                term_name="",
+                stage=data.get("stage"),
+                percent=data.get("percent"),
+                terms_count=data.get("terms_count"),
+                duration_ms=data.get("duration_ms"),
+                error=data.get("error"),
+            )
+            self.publish_glossary_change(managed.session_id, glossary_event)
+
     def get_session(self, session_id: str) -> ManagedSession:
         """Get a managed session by ID.
 

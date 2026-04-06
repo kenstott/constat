@@ -76,20 +76,19 @@ class TestBrowserConnection:
         assert "session_id" in body
 
     def test_websocket_connection(self, page, server_url):
-        """Browser can open a WebSocket to the session endpoint."""
-        session_id = _create_session(server_url)
-
+        """Browser can open a WebSocket to the GraphQL subscriptions endpoint."""
         ws_url = server_url.replace("http://", "ws://")
-        ws_endpoint = f"{ws_url}/api/sessions/{session_id}/ws"
+        ws_endpoint = f"{ws_url}/api/graphql"
 
         # Use page.evaluate to test WebSocket from browser context
+        # The graphql-ws protocol requires a specific subprotocol handshake
         result = page.evaluate(
             """async (wsUrl) => {
-                return new Promise((resolve, reject) => {
-                    const ws = new WebSocket(wsUrl);
+                return new Promise((resolve) => {
+                    const ws = new WebSocket(wsUrl, ['graphql-transport-ws']);
                     const timeout = setTimeout(() => {
                         ws.close();
-                        reject(new Error('WebSocket connection timeout'));
+                        resolve({ connected: false, error: 'WebSocket connection timeout' });
                     }, 10000);
 
                     ws.onopen = () => {
@@ -141,19 +140,17 @@ class TestSplitModeSession:
         assert resp.json()["session_id"]
 
     def test_websocket_non_default_user(self, page, server_url):
-        """WebSocket connects for a non-default user (split mode)."""
-        session_id = _create_session(server_url, user_id="integration_test_user_ws")
-
+        """WebSocket connects to the GraphQL subscriptions endpoint (session-independent)."""
         ws_url = server_url.replace("http://", "ws://")
-        ws_endpoint = f"{ws_url}/api/sessions/{session_id}/ws"
+        ws_endpoint = f"{ws_url}/api/graphql"
 
         result = page.evaluate(
             """async (wsUrl) => {
-                return new Promise((resolve, reject) => {
-                    const ws = new WebSocket(wsUrl);
+                return new Promise((resolve) => {
+                    const ws = new WebSocket(wsUrl, ['graphql-transport-ws']);
                     const timeout = setTimeout(() => {
                         ws.close();
-                        reject(new Error('WebSocket connection timeout'));
+                        resolve({ connected: false, error: 'WebSocket connection timeout' });
                     }, 10000);
 
                     ws.onopen = () => {

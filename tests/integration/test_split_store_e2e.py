@@ -220,18 +220,17 @@ class TestSplitStoreE2E:
             )
 
     def test_websocket_connects_for_split_session(self, page, server_url, split_session):
-        """WebSocket connects for a split-mode session."""
-        sid = split_session["session_id"]
+        """WebSocket connects to the GraphQL subscriptions endpoint."""
         ws_url = server_url.replace("http://", "ws://")
-        ws_endpoint = f"{ws_url}/api/sessions/{sid}/ws"
+        ws_endpoint = f"{ws_url}/api/graphql"
 
         result = page.evaluate(
             """async (wsUrl) => {
-                return new Promise((resolve, reject) => {
-                    const ws = new WebSocket(wsUrl);
+                return new Promise((resolve) => {
+                    const ws = new WebSocket(wsUrl, ['graphql-transport-ws']);
                     const timeout = setTimeout(() => {
                         ws.close();
-                        reject(new Error('WebSocket connection timeout'));
+                        resolve({ connected: false, error: 'WebSocket connection timeout' });
                     }, 10000);
 
                     ws.onopen = () => {
