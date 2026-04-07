@@ -98,8 +98,8 @@ export const ARTIFACTS_QUERY = gql`
 `
 
 export const ARTIFACT_QUERY = gql`
-  query Artifact($sessionId: String!, $id: Int!) {
-    artifact(sessionId: $sessionId, id: $id) {
+  query Artifact($sessionId: String!, $artifactId: Int!) {
+    artifact(sessionId: $sessionId, artifactId: $artifactId) {
       id
       name
       artifactType
@@ -111,8 +111,8 @@ export const ARTIFACT_QUERY = gql`
 `
 
 export const ARTIFACT_VERSIONS_QUERY = gql`
-  query ArtifactVersions($sessionId: String!, $id: Int!) {
-    artifactVersions(sessionId: $sessionId, id: $id) {
+  query ArtifactVersions($sessionId: String!, $artifactId: Int!) {
+    artifactVersions(sessionId: $sessionId, artifactId: $artifactId) {
       name
       currentVersion
       versions {
@@ -190,8 +190,8 @@ export const TOGGLE_TABLE_STAR = gql`
 `
 
 export const DELETE_ARTIFACT = gql`
-  mutation DeleteArtifact($sessionId: String!, $id: Int!) {
-    deleteArtifact(sessionId: $sessionId, id: $id) {
+  mutation DeleteArtifact($sessionId: String!, $artifactId: Int!) {
+    deleteArtifact(sessionId: $sessionId, artifactId: $artifactId) {
       status
       name
     }
@@ -199,8 +199,8 @@ export const DELETE_ARTIFACT = gql`
 `
 
 export const TOGGLE_ARTIFACT_STAR = gql`
-  mutation ToggleArtifactStar($sessionId: String!, $id: Int!) {
-    toggleArtifactStar(sessionId: $sessionId, id: $id) {
+  mutation ToggleArtifactStar($sessionId: String!, $artifactId: Int!) {
+    toggleArtifactStar(sessionId: $sessionId, artifactId: $artifactId) {
       name
       isStarred
     }

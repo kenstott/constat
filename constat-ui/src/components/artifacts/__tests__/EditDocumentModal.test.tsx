@@ -5,7 +5,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { detectScheme, isValidUri, URL_SCHEMES, EditDocumentModal } from '../EditDocumentModal'
+import { detectScheme, isValidUri, URL_SCHEMES } from '../uriUtils'
+import { EditDocumentModal } from '../EditDocumentModal'
 import type { DocumentSourceInfo } from '@/types/api'
 
 // ---------------------------------------------------------------------------

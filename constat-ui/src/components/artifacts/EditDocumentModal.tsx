@@ -13,6 +13,7 @@ import { useMutation, useLazyQuery } from '@apollo/client'
 import { UPDATE_DOCUMENT, VALIDATE_URI } from '@/graphql/operations/sources'
 import { useSessionContext } from '@/contexts/SessionContext'
 import type { DocumentSourceInfo } from '@/types/api'
+import { detectScheme, isValidUri } from './uriUtils'
 
 interface Props {
   doc: DocumentSourceInfo
@@ -24,34 +25,6 @@ interface FieldErrors {
   name?: string
   description?: string
   uri?: string
-}
-
-export const URL_SCHEMES = ['http://', 'https://', 'ftp://', 'sftp://', 's3://', 's3a://', 'file://']
-
-export function detectScheme(uri: string): string | null {
-  const lower = uri.toLowerCase()
-  return URL_SCHEMES.find(s => lower.startsWith(s)) ?? null
-}
-
-export function isValidUri(uri: string): boolean {
-  const trimmed = uri.trim()
-  if (!trimmed) return false
-  const scheme = detectScheme(trimmed)
-  if (scheme === 'http://' || scheme === 'https://') {
-    try { new URL(trimmed); return true } catch { return false }
-  }
-  if (scheme === 's3://' || scheme === 's3a://') {
-    // must have bucket: s3://bucket/key
-    return trimmed.replace(/^s3a?:\/\//i, '').split('/')[0].length > 0
-  }
-  if (scheme === 'ftp://' || scheme === 'sftp://') {
-    try { new URL(trimmed); return true } catch { return false }
-  }
-  if (scheme === 'file://') {
-    return trimmed.length > 'file://'.length
-  }
-  // bare file path — non-empty is sufficient
-  return trimmed.length > 0
 }
 
 export function EditDocumentModal({ doc, onSuccess, onCancel }: Props) {

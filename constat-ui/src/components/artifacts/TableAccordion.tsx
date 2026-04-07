@@ -346,9 +346,12 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
       {/* Accordion Item */}
       <div className="border border-gray-200 dark:border-gray-700 rounded-lg">
         {/* Header - overflow-visible to allow version dropdown to escape */}
-        <button
+        <div
+          role="button"
+          tabIndex={0}
           onClick={toggleOpen}
-          className="relative w-full flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors rounded-t-lg"
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleOpen() }}
+          className="relative w-full flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors rounded-t-lg cursor-pointer"
         >
           <div className="flex items-center gap-2 min-w-0">
             {isOpen ? (
@@ -480,7 +483,7 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
               )}
             </div>
           </div>
-        </button>
+        </div>
 
         {/* Collapsible Content */}
         {isOpen && (

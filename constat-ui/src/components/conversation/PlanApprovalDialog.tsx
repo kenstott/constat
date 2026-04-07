@@ -81,16 +81,24 @@ function StepItem({ step, index, isExpanded, onToggle, modification, onModificat
             Modified
           </span>
         )}
-        <button
+        <div
+          role="button"
+          tabIndex={0}
           onClick={(e) => {
             e.stopPropagation()
             onDelete()
           }}
-          className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.stopPropagation()
+              onDelete()
+            }
+          }}
+          className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors cursor-pointer"
           title="Delete step"
         >
           <TrashIcon className="w-4 h-4" />
-        </button>
+        </div>
       </button>
 
       {isExpanded && (

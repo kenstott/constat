@@ -190,7 +190,7 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
         } else {
           const { data: result } = await apolloClient.query({
             query: ARTIFACT_QUERY,
-            variables: { sessionId: session.session_id, id: artifact.id },
+            variables: { sessionId: session.session_id, artifactId: artifact.id },
             fetchPolicy: 'network-only',
           })
           setContent(toArtifactContent(result.artifact))
@@ -290,7 +290,7 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
       try {
         const { data: result } = await apolloClient.query({
           query: ARTIFACT_VERSIONS_QUERY,
-          variables: { sessionId: session.session_id, id: artifact.id },
+          variables: { sessionId: session.session_id, artifactId: artifact.id },
           fetchPolicy: 'network-only',
         })
         const mapped = toArtifactVersions(result.artifactVersions)
@@ -320,7 +320,7 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     try {
       const { data: result } = await apolloClient.query({
         query: ARTIFACT_QUERY,
-        variables: { sessionId: session.session_id, id: versionId },
+        variables: { sessionId: session.session_id, artifactId: versionId },
         fetchPolicy: 'network-only',
       })
       setContent(toArtifactContent(result.artifact))
@@ -396,7 +396,7 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
         if (!artifactContent) {
           const { data: result } = await apolloClient.query({
             query: ARTIFACT_QUERY,
-            variables: { sessionId: session.session_id, id: artifact.id },
+            variables: { sessionId: session.session_id, artifactId: artifact.id },
             fetchPolicy: 'network-only',
           })
           artifactContent = toArtifactContent(result.artifact)

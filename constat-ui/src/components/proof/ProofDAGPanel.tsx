@@ -368,6 +368,29 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     localStorage.setItem('constat-proof-panel-geometry', JSON.stringify(data))
   }, [panelSize, panelPosition])
 
+  // Native wheel listener (passive:false required for preventDefault to work)
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg) return
+    const handler = (e: WheelEvent) => {
+      e.preventDefault()
+      const scale = e.deltaY > 0 ? 0.9 : 1.1
+      setZoom(prev => {
+        const newZoom = Math.min(3, Math.max(0.3, prev * scale))
+        const svgRect = svg.getBoundingClientRect()
+        const cx = e.clientX - svgRect.left
+        const cy = e.clientY - svgRect.top
+        setPan(p => ({
+          x: cx - (cx - p.x) * (newZoom / prev),
+          y: cy - (cy - p.y) * (newZoom / prev),
+        }))
+        return newZoom
+      })
+    }
+    svg.addEventListener('wheel', handler, { passive: false })
+    return () => svg.removeEventListener('wheel', handler)
+  }, [svgRef])
+
   // Handle drag
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     // Only start drag if clicking on the header background, not buttons
@@ -934,19 +957,6 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
               preserveAspectRatio="xMidYMid meet"
               className="block"
               style={{ cursor: isPanningDag.current ? 'grabbing' : 'grab' }}
-              onWheel={(e) => {
-                e.preventDefault()
-                const scale = e.deltaY > 0 ? 0.9 : 1.1
-                const newZoom = Math.min(3, Math.max(0.3, zoom * scale))
-                const svgRect = svgRef.current!.getBoundingClientRect()
-                const cx = e.clientX - svgRect.left
-                const cy = e.clientY - svgRect.top
-                setPan(p => ({
-                  x: cx - (cx - p.x) * (newZoom / zoom),
-                  y: cy - (cy - p.y) * (newZoom / zoom),
-                }))
-                setZoom(newZoom)
-              }}
               onMouseDown={(e) => {
                 if (e.button !== 0) return
                 isPanningDag.current = true

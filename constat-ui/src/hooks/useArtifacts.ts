@@ -34,7 +34,7 @@ export function useArtifacts() {
 export function useArtifact(id: number) {
   const { sessionId } = useSessionContext()
   const { data, loading, error } = useQuery(ARTIFACT_QUERY, {
-    variables: { sessionId: sessionId!, id },
+    variables: { sessionId: sessionId!, artifactId: id },
     skip: !sessionId || !id,
   })
   return {
@@ -47,7 +47,7 @@ export function useArtifact(id: number) {
 export function useArtifactVersions(id: number) {
   const { sessionId } = useSessionContext()
   const { data, loading, error } = useQuery(ARTIFACT_VERSIONS_QUERY, {
-    variables: { sessionId: sessionId!, id },
+    variables: { sessionId: sessionId!, artifactId: id },
     skip: !sessionId || !id,
   })
   return {
@@ -66,8 +66,8 @@ export function useArtifactMutations() {
 
   return {
     deleteArtifact: (id: number) =>
-      deleteArtifactMut({ variables: { sessionId: sessionId!, id } }),
+      deleteArtifactMut({ variables: { sessionId: sessionId!, artifactId: id } }),
     toggleStar: (id: number) =>
-      toggleStarMut({ variables: { sessionId: sessionId!, id } }),
+      toggleStarMut({ variables: { sessionId: sessionId!, artifactId: id } }),
   }
 }

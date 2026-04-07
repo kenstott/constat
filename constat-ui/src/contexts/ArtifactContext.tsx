@@ -187,7 +187,7 @@ export function ArtifactProvider({ children }: { children: ReactNode }) {
 
   // Mutation actions
   const selectArtifact = useCallback(async (sid: string, artifactId: number) => {
-    const { data } = await apolloClient.query({ query: ARTIFACT_QUERY, variables: { sessionId: sid, id: artifactId }, fetchPolicy: 'network-only' })
+    const { data } = await apolloClient.query({ query: ARTIFACT_QUERY, variables: { sessionId: sid, artifactId }, fetchPolicy: 'network-only' })
     selectedArtifactVar(toArtifactContent(data.artifact))
   }, [])
 
@@ -196,7 +196,7 @@ export function ArtifactProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const removeArtifact = useCallback(async (sid: string, artifactId: number) => {
-    await apolloClient.mutate({ mutation: DELETE_ARTIFACT, variables: { sessionId: sid, id: artifactId } })
+    await apolloClient.mutate({ mutation: DELETE_ARTIFACT, variables: { sessionId: sid, artifactId } })
     await apolloClient.refetchQueries({ include: ['Artifacts', 'Tables'] })
   }, [])
 
@@ -206,7 +206,7 @@ export function ArtifactProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const toggleArtifactStar = useCallback(async (sid: string, artifactId: number) => {
-    await apolloClient.mutate({ mutation: TOGGLE_ARTIFACT_STAR, variables: { sessionId: sid, id: artifactId } })
+    await apolloClient.mutate({ mutation: TOGGLE_ARTIFACT_STAR, variables: { sessionId: sid, artifactId } })
     await apolloClient.refetchQueries({ include: ['Artifacts'] })
   }, [])
 

@@ -1185,11 +1185,15 @@ export function executeSideEffects(
       const { patch, version } = event.data as { patch: Operation[]; version: number }
       getCachedEntry(sessionId).then((entry) => {
         const base: CompactState = entry?.state ?? { e: {}, g: {}, r: {}, k: {} }
-        const { newDocument } = applyPatch(base, patch, false, false)
-        const newState = newDocument as CompactState
-        const { terms, totalDefined, totalSelfDescribing } = inflateToGlossaryTerms(newState)
-        setTermsFromState(terms, totalDefined, totalSelfDescribing)
-        setCachedEntry(sessionId, newState, version)
+        try {
+          const { newDocument } = applyPatch(base, patch, false, false)
+          const newState = newDocument as CompactState
+          const { terms, totalDefined, totalSelfDescribing } = inflateToGlossaryTerms(newState)
+          setTermsFromState(terms, totalDefined, totalSelfDescribing)
+          setCachedEntry(sessionId, newState, version)
+        } catch (err) {
+          console.warn('[entity_patch] patch failed, requesting full state', err)
+        }
       })
       break
     }
