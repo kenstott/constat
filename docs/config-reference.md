@@ -506,6 +506,33 @@ documents:
 | `api_token` | `string` | `null` | Confluence API token |
 | `page_url` | `string` | `null` | Notion page URL |
 | `notion_token` | `string` | `null` | Notion integration token |
+| `oauth2_cert_path` | `string` | `null` | Path to PFX certificate file for SharePoint REST API auth (env: `SP_CERT_PATH`). Required for list item attachments and linked file extraction. Bypasses the `AllowAppOnlyPolicy` tenant requirement. |
+| `oauth2_cert_password` | `string` | `null` | Password for the PFX certificate (env: `SP_CERT_PASSWORD`). May be empty string if the certificate has no password. |
+
+**SharePoint (Online):**
+
+The SharePoint transport (`transport: sharepoint`) uses Microsoft Graph API for discovery and SharePoint REST API for attachment/file access. Certificate auth (`oauth2_cert_path`) is required for list item attachments and linked file extraction; without it those features are skipped with a warning.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `site_url` | `string` | required | SharePoint site URL, e.g. `https://contoso.sharepoint.com` |
+| `discover_libraries` | `bool` | `true` | Index document libraries |
+| `discover_lists` | `bool` | `true` | Index generic lists (including attachments if cert configured) |
+| `discover_calendars` | `bool` | `true` | Index calendar events (including attachments and linked files if cert configured) |
+| `discover_pages` | `bool` | `true` | Index site pages |
+| `library_names` | `list[string]` | `null` | Limit to specific library names; `null` = all |
+| `list_names` | `list[string]` | `null` | Limit to specific list names; `null` = all |
+| `calendar_names` | `list[string]` | `null` | Limit to specific calendar names; `null` = all |
+| `recursive` | `bool` | `true` | Recurse into sub-folders in document libraries |
+| `max_files` | `int` | `200` | Maximum files per library |
+| `max_rows` | `int` | `500` | Maximum rows per list or calendar |
+| `oauth2_client_id` | `string` | required | Azure AD app client ID |
+| `oauth2_client_secret` | `string` | required | Azure AD app client secret |
+| `oauth2_tenant_id` | `string` | required | Azure AD tenant ID |
+| `oauth2_cert_path` | `string` | `null` | Path to PFX file — enables REST API attachment + linked file access |
+| `oauth2_cert_password` | `string` | `null` | PFX password (may be empty) |
+
+**Linked file extraction:** When `oauth2_cert_path` is set, `extract_linked_files_from_items()` scans all text/HTML fields of list items and calendar events for SharePoint document hyperlinks (both absolute URLs and server-relative `href` attributes), then downloads and indexes the linked files alongside the parent item.
 
 ---
 

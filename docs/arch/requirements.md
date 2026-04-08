@@ -75,6 +75,7 @@
 - **REQ-056** (2026-03-29): DuckDB vector backend (DuckDBVectorBackend) provides embeddings, FTS, BM25, RRF, reranking.
 - **REQ-057** (2026-03-29): Store class composes RelationalStore + DuckDBVectorBackend.
 - **REQ-058** (2026-03-29): Vector store (`constat/discovery/vector_store.py`) is thin wrapper over DuckDB backend.
+- **REQ-106** (2026-04-08): SharePoint list items and calendar events: detect hyperlinks in all text/rich-text fields, fetch linked files (filtered by tenant hostname and document extensions/content-type), and index files alongside parent item content.
 
 ## UI & Frontend
 - **REQ-059** (2026-03-29): Frontend modules: `api/` (HTTP/WebSocket clients), `components/` (React), `store/` (Zustand), `types/` (TypeScript), `hooks/` (custom hooks).

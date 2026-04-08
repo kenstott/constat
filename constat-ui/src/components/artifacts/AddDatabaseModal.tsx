@@ -13,6 +13,7 @@ import { useState } from 'react'
 const FILE_TYPES = new Set(['duckdb', 'sqlite'])
 const URI_TYPES = new Set(['custom'])
 const CLOUD_TYPES = new Set(['dynamodb', 'cosmosdb', 'firestore'])
+const JDBC_TYPES = new Set(['jdbc'])
 
 const DB_OPTIONS = [
   { value: 'postgresql', label: 'PostgreSQL' },
@@ -28,6 +29,7 @@ const DB_OPTIONS = [
   { value: 'cosmosdb', label: 'Cosmos DB' },
   { value: 'firestore', label: 'Firestore' },
   { value: 'custom', label: 'Custom URI' },
+  { value: 'jdbc', label: 'Generic JDBC' },
 ]
 
 const DEFAULT_PORTS: Record<string, string> = {
@@ -116,6 +118,10 @@ export function AddDatabaseModal({ onAdd, onCancel, uploading }: Props) {
   const [filePath, setFilePath] = useState('')
   const [customUri, setCustomUri] = useState('')
   const [net, setNet] = useState<NetworkFields>({ host: '', port: '', username: '', password: '', database: '' })
+  // JDBC fields
+  const [jdbcDriver, setJdbcDriver] = useState('')
+  const [jdbcUrl, setJdbcUrl] = useState('')
+  const [jarPath, setJarPath] = useState('')
   // Extra auth fields
   const [apiKey, setApiKey] = useState('')
   const [bearerToken, setBearerToken] = useState('')
@@ -130,7 +136,8 @@ export function AddDatabaseModal({ onAdd, onCancel, uploading }: Props) {
   const isFile = FILE_TYPES.has(dbType)
   const isUri = URI_TYPES.has(dbType)
   const isCloud = CLOUD_TYPES.has(dbType)
-  const isNetwork = dbType !== '' && !isFile && !isUri && !isCloud
+  const isJdbc = JDBC_TYPES.has(dbType)
+  const isNetwork = dbType !== '' && !isFile && !isUri && !isCloud && !isJdbc
   const authOptions = DB_AUTH_OPTIONS[dbType] ?? null
   const hasAuthSelector = authOptions !== null && isNetwork
 
@@ -140,6 +147,7 @@ export function AddDatabaseModal({ onAdd, onCancel, uploading }: Props) {
     setAuthType(defaultAuth(val))
     setApiKey(''); setBearerToken(''); setRegion(''); setAccessKeyId('')
     setSecretAccessKey(''); setEndpoint(''); setAccountKey(''); setProject(''); setCredentialsPath('')
+    setJdbcDriver(''); setJdbcUrl(''); setJarPath('')
   }
 
   function buildResult(): { uri: string; extra: Record<string, unknown> } {
@@ -158,6 +166,17 @@ export function AddDatabaseModal({ onAdd, onCancel, uploading }: Props) {
       return { uri: filePath, extra }
     }
     if (isUri) return { uri: customUri, extra }
+
+    if (isJdbc) {
+      extra.jdbc_driver = jdbcDriver
+      extra.jdbc_url = jdbcUrl
+      if (jarPath) extra.jar_path = jarPath.includes(',')
+        ? jarPath.split(',').map(s => s.trim())
+        : jarPath
+      if (net.username) extra.username = net.username
+      if (net.password) extra.password = net.password
+      return { uri: jdbcUrl, extra }
+    }
 
     if (isCloud) {
       if (dbType === 'dynamodb') {
@@ -196,7 +215,7 @@ export function AddDatabaseModal({ onAdd, onCancel, uploading }: Props) {
   function handleSubmit() {
     if (!name || !dbType) return
     const { uri, extra } = buildResult()
-    if (!uri && !isCloud) return
+    if (!uri && !isCloud && !isJdbc) return
     // SQLite/DuckDB use SQLAlchemy driver — report as 'sqlalchemy' so backend accepts the URI
     const effectiveType = (dbType === 'sqlite' || dbType === 'duckdb') ? 'sqlalchemy' : dbType
     onAdd(name, uri, effectiveType, Object.keys(extra).length ? extra : undefined)
@@ -206,6 +225,7 @@ export function AddDatabaseModal({ onAdd, onCancel, uploading }: Props) {
     if (!name || !dbType) return false
     if (isFile) return filePath.length > 0
     if (isUri) return customUri.length > 0
+    if (isJdbc) return jdbcDriver.length > 0 && jdbcUrl.length > 0
     if (isCloud) {
       if (dbType === 'dynamodb') return authType === 'env' || (accessKeyId.length > 0 && secretAccessKey.length > 0)
       if (dbType === 'cosmosdb') return endpoint.length > 0
@@ -254,6 +274,53 @@ export function AddDatabaseModal({ onAdd, onCancel, uploading }: Props) {
           <p className={label}>Connection URI (SQLAlchemy format)</p>
           <input type="text" placeholder="dialect+driver://user:pass@host:port/db" value={customUri} onChange={(e) => setCustomUri(e.target.value)} className={input} />
         </div>
+      )}
+
+      {/* Generic JDBC */}
+      {isJdbc && (
+        <>
+          <div>
+            <p className={label}>JDBC Driver Class</p>
+            <input
+              type="text"
+              placeholder="com.example.jdbc.Driver"
+              value={jdbcDriver}
+              onChange={(e) => setJdbcDriver(e.target.value)}
+              className={input}
+            />
+          </div>
+          <div>
+            <p className={label}>JDBC URL</p>
+            <input
+              type="text"
+              placeholder="jdbc:vendor://host:port/database"
+              value={jdbcUrl}
+              onChange={(e) => setJdbcUrl(e.target.value)}
+              className={input}
+            />
+          </div>
+          <div>
+            <p className={label}>JAR Path(s) (comma-separated for multiple)</p>
+            <input
+              type="text"
+              placeholder="/opt/drivers/vendor.jar"
+              value={jarPath}
+              onChange={(e) => setJarPath(e.target.value)}
+              className={input}
+            />
+          </div>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <p className={label}>Username (optional)</p>
+              <input type="text" placeholder="user" value={net.username} onChange={(e) => setNet({ ...net, username: e.target.value })} className={half} />
+            </div>
+            <div className="flex-1">
+              <p className={label}>Password (optional)</p>
+              <input type="password" placeholder="password" value={net.password} onChange={(e) => setNet({ ...net, password: e.target.value })} className={half} />
+            </div>
+          </div>
+          <p className={hint}>Requires <code>pip install &apos;constat[jdbc]&apos;</code> and a JVM (Java) installation.</p>
+        </>
       )}
 
       {/* Network: host + port */}

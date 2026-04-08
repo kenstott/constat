@@ -424,6 +424,8 @@ class SchemaManager:
                 self._connect_file(db_name, db_config)
             elif db_config.is_nosql():
                 self._connect_nosql(db_name, db_config)
+            elif db_config.is_jdbc():
+                self._connect_jdbc(db_name, db_config)
             else:
                 self._connect_sql(db_name, db_config)
 
@@ -460,6 +462,211 @@ class SchemaManager:
         logger.debug(f"Connected to {db_name} with transpilation: postgres -> {wrapped.target_dialect}")
 
         # Track read-only status
+        if db_config.read_only:
+            self._read_only_databases.add(db_name)
+
+    def _connect_jdbc(self, db_name: str, db_config: DatabaseConfig) -> None:
+        """Connect to a database via JDBC using JayDeBeApi + JPype.
+
+        Requires: pip install 'constat[jdbc]'
+        Config fields: jdbc_driver, jdbc_url, jar_path, username, password
+
+        Example config.yaml:
+            databases:
+              sap_hana:
+                type: jdbc
+                jdbc_driver: com.sap.db.jdbc.Driver
+                jdbc_url: jdbc:sap://host:30015/?databaseName=mydb
+                jar_path: /opt/drivers/ngdbc.jar
+                username: ${SAP_USER}
+                password: ${SAP_PASS}
+        """
+        try:
+            import jaydebeapi
+        except ImportError as e:
+            raise ImportError(
+                f"JDBC support requires JayDeBeApi and JPype1. "
+                f"Install with: pip install 'constat[jdbc]'"
+            ) from e
+
+        if not db_config.jdbc_driver:
+            raise ValueError(f"[{db_name}] jdbc_driver is required for type=jdbc")
+        if not db_config.jdbc_url:
+            raise ValueError(f"[{db_name}] jdbc_url is required for type=jdbc")
+
+        jar_path = db_config.jar_path
+        if isinstance(jar_path, str):
+            jar_path = [jar_path]
+
+        credentials = []
+        if db_config.username:
+            credentials = [db_config.username, db_config.password or ""]
+
+        def _creator():
+            return jaydebeapi.connect(
+                db_config.jdbc_driver,
+                db_config.jdbc_url,
+                credentials or None,
+                jar_path,
+            )
+
+        # Build a SQLAlchemy Engine without going through create_engine() URL
+        # parsing.  create_engine("sqlite://", creator=...) triggers SQLite's
+        # post-connect hook (conn.create_function) which JayDeBeApi connections
+        # don't have.  We use a minimal custom dialect that:
+        #   - Sets the correct name for SQL transpilation dialect detection
+        #   - Points loaded_dbapi at jaydebeapi so error handling works
+        #   - Swallows rollback/begin errors (JDBC drivers that run in
+        #     auto-commit mode, e.g. Xerial SQLite JDBC, can't rollback)
+        from sqlalchemy.engine.base import Engine as _Engine
+        from sqlalchemy.pool import NullPool
+        from sqlalchemy.engine import default as _sa_default
+
+        jdbc_lower = (db_config.jdbc_url or "").lower()
+        _JDBC_DIALECT_MAP = [
+            ("jdbc:postgresql", "postgresql"),
+            ("jdbc:mysql",      "mysql"),
+            ("jdbc:mariadb",    "mysql"),
+            ("jdbc:mssql",      "mssql"),
+            ("jdbc:sqlserver",  "mssql"),
+            ("jdbc:oracle",     "oracle"),
+            ("jdbc:db2",        "db2"),
+            ("jdbc:sqlite",     "sqlite"),
+            ("jdbc:h2",         "sqlite"),
+            ("jdbc:hsqldb",     "sqlite"),
+            ("jdbc:sap",        "hana"),
+        ]
+        dialect_name = "sqlite"  # generic fallback
+        for prefix, name in _JDBC_DIALECT_MAP:
+            if jdbc_lower.startswith(prefix):
+                dialect_name = name
+                break
+
+        _jaydebeapi = jaydebeapi  # capture for class definition below
+
+        class _JDBCDialect(_sa_default.DefaultDialect):
+            """Minimal SQLAlchemy dialect wrapper for JayDeBeApi connections."""
+            driver = "jaydebeapi"
+            supports_statement_cache = True
+
+            @classmethod
+            def dbapi(cls):
+                return _jaydebeapi
+
+            def do_begin(self, dbapi_connection):
+                try:
+                    super().do_begin(dbapi_connection)
+                except Exception:
+                    pass  # auto-commit mode: begin is implicit
+
+            def do_rollback(self, dbapi_connection):
+                try:
+                    super().do_rollback(dbapi_connection)
+                except Exception:
+                    pass  # auto-commit mode: rollback is a no-op
+
+            @staticmethod
+            def _raw_jconn(connection):
+                """Extract the raw JayDeBeApi JDBC connection from a SA connection."""
+                # SA connection → DBAPI connection → JayDeBeApi Connection
+                dbapi_conn = connection.connection
+                # JayDeBeApi stores the underlying JPype JDBC conn as .jconn
+                if hasattr(dbapi_conn, "jconn"):
+                    return dbapi_conn.jconn
+                # Some SA versions wrap it one level deeper
+                raw = getattr(dbapi_conn, "driver_connection", dbapi_conn)
+                return raw.jconn
+
+            def get_table_names(self, connection, schema=None, **kw):
+                jconn = self._raw_jconn(connection)
+                meta = jconn.getMetaData()
+                rs = meta.getTables(None, schema, "%", ["TABLE", "VIEW"])
+                tables = []
+                while rs.next():
+                    tables.append(rs.getString("TABLE_NAME"))
+                rs.close()
+                return tables
+
+            def get_view_names(self, connection, schema=None, **kw):
+                return []
+
+            def get_columns(self, connection, table_name, schema=None, **kw):
+                from sqlalchemy import types as sa_types
+                jconn = self._raw_jconn(connection)
+                meta = jconn.getMetaData()
+                rs = meta.getColumns(None, schema, table_name, "%")
+                columns = []
+                while rs.next():
+                    col_name = rs.getString("COLUMN_NAME")
+                    jdbc_type = rs.getInt("DATA_TYPE")  # java.sql.Types int
+                    nullable = rs.getInt("NULLABLE") != 0  # 0 = columnNoNulls
+                    # Map common java.sql.Types to SA types (best-effort)
+                    _JDBC_TYPE_MAP = {
+                        -7: sa_types.Boolean,   # BIT
+                        -6: sa_types.SmallInteger,
+                        -5: sa_types.BigInteger,
+                        -4: sa_types.LargeBinary,
+                        -3: sa_types.LargeBinary,
+                        -2: sa_types.LargeBinary,
+                        -1: sa_types.Text,
+                        1:  sa_types.String,
+                        2:  sa_types.Numeric,
+                        3:  sa_types.Numeric,
+                        4:  sa_types.Integer,
+                        5:  sa_types.SmallInteger,
+                        6:  sa_types.Float,
+                        7:  sa_types.Float,
+                        8:  sa_types.Float,
+                        12: sa_types.String,
+                        16: sa_types.Boolean,
+                        91: sa_types.Date,
+                        92: sa_types.Time,
+                        93: sa_types.DateTime,
+                    }
+                    sa_type = _JDBC_TYPE_MAP.get(jdbc_type, sa_types.String)()
+                    columns.append({
+                        "name": col_name,
+                        "type": sa_type,
+                        "nullable": nullable,
+                        "default": None,
+                    })
+                rs.close()
+                return columns
+
+            def get_pk_constraint(self, connection, table_name, schema=None, **kw):
+                return {"constrained_columns": [], "name": None}
+
+            def get_foreign_keys(self, connection, table_name, schema=None, **kw):
+                return []
+
+            def get_indexes(self, connection, table_name, schema=None, **kw):
+                return []
+
+            def get_check_constraints(self, connection, table_name, schema=None, **kw):
+                return []
+
+            def get_unique_constraints(self, connection, table_name, schema=None, **kw):
+                return []
+
+        dialect = _JDBCDialect()
+        dialect.name = dialect_name
+        pool = NullPool(_creator)
+        pool._dialect = dialect  # Engine.__init__ does NOT set this; do it explicitly
+        engine = _Engine(pool, dialect, None)
+
+        # Test connectivity via JayDeBeApi directly (bypasses SA transaction mgmt)
+        test_conn = _creator()
+        try:
+            cur = test_conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+        finally:
+            test_conn.close()
+
+        wrapped = TranspilingConnection(engine)
+        self.connections[db_name] = wrapped
+        logger.debug(f"Connected to {db_name} via JDBC driver {db_config.jdbc_driver}")
+
         if db_config.read_only:
             self._read_only_databases.add(db_name)
 
@@ -822,6 +1029,8 @@ class SchemaManager:
                 "port": db_config.port or 0,
                 "path": db_config.path or "",
                 "keyspace": db_config.keyspace or "",
+                "jdbc_url": db_config.jdbc_url or "",
+                "jdbc_driver": db_config.jdbc_driver or "",
             }
 
         # Create deterministic JSON and hash it

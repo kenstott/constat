@@ -58,7 +58,8 @@ class Mutation:
                 raise ValueError(f"File not found: {input.file_id}")
             uri = file_info["file_uri"]
 
-        if not uri:
+        is_jdbc = input.type == "jdbc" or (input.extra_config or {}).get("jdbc_driver")
+        if not uri and not is_jdbc:
             raise ValueError("Either uri or file_id is required")
 
         uri_lower = uri.lower()
@@ -99,7 +100,7 @@ class Mutation:
             try:
                 managed.session.add_database(
                     name=input.name,
-                    uri=uri,
+                    uri=uri or "",
                     db_type=effective_type,
                     description=input.description,
                 )
@@ -114,7 +115,7 @@ class Mutation:
                     db_config = DatabaseConfig(
                         type=config_type,
                         path=uri if is_file_source else None,
-                        uri=uri if not is_file_source else None,
+                        uri=uri if (not is_file_source and config_type != "jdbc") else None,
                         description=input.description or "",
                         **extra,
                     )
@@ -123,15 +124,17 @@ class Mutation:
             except Exception as e:
                 raise ValueError(f"Failed to add database '{input.name}': {e}")
 
-        if "postgresql" in uri or "postgres" in uri:
+        if effective_type == "jdbc":
+            dialect = "jdbc"
+        elif "postgresql" in (uri or "") or "postgres" in (uri or ""):
             dialect = "postgresql"
-        elif "mysql" in uri:
+        elif "mysql" in (uri or ""):
             dialect = "mysql"
-        elif "sqlite" in uri:
+        elif "sqlite" in (uri or ""):
             dialect = "sqlite"
-        elif "duckdb" in uri:
+        elif "duckdb" in (uri or ""):
             dialect = "duckdb"
-        elif "mssql" in uri:
+        elif "mssql" in (uri or ""):
             dialect = "mssql"
 
         now = datetime.now(timezone.utc)

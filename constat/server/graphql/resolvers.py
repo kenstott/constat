@@ -201,7 +201,7 @@ class Query:
                 eff = r.get("_effective_domain")
                 if eff == "cross-domain":
                     return include_cross
-                if include_system and eff == "__base__":
+                if include_system and eff in ("__base__", "system"):
                     return True
                 if eff in explicit_domains:
                     return True

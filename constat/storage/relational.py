@@ -385,6 +385,7 @@ class RelationalStore:
                 """
                 INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
                 VALUES (?, ?, ?)
+                ON CONFLICT (chunk_id, entity_id) DO UPDATE SET confidence = excluded.confidence
                 """,
                 unique_records,
             )
@@ -395,6 +396,7 @@ class RelationalStore:
                         """
                         INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
                         VALUES (?, ?, ?)
+                        ON CONFLICT (chunk_id, entity_id) DO UPDATE SET confidence = excluded.confidence
                         """,
                         record,
                     )

@@ -852,12 +852,14 @@ class DuckDBVectorBackend(VectorBackend):
     def get_visible_chunks_with_metadata(
         self, chunk_filter: str, params: list, domain_join: str = "",
     ) -> list[tuple]:
+        if not domain_join:
+            domain_join = "LEFT JOIN data_sources _ds_e ON e.data_source_id = _ds_e.id"
         return self._conn.execute(
             f"""
             SELECT e.chunk_id, e.document_name, e.content, e.section, e.chunk_index,
-                   COALESCE(_ds.domain_id, e.domain_id) AS domain_id
+                   COALESCE(_ds_e.domain_id, e.domain_id) AS domain_id
             FROM {self._view('embeddings')} e
-            LEFT JOIN data_sources _ds ON e.data_source_id = _ds.id
+            {domain_join}
             WHERE {chunk_filter}
             """,
             params,

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -33,6 +34,12 @@ _GRAPH_API = "https://graph.microsoft.com/v1.0"
 # SharePoint list base templates
 _TEMPLATE_DOCUMENT_LIBRARY = "documentLibrary"
 _TEMPLATE_GENERIC_LIST = "genericList"
+
+# File extensions treated as indexable documents when found as hyperlinks
+_DOCUMENT_EXTENSIONS = {
+    ".docx", ".doc", ".pdf", ".xlsx", ".xls", ".pptx", ".ppt",
+    ".txt", ".csv", ".md", ".odt", ".ods", ".odp", ".rtf",
+}
 _TEMPLATE_EVENTS = "events"
 
 
@@ -90,10 +97,71 @@ class SharePointClient:
     # ------------------------------------------------------------------
 
     def _get_access_token(self) -> str:
-        """Get an OAuth2 access token via existing Azure provider."""
+        """Get an OAuth2 access token (Graph-scoped) via existing Azure provider."""
         from constat.discovery.doc_tools._imap import AzureOAuth2Provider
 
         return AzureOAuth2Provider(self._config).get_access_token()
+
+    def _has_cert(self) -> bool:
+        """Return True if a PFX certificate is configured for SharePoint REST auth."""
+        _cfg_cert = getattr(self._config, "oauth2_cert_path", None)
+        return bool((_cfg_cert if isinstance(_cfg_cert, str) else None) or os.environ.get("SP_CERT_PATH"))
+
+    def _get_sharepoint_rest_token(self) -> str:
+        """Get a SharePoint REST API token scoped to the tenant hostname.
+
+        Certificate auth (SP_CERT_PATH / oauth2_cert_path) bypasses the tenant-level
+        AllowAppOnlyPolicy requirement. Client-secret auth requires that policy enabled.
+        """
+        import msal
+
+        parsed = urlparse(self._site_url)
+        hostname = parsed.hostname
+        sp_scope = f"https://{hostname}/.default"
+        tenant_id = getattr(self._config, "oauth2_tenant_id", None)
+        client_id = getattr(self._config, "oauth2_client_id", None)
+        authority = f"https://login.microsoftonline.com/{tenant_id}"
+
+        _cfg_cert = getattr(self._config, "oauth2_cert_path", None)
+        cert_path = (_cfg_cert if isinstance(_cfg_cert, str) else None) or os.environ.get("SP_CERT_PATH")
+        if cert_path:
+            _cfg_pw = getattr(self._config, "oauth2_cert_password", None)
+            cert_password_raw = (
+                (_cfg_pw if isinstance(_cfg_pw, str) else None)
+                or os.environ.get("SP_CERT_PASSWORD")
+                or ""
+            )
+            credential = self._load_pfx_credential(cert_path, cert_password_raw)
+            app = msal.ConfidentialClientApplication(
+                client_id, authority=authority, client_credential=credential
+            )
+        else:
+            client_secret = getattr(self._config, "oauth2_client_secret", None)
+            app = msal.ConfidentialClientApplication(
+                client_id, authority=authority, client_credential=client_secret
+            )
+
+        result = app.acquire_token_for_client(scopes=[sp_scope])
+        if "access_token" not in result:
+            raise RuntimeError(
+                f"SharePoint REST token acquisition failed: {result.get('error_description', result)}"
+            )
+        return result["access_token"]
+
+    @staticmethod
+    def _load_pfx_credential(cert_path: str, password: str) -> dict:
+        """Extract thumbprint and private key from a PFX file for MSAL."""
+        from cryptography.hazmat.primitives.hashes import SHA1
+        from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+        from cryptography.hazmat.primitives.serialization.pkcs12 import load_pkcs12
+
+        with open(cert_path, "rb") as f:
+            pfx_data = f.read()
+        pw_bytes = password.encode() if password else None
+        pfx = load_pkcs12(pfx_data, pw_bytes)
+        private_key_pem = pfx.key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+        thumbprint = pfx.cert.certificate.fingerprint(SHA1()).hex().upper()
+        return {"thumbprint": thumbprint, "private_key": private_key_pem.decode()}
 
     def _get_auth_headers(self) -> dict[str, str]:
         """Build auth headers based on auth_type (ntlm, basic, or bearer)."""
@@ -165,14 +233,17 @@ class SharePointClient:
     def _get_site_id(self, token: str) -> str:
         """Resolve site URL to a Graph site ID.
 
-        Parses https://tenant.sharepoint.com/sites/name into
-        GET /sites/{hostname}:/{path}
+        Root URL  → GET /sites/{hostname}
+        Sub-site  → GET /sites/{hostname}:{path}
         """
         parsed = urlparse(self._site_url)
         hostname = parsed.hostname
         site_path = parsed.path.rstrip("/")
 
-        url = f"{_GRAPH_API}/sites/{hostname}:{site_path}"
+        if site_path:
+            url = f"{_GRAPH_API}/sites/{hostname}:{site_path}"
+        else:
+            url = f"{_GRAPH_API}/sites/{hostname}"
         resp = httpx.get(url, headers=self._headers(token), timeout=30)
         resp.raise_for_status()
         return resp.json()["id"]
@@ -251,7 +322,7 @@ class SharePointClient:
     def _list_site_lists(self, token: str, site_id: str) -> list[dict]:
         """Fetch all lists on a site (paginated)."""
         url = f"{_GRAPH_API}/sites/{site_id}/lists"
-        params: dict[str, str] = {"$top": "200"}
+        params: dict[str, str] = {"$top": "200", "$expand": "drive"}
         all_lists: list[dict] = []
 
         while True:
@@ -288,38 +359,47 @@ class SharePointClient:
     # Document library files
     # ------------------------------------------------------------------
 
+    def _make_drive_config(self, drive_id: str, **overrides):
+        """Build a config object for DriveFetcher by copying SP config attrs."""
+        from types import SimpleNamespace
+
+        attrs = {k: getattr(self._config, k, None) for k in (
+            "auth_type", "oauth2_client_id", "oauth2_client_secret", "oauth2_tenant_id",
+            "oauth2_scopes", "oauth2_token_cache",
+            "recursive", "max_files", "include_types",
+            "exclude_patterns", "include_trashed", "since",
+        )}
+        attrs.update(
+            provider="microsoft",
+            drive_id=drive_id,
+            site_id=None,
+            folder_id=None,
+            folder_path=getattr(self._config, "folder_path", None),
+        )
+        attrs.update(overrides)
+        return SimpleNamespace(**attrs)
+
     def fetch_library_files(self, library: SPLibrary) -> list:
         """List files in a document library (reuses DriveFetcher pattern).
 
         Returns a list of DriveFile objects.
         """
-        from constat.discovery.doc_tools._drive import DriveFetcher, DriveFile
+        from constat.discovery.doc_tools._drive import DriveFetcher
 
-        # Build a config variant that points DriveFetcher at this library's drive
-        from unittest.mock import MagicMock
-
-        drive_config = MagicMock(wraps=self._config)
-        drive_config.provider = "microsoft"
-        drive_config.drive_id = library.drive_id
-        drive_config.site_id = None
-        drive_config.folder_id = None
-        drive_config.folder_path = self._config.folder_path
-
-        fetcher = DriveFetcher(drive_config, config_dir=self._config_dir)
+        fetcher = DriveFetcher(
+            self._make_drive_config(library.drive_id),
+            config_dir=self._config_dir,
+        )
         return fetcher.list_files()
 
     def download_library_file(self, library: SPLibrary, file) -> bytes:
         """Download a file from a document library."""
         from constat.discovery.doc_tools._drive import DriveFetcher
 
-        from unittest.mock import MagicMock
-
-        drive_config = MagicMock(wraps=self._config)
-        drive_config.provider = "microsoft"
-        drive_config.drive_id = library.drive_id
-        drive_config.site_id = None
-
-        fetcher = DriveFetcher(drive_config, config_dir=self._config_dir)
+        fetcher = DriveFetcher(
+            self._make_drive_config(library.drive_id),
+            config_dir=self._config_dir,
+        )
         return fetcher.download_file(file)
 
     # ------------------------------------------------------------------
@@ -374,6 +454,148 @@ class SharePointClient:
             row = [str(fields.get(h, "")) for h in headers]
             lines.append("| " + " | ".join(row) + " |")
         return "\n".join(lines)
+
+    def fetch_list_item_attachments(self, sp_list: SPList, item_id: str) -> list[dict]:
+        """List attachments for a single list item via SharePoint REST API.
+
+        Graph API v1.0 does not expose the /attachments navigation property for
+        SharePoint list items; the SharePoint REST API is the only supported path.
+
+        Returns list of dicts with keys: FileName, ServerRelativeUrl.
+
+        Raises:
+            httpx.HTTPStatusError: 401 if the Azure AD app-only policy is not
+                enabled on the tenant. Tenant admin must run:
+                Set-SPOTenant -AllowAppOnlyPolicy $true
+        """
+        if not self._has_cert():
+            logger.warning(
+                "SharePoint list item attachments require certificate auth "
+                "(SP_CERT_PATH not set) — skipping attachment indexing."
+            )
+            return []
+        token = self._get_sharepoint_rest_token()
+        encoded_name = sp_list.name.replace("'", "''")
+        url = (
+            f"{self._site_url.rstrip('/')}/_api/web"
+            f"/lists/getbytitle('{encoded_name}')/items({item_id})/AttachmentFiles"
+        )
+        resp = httpx.get(
+            url,
+            headers={**self._headers(token), "Accept": "application/json;odata=verbose"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json().get("d", {}).get("results", [])
+
+    def download_list_item_attachment(
+        self, sp_list: SPList, item_id: str, file_name: str
+    ) -> bytes:
+        """Download attachment content via SharePoint REST API.
+
+        Raises:
+            httpx.HTTPStatusError: 401 if AllowAppOnlyPolicy is not enabled.
+        """
+        if not self._has_cert():
+            logger.warning(
+                "SharePoint list item attachments require certificate auth "
+                "(SP_CERT_PATH not set) — skipping attachment download."
+            )
+            return b""
+        token = self._get_sharepoint_rest_token()
+        encoded_name = sp_list.name.replace("'", "''")
+        encoded_file = file_name.replace("'", "''")
+        url = (
+            f"{self._site_url.rstrip('/')}/_api/web"
+            f"/lists/getbytitle('{encoded_name}')/items({item_id})"
+            f"/AttachmentFiles('{encoded_file}')/$value"
+        )
+        resp = httpx.get(
+            url,
+            headers=self._headers(token),
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.content
+
+    # ------------------------------------------------------------------
+    # Linked file extraction
+    # ------------------------------------------------------------------
+
+    def _extract_sp_urls(self, text: str) -> list[str]:
+        """Extract SharePoint document URLs from a text or HTML field value.
+
+        Handles both absolute URLs (https://hostname/...) and server-relative
+        hrefs in HTML anchor tags (/SiteAssets/...).
+        """
+        if not text or not isinstance(text, str):
+            return []
+        parsed = urlparse(self._site_url)
+        hostname = re.escape(parsed.hostname or "")
+        base = f"{parsed.scheme}://{parsed.hostname}"
+        seen: set[str] = set()
+        results: list[str] = []
+
+        def _accept(url: str) -> None:
+            url = url.rstrip(".,;)")
+            ext = Path(urlparse(url).path).suffix.lower()
+            if ext in _DOCUMENT_EXTENSIONS and url not in seen:
+                seen.add(url)
+                results.append(url)
+
+        # Absolute URLs containing the SharePoint hostname
+        for url in re.findall(rf'https?://{hostname}[^\s"\'<>]+', text):
+            _accept(url)
+
+        # Server-relative hrefs in HTML anchor tags: href="/path/to/file.docx"
+        for rel in re.findall(r'href=["\']([^"\']+)["\']', text):
+            if rel.startswith("/"):
+                _accept(base + rel)
+
+        return results
+
+    def fetch_linked_file(self, absolute_url: str) -> bytes:
+        """Download a SharePoint-hosted file by its absolute URL."""
+        if not self._has_cert():
+            logger.warning(
+                "Fetching linked SharePoint files requires certificate auth "
+                "(SP_CERT_PATH not set) — skipping linked file download."
+            )
+            return b""
+        token = self._get_sharepoint_rest_token()
+        server_relative = urlparse(absolute_url).path.replace("'", "''")
+        url = (
+            f"{self._site_url.rstrip('/')}/_api/web"
+            f"/GetFileByServerRelativeUrl('{server_relative}')/$value"
+        )
+        resp = httpx.get(url, headers=self._headers(token), timeout=60)
+        resp.raise_for_status()
+        return resp.content
+
+    def extract_linked_files_from_items(
+        self, items: list[dict]
+    ) -> list[tuple[str, str, bytes]]:
+        """Scan all string fields of list items for embedded SharePoint file URLs.
+
+        Returns list of (item_id, url, content) for each linked document found.
+        Inaccessible URLs are skipped with a debug log entry.
+        """
+        results = []
+        seen: set[str] = set()
+        for item in items:
+            item_id = item.get("id", "")
+            fields = item.get("fields", item)
+            for value in fields.values():
+                for url in self._extract_sp_urls(str(value) if value else ""):
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    try:
+                        content = self.fetch_linked_file(url)
+                        results.append((item_id, url, content))
+                    except httpx.HTTPStatusError:
+                        logger.debug("Linked file not accessible: %s", url)
+        return results
 
     # ------------------------------------------------------------------
     # Calendar events

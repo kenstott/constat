@@ -115,6 +115,25 @@ databases:
       Clickstream events (500 records). Fields: event_id, timestamp, event_type
       (page_view/click/form_submit/purchase/signup/error), source, user_id, properties
 
+  # Generic JDBC example using Xerial SQLite JDBC driver.
+  # SQLite has a native Python driver and wouldn't normally use JDBC — this
+  # entry exists purely to demonstrate the JDBC config path without needing
+  # a proprietary database.  Requires: pip install 'constat[jdbc]'
+  #
+  chinook_jdbc:
+    type: jdbc
+    jdbc_driver: org.sqlite.JDBC
+    jdbc_url: "jdbc:sqlite:data/chinook.db"
+    jar_path:
+      - demo/drivers/sqlite-jdbc-3.45.3.0.jar
+      - demo/drivers/slf4j-api-2.0.9.jar
+      - demo/drivers/slf4j-nop-2.0.9.jar
+    description: >
+      Chinook sample music-store database (albums, artists, tracks, invoices,
+      customers, employees) accessed via Generic JDBC using the Xerial SQLite driver.
+      Demonstrates JDBC connectivity with no credentials required.
+    read_only: true
+
 databases_description: |
   Three interconnected business databases and two file-based data sources:
   - sales: CRM and order management (customers.tier determines discount)

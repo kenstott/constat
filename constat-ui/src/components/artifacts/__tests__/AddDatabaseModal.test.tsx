@@ -316,4 +316,64 @@ describe('AddDatabaseModal', () => {
     selectType('firestore')
     expect(screen.getByText(/GOOGLE_APPLICATION_CREDENTIALS/)).toBeInTheDocument()
   })
+
+  // ---------------------------------------------------------------------------
+  // Generic JDBC
+  // ---------------------------------------------------------------------------
+
+  it('JDBC shows driver class, URL, JAR path, and optional username/password fields', () => {
+    renderModal(onAdd, onCancel)
+    selectType('jdbc')
+    expect(screen.getByPlaceholderText(/com\.example\.jdbc\.Driver/)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/jdbc:vendor/)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/\.jar/)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('user')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('password')).toBeInTheDocument()
+  })
+
+  it('JDBC shows JVM install hint', () => {
+    renderModal(onAdd, onCancel)
+    selectType('jdbc')
+    expect(screen.getByText(/constat\[jdbc\]/)).toBeInTheDocument()
+  })
+
+  it('JDBC Add button disabled until driver + URL filled', () => {
+    renderModal(onAdd, onCancel)
+    fireEvent.change(screen.getByPlaceholderText('Name'), { target: { value: 'myjdbc' } })
+    selectType('jdbc')
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled()
+    fireEvent.change(screen.getByPlaceholderText(/com\.example\.jdbc\.Driver/), { target: { value: 'com.sap.db.jdbc.Driver' } })
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled()
+    fireEvent.change(screen.getByPlaceholderText(/jdbc:vendor/), { target: { value: 'jdbc:sap://host:30015/' } })
+    expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled()
+  })
+
+  it('JDBC calls onAdd with correct type and extraConfig', () => {
+    renderModal(onAdd, onCancel)
+    fireEvent.change(screen.getByPlaceholderText('Name'), { target: { value: 'sap' } })
+    selectType('jdbc')
+    fireEvent.change(screen.getByPlaceholderText(/com\.example\.jdbc\.Driver/), { target: { value: 'com.sap.db.jdbc.Driver' } })
+    fireEvent.change(screen.getByPlaceholderText(/jdbc:vendor/), { target: { value: 'jdbc:sap://host:30015/' } })
+    fireEvent.change(screen.getByPlaceholderText(/\.jar/), { target: { value: '/opt/ngdbc.jar' } })
+    fireEvent.change(screen.getByPlaceholderText('user'), { target: { value: 'admin' } })
+    fireEvent.change(screen.getByPlaceholderText('password'), { target: { value: 'pass' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(onAdd).toHaveBeenCalledOnce()
+    const [name, uri, type, extraConfig] = onAdd.mock.calls[0]
+    expect(name).toBe('sap')
+    expect(type).toBe('jdbc')
+    expect(uri).toBe('jdbc:sap://host:30015/')
+    expect(extraConfig?.jdbc_driver).toBe('com.sap.db.jdbc.Driver')
+    expect(extraConfig?.jdbc_url).toBe('jdbc:sap://host:30015/')
+    expect(extraConfig?.jar_path).toBe('/opt/ngdbc.jar')
+    expect(extraConfig?.username).toBe('admin')
+    expect(extraConfig?.password).toBe('pass')
+  })
+
+  it('JDBC does not show host/port/database network fields', () => {
+    renderModal(onAdd, onCancel)
+    selectType('jdbc')
+    expect(screen.queryByPlaceholderText('localhost')).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('database')).not.toBeInTheDocument()
+  })
 })

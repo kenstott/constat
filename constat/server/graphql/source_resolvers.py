@@ -457,9 +457,14 @@ class Query:
             # Use identifier quoting via schema_manager validation above
             safe_name = table_name.replace('"', '""')
             query = f'SELECT * FROM "{safe_name}" LIMIT {int(page_size)} OFFSET {int(offset)}'
-            df = pd.read_sql(query, db_connection)
             count_query = f'SELECT COUNT(*) as cnt FROM "{safe_name}"'
-            count_df = pd.read_sql(count_query, db_connection)
+            # TranspilingConnection wraps a SQLAlchemy Engine — pass .engine so
+            # pandas uses the SQLAlchemy code path, not the DBAPI2 cursor path
+            # (JayDeBeApi cursors are not reliable via the DBAPI2 path).
+            from constat.catalog.sql_transpiler import TranspilingConnection
+            sql_con = db_connection.engine if isinstance(db_connection, TranspilingConnection) else db_connection
+            df = pd.read_sql(query, sql_con)
+            count_df = pd.read_sql(count_query, sql_con)
             total_rows = int(count_df.iloc[0]["cnt"])
 
         return DatabaseTablePreviewType(

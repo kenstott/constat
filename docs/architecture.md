@@ -261,6 +261,7 @@ Returns ranked results from:
 | `doc_tools/_file_extractors.py` | PDF, DOCX, XLSX, PPTX, HTML extraction (including embedded image extraction) |
 | `doc_tools/_image.py` | Image ingestion pipeline: OCR (Tesseract) → classification → LLM vision summary |
 | `doc_tools/_audio.py` | Audio/video transcription pipeline: faster-whisper → optional WhisperX diarization |
+| `doc_tools/_sharepoint.py` | SharePoint Online: document libraries, lists, calendars, site pages; REST API attachment download; linked file extraction from rich-text fields |
 | `doc_tools/_access.py` | Document access control and resolution |
 | `api_tools.py` | `search_operations` for API discovery |
 | `vector_store.py` | DuckDB VSS backend for embedding storage/search |

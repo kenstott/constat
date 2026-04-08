@@ -55,6 +55,13 @@ def _plan_to_gql(plan) -> ExecutionPlanType:
                 "tables_created": s.result.tables_created,
                 "tables_modified": s.result.tables_modified,
             }
+        step_code = s.code
+        if step_code is not None and not isinstance(step_code, str):
+            logger.warning(
+                "step.code is not a string (step=%s, type=%s, value=%r) — coercing to None",
+                getattr(s, "number", "?"), type(step_code).__name__, step_code,
+            )
+            step_code = None
         steps.append(PlanStepType(
             number=s.number,
             goal=s.goal,
@@ -62,7 +69,7 @@ def _plan_to_gql(plan) -> ExecutionPlanType:
             expected_inputs=s.expected_inputs,
             expected_outputs=s.expected_outputs,
             depends_on=s.depends_on,
-            code=s.code,
+            code=step_code,
             domain=s.domain,
             result=result,
         ))

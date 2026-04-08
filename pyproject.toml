@@ -14,6 +14,7 @@ dependencies = [
     "pandas>=3.0.0",
     "pyarrow>=20.0.0",
     "httpx>=0.28.1",
+    "msal>=1.28.0",
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",
     # CLI & REPL
@@ -74,6 +75,7 @@ dynamodb = ["boto3>=1.42.44"]
 cosmosdb = ["azure-cosmos>=4.14.6"]
 firestore = ["google-cloud-firestore>=2.23.0"]
 neo4j = ["neo4j>=5.0.0"]
+jdbc = ["JayDeBeApi>=1.2.3", "JPype1>=1.4.0"]
 
 # Document transports
 s3 = ["boto3>=1.42.44"]
@@ -111,7 +113,7 @@ dev = [
 # All optional dependencies
 all = [
     "constat[mysql,bigquery,snowflake,databricks]",
-    "constat[mongodb,cassandra,elasticsearch,dynamodb,cosmosdb,firestore,neo4j]",
+    "constat[mongodb,cassandra,elasticsearch,dynamodb,cosmosdb,firestore,neo4j,jdbc]",
     "constat[s3,sftp]",
     "constat[openai]",
     "constat[email]",

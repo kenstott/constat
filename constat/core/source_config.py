@@ -366,6 +366,8 @@ class DocumentConfig(BaseModel):
     oauth2_tenant_id: Optional[str] = None  # Azure AD
     oauth2_scopes: list[str] = Field(default_factory=list)
     oauth2_token_cache: Optional[str] = None
+    oauth2_cert_path: Optional[str] = None  # Path to PFX file (env: SP_CERT_PATH)
+    oauth2_cert_password: Optional[str] = None  # PFX password (env: SP_CERT_PASSWORD)
 
     # Metadata
     description: str = ""  # What this document contains

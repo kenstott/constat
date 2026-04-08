@@ -213,9 +213,8 @@ class _EntityMixin:
 
         if all_links:
             deduped = _deduplicate_chunk_links(all_links)
-            # Clear and re-link for entities we're keeping/adding
-            if new_ids and hasattr(self._vector_store, 'clear_chunk_entity_links_for_ids'):
-                self._vector_store.clear_chunk_entity_links_for_ids(new_ids)
+            # Insert/update links first so there is never a window with 0 links.
+            # ON CONFLICT DO UPDATE in link_chunk_entities handles re-runs safely.
             self._vector_store.link_chunk_entities(deduped)
             logger.info(f"extract_entities_for_session({session_id}): {len(new_ids - old_ids)} new, {len(stale_ids)} removed, {len(deduped)} links")
 

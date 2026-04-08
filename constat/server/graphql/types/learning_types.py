@@ -24,7 +24,7 @@ class LearningInfoType:
     content: str
     category: str
     source: Optional[str] = None
-    context: Optional[str] = None
+    context: Optional[JSON] = None
     applied_count: int = 0
     created_at: Optional[str] = None
     scope: Optional[JSON] = None

@@ -693,9 +693,11 @@ async def preview_database_table(
             conn.close()
         else:
             query = f'SELECT * FROM "{table_name}" LIMIT {page_size} OFFSET {offset}'
-            df = pd.read_sql(query, db_connection)
             count_query = f'SELECT COUNT(*) as cnt FROM "{table_name}"'
-            count_df = pd.read_sql(count_query, db_connection)
+            from constat.catalog.sql_transpiler import TranspilingConnection
+            sql_con = db_connection.engine if isinstance(db_connection, TranspilingConnection) else db_connection
+            df = pd.read_sql(query, sql_con)
+            count_df = pd.read_sql(count_query, sql_con)
             # noinspection PyTypeChecker
             total_rows = int(count_df.iloc[0]["cnt"])
 
@@ -761,8 +763,10 @@ async def download_database_table(
             df = conn.execute(f"SELECT * FROM {read_fn}").df()
             conn.close()
         else:
+            from constat.catalog.sql_transpiler import TranspilingConnection
+            sql_con = db_connection.engine if isinstance(db_connection, TranspilingConnection) else db_connection
             query = f'SELECT * FROM "{table_name}"'
-            df = pd.read_sql(query, db_connection)
+            df = pd.read_sql(query, sql_con)
 
         return _df_to_download_response(df, f"{db_name}_{table_name}", format)
 

@@ -67,6 +67,8 @@ def _compute_db_config_hash(databases: dict) -> str:
                 "uri": db_config.uri or "",
                 "database": db_config.database or "",
                 "path": db_config.path or "",
+                "jdbc_url": getattr(db_config, "jdbc_url", None) or "",
+                "jdbc_driver": getattr(db_config, "jdbc_driver", None) or "",
             }
     return _compute_config_hash(db_data)
 
@@ -237,7 +239,7 @@ def _warmup_vector_store(config: Config) -> None:
             logger.info(f"  Base APIs: {len(config.apis)} indexed")
 
     # === DOMAIN CONFIGS ===
-    for domain_name, domain in config.projects.items():
+    for domain_name, domain in list(config.projects.items()):
         source_id = domain_name
 
         # Domain databases
@@ -377,7 +379,7 @@ def _warmup_vector_store(config: Config) -> None:
         logger.info(f"  Base documents: 0 configured")
 
     # === DOMAIN DOCUMENTS (two-level hashing) ===
-    for filename, domain in config.projects.items():
+    for filename, domain in list(config.projects.items()):
         if not domain.documents:
             continue
 
@@ -597,7 +599,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
                     logger.info("Background warmup: document pre-indexing complete")
                     _fastapi_app.state.warmup_complete = True
                 except Exception as e:
-                    logger.error(f"Background warmup failed: {e}")
+                    logger.exception(f"Background warmup failed: {e}")
                     _fastapi_app.state.warmup_error = str(e)
 
             warmup_task = asyncio.create_task(_warmup_task())
@@ -652,6 +654,12 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         finally:
             from constat.storage.duckdb_pool import close_all_pools
             close_all_pools()
+            try:
+                import jpype
+                if jpype.isJVMStarted():
+                    jpype.shutdownJVM()
+            except Exception:
+                pass
 
     fastapi_app = FastAPI(
         title="Constat API",

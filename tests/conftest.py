@@ -80,6 +80,13 @@ def pytest_sessionfinish(session, exitstatus):
         pass  # Teardown: pool may already be closed; swallowed intentionally
 
     try:
+        import jpype
+        if jpype.isJVMStarted():
+            jpype.shutdownJVM()
+    except Exception:
+        pass  # Teardown: JVM may not be running; swallowed intentionally
+
+    try:
         result = subprocess.run(
             ["docker", "ps", "-a", "-q", "--filter", "name=constat_test_"],
             capture_output=True, text=True, timeout=10,

@@ -203,6 +203,18 @@ class Step:
     code: Optional[str] = None
     result: Optional["StepResult"] = None
 
+    def __setattr__(self, name: str, value) -> None:
+        if name == "code" and value is not None and not isinstance(value, str):
+            import logging
+            import traceback
+            logging.getLogger(__name__).error(
+                "Step.code assigned non-string value (type=%s, value=%r)\n%s",
+                type(value).__name__,
+                value,
+                "".join(traceback.format_stack()),
+            )
+        object.__setattr__(self, name, value)
+
     # Phase 2 extensions
     prolog_code: Optional[str] = None
     derivation_trace: Optional[str] = None
