@@ -192,13 +192,13 @@ class TestAnthropicProvider:
     @requires_anthropic_key
     def test_instantiation_with_custom_model(self):
         """Provider accepts custom model."""
-        provider = AnthropicProvider(model="claude-3-haiku-20240307")
-        assert provider.model == "claude-3-haiku-20240307"
+        provider = AnthropicProvider(model="claude-haiku-4-5-20251001")
+        assert provider.model == "claude-haiku-4-5-20251001"
 
     @requires_anthropic_key
     def test_generate_simple(self):
         """Basic generation without tools."""
-        provider = AnthropicProvider(model="claude-3-haiku-20240307")
+        provider = AnthropicProvider(model="claude-haiku-4-5-20251001")
         response = provider.generate(
             system="You are a helpful assistant. Be concise.",
             user_message="What is 2 + 2? Reply with just the number.",
@@ -209,7 +209,7 @@ class TestAnthropicProvider:
     @requires_anthropic_key
     def test_generate_code(self):
         """Code generation extracts from markdown blocks."""
-        provider = AnthropicProvider(model="claude-3-haiku-20240307")
+        provider = AnthropicProvider(model="claude-haiku-4-5-20251001")
         response = provider.generate_code(
             system="You are a Python expert. Return only code in markdown blocks.",
             user_message="Write a function that adds two numbers. Just the function, no explanation.",
@@ -221,7 +221,7 @@ class TestAnthropicProvider:
     @requires_anthropic_key
     def test_generate_with_tools(self):
         """Generation with tool calling."""
-        provider = AnthropicProvider(model="claude-3-haiku-20240307")
+        provider = AnthropicProvider(model="claude-haiku-4-5-20251001")
         response = provider.generate(
             system="You have access to tools. Use them to answer questions.",
             user_message="What's the weather in Paris?",
@@ -234,7 +234,7 @@ class TestAnthropicProvider:
     @requires_anthropic_key
     def test_generate_with_calculation_tool(self):
         """Tool calling with calculation."""
-        provider = AnthropicProvider(model="claude-3-haiku-20240307")
+        provider = AnthropicProvider(model="claude-haiku-4-5-20251001")
         response = provider.generate(
             system="Use the calculate tool for math. Report the result.",
             user_message="What is 15 * 7?",
@@ -255,7 +255,7 @@ class TestAnthropicProvider:
         response = provider.generate(
             system="You are a helpful assistant. Be concise.",
             user_message="What is 3 + 3? Reply with just the number.",
-            model="claude-3-5-haiku-20241022",  # Override for this call
+            model="claude-haiku-4-5-20251001",  # Override for this call
             max_tokens=50,
         )
         assert "6" in response
@@ -271,13 +271,13 @@ class TestAnthropicProvider:
         # Configure task routing like production would
         routing = TaskRoutingConfig(routes={
             "planning": TaskRoutingEntry(
-                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+                models=[ModelSpec(model="claude-haiku-4-5-20251001")]
             ),
             "sql_generation": TaskRoutingEntry(
-                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+                models=[ModelSpec(model="claude-haiku-4-5-20251001")]
             ),
             "summarization": TaskRoutingEntry(
-                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+                models=[ModelSpec(model="claude-haiku-4-5-20251001")]
             ),
         })
         llm_config = LLMConfig(
@@ -294,7 +294,7 @@ class TestAnthropicProvider:
         planning_models = task_routing.get_models_for_task("planning")
         assert len(planning_models) >= 1
         planning_model = planning_models[0].model
-        assert planning_model == "claude-3-5-haiku-20241022"
+        assert planning_model == "claude-haiku-4-5-20251001"
 
         response = provider.generate(
             system="You are a helpful assistant.",
@@ -1289,7 +1289,7 @@ class TestTaskRouter:
 
         llm_config = LLMConfig(
             provider="anthropic",
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5-20251001",
         )
         router = TaskRouter(llm_config)
 
@@ -1329,7 +1329,7 @@ class TestTaskRouter:
 
         llm_config = LLMConfig(
             provider="anthropic",
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5-20251001",
         )
         router = TaskRouter(llm_config)
 
@@ -1347,7 +1347,7 @@ class TestTaskRouter:
 
         routing = TaskRoutingConfig(routes={
             "python_analysis": TaskRoutingEntry(
-                models=[ModelSpec(model="claude-3-5-haiku-20241022")],
+                models=[ModelSpec(model="claude-haiku-4-5-20251001")],
                 high_complexity_models=[ModelSpec(model="claude-sonnet-4-20250514")],
             )
         })
@@ -1360,7 +1360,7 @@ class TestTaskRouter:
 
         # Medium complexity uses standard model
         medium_models = router.routing_config.get_models_for_task("python_analysis", "medium")
-        assert medium_models[0].model == "claude-3-5-haiku-20241022"
+        assert medium_models[0].model == "claude-haiku-4-5-20251001"
 
         # High complexity uses advanced model
         high_models = router.routing_config.get_models_for_task("python_analysis", "high")
@@ -1373,7 +1373,7 @@ class TestTaskRouter:
 
         llm_config = LLMConfig(
             provider="anthropic",
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5-20251001",
         )
         router = TaskRouter(llm_config)
 
@@ -1434,7 +1434,7 @@ class TestMultiProviderIntegration:
 
         routing = TaskRoutingConfig(routes={
             "planning": TaskRoutingEntry(
-                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+                models=[ModelSpec(model="claude-haiku-4-5-20251001")]
             ),
             "sql_generation": TaskRoutingEntry(
                 models=[ModelSpec(provider="ollama", model=OLLAMA_TEST_MODEL)]
@@ -1442,14 +1442,14 @@ class TestMultiProviderIntegration:
         })
         llm_config = LLMConfig(
             provider="anthropic",
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5-20251001",
             task_routing=routing,
         )
         router = TaskRouter(llm_config)
 
         # Verify routing configuration
         planning_models = router.routing_config.get_models_for_task("planning")
-        assert planning_models[0].model == "claude-3-5-haiku-20241022"
+        assert planning_models[0].model == "claude-haiku-4-5-20251001"
         assert planning_models[0].provider is None  # Uses default
 
         sql_models = router.routing_config.get_models_for_task("sql_generation")
@@ -1467,10 +1467,10 @@ class TestMultiProviderIntegration:
                 models=[ModelSpec(model="claude-sonnet-4-20250514")]
             ),
             "sql_generation": TaskRoutingEntry(
-                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+                models=[ModelSpec(model="claude-haiku-4-5-20251001")]
             ),
             "summarization": TaskRoutingEntry(
-                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+                models=[ModelSpec(model="claude-haiku-4-5-20251001")]
             ),
         })
         llm_config = LLMConfig(
@@ -1485,7 +1485,7 @@ class TestMultiProviderIntegration:
         sql_models = router.routing_config.get_models_for_task("sql_generation")
 
         assert planning_models[0].model == "claude-sonnet-4-20250514"
-        assert sql_models[0].model == "claude-3-5-haiku-20241022"
+        assert sql_models[0].model == "claude-haiku-4-5-20251001"
 
 
 # =============================================================================
@@ -1645,7 +1645,7 @@ class TestTaskRoutingIntegration:
             "sql_generation": TaskRoutingEntry(
                 models=[
                     ModelSpec(provider="ollama", model="sqlcoder:7b"),
-                    ModelSpec(model="claude-3-5-haiku-20241022"),
+                    ModelSpec(model="claude-haiku-4-5-20251001"),
                     ModelSpec(model="claude-sonnet-4-20250514"),
                 ]
             ),
@@ -1664,7 +1664,7 @@ class TestTaskRoutingIntegration:
         assert len(sql_models) == 3
         assert sql_models[0].provider == "ollama"
         assert sql_models[0].model == "sqlcoder:7b"
-        assert sql_models[1].model == "claude-3-5-haiku-20241022"
+        assert sql_models[1].model == "claude-haiku-4-5-20251001"
         assert sql_models[2].model == "claude-sonnet-4-20250514"
 
     def test_routing_falls_back_to_defaults(self):
