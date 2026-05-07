@@ -31,7 +31,7 @@ from constat.discovery.models import (
     ChunkEntity,
 )
 from constat.discovery.vector_store import (
-    VectorStoreBackend,
+    DuckDBVectorStore,
     create_vector_store,
 )
 from constat.discovery.entity_extractor import EntityExtractor
@@ -357,7 +357,7 @@ class DocumentDiscoveryTools:
         self,
         config: Config,
         cache_dir: Optional[Path] = None,
-        vector_store: Optional[VectorStoreBackend] = None,
+        vector_store: Optional[DuckDBVectorStore] = None,
         schema_entities: Optional[list[str]] = None,
         allowed_documents: Optional[set[str]] = None,
         skip_auto_index: bool = False,
@@ -498,15 +498,9 @@ class DocumentDiscoveryTools:
         # Extract and store entities
         self._extract_and_store_entities(chunks, schema_entities)
 
-    def _create_vector_store(self) -> VectorStoreBackend:
+    def _create_vector_store(self) -> DuckDBVectorStore:
         """Create vector store based on config."""
-        storage_config = self.config.storage
-        vs_config = storage_config.vector_store if storage_config else None
-
-        backend = vs_config.backend if vs_config else "duckdb"
-        db_path = vs_config.db_path if vs_config else None
-
-        return create_vector_store(backend=backend, db_path=db_path)
+        return create_vector_store(backend="duckdb", db_path=None)
 
     def set_schema_entities(self, entities: set[str] | list[str]) -> None:
         """Set database schema entities (table names, column names) for pattern matching.
