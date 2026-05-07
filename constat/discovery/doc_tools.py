@@ -2422,18 +2422,9 @@ class DocumentDiscoveryTools:
         """Split a document into semantically bounded chunks using chonk's chunker."""
         from chonk import chunk_document, enrich_chunks
         result = []
-        for c in enrich_chunks(
+        return list(enrich_chunks(
             chunk_document(name, content, min_chunk_size=600, max_chunk_size=self.CHUNK_SIZE)
-        ):
-            result.append(DocumentChunk(
-                document_name=c.document_name,
-                content=c.content,
-                section=" > ".join(c.section) if c.section else None,
-                chunk_index=c.chunk_index,
-                chunk_type=c.chunk_type,
-                embedding_content=c.embedding_content,
-            ))
-        return result
+        ))
 
 
 # Tool schemas for LLM

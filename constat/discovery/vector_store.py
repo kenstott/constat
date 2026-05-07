@@ -43,7 +43,7 @@ class NumpyVectorStore:
 
     def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
         content_hash = hashlib.sha256(
-            f"{chunk.document_name}:{chunk.section}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
+            f"{chunk.document_name}:{(" > ".join(chunk.section) if chunk.section else "")}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
         ).hexdigest()[:16]
         return f"{chunk.document_name}_{chunk.chunk_index}_{content_hash}"
 
@@ -198,7 +198,7 @@ class DuckDBVectorStore:
 
     def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
         content_hash = hashlib.sha256(
-            f"{chunk.document_name}:{chunk.section}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
+            f"{chunk.document_name}:{(" > ".join(chunk.section) if chunk.section else "")}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
         ).hexdigest()[:16]
         return f"{chunk.document_name}_{chunk.chunk_index}_{content_hash}"
 
@@ -237,7 +237,7 @@ class DuckDBVectorStore:
             records.append((
                 chunk_id,
                 chunk.document_name,
-                chunk.section,
+                " > ".join(chunk.section) if chunk.section else None,
                 chunk.chunk_index,
                 chunk.content,
                 chunk_type_str,
@@ -292,21 +292,16 @@ class DuckDBVectorStore:
             params,
         ).fetchall()
 
-        from constat.discovery.models import ChunkType
         results = []
         for row in result:
             chunk_id, doc_name, source, chunk_type_str, section, chunk_idx, content, similarity = row
-            try:
-                chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
-            except ValueError:
-                chunk_type = ChunkType.DOCUMENT
             chunk = DocumentChunk(
                 document_name=doc_name,
                 content=content,
-                section=section,
+                section=section.split(" > ") if section else [],
                 chunk_index=chunk_idx,
                 source=source or "document",
-                chunk_type=chunk_type,
+                chunk_type=chunk_type_str or "document",
             )
             results.append((chunk_id, float(similarity), chunk))
 
@@ -691,21 +686,16 @@ class DuckDBVectorStore:
             """,
             params,
         ).fetchall()
-        from constat.discovery.models import ChunkType
         chunks = []
         for row in result:
             doc_name, content, section, chunk_idx, source, chunk_type_str = row
-            try:
-                chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
-            except ValueError:
-                chunk_type = ChunkType.DOCUMENT
             chunks.append(DocumentChunk(
                 document_name=doc_name,
                 content=content,
-                section=section,
+                section=section.split(" > ") if section else [],
                 chunk_index=chunk_idx,
                 source=source or "document",
-                chunk_type=chunk_type,
+                chunk_type=chunk_type_str or "document",
             ))
         return chunks
 
@@ -718,21 +708,16 @@ class DuckDBVectorStore:
             """,
             [project_id],
         ).fetchall()
-        from constat.discovery.models import ChunkType
         chunks = []
         for row in result:
             doc_name, content, section, chunk_idx, source, chunk_type_str = row
-            try:
-                chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
-            except ValueError:
-                chunk_type = ChunkType.DOCUMENT
             chunks.append(DocumentChunk(
                 document_name=doc_name,
                 content=content,
-                section=section,
+                section=section.split(" > ") if section else [],
                 chunk_index=chunk_idx,
                 source=source or "document",
-                chunk_type=chunk_type,
+                chunk_type=chunk_type_str or "document",
             ))
         return chunks
 

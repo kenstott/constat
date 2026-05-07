@@ -296,8 +296,9 @@ class EntityExtractor:
 
     def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
         """Generate chunk ID matching vector store format."""
+        section_str = " > ".join(chunk.section) if chunk.section else ""
         content_hash = hashlib.sha256(
-            f"{chunk.document_name}:{chunk.section}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
+            f"{chunk.document_name}:{section_str}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
         ).hexdigest()[:16]
         return f"{chunk.document_name}_{chunk.chunk_index}_{content_hash}"
 
