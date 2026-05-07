@@ -15,8 +15,6 @@ same DuckDB connection.
 
 Public interface:
     DuckDBVectorStore  — persistent store (chonk Store adapter)
-    NumpyVectorStore   — in-memory stub (for create_vector_store(backend='numpy'))
-    create_vector_store — factory function
 """
 
 import hashlib
@@ -26,67 +24,94 @@ from typing import Optional
 
 import numpy as np
 
-from constat.discovery.models import DocumentChunk, Entity, ChunkEntity, EnrichedChunk
+from constat.discovery.models import DocumentChunk, Entity, ChunkEntity, EnrichedChunk, SemanticType
 
 logger = logging.getLogger(__name__)
 
 
-class NumpyVectorStore:
-    """In-memory vector store stub (for testing / non-persistent usage)."""
+def _run_entity_extraction(
+    chunks,
+    session_id: str,
+    project_id: Optional[str],
+    schema_terms,
+    api_terms,
+    business_terms,
+    add_entities_fn,
+    link_fn,
+) -> int:
+    """Two-pass entity extraction using chonk's SchemaMatcher + SpacyMatcher."""
+    from chonk.ner import SchemaMatcher, SpacyMatcher, merge_matches
 
-    EMBEDDING_DIM = 1024
+    schema_matcher = SchemaMatcher(
+        schema_terms=schema_terms or [],
+        api_terms=api_terms or [],
+        business_terms=business_terms or [],
+    )
+    spacy_matcher = SpacyMatcher()
 
-    def __init__(self):
-        self._chunks: list[DocumentChunk] = []
-        self._embeddings: Optional[np.ndarray] = None
-        self._chunk_ids: list[str] = []
+    _SEMANTIC = {
+        "schema": SemanticType.CONCEPT,
+        "api": SemanticType.ACTION,
+        "term": SemanticType.TERM,
+    }
+    _NER = {"schema": "SCHEMA", "api": "API", "term": "TERM"}
 
-    def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
-        content_hash = hashlib.sha256(
-            f"{chunk.document_name}:{(" > ".join(chunk.section) if chunk.section else "")}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
-        ).hexdigest()[:16]
-        return f"{chunk.document_name}_{chunk.chunk_index}_{content_hash}"
+    entity_cache: dict[str, Entity] = {}
+    all_links: list[ChunkEntity] = []
 
-    def add_chunks(self, chunks, embeddings, source="document",
-                   session_id=None, project_id=None) -> None:
-        if len(chunks) == 0:
-            return
-        for chunk in chunks:
-            chunk.source = source
-        new_ids = [self._generate_chunk_id(c) for c in chunks]
-        self._chunks.extend(chunks)
-        self._chunk_ids.extend(new_ids)
-        if self._embeddings is None:
-            self._embeddings = embeddings.copy()
-        else:
-            self._embeddings = np.vstack([self._embeddings, embeddings])
-
-    def search(self, query_embedding, limit=5, project_ids=None,
-               session_id=None) -> list:
-        if self._embeddings is None or len(self._chunks) == 0:
-            return []
-        query = query_embedding.flatten()
-        query_norm = query / (np.linalg.norm(query) + 1e-10)
-        emb_norms = self._embeddings / (
-            np.linalg.norm(self._embeddings, axis=1, keepdims=True) + 1e-10
+    for chunk in chunks:
+        section_str = (
+            " > ".join(chunk.section)
+            if isinstance(chunk.section, list)
+            else (chunk.section or "")
         )
-        similarities = np.dot(emb_norms, query_norm)
-        top_indices = np.argsort(similarities)[::-1][:limit]
-        return [
-            (self._chunk_ids[i], float(similarities[i]), self._chunks[i])
-            for i in top_indices
-        ]
+        chunk_id = (
+            f"{chunk.document_name}_{chunk.chunk_index}_"
+            + hashlib.sha256(
+                f"{chunk.document_name}:{section_str}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
+            ).hexdigest()[:16]
+        )
 
-    def clear(self) -> None:
-        self._chunks = []
-        self._embeddings = None
-        self._chunk_ids = []
+        vocab_hits = schema_matcher.match(chunk.content)
+        spacy_hits = spacy_matcher.match(chunk.content)
+        matches = merge_matches(vocab_hits, spacy_hits, source_text=chunk.content)
 
-    def count(self) -> int:
-        return len(self._chunks)
+        seen: set[str] = set()
+        for match in matches:
+            key = match.name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
 
-    def get_chunks(self) -> list[DocumentChunk]:
-        return self._chunks.copy()
+            if key not in entity_cache:
+                entity_id = hashlib.sha256(
+                    f"{key}:{session_id}".encode()
+                ).hexdigest()[:16]
+                semantic_type = _SEMANTIC.get(match.entity_type, SemanticType.CONCEPT)
+                ner_type_val = _NER.get(match.entity_type, match.entity_type.upper())
+                entity_cache[key] = Entity(
+                    id=entity_id,
+                    name=key,
+                    display_name=match.display_name,
+                    semantic_type=semantic_type,
+                    ner_type=ner_type_val,
+                    session_id=session_id,
+                    project_id=project_id,
+                )
+
+            entity = entity_cache[key]
+            confidence = 0.9 if match.entity_type in {"schema", "api", "term"} else 0.75
+            all_links.append(ChunkEntity(
+                chunk_id=chunk_id,
+                entity_id=entity.id,
+                confidence=confidence,
+            ))
+
+    entities = list(entity_cache.values())
+    if entities:
+        add_entities_fn(entities)
+        link_fn(all_links)
+    return len(entities)
 
 
 class DuckDBVectorStore:
@@ -127,7 +152,8 @@ class DuckDBVectorStore:
         conn = self._conn
 
         # Add constat-specific columns to chonk's embeddings table (nullable only)
-        for col in ("source", "session_id", "project_id"):
+        # Note: chonk's DDL already creates the `namespace` column
+        for col in ("source", "session_id"):
             try:
                 conn.execute(f"ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS {col} VARCHAR")
             except Exception as e:
@@ -183,7 +209,7 @@ class DuckDBVectorStore:
         # Indexes
         for ddl in [
             "CREATE INDEX IF NOT EXISTS idx_embeddings_session ON embeddings(session_id)",
-            "CREATE INDEX IF NOT EXISTS idx_embeddings_project ON embeddings(project_id)",
+            "CREATE INDEX IF NOT EXISTS idx_embeddings_namespace ON embeddings(namespace)",
             "CREATE INDEX IF NOT EXISTS idx_sess_entities_session ON session_entities(session_id)",
             "CREATE INDEX IF NOT EXISTS idx_sess_chunk_ent ON session_chunk_entities(entity_id)",
         ]:
@@ -203,7 +229,9 @@ class DuckDBVectorStore:
         return f"{chunk.document_name}_{chunk.chunk_index}_{content_hash}"
 
     def add_chunks(self, chunks, embeddings, source="document",
-                   session_id=None, project_id=None) -> None:
+                   session_id=None, namespace=None, project_id=None) -> None:
+        if project_id is not None and namespace is None:
+            namespace = project_id
         if source not in ("schema", "api", "document"):
             raise ValueError(f"source must be 'schema', 'api', or 'document', got: {source}")
         if len(chunks) == 0:
@@ -243,7 +271,7 @@ class DuckDBVectorStore:
                 chunk_type_str,
                 source,
                 session_id,
-                project_id,
+                namespace,
                 embedding,
             ))
 
@@ -251,24 +279,24 @@ class DuckDBVectorStore:
             """
             INSERT INTO embeddings
                 (chunk_id, document_name, section, chunk_index, content,
-                 chunk_type, source, session_id, project_id, embedding)
+                 chunk_type, source, session_id, namespace, embedding)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             records,
         )
 
-    def search(self, query_embedding, limit=5, project_ids=None, session_id=None,
+    def search(self, query_embedding, limit=5, namespaces=None, session_id=None,
                query_text=None) -> list:
         query = query_embedding.flatten().tolist()
 
-        filter_conditions = ["(project_id IS NULL)", "(project_id = '__base__')"]
+        filter_conditions = ["(namespace IS NULL)", "(namespace = '__base__')"]
         params: list = [query]
 
-        if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            filter_conditions.append(f"project_id IN ({placeholders})")
-            params.extend(project_ids)
+        if namespaces:
+            placeholders = ",".join(["?" for _ in namespaces])
+            filter_conditions.append(f"namespace IN ({placeholders})")
+            params.extend(namespaces)
 
         where_clause = " OR ".join(filter_conditions)
         params.append(limit)
@@ -307,9 +335,9 @@ class DuckDBVectorStore:
 
         return results
 
-    def search_enriched(self, query_embedding, limit=5, project_ids=None,
+    def search_enriched(self, query_embedding, limit=5, namespaces=None,
                         session_id=None) -> list:
-        results = self.search(query_embedding, limit=limit, project_ids=project_ids,
+        results = self.search(query_embedding, limit=limit, namespaces=namespaces,
                               session_id=session_id)
         return [EnrichedChunk(chunk=chunk, score=score) for _, score, chunk in results]
 
@@ -469,7 +497,44 @@ class DuckDBVectorStore:
         return []
 
     def find_entity_by_name(self, name, project_ids=None, session_id=None):
-        return None
+        conditions = ["LOWER(e.name) = LOWER(?)"]
+        params: list = [name]
+
+        if session_id:
+            conditions.append("e.session_id = ?")
+            params.append(session_id)
+
+        if project_ids:
+            placeholders = ",".join(["?" for _ in project_ids])
+            conditions.append(f"e.project_id IN ({placeholders})")
+            params.extend(project_ids)
+
+        where_clause = " AND ".join(conditions)
+        result = self._conn.execute(
+            f"""
+            SELECT e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
+                   e.session_id, e.project_id, e.created_at
+            FROM session_entities e
+            WHERE {where_clause}
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+
+        if not result:
+            return None
+
+        entity_id, ename, display_name, semantic_type, ner_type, sess_id, proj_id, created_at = result
+        return Entity(
+            id=entity_id,
+            name=ename,
+            display_name=display_name,
+            semantic_type=semantic_type,
+            ner_type=ner_type,
+            session_id=sess_id,
+            project_id=proj_id,
+            created_at=created_at,
+        )
 
     def clear_entities(self, source=None) -> None:
         self._conn.execute("DELETE FROM session_chunk_entities")
@@ -611,7 +676,7 @@ class DuckDBVectorStore:
                 """
                 SELECT chunk_id FROM embeddings
                 WHERE document_name = ? AND source = ?
-                AND (project_id IS NULL OR project_id = '__base__')
+                AND (namespace IS NULL OR namespace = '__base__')
                 """,
                 [resource_name, source_type],
             ).fetchall()
@@ -619,7 +684,7 @@ class DuckDBVectorStore:
             chunk_ids = self._conn.execute(
                 """
                 SELECT chunk_id FROM embeddings
-                WHERE document_name = ? AND source = ? AND project_id = ?
+                WHERE document_name = ? AND source = ? AND namespace = ?
                 """,
                 [resource_name, source_type, source_id],
             ).fetchall()
@@ -639,7 +704,7 @@ class DuckDBVectorStore:
                 """
                 DELETE FROM embeddings
                 WHERE document_name = ? AND source = ?
-                AND (project_id IS NULL OR project_id = '__base__')
+                AND (namespace IS NULL OR namespace = '__base__')
                 """,
                 [resource_name, source_type],
             )
@@ -647,17 +712,17 @@ class DuckDBVectorStore:
             self._conn.execute(
                 """
                 DELETE FROM embeddings
-                WHERE document_name = ? AND source = ? AND project_id = ?
+                WHERE document_name = ? AND source = ? AND namespace = ?
                 """,
                 [resource_name, source_type, source_id],
             )
 
         return len(chunk_ids)
 
-    def clear_project_embeddings(self, project_id: str) -> int:
+    def clear_namespace_embeddings(self, namespace: str) -> int:
         chunk_ids = self._conn.execute(
-            "SELECT chunk_id FROM embeddings WHERE project_id = ?",
-            [project_id]
+            "SELECT chunk_id FROM embeddings WHERE namespace = ?",
+            [namespace]
         ).fetchall()
         chunk_ids = [row[0] for row in chunk_ids]
         if chunk_ids:
@@ -666,17 +731,16 @@ class DuckDBVectorStore:
                 f"DELETE FROM session_chunk_entities WHERE chunk_id IN ({placeholders})",
                 chunk_ids,
             )
-        self._conn.execute("DELETE FROM embeddings WHERE project_id = ?", [project_id])
-        self._conn.execute("DELETE FROM session_entities WHERE project_id = ?", [project_id])
+        self._conn.execute("DELETE FROM embeddings WHERE namespace = ?", [namespace])
         return len(chunk_ids)
 
-    def get_all_chunks(self, project_ids: list[str] | None = None) -> list[DocumentChunk]:
-        conditions = ["project_id IS NULL"]
+    def get_all_chunks(self, namespaces: list[str] | None = None) -> list[DocumentChunk]:
+        conditions = ["namespace IS NULL"]
         params: list = []
-        if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            conditions.append(f"project_id IN ({placeholders})")
-            params.extend(project_ids)
+        if namespaces:
+            placeholders = ",".join(["?" for _ in namespaces])
+            conditions.append(f"namespace IN ({placeholders})")
+            params.extend(namespaces)
         where_clause = " OR ".join(conditions)
         result = self._conn.execute(
             f"""
@@ -699,14 +763,14 @@ class DuckDBVectorStore:
             ))
         return chunks
 
-    def get_project_chunks(self, project_id: str) -> list[DocumentChunk]:
+    def get_project_chunks(self, namespace: str) -> list[DocumentChunk]:
         result = self._conn.execute(
             """
             SELECT document_name, content, section, chunk_index, source, chunk_type
-            FROM embeddings WHERE project_id = ?
+            FROM embeddings WHERE namespace = ?
             ORDER BY document_name, chunk_index
             """,
-            [project_id],
+            [namespace],
         ).fetchall()
         chunks = []
         for row in result:
@@ -721,55 +785,40 @@ class DuckDBVectorStore:
             ))
         return chunks
 
-    def extract_entities_for_session(self, session_id: str, project_ids=None,
+    def extract_entities_for_session(self, session_id: str, namespaces=None,
                                       schema_terms=None, api_terms=None,
                                       business_terms=None) -> int:
-        from constat.discovery.entity_extractor import EntityExtractor
         self.clear_session_entities(session_id)
-        chunks = self.get_all_chunks(project_ids)
+        chunks = self.get_all_chunks(namespaces)
         if not chunks:
             return 0
-        extractor = EntityExtractor(
+        return _run_entity_extraction(
+            chunks=chunks,
             session_id=session_id,
+            project_id=None,
             schema_terms=schema_terms,
             api_terms=api_terms,
             business_terms=business_terms,
+            add_entities_fn=lambda ents: self.add_entities(ents, session_id),
+            link_fn=self.link_chunk_entities,
         )
-        all_links: list[ChunkEntity] = []
-        for chunk in chunks:
-            results = extractor.extract(chunk)
-            for entity, link in results:
-                all_links.append(link)
-        entities = extractor.get_all_entities()
-        if entities:
-            self.add_entities(entities, session_id)
-            self.link_chunk_entities(all_links)
-        return len(entities)
 
     def extract_entities_for_project(self, session_id: str, project_id: str,
                                       schema_terms=None, api_terms=None,
                                       business_terms=None) -> int:
-        from constat.discovery.entity_extractor import EntityExtractor
         chunks = self.get_project_chunks(project_id)
         if not chunks:
             return 0
-        extractor = EntityExtractor(
+        return _run_entity_extraction(
+            chunks=chunks,
             session_id=session_id,
             project_id=project_id,
             schema_terms=schema_terms,
             api_terms=api_terms,
             business_terms=business_terms,
+            add_entities_fn=lambda ents: self.add_entities(ents, session_id),
+            link_fn=self.link_chunk_entities,
         )
-        all_links: list[ChunkEntity] = []
-        for chunk in chunks:
-            results = extractor.extract(chunk)
-            for entity, link in results:
-                all_links.append(link)
-        entities = extractor.get_all_entities()
-        if entities:
-            self.add_entities(entities, session_id)
-            self.link_chunk_entities(all_links)
-        return len(entities)
 
     def get_entity_names(self, session_id: str) -> list[str]:
         result = self._conn.execute(
@@ -808,11 +857,3 @@ class DuckDBVectorStore:
         self.close()
 
 
-def create_vector_store(backend: str = "duckdb", db_path: str | None = None) -> DuckDBVectorStore:
-    """Factory function to create a vector store backend."""
-    if backend == "duckdb":
-        return DuckDBVectorStore(db_path=db_path)
-    elif backend == "numpy":
-        return NumpyVectorStore()  # type: ignore[return-value]
-    else:
-        raise ValueError(f"Unknown vector store backend: {backend}")
