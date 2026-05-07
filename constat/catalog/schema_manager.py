@@ -926,7 +926,7 @@ class SchemaManager:
         not here. This keeps init-time fast and avoids duplicate extraction.
         """
         # Lazy import
-        from constat.discovery.models import DocumentChunk, ChunkType
+        from constat.discovery.models import DocumentChunk
 
         # Collect chunks for ALL tables and columns
         chunks: list[DocumentChunk] = []
@@ -947,7 +947,7 @@ class SchemaManager:
                 section="table_description",
                 chunk_index=0,
                 source="schema",
-                chunk_type=ChunkType.DB_TABLE,
+                chunk_type="db_table",
             ))
 
             # Column chunks
@@ -964,7 +964,7 @@ class SchemaManager:
                     section="column_description",
                     chunk_index=i,
                     source="schema",
-                    chunk_type=ChunkType.DB_COLUMN,
+                    chunk_type="db_column",
                 ))
 
         if not chunks:
@@ -989,7 +989,7 @@ class SchemaManager:
         Args:
             db_name: Name of the database to add chunks for
         """
-        from constat.discovery.models import DocumentChunk, ChunkType
+        from constat.discovery.models import DocumentChunk
 
         chunks: list[DocumentChunk] = []
         for full_name, table_meta in self.metadata_cache.items():
@@ -1012,7 +1012,7 @@ class SchemaManager:
                 section="table_description",
                 chunk_index=0,
                 source="schema",
-                chunk_type=ChunkType.DB_TABLE,
+                chunk_type="db_table",
             ))
 
             # Column chunks
@@ -1029,7 +1029,7 @@ class SchemaManager:
                     section="column_description",
                     chunk_index=i,
                     source="schema",
-                    chunk_type=ChunkType.DB_COLUMN,
+                    chunk_type="db_column",
                 ))
 
         if not chunks:
@@ -1332,14 +1332,13 @@ class SchemaManager:
         query_embedding = self._model.encode([query], convert_to_numpy=True)
 
         # Search embeddings — fetch extra to filter for schema table chunks
-        from constat.discovery.models import ChunkType
         search_results = self._vector_store.search(query_embedding, limit=top_k * 10)
 
         # Filter to schema table chunks and deduplicate by table
         seen_tables: set[str] = set()
         results = []
         for _chunk_id, similarity, chunk in search_results:
-            if chunk.source != "schema" or chunk.chunk_type != ChunkType.DB_TABLE:
+            if chunk.source != "schema" or chunk.chunk_type != "db_table":
                 continue
             # document_name format: "schema:db_name.TableName"
             full_name = chunk.document_name.removeprefix("schema:")

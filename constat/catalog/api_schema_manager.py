@@ -684,7 +684,7 @@ class APISchemaManager:
         Args:
             api_name: Name of the API to build chunks for
         """
-        from constat.discovery.models import DocumentChunk, ChunkType
+        from constat.discovery.models import DocumentChunk
 
         chunks: list[DocumentChunk] = []
         for full_name, meta in self.metadata_cache.items():
@@ -695,20 +695,20 @@ class APISchemaManager:
 
             # Determine chunk_type based on api_type
             if meta.api_type == "graphql_query":
-                endpoint_chunk_type = ChunkType.GRAPHQL_QUERY
-                field_chunk_type = ChunkType.GRAPHQL_FIELD
+                endpoint_chunk_type = "graphql_query"
+                field_chunk_type = "graphql_field"
             elif meta.api_type == "graphql_mutation":
-                endpoint_chunk_type = ChunkType.GRAPHQL_MUTATION
-                field_chunk_type = ChunkType.GRAPHQL_FIELD
+                endpoint_chunk_type = "graphql_mutation"
+                field_chunk_type = "graphql_field"
             elif meta.api_type == "graphql_type":
-                endpoint_chunk_type = ChunkType.GRAPHQL_TYPE
-                field_chunk_type = ChunkType.GRAPHQL_FIELD
+                endpoint_chunk_type = "graphql_type"
+                field_chunk_type = "graphql_field"
             elif meta.api_type == "rest/schema":
-                endpoint_chunk_type = ChunkType.API_SCHEMA
-                field_chunk_type = ChunkType.API_SCHEMA
+                endpoint_chunk_type = "api_schema"
+                field_chunk_type = "api_schema"
             else:
-                endpoint_chunk_type = ChunkType.API_ENDPOINT
-                field_chunk_type = ChunkType.API_ENDPOINT
+                endpoint_chunk_type = "api_endpoint"
+                field_chunk_type = "api_endpoint"
 
             # Endpoint chunk
             if meta.description:
@@ -780,7 +780,7 @@ class APISchemaManager:
         not here. This keeps init-time fast and avoids duplicate extraction.
         """
         # Lazy import
-        from constat.discovery.models import DocumentChunk, ChunkType
+        from constat.discovery.models import DocumentChunk
 
         # Collect chunks for ALL endpoints and fields
         chunks: list[DocumentChunk] = []
@@ -789,20 +789,20 @@ class APISchemaManager:
 
             # Determine chunk_type based on api_type
             if meta.api_type == "graphql_query":
-                endpoint_chunk_type = ChunkType.GRAPHQL_QUERY
-                field_chunk_type = ChunkType.GRAPHQL_FIELD
+                endpoint_chunk_type = "graphql_query"
+                field_chunk_type = "graphql_field"
             elif meta.api_type == "graphql_mutation":
-                endpoint_chunk_type = ChunkType.GRAPHQL_MUTATION
-                field_chunk_type = ChunkType.GRAPHQL_FIELD
+                endpoint_chunk_type = "graphql_mutation"
+                field_chunk_type = "graphql_field"
             elif meta.api_type == "graphql_type":
-                endpoint_chunk_type = ChunkType.GRAPHQL_TYPE
-                field_chunk_type = ChunkType.GRAPHQL_FIELD
+                endpoint_chunk_type = "graphql_type"
+                field_chunk_type = "graphql_field"
             elif meta.api_type == "rest/schema":
-                endpoint_chunk_type = ChunkType.API_SCHEMA
-                field_chunk_type = ChunkType.API_SCHEMA
+                endpoint_chunk_type = "api_schema"
+                field_chunk_type = "api_schema"
             else:
-                endpoint_chunk_type = ChunkType.API_ENDPOINT
-                field_chunk_type = ChunkType.API_ENDPOINT
+                endpoint_chunk_type = "api_endpoint"
+                field_chunk_type = "api_endpoint"
 
             # Endpoint chunk - use description if available, otherwise structured text
             if meta.description:

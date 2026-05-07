@@ -398,6 +398,7 @@ class DocumentChunk:
     chunk_index: int = 0
     source: str = "document"
     chunk_type: ChunkType = ChunkType.DOCUMENT
+    embedding_content: Optional[str] = None
 
 
 @dataclass

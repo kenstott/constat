@@ -486,8 +486,8 @@ class DocumentDiscoveryTools:
             print("[DOC_INDEX] No chunks to index!")
             return
 
-        # Generate embeddings
-        texts = [chunk.content for chunk in chunks]
+        # Generate embeddings — use contextual prefix when available
+        texts = [chunk.embedding_content or chunk.content for chunk in chunks]
         with self._model_lock:
             embeddings = self._model.encode(texts, convert_to_numpy=True)
 
@@ -866,8 +866,8 @@ class DocumentDiscoveryTools:
         if not chunks:
             return True
 
-        # Generate embeddings
-        texts = [chunk.content for chunk in chunks]
+        # Generate embeddings — use contextual prefix when available
+        texts = [chunk.embedding_content or chunk.content for chunk in chunks]
         embeddings = self._model.encode(texts, convert_to_numpy=True)
 
         # Add to vector store with project_id/session_id for filtering
@@ -2425,66 +2425,21 @@ class DocumentDiscoveryTools:
             self._vector_store.link_chunk_entities(list(unique_links.values()))
 
     def _chunk_document(self, name: str, content: str) -> list[DocumentChunk]:
-        """Split a document into chunks for embedding.
-
-        Chunks are split only on paragraph/line boundaries - never mid-paragraph.
-        Paragraphs are combined until hitting CHUNK_SIZE, then a new chunk starts.
-        A chunk may exceed CHUNK_SIZE if a single paragraph is larger (we don't split it).
-        """
-        chunks = []
-        current_section = None
-
-        # Determine paragraph separator based on content
-        # Use double newline if present, otherwise single newline
-        if "\n\n" in content:
-            paragraphs = content.split("\n\n")
-            separator = "\n\n"
-        else:
-            paragraphs = content.split("\n")
-            separator = "\n"
-
-        chunk_index = 0
-        current_chunk = ""
-
-        for para in paragraphs:
-            para = para.strip()
-            if not para:
-                continue
-
-            # Track sections from markdown headers
-            if para.startswith("#"):
-                current_section = para.lstrip("#").strip()
-
-            # Check if adding this paragraph would exceed chunk size
-            potential_chunk = (current_chunk + separator + para).strip() if current_chunk else para
-
-            if len(potential_chunk) <= self.CHUNK_SIZE:
-                # Fits in current chunk - add it
-                current_chunk = potential_chunk
-            else:
-                # Would exceed chunk size
-                if current_chunk:
-                    # Save current chunk first
-                    chunks.append(DocumentChunk(
-                        document_name=name,
-                        content=current_chunk,
-                        section=current_section,
-                        chunk_index=chunk_index,
-                    ))
-                    chunk_index += 1
-                # Start new chunk with this paragraph (even if it exceeds CHUNK_SIZE)
-                current_chunk = para
-
-        # Save final chunk
-        if current_chunk:
-            chunks.append(DocumentChunk(
-                document_name=name,
-                content=current_chunk,
-                section=current_section,
-                chunk_index=chunk_index,
+        """Split a document into semantically bounded chunks using chonk's chunker."""
+        from chonk import chunk_document, enrich_chunks
+        result = []
+        for c in enrich_chunks(
+            chunk_document(name, content, min_chunk_size=600, max_chunk_size=self.CHUNK_SIZE)
+        ):
+            result.append(DocumentChunk(
+                document_name=c.document_name,
+                content=c.content,
+                section=" > ".join(c.section) if c.section else None,
+                chunk_index=c.chunk_index,
+                chunk_type=c.chunk_type,
+                embedding_content=c.embedding_content,
             ))
-
-        return chunks
+        return result
 
 
 # Tool schemas for LLM
