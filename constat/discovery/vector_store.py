@@ -288,56 +288,36 @@ class DuckDBVectorStore:
 
     def search(self, query_embedding, limit=5, namespaces=None, session_id=None,
                query_text=None) -> list:
-        query = query_embedding.flatten().tolist()
+        from chonk import EnhancedSearch
 
-        filter_conditions = ["(namespace IS NULL)", "(namespace = '__base__')"]
-        params: list = [query]
-
+        # Build effective namespace list: always include __base__; None means all
         if namespaces:
-            placeholders = ",".join(["?" for _ in namespaces])
-            filter_conditions.append(f"namespace IN ({placeholders})")
-            params.extend(namespaces)
+            effective_ns = list({*namespaces, "__base__"})
+        else:
+            effective_ns = None
 
-        where_clause = " OR ".join(filter_conditions)
-        params.append(limit)
+        # Proxy that injects namespace filtering into every Store.search() call
+        # made internally by EnhancedSearch (structural/entity/cluster expansions)
+        store = self._store
+        effective_ns_capture = effective_ns
 
-        result = self._conn.execute(
-            f"""
-            SELECT
-                chunk_id,
-                document_name,
-                source,
-                chunk_type,
-                section,
-                chunk_index,
-                content,
-                array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
-            FROM embeddings
-            WHERE ({where_clause})
-            ORDER BY similarity DESC
-            LIMIT ?
-            """,
-            params,
-        ).fetchall()
+        class _NSProxy(store.__class__):  # type: ignore[misc]
+            def __init__(self):
+                pass  # skip Store.__init__; all state lives in outer `store`
+            def search(self, query_embedding, limit=5, query_text=None, **kw):
+                return store.search(query_embedding, limit=limit, query_text=query_text,  # type: ignore[call-arg]
+                                    namespaces=effective_ns_capture, **kw)
+            def __getattr__(self, name):
+                return getattr(store, name)
 
-        results = []
-        for row in result:
-            chunk_id, doc_name, source, chunk_type_str, section, chunk_idx, content, similarity = row
-            chunk = DocumentChunk(
-                document_name=doc_name,
-                content=content,
-                section=section.split(" > ") if section else [],
-                chunk_index=chunk_idx,
-                source=source or "document",
-                chunk_type=chunk_type_str or "document",
-            )
-            results.append((chunk_id, float(similarity), chunk))
-
-        return results
+        enhanced = EnhancedSearch(_NSProxy())
+        scored = enhanced.search(query_embedding.flatten(), k=limit, query_text=query_text)
+        return [(sc.chunk_id, sc.score, sc.chunk) for sc in scored]
 
     def search_enriched(self, query_embedding, limit=5, namespaces=None,
-                        session_id=None) -> list:
-        results = self.search(query_embedding, limit=limit, namespaces=namespaces,
+                        session_id=None, project_ids=None) -> list:
+        effective_namespaces = namespaces or project_ids
+        results = self.search(query_embedding, limit=limit, namespaces=effective_namespaces,
                               session_id=session_id)
         return [EnrichedChunk(chunk=chunk, score=score) for _, score, chunk in results]
 

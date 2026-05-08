@@ -18,6 +18,8 @@ export interface FactNode {
   reason?: string
   dependencies: string[]
   elapsed_ms?: number
+  validations?: string[]
+  profile?: string[]
 }
 
 interface ProofState {

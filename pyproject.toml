@@ -53,6 +53,8 @@ dependencies = [
     "graphviz>=0.21",
     # NLP / Named Entity Recognition
     "spacy>=3.8.11",
+    # GraphRAG / document chunking
+    "chonk @ git+https://github.com/kenstott/chonk.git",
 ]
 
 [project.optional-dependencies]
@@ -104,6 +106,9 @@ all = [
 
 [project.scripts]
 constat = "constat.cli:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [build-system]
 requires = ["hatchling"]

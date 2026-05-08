@@ -252,7 +252,7 @@ class FileConnector:
 
     def _infer_parquet_arrow_schema(self) -> FileMetadata:
         """Infer schema from a Parquet or Arrow file using chonk._struct_inference."""
-        from chonk._struct_inference import infer_parquet
+        from chonk import infer_parquet
         _ext_map = {
             FileType.PARQUET: ".parquet",
             FileType.ARROW: ".arrow",
