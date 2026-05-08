@@ -472,6 +472,7 @@ class TestEmbeddingModelConfig:
 
 # Integration test that requires the actual model (slow, skip by default)
 @pytest.mark.slow
+@pytest.mark.run_sequentially
 class TestIntentClassifierIntegration:
     """Integration tests with actual embedding model."""
 

@@ -115,4 +115,5 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 markers = [
     "slow: requires LLM API calls or external services (deselect with '-m \"not slow\"')",
+    "run_sequentially: loads embedding/reranking models; must not run concurrently (OOM risk)",
 ]

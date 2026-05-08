@@ -58,6 +58,7 @@ def fact_resolution_tools(doc_tools):
     )
 
 
+@pytest.mark.run_sequentially
 class TestDocumentSearch:
     """Tests for semantic search over documents.
 
@@ -99,6 +100,7 @@ class TestDocumentSearch:
         assert any(term in all_excerpts for term in ["rating", "exceptional", "performance"])
 
 
+@pytest.mark.run_sequentially
 class TestFactResolutionFromDocuments:
     """Tests for resolving facts from document content.
 
@@ -154,6 +156,7 @@ class TestFactResolutionFromDocuments:
         assert result["confidence"] < 0.7 or result["needs_clarification"]
 
 
+@pytest.mark.run_sequentially
 class TestIntegratedFactUsage:
     """Tests for using document-derived facts in calculations.
 
@@ -234,6 +237,7 @@ class TestIntegratedFactUsage:
         assert reorder_quantity == 100
 
 
+@pytest.mark.run_sequentially
 class TestPerformanceReviewIntegration:
     """
     Integration test: Analyze actual performance reviews against documented guidelines.
@@ -345,6 +349,7 @@ class TestPerformanceReviewIntegration:
         # - Analysis compares them
 
 
+@pytest.mark.run_sequentially
 class TestProductionDiscoveryPath:
     """Tests that verify the production code path yields correct discovery results.
 
@@ -485,6 +490,7 @@ class TestProductionDiscoveryPath:
                     os.environ.pop("CONSTAT_VECTOR_STORE_PATH", None)
 
 
+@pytest.mark.run_sequentially
 class TestUnifiedDiscovery:
     """Tests for unified discovery returning enriched chunks."""
 
@@ -612,6 +618,7 @@ class TestUnifiedDiscovery:
 
 
 
+@pytest.mark.run_sequentially
 class TestEdgeCases:
     """Edge cases and error handling for document fact resolution."""
 

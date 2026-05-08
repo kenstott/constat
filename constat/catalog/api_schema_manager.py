@@ -679,72 +679,31 @@ class APISchemaManager:
             return False
 
     def _add_chunks_for_api(self, api_name: str) -> None:
-        """Build and store chunks for a single API's endpoints.
+        """Build and store chunks for a single API's endpoints using chonk DocumentLoader.
 
         Args:
             api_name: Name of the API to build chunks for
         """
-        from constat.discovery.models import DocumentChunk
+        from chonk.loader import DocumentLoader
+        from chonk.schema import EndpointMeta as ChonkEndpointMeta, FieldMeta as ChonkFieldMeta
 
-        chunks: list[DocumentChunk] = []
-        for full_name, meta in self.metadata_cache.items():
-            if meta.api_name != api_name:
-                continue
+        chonk_endpoints = [
+            ChonkEndpointMeta(
+                path=meta.endpoint_name,
+                method=meta.http_method,
+                description=meta.description,
+                endpoint_type=meta.api_type,
+                source_api=meta.api_name,
+                fields=[
+                    ChonkFieldMeta(name=f.name, field_type=f.type or "unknown", description=f.description)
+                    for f in meta.fields
+                ],
+            )
+            for meta in self.metadata_cache.values()
+            if meta.api_name == api_name
+        ]
 
-            field_names = [f.name for f in meta.fields]
-
-            # Determine chunk_type based on api_type
-            if meta.api_type == "graphql_query":
-                endpoint_chunk_type = "graphql_query"
-                field_chunk_type = "graphql_field"
-            elif meta.api_type == "graphql_mutation":
-                endpoint_chunk_type = "graphql_mutation"
-                field_chunk_type = "graphql_field"
-            elif meta.api_type == "graphql_type":
-                endpoint_chunk_type = "graphql_type"
-                field_chunk_type = "graphql_field"
-            elif meta.api_type == "rest/schema":
-                endpoint_chunk_type = "api_schema"
-                field_chunk_type = "api_schema"
-            else:
-                endpoint_chunk_type = "api_endpoint"
-                field_chunk_type = "api_endpoint"
-
-            # Endpoint chunk
-            if meta.description:
-                endpoint_content = f"{meta.endpoint_name} endpoint: {meta.description}"
-            else:
-                endpoint_content = f"{meta.endpoint_name} endpoint in {meta.api_name} API"
-                if meta.http_method and meta.http_path:
-                    endpoint_content += f" ({meta.http_method} {meta.http_path})"
-                if field_names:
-                    endpoint_content += f" with fields: {', '.join(field_names)}"
-
-            chunks.append(DocumentChunk(
-                document_name=f"api:{full_name}",
-                content=endpoint_content,
-                section=meta.api_type,
-                chunk_index=0,
-                source="api",
-                chunk_type=endpoint_chunk_type,
-            ))
-
-            # Field chunks
-            for i, field_meta in enumerate(meta.fields):
-                if field_meta.description:
-                    field_content = f"{field_meta.name} field in {meta.endpoint_name}: {field_meta.description}"
-                else:
-                    field_type = field_meta.type if field_meta.type else "unknown type"
-                    field_content = f"{field_meta.name} field ({field_type}) in {meta.endpoint_name} endpoint"
-
-                chunks.append(DocumentChunk(
-                    document_name=f"api:{full_name}.{field_meta.name}",
-                    content=field_content,
-                    section=meta.api_type,
-                    chunk_index=i,
-                    source="api",
-                    chunk_type=field_chunk_type,
-                ))
+        chunks = DocumentLoader().load_api(chonk_endpoints)
 
         if not chunks:
             logger.debug(f"No metadata to create chunks for API: {api_name}")
