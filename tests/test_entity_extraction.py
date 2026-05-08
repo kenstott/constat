@@ -22,8 +22,8 @@ from constat.discovery.models import (
     SemanticType,
     NerType,
 )
-from constat.discovery.entity_extractor import EntityExtractor
 from constat.discovery.vector_store import DuckDBVectorStore
+from chonk.ner import SchemaMatcher, SpacyMatcher, merge_matches
 
 
 class TestEntityModels:
@@ -105,12 +105,75 @@ class TestEntityModels:
         assert len(enriched.entities) == 2
 
 
+class _Extractor:
+    """Test wrapper: chonk SchemaMatcher + SpacyMatcher with the old EntityExtractor interface."""
+
+    def __init__(self, session_id, schema_terms=None, api_terms=None, business_terms=None, project_id=None):
+        import hashlib as _hashlib
+        self.session_id = session_id
+        self.project_id = project_id
+        self._hashlib = _hashlib
+        self._schema_matcher = SchemaMatcher(
+            schema_terms=schema_terms or [],
+            api_terms=api_terms or [],
+            business_terms=business_terms or [],
+        )
+        self._spacy_matcher = SpacyMatcher()
+        self._entity_cache: dict = {}
+
+    def extract(self, chunk):
+        _SEMANTIC = {"schema": SemanticType.CONCEPT, "api": SemanticType.ACTION, "term": SemanticType.TERM}
+        _NER = {"schema": NerType.SCHEMA, "api": NerType.API, "term": NerType.TERM}
+        section_str = (
+            " > ".join(chunk.section) if isinstance(chunk.section, list) else (chunk.section or "")
+        )
+        chunk_id = (
+            f"{chunk.document_name}_{chunk.chunk_index}_"
+            + self._hashlib.sha256(
+                f"{chunk.document_name}:{section_str}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
+            ).hexdigest()[:16]
+        )
+        vocab_hits = self._schema_matcher.match(chunk.content)
+        spacy_hits = self._spacy_matcher.match(chunk.content)
+        matches = merge_matches(vocab_hits, spacy_hits, source_text=chunk.content)
+        results = []
+        seen: set = set()
+        for match in matches:
+            key = match.name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if key not in self._entity_cache:
+                entity_id = self._hashlib.sha256(f"{key}:{self.session_id}".encode()).hexdigest()[:16]
+                semantic_type = _SEMANTIC.get(match.entity_type, SemanticType.CONCEPT)
+                ner_type_val = _NER.get(match.entity_type, match.entity_type.upper())
+                raw_display = match.display_name or key
+                display_name = raw_display.replace("_", " ").title()
+                self._entity_cache[key] = Entity(
+                    id=entity_id,
+                    name=key,
+                    display_name=display_name,
+                    semantic_type=semantic_type,
+                    ner_type=ner_type_val,
+                    session_id=self.session_id,
+                    project_id=self.project_id,
+                )
+            entity = self._entity_cache[key]
+            confidence = 0.9 if match.entity_type in {"schema", "api", "term"} else 0.75
+            link = ChunkEntity(chunk_id=chunk_id, entity_id=entity.id, confidence=confidence)
+            results.append((entity, link))
+        return results
+
+    def get_all_entities(self):
+        return list(self._entity_cache.values())
+
+
 class TestEntityExtractor:
-    """Test EntityExtractor class."""
+    """Test entity extraction via chonk SchemaMatcher + SpacyMatcher."""
 
     def test_extract_schema_entities(self):
         """Test extracting schema entities by pattern matching."""
-        extractor = EntityExtractor(
+        extractor = _Extractor(
             session_id="test-session",
             schema_terms=["customers", "orders", "product_id"],
         )
@@ -131,7 +194,7 @@ class TestEntityExtractor:
 
     def test_extract_business_terms(self):
         """Test extracting known business terms."""
-        extractor = EntityExtractor(
+        extractor = _Extractor(
             session_id="test-session",
             business_terms=["churn rate", "customer lifetime value", "MRR"],
         )
@@ -153,7 +216,7 @@ class TestEntityExtractor:
 
     def test_entity_deduplication(self):
         """Test that entities are deduplicated across extractions."""
-        extractor = EntityExtractor(
+        extractor = _Extractor(
             session_id="test-session",
             schema_terms=["users"],
         )
@@ -182,12 +245,12 @@ class TestEntityExtractor:
     def test_extractor_requires_session_id(self):
         """Test that session_id is required."""
         # This should work
-        extractor = EntityExtractor(session_id="test")
+        extractor = _Extractor(session_id="test")
         assert extractor.session_id == "test"
 
     def test_api_terms_extraction(self):
         """Test extracting API endpoint terms."""
-        extractor = EntityExtractor(
+        extractor = _Extractor(
             session_id="test-session",
             api_terms=["/users", "/orders", "GET /products"],
         )
@@ -209,7 +272,7 @@ class TestEntityExtractor:
 
     def test_get_all_entities(self):
         """Test retrieving all extracted entities."""
-        extractor = EntityExtractor(
+        extractor = _Extractor(
             session_id="test-session",
             schema_terms=["customers", "products"],
         )
@@ -230,7 +293,7 @@ class TestEntityExtractor:
 
     def test_semantic_type_mapping_for_schema(self):
         """Test that SCHEMA patterns get CONCEPT semantic type."""
-        extractor = EntityExtractor(
+        extractor = _Extractor(
             session_id="test-session",
             schema_terms=["customers"],
         )
@@ -254,7 +317,7 @@ class TestEntityExtractor:
 
     def test_semantic_type_mapping_for_api(self):
         """Test that API patterns get ACTION semantic type."""
-        extractor = EntityExtractor(
+        extractor = _Extractor(
             session_id="test-session",
             api_terms=["create_user", "get_orders"],
         )
@@ -275,7 +338,7 @@ class TestEntityExtractor:
 
     def test_display_name_generation(self):
         """Test that display_name is title case for schema names."""
-        extractor = EntityExtractor(
+        extractor = _Extractor(
             session_id="test-session",
             schema_terms=["order_items"],
         )
@@ -302,7 +365,7 @@ class TestEntityExtractor:
 
     def test_ner_type_preserved_for_spacy_entities(self):
         """Test that spaCy NER types are preserved as ner_type."""
-        extractor = EntityExtractor(session_id="test-session")
+        extractor = _Extractor(session_id="test-session")
 
         # spaCy should recognize organizations like "Microsoft"
         chunk = DocumentChunk(
@@ -326,7 +389,7 @@ class TestEntityExtractor:
 
     def test_custom_pattern_entities_have_schema_ner_type(self):
         """Test that schema pattern entities get SCHEMA ner_type."""
-        extractor = EntityExtractor(
+        extractor = _Extractor(
             session_id="test-session",
             schema_terms=["custom_table"],
         )
@@ -350,7 +413,7 @@ class TestEntityExtractor:
 
     def test_entity_project_id_from_extractor(self):
         """Test that project_id is set from extractor initialization."""
-        extractor = EntityExtractor(
+        extractor = _Extractor(
             session_id="test-session",
             project_id="my-project",
             schema_terms=["test_table"],

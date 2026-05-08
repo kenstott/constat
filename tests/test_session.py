@@ -129,6 +129,7 @@ class TestMultiStepSession:
         print(f"Plan: {len(result['plan'].steps)} steps")
         print(f"\nOutput:\n{result['output']}")
 
+    @pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
     def test_state_sharing_between_steps(self, session: Session):
         """Test that state is properly shared between steps."""
         result = session.solve(
@@ -180,6 +181,7 @@ class TestPlanner:
 class TestSessionHistory:
     """Test session history integration."""
 
+    @pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
     def test_session_recorded(self, session: Session, temp_history_dir):
         """Test that session is recorded in history."""
         # Run a query

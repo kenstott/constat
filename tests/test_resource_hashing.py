@@ -15,7 +15,7 @@ import pytest
 import numpy as np
 
 from constat.discovery.vector_store import DuckDBVectorStore
-from constat.discovery.models import DocumentChunk, ChunkType
+from constat.discovery.models import DocumentChunk
 
 
 @pytest.fixture
@@ -170,7 +170,7 @@ class TestDeleteResourceChunks:
                 section="Test",
                 chunk_index=i,
                 source=source_type,
-                chunk_type=ChunkType.DOCUMENT,
+                chunk_type="document",
             ))
 
         # Create dummy embeddings
@@ -311,7 +311,7 @@ class TestIncrementalUpdateFlow:
                 section="Test",
                 chunk_index=i,
                 source=source_type,
-                chunk_type=ChunkType.DOCUMENT,
+                chunk_type="document",
             ))
 
         embeddings = np.random.rand(count, vector_store.EMBEDDING_DIM).astype(np.float32)

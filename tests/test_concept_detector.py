@@ -49,6 +49,7 @@ class TestPromptSections:
         assert set(PROMPT_SECTIONS.keys()) == expected
 
 
+@pytest.mark.run_sequentially
 class TestConceptDetector:
     """Test the ConceptDetector class."""
 
@@ -161,6 +162,7 @@ class TestConceptDetector:
                 assert concepts[i].similarity >= concepts[i + 1].similarity
 
 
+@pytest.mark.run_sequentially
 class TestGetSectionsForPrompt:
     """Test the get_sections_for_prompt method."""
 
@@ -207,6 +209,7 @@ class TestGetSectionsForPrompt:
         assert len(content) > 100  # Should be substantial
 
 
+@pytest.mark.run_sequentially
 class TestConceptDetectorLazyInit:
     """Test lazy initialization behavior."""
 
@@ -228,6 +231,7 @@ class TestConceptDetectorLazyInit:
         assert d.is_initialized
 
 
+@pytest.mark.run_sequentially
 class TestConceptDetectorModelSharing:
     """Test model sharing capability."""
 

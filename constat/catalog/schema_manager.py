@@ -183,6 +183,10 @@ class SchemaManager:
         # Progress callback (set during initialize)
         self._progress_callback: Optional[Callable[[str, int, int, str], None]] = None
 
+        # Graph: FK-derived SVO triples (references, part_of)
+        from chonk import RelationshipIndex
+        self._relationship_index: RelationshipIndex = RelationshipIndex()
+
     def _get_raw_engine(self, conn: Union[Engine, TranspilingConnection]) -> Engine:
         """Get the raw SQLAlchemy Engine from a connection.
 
@@ -221,7 +225,7 @@ class SchemaManager:
         if self._load_schema_cache(config_hash):
             # Cache hit - still need connections for query execution
             self._connect_all()
-            # Reverse references are stored in cache, no need to recompute
+            self._build_relationship_index()
         else:
             # Cache miss - full introspection required
             self._connect_all()
@@ -256,6 +260,8 @@ class SchemaManager:
             self._introspect_all()
             self._resolve_reverse_references()
             self._save_schema_cache(config_hash)
+        else:
+            self._build_relationship_index()
 
         # Build chunks
         self._extract_entities_from_descriptions()
@@ -764,6 +770,36 @@ class SchemaManager:
                     ref_str = f"{table_meta.name}.{fk.from_column}"
                     if ref_str not in ref_table.referenced_by:
                         ref_table.referenced_by.append(ref_str)
+        self._build_relationship_index()
+
+    def _build_relationship_index(self) -> None:
+        """Populate RelationshipIndex with FK-derived SVOTriples (zero LLM cost).
+
+        references — table X references table Y via a foreign key
+        part_of    — FK column X is part_of its owning table
+        """
+        from chonk import SVOTriple, RelationshipIndex
+        idx = RelationshipIndex()
+        for table_meta in self.metadata_cache.values():
+            for fk in table_meta.foreign_keys:
+                idx.add(SVOTriple(
+                    subject_id=table_meta.name,
+                    verb="references",
+                    object_id=fk.to_table,
+                    confidence=1.0,
+                ))
+                idx.add(SVOTriple(
+                    subject_id=fk.from_column,
+                    verb="part_of",
+                    object_id=table_meta.name,
+                    confidence=1.0,
+                ))
+        self._relationship_index = idx
+
+    @property
+    def relationship_index(self) -> "RelationshipIndex":
+        """FK-derived RelationshipIndex (references + part_of triples)."""
+        return self._relationship_index
 
     def _compute_config_hash(self) -> str:
         """Compute a deterministic hash of the databases config.
@@ -917,61 +953,29 @@ class SchemaManager:
             pass
 
     def _extract_entities_from_descriptions(self) -> None:
-        """Create chunks for table and column metadata.
+        """Create chunks for table and column metadata using chonk DocumentLoader."""
+        from chonk.loader import DocumentLoader
+        from chonk.schema import TableMeta as ChonkTableMeta, ColumnMeta as ChonkColumnMeta
 
-        Creates chunks for ALL tables and columns (not just those with descriptions)
-        so that session-time entity extraction can find and link table/column names.
+        chonk_tables = [
+            ChonkTableMeta(
+                name=table_meta.name,
+                source_db=table_meta.database,
+                description=table_meta.comment,
+                columns=[
+                    ChonkColumnMeta(name=c.name, data_type=c.type or "unknown", description=c.comment)
+                    for c in table_meta.columns
+                ],
+            )
+            for table_meta in self.metadata_cache.values()
+        ]
 
-        Entity extraction is done at session-time by extract_entities_for_session(),
-        not here. This keeps init-time fast and avoids duplicate extraction.
-        """
-        # Lazy import
-        from constat.discovery.models import DocumentChunk, ChunkType
-
-        # Collect chunks for ALL tables and columns
-        chunks: list[DocumentChunk] = []
-        for full_name, table_meta in self.metadata_cache.items():
-            db_name = table_meta.database
-            table_name = table_meta.name
-            col_names = [c.name for c in table_meta.columns]
-
-            # Table chunk - use description if available, otherwise structured text
-            if table_meta.comment:
-                table_content = f"{table_name} table: {table_meta.comment}"
-            else:
-                table_content = f"{table_name} table in {db_name} database with columns: {', '.join(col_names)}"
-
-            chunks.append(DocumentChunk(
-                document_name=f"schema:{full_name}",
-                content=table_content,
-                section="table_description",
-                chunk_index=0,
-                source="schema",
-                chunk_type=ChunkType.DB_TABLE,
-            ))
-
-            # Column chunks
-            for i, col in enumerate(table_meta.columns):
-                if col.comment:
-                    col_content = f"{col.name} column in {table_name}: {col.comment}"
-                else:
-                    col_type = col.type if col.type else "unknown type"
-                    col_content = f"{col.name} column ({col_type}) in {table_name} table"
-
-                chunks.append(DocumentChunk(
-                    document_name=f"schema:{full_name}.{col.name}",
-                    content=col_content,
-                    section="column_description",
-                    chunk_index=i,
-                    source="schema",
-                    chunk_type=ChunkType.DB_COLUMN,
-                ))
+        chunks = DocumentLoader().load_schema(chonk_tables)
 
         if not chunks:
             logger.debug("No schema metadata to create chunks from")
             return
 
-        # Generate embeddings and store chunks (no entity extraction here)
         if self._model is not None:
             try:
                 texts = [c.content for c in chunks]
@@ -982,61 +986,36 @@ class SchemaManager:
                 logger.warning(f"Failed to store schema description chunks: {e}")
 
     def _add_chunks_for_database(self, db_name: str) -> None:
-        """Add chunks for a specific database only.
+        """Add chunks for a specific database only using chonk DocumentLoader.
 
         Used when dynamically adding a database to avoid rebuilding all chunks.
 
         Args:
             db_name: Name of the database to add chunks for
         """
-        from constat.discovery.models import DocumentChunk, ChunkType
+        from chonk.loader import DocumentLoader
+        from chonk.schema import TableMeta as ChonkTableMeta, ColumnMeta as ChonkColumnMeta
 
-        chunks: list[DocumentChunk] = []
-        for full_name, table_meta in self.metadata_cache.items():
-            # Only process tables from the specified database
-            if table_meta.database != db_name:
-                continue
+        chonk_tables = [
+            ChonkTableMeta(
+                name=table_meta.name,
+                source_db=table_meta.database,
+                description=table_meta.comment,
+                columns=[
+                    ChonkColumnMeta(name=c.name, data_type=c.type or "unknown", description=c.comment)
+                    for c in table_meta.columns
+                ],
+            )
+            for table_meta in self.metadata_cache.values()
+            if table_meta.database == db_name
+        ]
 
-            table_name = table_meta.name
-            col_names = [c.name for c in table_meta.columns]
-
-            # Table chunk
-            if table_meta.comment:
-                table_content = f"{table_name} table: {table_meta.comment}"
-            else:
-                table_content = f"{table_name} table in {db_name} database with columns: {', '.join(col_names)}"
-
-            chunks.append(DocumentChunk(
-                document_name=f"schema:{full_name}",
-                content=table_content,
-                section="table_description",
-                chunk_index=0,
-                source="schema",
-                chunk_type=ChunkType.DB_TABLE,
-            ))
-
-            # Column chunks
-            for i, col in enumerate(table_meta.columns):
-                if col.comment:
-                    col_content = f"{col.name} column in {table_name}: {col.comment}"
-                else:
-                    col_type = col.type if col.type else "unknown type"
-                    col_content = f"{col.name} column ({col_type}) in {table_name} table"
-
-                chunks.append(DocumentChunk(
-                    document_name=f"schema:{full_name}.{col.name}",
-                    content=col_content,
-                    section="column_description",
-                    chunk_index=i,
-                    source="schema",
-                    chunk_type=ChunkType.DB_COLUMN,
-                ))
+        chunks = DocumentLoader().load_schema(chonk_tables)
 
         if not chunks:
             logger.debug(f"No tables found for database {db_name}")
             return
 
-        # Generate embeddings and store chunks
         if self._model is not None:
             try:
                 texts = [c.content for c in chunks]
@@ -1332,14 +1311,13 @@ class SchemaManager:
         query_embedding = self._model.encode([query], convert_to_numpy=True)
 
         # Search embeddings — fetch extra to filter for schema table chunks
-        from constat.discovery.models import ChunkType
         search_results = self._vector_store.search(query_embedding, limit=top_k * 10)
 
         # Filter to schema table chunks and deduplicate by table
         seen_tables: set[str] = set()
         results = []
         for _chunk_id, similarity, chunk in search_results:
-            if chunk.source != "schema" or chunk.chunk_type != ChunkType.DB_TABLE:
+            if chunk.source != "schema" or chunk.chunk_type != "db_table":
                 continue
             # document_name format: "schema:db_name.TableName"
             full_name = chunk.document_name.removeprefix("schema:")

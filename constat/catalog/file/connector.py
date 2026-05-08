@@ -251,94 +251,25 @@ class FileConnector:
         )
 
     def _infer_parquet_arrow_schema(self) -> FileMetadata:
-        """Infer schema from a Parquet or Arrow file."""
+        """Infer schema from a Parquet or Arrow file using chonk._struct_inference."""
+        from chonk._struct_inference import infer_parquet
+        _ext_map = {
+            FileType.PARQUET: ".parquet",
+            FileType.ARROW: ".arrow",
+            FileType.FEATHER: ".feather",
+        }
+        ext = _ext_map[self.file_type]
         try:
-            import pyarrow.parquet as pq
-            import pyarrow.feather as feather
-            import pyarrow as pa
-        except ImportError:
-            # Fall back to pandas
-            return self._infer_parquet_arrow_schema_pandas()
-
-        try:
-            if self.file_type == FileType.PARQUET:
-                # Use PyArrow for efficient metadata reading
-                parquet_file = pq.ParquetFile(self.path)
-                schema = parquet_file.schema_arrow
-                row_count = parquet_file.metadata.num_rows
-
-                # Read sample for values
-                table = parquet_file.read_row_groups([0])
-                if table.num_rows > self.sample_size:
-                    table = table.slice(0, self.sample_size)
-                df = table.to_pandas()
-            else:
-                # Arrow/Feather
-                table = feather.read_table(self.path)
-                schema = table.schema
-                row_count = table.num_rows
-
-                if table.num_rows > self.sample_size:
-                    table = table.slice(0, self.sample_size)
-                df = table.to_pandas()
-
-            columns = []
-            for i, field in enumerate(schema):
-                col_name = field.name
-                col_type = self._arrow_type_to_string(field.type)
-
-                # Get sample values from dataframe
-                sample_values = []
-                if col_name in df.columns:
-                    sample_values = df[col_name].dropna().head(5).tolist()
-
-                columns.append(ColumnInfo(
-                    name=col_name,
-                    data_type=col_type,
-                    nullable=field.nullable,
-                    sample_values=sample_values,
-                ))
-
+            with open(self.path, "rb") as fh:
+                data = fh.read()
+            table_meta = infer_parquet(data, ext, self.name)
+            columns = [ColumnInfo(name=c.name, data_type=c.data_type) for c in table_meta.columns]
             return FileMetadata(
                 name=self.name,
                 path=self.path,
                 file_type=self.file_type,
                 columns=columns,
-                row_count=row_count,
-                description=self.description,
-            )
-
-        except Exception as e:
-            return FileMetadata(
-                name=self.name,
-                path=self.path,
-                file_type=self.file_type,
-                columns=[],
-                description=f"Error reading file: {e}",
-            )
-
-    def _infer_parquet_arrow_schema_pandas(self) -> FileMetadata:
-        """Fallback schema inference using pandas."""
-        import pandas as pd
-
-        try:
-            if self.file_type == FileType.PARQUET:
-                df = pd.read_parquet(self.path)
-            else:
-                df = pd.read_feather(self.path)
-
-            row_count = len(df)
-            if len(df) > self.sample_size:
-                df = df.head(self.sample_size)
-
-            columns = self._infer_columns_from_dataframe(df)
-
-            return FileMetadata(
-                name=self.name,
-                path=self.path,
-                file_type=self.file_type,
-                columns=columns,
-                row_count=row_count,
+                row_count=table_meta.row_count or 0,
                 description=self.description,
             )
         except Exception as e:

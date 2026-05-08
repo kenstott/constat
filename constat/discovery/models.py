@@ -12,34 +12,12 @@
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from typing import Optional
 
 from constat.core.config import DocumentConfig
 
-
-class ChunkType(str, Enum):
-    """Granular type for document chunks.
-
-    Identifies what kind of resource a chunk describes.
-    """
-    # Database schema
-    DB_TABLE = "db_table"
-    DB_COLUMN = "db_column"
-    DB_SCHEMA = "db_schema"
-
-    # REST API
-    API_ENDPOINT = "api_endpoint"
-    API_SCHEMA = "api_schema"
-
-    # GraphQL
-    GRAPHQL_QUERY = "graphql_query"
-    GRAPHQL_MUTATION = "graphql_mutation"
-    GRAPHQL_TYPE = "graphql_type"
-    GRAPHQL_FIELD = "graphql_field"
-
-    # Documents
-    DOCUMENT = "document"
+# Phase 1.5: re-export chonk's DocumentChunk; section is list[str], chunk_type is str
+from chonk.models import DocumentChunk
 
 
 def singularize(word: str) -> str:
@@ -378,26 +356,6 @@ class EnrichedChunk:
     chunk: "DocumentChunk"
     score: float
     entities: list[Entity] = field(default_factory=list)
-
-
-@dataclass
-class DocumentChunk:
-    """A chunk of a document for embedding and search.
-
-    Attributes:
-        document_name: Name of the document this chunk belongs to
-        content: The text content of this chunk
-        section: Optional section header this chunk is under
-        chunk_index: Index of this chunk within the document
-        source: Resource type - 'schema', 'api', or 'document'
-        chunk_type: Granular type from ChunkType enum
-    """
-    document_name: str
-    content: str
-    section: Optional[str] = None
-    chunk_index: int = 0
-    source: str = "document"
-    chunk_type: ChunkType = ChunkType.DOCUMENT
 
 
 @dataclass

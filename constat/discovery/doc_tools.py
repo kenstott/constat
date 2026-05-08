@@ -27,14 +27,9 @@ from constat.embedding_loader import EmbeddingModelLoader
 from constat.discovery.models import (
     DocumentChunk,
     LoadedDocument,
-    StructuredFileSchema,
     ChunkEntity,
 )
-from constat.discovery.vector_store import (
-    VectorStoreBackend,
-    create_vector_store,
-)
-from constat.discovery.entity_extractor import EntityExtractor
+from constat.discovery.vector_store import DuckDBVectorStore, _run_entity_extraction
 
 
 def _is_glob_pattern(path: str) -> bool:
@@ -76,270 +71,6 @@ def _expand_file_paths(path: str) -> list[tuple[str, Path]]:
 
 
 
-def _infer_csv_schema(filepath: Path, sample_rows: int = 100) -> StructuredFileSchema:
-    """Infer schema from a CSV file."""
-    import csv
-
-    columns = []
-    row_count = 0
-
-    with open(filepath, 'r', newline='', encoding='utf-8', errors='replace') as f:
-        reader = csv.reader(f)
-        try:
-            headers = next(reader)
-        except StopIteration:
-            return StructuredFileSchema(
-                filename=filepath.name,
-                filepath=str(filepath),
-                file_format="csv",
-                row_count=0,
-                columns=[],
-            )
-
-        # Initialize column info
-        col_data = {h: {'name': h, 'values': []} for h in headers}
-
-        # Sample rows to infer types and collect sample values
-        for i, row in enumerate(reader):
-            row_count += 1
-            if i < sample_rows:
-                for j, val in enumerate(row):
-                    if j < len(headers):
-                        col_data[headers[j]]['values'].append(val)
-
-        # Count remaining rows
-        for _ in reader:
-            row_count += 1
-
-    # Infer types and get sample values
-    for header in headers:
-        values = col_data[header]['values']
-        col_type = _infer_column_type(values)
-        unique_values = list(set(v for v in values if v))[:10]
-
-        columns.append({
-            'name': header,
-            'type': col_type,
-            'sample_values': unique_values,
-        })
-
-    return StructuredFileSchema(
-        filename=filepath.name,
-        filepath=str(filepath),
-        file_format="csv",
-        row_count=row_count,
-        columns=columns,
-    )
-
-
-def _infer_json_schema(filepath: Path, sample_docs: int = 100) -> StructuredFileSchema:
-    """Infer schema from a JSON file (array of objects or single object)."""
-    import json
-
-    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-        try:
-            data = json.load(f)
-        except json.JSONDecodeError:
-            return StructuredFileSchema(
-                filename=filepath.name,
-                filepath=str(filepath),
-                file_format="json",
-                row_count=0,
-                columns=[],
-            )
-
-    # Handle array of objects vs single object
-    if isinstance(data, list):
-        docs = data[:sample_docs]
-        row_count = len(data)
-    elif isinstance(data, dict):
-        docs = [data]
-        row_count = 1
-    else:
-        return StructuredFileSchema(
-            filename=filepath.name,
-            filepath=str(filepath),
-            file_format="json",
-            row_count=1,
-            columns=[],
-        )
-
-    # Collect all keys and their values
-    key_values: dict[str, list] = {}
-    for doc in docs:
-        if isinstance(doc, dict):
-            for key, val in doc.items():
-                if key not in key_values:
-                    key_values[key] = []
-                key_values[key].append(val)
-
-    # Build column info
-    columns = []
-    for key, values in key_values.items():
-        col_type = _infer_json_value_type(values)
-        # Get sample values (only for simple types)
-        sample_values = []
-        for v in values[:10]:
-            if isinstance(v, (str, int, float, bool)) and v is not None:
-                sample_values.append(str(v) if not isinstance(v, str) else v)
-        unique_samples = list(set(sample_values))[:10]
-
-        columns.append({
-            'name': key,
-            'type': col_type,
-            'sample_values': unique_samples,
-        })
-
-    return StructuredFileSchema(
-        filename=filepath.name,
-        filepath=str(filepath),
-        file_format="json",
-        row_count=row_count,
-        columns=columns,
-    )
-
-
-def _infer_column_type(values: list[str]) -> str:
-    """Infer column type from string values."""
-    if not values:
-        return "unknown"
-
-    # Check for numeric types
-    int_count = 0
-    float_count = 0
-    date_count = 0
-
-    for v in values:
-        if not v:
-            continue
-        try:
-            int(v)
-            int_count += 1
-            continue
-        except ValueError:
-            pass
-        try:
-            float(v)
-            float_count += 1
-            continue
-        except ValueError:
-            pass
-        # Simple date check
-        if len(v) == 10 and v[4:5] == '-' and v[7:8] == '-':
-            date_count += 1
-
-    non_empty = len([v for v in values if v])
-    if non_empty == 0:
-        return "unknown"
-
-    if int_count == non_empty:
-        return "integer"
-    if int_count + float_count == non_empty:
-        return "float"
-    if date_count > non_empty * 0.8:
-        return "date"
-    return "string"
-
-
-def _infer_json_value_type(values: list) -> str:
-    """Infer type from JSON values."""
-    if not values:
-        return "unknown"
-
-    types = set()
-    for v in values:
-        if v is None:
-            continue
-        elif isinstance(v, bool):
-            types.add("boolean")
-        elif isinstance(v, int):
-            types.add("integer")
-        elif isinstance(v, float):
-            types.add("float")
-        elif isinstance(v, str):
-            types.add("string")
-        elif isinstance(v, list):
-            types.add("array")
-        elif isinstance(v, dict):
-            types.add("object")
-
-    if len(types) == 0:
-        return "null"
-    if len(types) == 1:
-        return types.pop()
-    if types == {"integer", "float"}:
-        return "float"
-    return "mixed"
-
-
-def _infer_structured_schema(filepath: Path, description: Optional[str] = None) -> Optional[StructuredFileSchema]:
-    """Infer schema for a structured file based on its extension."""
-    suffix = filepath.suffix.lower()
-
-    if suffix == ".csv":
-        schema = _infer_csv_schema(filepath)
-    elif suffix == ".json":
-        schema = _infer_json_schema(filepath)
-    elif suffix == ".jsonl":
-        # JSON Lines - read first N lines as separate JSON objects
-        schema = _infer_jsonl_schema(filepath)
-    else:
-        return None
-
-    schema.description = description
-    return schema
-
-
-def _infer_jsonl_schema(filepath: Path, sample_lines: int = 100) -> StructuredFileSchema:
-    """Infer schema from a JSON Lines file."""
-    import json
-
-    docs = []
-    row_count = 0
-
-    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-        for i, line in enumerate(f):
-            row_count += 1
-            if i < sample_lines and line.strip():
-                try:
-                    docs.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-
-    # Collect all keys and their values
-    key_values: dict[str, list] = {}
-    for doc in docs:
-        if isinstance(doc, dict):
-            for key, val in doc.items():
-                if key not in key_values:
-                    key_values[key] = []
-                key_values[key].append(val)
-
-    # Build column info
-    columns = []
-    for key, values in key_values.items():
-        col_type = _infer_json_value_type(values)
-        sample_values = []
-        for v in values[:10]:
-            if isinstance(v, (str, int, float, bool)) and v is not None:
-                sample_values.append(str(v) if not isinstance(v, str) else v)
-        unique_samples = list(set(sample_values))[:10]
-
-        columns.append({
-            'name': key,
-            'type': col_type,
-            'sample_values': unique_samples,
-        })
-
-    return StructuredFileSchema(
-        filename=filepath.name,
-        filepath=str(filepath),
-        file_format="jsonl",
-        row_count=row_count,
-        columns=columns,
-    )
-
-
 class DocumentDiscoveryTools:
     """Tools for discovering and searching reference documents on-demand.
 
@@ -357,7 +88,7 @@ class DocumentDiscoveryTools:
         self,
         config: Config,
         cache_dir: Optional[Path] = None,
-        vector_store: Optional[VectorStoreBackend] = None,
+        vector_store: Optional[DuckDBVectorStore] = None,
         schema_entities: Optional[list[str]] = None,
         allowed_documents: Optional[set[str]] = None,
         skip_auto_index: bool = False,
@@ -451,7 +182,7 @@ class DocumentDiscoveryTools:
             result = self._vector_store._conn.execute("""
                 SELECT DISTINCT document_name
                 FROM embeddings
-                WHERE source = 'document'
+                WHERE chunk_type = 'document'
             """).fetchall()
             indexed_docs = {row[0] for row in result}
         except Exception:
@@ -486,8 +217,8 @@ class DocumentDiscoveryTools:
             print("[DOC_INDEX] No chunks to index!")
             return
 
-        # Generate embeddings
-        texts = [chunk.content for chunk in chunks]
+        # Generate embeddings — use contextual prefix when available
+        texts = [chunk.embedding_content or chunk.content for chunk in chunks]
         with self._model_lock:
             embeddings = self._model.encode(texts, convert_to_numpy=True)
 
@@ -498,15 +229,8 @@ class DocumentDiscoveryTools:
         # Extract and store entities
         self._extract_and_store_entities(chunks, schema_entities)
 
-    def _create_vector_store(self) -> VectorStoreBackend:
-        """Create vector store based on config."""
-        storage_config = self.config.storage
-        vs_config = storage_config.vector_store if storage_config else None
-
-        backend = vs_config.backend if vs_config else "duckdb"
-        db_path = vs_config.db_path if vs_config else None
-
-        return create_vector_store(backend=backend, db_path=db_path)
+    def _create_vector_store(self) -> DuckDBVectorStore:
+        return DuckDBVectorStore()
 
     def set_schema_entities(self, entities: set[str] | list[str]) -> None:
         """Set database schema entities (table names, column names) for pattern matching.
@@ -601,47 +325,18 @@ class DocumentDiscoveryTools:
             (self._graphql_fields or [])
         ))
 
-        # Create extractor with session's entity catalog
-        extractor = EntityExtractor(
+        count = _run_entity_extraction(
+            chunks=chunks,
             session_id=session_id,
+            project_id=None,
             schema_terms=self._schema_entities,
             api_terms=api_terms if api_terms else None,
+            business_terms=None,
+            add_entities_fn=lambda ents: self._vector_store.add_entities(ents, session_id=session_id),
+            link_fn=self._vector_store.link_chunk_entities,
         )
-
-        all_links: list[ChunkEntity] = []
-        for chunk in chunks:
-            extractions = extractor.extract(chunk)
-            for entity, link in extractions:
-                all_links.append(link)
-
-        # Store entities - Entity model now has semantic_type instead of metadata
-        entities = extractor.get_all_entities()
-        if entities:
-            # Add all entities to vector store (session_id is required)
-            self._vector_store.add_entities(entities, session_id=session_id)
-
-        # Store links WITH session_id
-        if all_links:
-            # Deduplicate links by (chunk_id, entity_id)
-            unique_links = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
-            logger.info(f"extract_entities_for_session({session_id}): created {len(unique_links)} links")
-            return len(unique_links)
-
-        return 0
+        logger.info(f"extract_entities_for_session({session_id}): created {count} links")
+        return count
 
     def _get_session_visible_chunks(self, project_ids: list[str]) -> list[DocumentChunk]:
         """Get chunks visible to a session (base + loaded projects).
@@ -655,13 +350,13 @@ class DocumentDiscoveryTools:
         if not hasattr(self._vector_store, '_conn'):
             return self._vector_store.get_chunks()
 
-        # Query chunks where project_id is NULL, '__base__', or in project_ids
-        conditions = ["project_id IS NULL", "project_id = '__base__'"]
+        # Query chunks where namespace is NULL, '__base__', or in project_ids
+        conditions = ["namespace IS NULL", "namespace = '__base__'"]
         params = []
 
         if project_ids:
             placeholders = ",".join(["?" for _ in project_ids])
-            conditions.append(f"project_id IN ({placeholders})")
+            conditions.append(f"namespace IN ({placeholders})")
             params.extend(project_ids)
 
         where_clause = " OR ".join(conditions)
@@ -735,44 +430,17 @@ class DocumentDiscoveryTools:
             (self._graphql_fields or [])
         ))
 
-        # Run entity extraction on metadata chunks
-        # Use "__metadata__" as session_id for metadata processing
-        extractor = EntityExtractor(
+        count = _run_entity_extraction(
+            chunks=chunks,
             session_id="__metadata__",
+            project_id=None,
             schema_terms=self._schema_entities,
             api_terms=api_terms if api_terms else None,
+            business_terms=None,
+            add_entities_fn=lambda ents: self._vector_store.add_entities(ents, session_id="__metadata__"),
+            link_fn=self._vector_store.link_chunk_entities,
         )
-
-        all_links: list[ChunkEntity] = []
-        for chunk in chunks:
-            extractions = extractor.extract(chunk)
-            for entity, link in extractions:
-                all_links.append(link)
-
-        entities = extractor.get_all_entities()
-        logger.debug(f"Metadata NER: {len(entities)} entities, {len(all_links)} links from {len(chunks)} metadata items")
-
-        if entities:
-            # Add all entities to vector store
-            self._vector_store.add_entities(entities, session_id="__metadata__")
-
-        if all_links:
-            # Deduplicate links by (chunk_id, entity_id)
-            unique_links = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
+        logger.debug(f"Metadata NER: {count} entities from {len(chunks)} metadata items")
 
     def set_openapi_entities(
         self,
@@ -866,8 +534,8 @@ class DocumentDiscoveryTools:
         if not chunks:
             return True
 
-        # Generate embeddings
-        texts = [chunk.content for chunk in chunks]
+        # Generate embeddings — use contextual prefix when available
+        texts = [chunk.embedding_content or chunk.content for chunk in chunks]
         embeddings = self._model.encode(texts, convert_to_numpy=True)
 
         # Add to vector store with project_id/session_id for filtering
@@ -999,45 +667,17 @@ class DocumentDiscoveryTools:
             (self._graphql_fields or [])
         ))
 
-        # Create extractor with all known schema entities
-        extractor = EntityExtractor(
+        count = _run_entity_extraction(
+            chunks=chunks,
             session_id=session_id,
+            project_id=None,
             schema_terms=self._schema_entities,
             api_terms=api_terms if api_terms else None,
+            business_terms=None,
+            add_entities_fn=lambda ents: self._vector_store.add_entities(ents, session_id=session_id),
+            link_fn=self._vector_store.link_chunk_entities,
         )
-
-        all_links: list[ChunkEntity] = []
-
-        # Extract entities from all chunks using spaCy NER
-        for chunk in chunks:
-            extractions = extractor.extract(chunk)
-            logger.debug(f"[ENTITY] Chunk '{chunk.section}' -> {len(extractions)} entities")
-
-            for entity, link in extractions:
-                all_links.append(link)
-
-        entities = extractor.get_all_entities()
-        logger.debug(f"Extracted {len(entities)} entities, {len(all_links)} links")
-        if entities:
-            self._vector_store.add_entities(entities, session_id=session_id)
-
-        if all_links:
-            # Deduplicate links by (chunk_id, entity_id)
-            unique_links = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
+        logger.debug(f"Extracted {count} entities")
 
     def _extract_and_store_entities_project(
         self,
@@ -1066,47 +706,17 @@ class DocumentDiscoveryTools:
             (self._graphql_fields or [])
         ))
 
-        # Create extractor with all known schema entities
-        # Use project_id as session_id for project-scoped extraction
-        extractor = EntityExtractor(
+        count = _run_entity_extraction(
+            chunks=chunks,
             session_id=project_id,
             project_id=project_id,
             schema_terms=self._schema_entities,
             api_terms=api_terms if api_terms else None,
+            business_terms=None,
+            add_entities_fn=lambda ents: self._vector_store.add_entities(ents, session_id=project_id),
+            link_fn=self._vector_store.link_chunk_entities,
         )
-
-        all_links: list[ChunkEntity] = []
-
-        # Extract entities from all chunks using spaCy NER
-        for chunk in chunks:
-            extractions = extractor.extract(chunk)
-            logger.debug(f"[ENTITY] Chunk '{chunk.section}' -> {len(extractions)} entities")
-
-            for entity, link in extractions:
-                all_links.append(link)
-
-        entities = extractor.get_all_entities()
-        logger.debug(f"Extracted {len(entities)} entities, {len(all_links)} links")
-        if entities:
-            self._vector_store.add_entities(entities, session_id=project_id)
-
-        if all_links:
-            # Deduplicate links by (chunk_id, entity_id)
-            unique_links = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
+        logger.debug(f"Extracted {count} entities for project {project_id}")
 
     def remove_document(self, name: str) -> bool:
         """Remove a document and its vectors from the index.
@@ -1579,7 +1189,7 @@ class DocumentDiscoveryTools:
             search_results = self._vector_store.search(
                 query_embedding,
                 limit=limit,
-                project_ids=self._active_project_ids,
+                namespaces=self._active_project_ids,
                 session_id=session_id,
             )
 
@@ -1631,7 +1241,7 @@ class DocumentDiscoveryTools:
                 enriched_results = self._vector_store.search_enriched(
                     query_embedding,
                     limit=limit,
-                    project_ids=self._active_project_ids,
+                    namespaces=self._active_project_ids,
                     session_id=session_id,
                 )
 
@@ -1828,12 +1438,12 @@ class DocumentDiscoveryTools:
                         content = self._extract_pptx_text(path)
                         doc_format = "text"
                     else:
-                        # Check for structured data files - use schema metadata
-                        schema = _infer_structured_schema(path, doc_config.description)
-                        if schema:
-                            content = schema.to_metadata_doc()
-                            doc_format = schema.file_format
-                        # Text-based files - return content for rendering
+                        _STRUCTURED_EXTS = {".csv", ".json", ".jsonl", ".ndjson", ".parquet", ".arrow", ".feather"}
+                        if suffix in _STRUCTURED_EXTS:
+                            from chonk.loader import DocumentLoader
+                            _chunks = DocumentLoader().load_structured_file(str(path))
+                            content = "\n\n".join(c.content for c in _chunks)
+                            doc_format = suffix.lstrip(".")
                         else:
                             content = path.read_text()
                             if doc_format == "auto":
@@ -1965,14 +1575,14 @@ class DocumentDiscoveryTools:
         doc_format = doc_config.format
 
         # Check if it's a structured data file - use schema metadata instead of raw content
-        schema = _infer_structured_schema(filepath, doc_config.description)
-        if schema:
-            # For structured files, index the metadata, not the raw data
-            content = schema.to_metadata_doc()
-            doc_format = schema.file_format
+        _STRUCTURED_EXTS = {".csv", ".json", ".jsonl", ".ndjson", ".parquet", ".arrow", ".feather"}
+        if suffix in _STRUCTURED_EXTS:
+            from chonk.loader import DocumentLoader
+            _chunks = DocumentLoader().load_structured_file(str(filepath))
+            content = "\n\n".join(c.content for c in _chunks)
+            doc_format = suffix.lstrip(".")
             sections = ["Schema", "Columns"]
 
-            # Store schema for later reference
             file_config = DocumentConfig(
                 type="file",
                 path=str(filepath),
@@ -2382,109 +1992,25 @@ class DocumentDiscoveryTools:
             (self._graphql_fields or [])
         ))
 
-        # Create extractor with schema entities and spaCy NER
-        # Use "__document__" as session_id for general document extraction
-        extractor = EntityExtractor(
+        count = _run_entity_extraction(
+            chunks=chunks,
             session_id="__document__",
+            project_id=None,
             schema_terms=schema_entities,
             api_terms=api_terms if api_terms else None,
+            business_terms=None,
+            add_entities_fn=lambda ents: self._vector_store.add_entities(ents, session_id="__document__"),
+            link_fn=self._vector_store.link_chunk_entities,
         )
-
-        # Extract entities from each chunk
-        all_links: list[ChunkEntity] = []
-
-        for chunk in chunks:
-            extractions = extractor.extract(chunk)
-            for entity, link in extractions:
-                all_links.append(link)
-
-        # Store all unique entities
-        entities = extractor.get_all_entities()
-        logger.debug(f"Entity extraction: {len(entities)} unique entities, {len(all_links)} links from {len(chunks)} chunks")
-        if entities:
-            self._vector_store.add_entities(entities, session_id="__document__")
-
-        # Store all chunk-entity links (deduplicated by chunk_id + entity_id)
-        if all_links:
-            # Deduplicate links - same entity in same chunk should only have one link
-            unique_links = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    # Merge mention counts if duplicate
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
+        logger.debug(f"Entity extraction: {count} unique entities from {len(chunks)} chunks")
 
     def _chunk_document(self, name: str, content: str) -> list[DocumentChunk]:
-        """Split a document into chunks for embedding.
-
-        Chunks are split only on paragraph/line boundaries - never mid-paragraph.
-        Paragraphs are combined until hitting CHUNK_SIZE, then a new chunk starts.
-        A chunk may exceed CHUNK_SIZE if a single paragraph is larger (we don't split it).
-        """
-        chunks = []
-        current_section = None
-
-        # Determine paragraph separator based on content
-        # Use double newline if present, otherwise single newline
-        if "\n\n" in content:
-            paragraphs = content.split("\n\n")
-            separator = "\n\n"
-        else:
-            paragraphs = content.split("\n")
-            separator = "\n"
-
-        chunk_index = 0
-        current_chunk = ""
-
-        for para in paragraphs:
-            para = para.strip()
-            if not para:
-                continue
-
-            # Track sections from markdown headers
-            if para.startswith("#"):
-                current_section = para.lstrip("#").strip()
-
-            # Check if adding this paragraph would exceed chunk size
-            potential_chunk = (current_chunk + separator + para).strip() if current_chunk else para
-
-            if len(potential_chunk) <= self.CHUNK_SIZE:
-                # Fits in current chunk - add it
-                current_chunk = potential_chunk
-            else:
-                # Would exceed chunk size
-                if current_chunk:
-                    # Save current chunk first
-                    chunks.append(DocumentChunk(
-                        document_name=name,
-                        content=current_chunk,
-                        section=current_section,
-                        chunk_index=chunk_index,
-                    ))
-                    chunk_index += 1
-                # Start new chunk with this paragraph (even if it exceeds CHUNK_SIZE)
-                current_chunk = para
-
-        # Save final chunk
-        if current_chunk:
-            chunks.append(DocumentChunk(
-                document_name=name,
-                content=current_chunk,
-                section=current_section,
-                chunk_index=chunk_index,
-            ))
-
-        return chunks
+        """Split a document into semantically bounded chunks using chonk's chunker."""
+        from chonk import chunk_document, enrich_chunks
+        result = []
+        return list(enrich_chunks(
+            chunk_document(name, content, min_chunk_size=600, max_chunk_size=self.CHUNK_SIZE)
+        ))
 
 
 # Tool schemas for LLM

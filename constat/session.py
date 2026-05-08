@@ -8956,24 +8956,32 @@ If the original question had multiple goals or sub-questions, note whether all w
             search_results = self.doc_tools.search_documents(problem, limit=5)
 
             if search_results:
-                doc_lines = ["Relevant document excerpts:"]
-                for i, result in enumerate(search_results, 1):
-                    doc_name = result.get("document", "unknown")
-                    excerpt = result.get("excerpt", "")
-                    relevance = result.get("relevance", 0)
-                    section = result.get("section", "")
+                from chonk.models import ScoredChunk as ChonkScoredChunk, DocumentChunk as ChonkDocChunk
+                from chonk.generation import AnswerContext, PromptBuilder
 
-                    source_info = {
-                        "document": doc_name,
-                        "section": section,
-                        "relevance": relevance,
+                scored_chunks = [
+                    ChonkScoredChunk(
+                        chunk_id=f"doc_{i}",
+                        chunk=ChonkDocChunk(
+                            document_name=r.get("document", "unknown"),
+                            content=r.get("excerpt", ""),
+                            section=r.get("section") or [],
+                        ),
+                        score=r.get("relevance", 0.0),
+                        provenance="seed",
+                    )
+                    for i, r in enumerate(search_results)
+                ]
+                sources = [
+                    {
+                        "document": r.get("document", "unknown"),
+                        "section": r.get("section", ""),
+                        "relevance": r.get("relevance", 0),
                     }
-                    sources.append(source_info)
-
-                    doc_lines.append(f"\n[{i}] From '{doc_name}'" + (f" - {section}" if section else ""))
-                    doc_lines.append(excerpt)
-
-                doc_context = "\n".join(doc_lines)
+                    for r in search_results
+                ]
+                context = AnswerContext(chunks=scored_chunks, query=problem)
+                doc_context = PromptBuilder().build(context, token_budget=3000)
 
         # Step 2: Build prompt for LLM synthesis
         self._emit_event(StepEvent(

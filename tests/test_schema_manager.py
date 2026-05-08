@@ -256,6 +256,45 @@ class TestSchemaManagerVectorSearch:
             assert "rows" in result["summary"]
 
 
+class TestSchemaManagerRelationshipIndex:
+    """Test Phase 4.1: FK-derived RelationshipIndex."""
+
+    def test_relationship_index_exists(self, schema_manager: SchemaManager):
+        from chonk import RelationshipIndex
+        assert isinstance(schema_manager.relationship_index, RelationshipIndex)
+
+    def test_references_triples_built_from_fks(self, schema_manager: SchemaManager):
+        # Track references Album, Genre, MediaType
+        objects = schema_manager.relationship_index.get_objects("Track", verb="references")
+        targets = {t.object_id for t in objects}
+        assert "Album" in targets
+        assert "Genre" in targets
+        assert "MediaType" in targets
+
+    def test_part_of_triples_built_for_fk_columns(self, schema_manager: SchemaManager):
+        # AlbumId is a FK column in Track, so AlbumId part_of Track
+        subjects = schema_manager.relationship_index.get_objects("Track", verb="part_of")
+        # part_of: FK columns are subjects, table is object — use get_subjects on table
+        parts = schema_manager.relationship_index.get_subjects("Track", verb="part_of")
+        column_ids = {t.subject_id for t in parts}
+        assert "AlbumId" in column_ids
+
+    def test_references_confidence_is_one(self, schema_manager: SchemaManager):
+        triples = schema_manager.relationship_index.get_objects("Track", verb="references")
+        assert all(t.confidence == 1.0 for t in triples)
+
+    def test_reverse_traversal(self, schema_manager: SchemaManager):
+        # Album is referenced by Track (and others)
+        subjects = schema_manager.relationship_index.get_subjects("Album", verb="references")
+        referencing = {t.subject_id for t in subjects}
+        assert "Track" in referencing
+
+    def test_index_nonempty(self, schema_manager: SchemaManager):
+        from chonk import RelationshipIndex
+        idx = schema_manager.relationship_index
+        assert len(idx) > 0
+
+
 class TestSchemaManagerEdgeCases:
     """Test edge cases and error handling."""
 
