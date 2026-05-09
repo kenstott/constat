@@ -1415,139 +1415,91 @@ class DocumentDiscoveryTools:
             if doc_format == "auto":
                 doc_format = "text"
 
-        elif doc_config.type == "file":
+        elif doc_config.type in ("file", "pdf", "docx", "xlsx", "pptx"):
+            from chonk.loader import DocumentLoader
+            loader = DocumentLoader()
             if doc_config.path:
                 path = Path(doc_config.path)
-                # Resolve relative paths from config directory
                 if not path.is_absolute() and self.config.config_dir:
                     path = (Path(self.config.config_dir) / doc_config.path).resolve()
-                if path.exists():
-                    suffix = path.suffix.lower()
-
-                    # Binary document formats - extract text content
-                    if suffix == ".pdf":
-                        content = self._extract_pdf_text(path)
-                        doc_format = "text"
-                    elif suffix == ".docx":
-                        content = self._extract_docx_text(path)
-                        doc_format = "text"
-                    elif suffix == ".xlsx":
-                        content = self._extract_xlsx_text(path)
-                        doc_format = "text"
-                    elif suffix == ".pptx":
-                        content = self._extract_pptx_text(path)
-                        doc_format = "text"
-                    else:
-                        _STRUCTURED_EXTS = {".csv", ".json", ".jsonl", ".ndjson", ".parquet", ".arrow", ".feather"}
-                        if suffix in _STRUCTURED_EXTS:
-                            from chonk.loader import DocumentLoader
-                            _chunks = DocumentLoader().load_structured_file(str(path))
-                            content = "\n\n".join(c.content for c in _chunks)
-                            doc_format = suffix.lstrip(".")
-                        else:
-                            content = path.read_text()
-                            if doc_format == "auto":
-                                doc_format = self._detect_format(suffix)
-                else:
+                if not path.exists():
                     raise FileNotFoundError(f"Document file not found: {doc_config.path}")
+                _chunks = loader.load(str(path))
+            elif doc_config.url:
+                import requests
+                response = requests.get(doc_config.url, headers=doc_config.headers or {}, timeout=30)
+                response.raise_for_status()
+                _chunks = loader.load_bytes(response.content, Path(doc_config.url).stem or "doc", source_path=doc_config.url)
+            else:
+                _chunks = []
+            content = "\n\n".join(c.content for c in _chunks)
+            doc_format = "text"
 
         elif doc_config.type == "http":
+            from chonk.loader import DocumentLoader
+            loader = DocumentLoader()
             if doc_config.url:
                 import requests
-                headers = doc_config.headers or {}
-                response = requests.get(doc_config.url, headers=headers, timeout=30)
+                response = requests.get(doc_config.url, headers=doc_config.headers or {}, timeout=30)
                 response.raise_for_status()
-
-                # Check content type and URL extension for binary formats
-                content_type = response.headers.get("content-type", "")
-                url_lower = doc_config.url.lower() if doc_config.url else ""
-
-                if "pdf" in content_type or url_lower.endswith(".pdf"):
-                    content = self._extract_pdf_text_from_bytes(response.content)
-                    doc_format = "text"
-                elif "wordprocessingml" in content_type or url_lower.endswith(".docx"):
-                    content = self._extract_docx_text_from_bytes(response.content)
-                    doc_format = "text"
-                elif "spreadsheetml" in content_type or url_lower.endswith(".xlsx"):
-                    content = self._extract_xlsx_text_from_bytes(response.content)
-                    doc_format = "text"
-                elif "presentationml" in content_type or url_lower.endswith(".pptx"):
-                    content = self._extract_pptx_text_from_bytes(response.content)
-                    doc_format = "text"
-                else:
-                    content = response.text
-                    if doc_format == "auto":
-                        doc_format = self._detect_format_from_content_type(content_type)
-
-        elif doc_config.type == "pdf":
-            # Direct PDF type - load from path or url
-            if doc_config.path:
-                path = Path(doc_config.path)
-                if path.exists():
-                    content = self._extract_pdf_text(path)
-                    doc_format = "text"
-                else:
-                    raise FileNotFoundError(f"PDF file not found: {doc_config.path}")
-            elif doc_config.url:
-                import requests
-                headers = doc_config.headers or {}
-                response = requests.get(doc_config.url, headers=headers, timeout=30)
-                response.raise_for_status()
-                content = self._extract_pdf_text_from_bytes(response.content)
+                _chunks = loader.load_bytes(response.content, Path(doc_config.url).stem or "doc", source_path=doc_config.url)
+                content = "\n\n".join(c.content for c in _chunks)
                 doc_format = "text"
 
-        elif doc_config.type == "docx":
-            # Word document - load from path or url
-            if doc_config.path:
-                path = Path(doc_config.path)
-                if path.exists():
-                    content = self._extract_docx_text(path)
-                    doc_format = "text"
-                else:
-                    raise FileNotFoundError(f"Word document not found: {doc_config.path}")
-            elif doc_config.url:
-                import requests
-                headers = doc_config.headers or {}
-                response = requests.get(doc_config.url, headers=headers, timeout=30)
-                response.raise_for_status()
-                content = self._extract_docx_text_from_bytes(response.content)
-                doc_format = "text"
+        elif doc_config.type == "directory":
+            from chonk.loader import DocumentLoader
+            path = Path(doc_config.path or ".")
+            if not path.is_absolute() and self.config.config_dir:
+                path = (Path(self.config.config_dir) / path).resolve()
+            _chunks = DocumentLoader().load_directory(str(path), extensions=doc_config.extensions, recursive=doc_config.recursive, max_files=doc_config.max_files)
+            content = "\n\n".join(c.content for c in _chunks)
+            doc_format = "text"
 
-        elif doc_config.type == "xlsx":
-            # Excel spreadsheet - load from path or url
-            if doc_config.path:
-                path = Path(doc_config.path)
-                if path.exists():
-                    content = self._extract_xlsx_text(path)
-                    doc_format = "text"
-                else:
-                    raise FileNotFoundError(f"Excel file not found: {doc_config.path}")
-            elif doc_config.url:
-                import requests
-                headers = doc_config.headers or {}
-                response = requests.get(doc_config.url, headers=headers, timeout=30)
-                response.raise_for_status()
-                content = self._extract_xlsx_text_from_bytes(response.content)
-                doc_format = "text"
+        elif doc_config.type == "github":
+            from chonk.loader import DocumentLoader
+            from chonk.transports import GitHubCrawler
+            crawler = GitHubCrawler(token=doc_config.token, branch=doc_config.branch, extensions=doc_config.extensions)
+            loader = DocumentLoader(extra_transports=[crawler])
+            _chunks = loader.load_crawl(doc_config.url or "", crawler=crawler)
+            content = "\n\n".join(c.content for c in _chunks)
+            doc_format = "text"
 
-        elif doc_config.type == "pptx":
-            # PowerPoint presentation - load from path or url
-            if doc_config.path:
-                path = Path(doc_config.path)
-                if path.exists():
-                    content = self._extract_pptx_text(path)
-                    doc_format = "text"
-                else:
-                    raise FileNotFoundError(f"PowerPoint file not found: {doc_config.path}")
-            elif doc_config.url:
-                import requests
-                headers = doc_config.headers or {}
-                response = requests.get(doc_config.url, headers=headers, timeout=30)
-                response.raise_for_status()
-                content = self._extract_pptx_text_from_bytes(response.content)
-                doc_format = "text"
+        elif doc_config.type == "sharepoint":
+            from chonk.loader import DocumentLoader
+            from chonk.transports import SharePointCrawler
+            crawler = SharePointCrawler(
+                site_url=doc_config.url or "",
+                auth_mode=doc_config.auth_mode or "azure_ad",
+                tenant_id=doc_config.tenant_id,
+                client_id=doc_config.client_id,
+                client_secret=doc_config.client_secret,
+                username=doc_config.username,
+                password=doc_config.password,
+                artifacts=doc_config.artifacts,
+            )
+            loader = DocumentLoader(extra_transports=[crawler])
+            _chunks = loader.load_crawl(doc_config.url or "", crawler=crawler)
+            content = "\n\n".join(c.content for c in _chunks)
+            doc_format = "text"
 
-        # TODO: Implement confluence, notion loaders
+        elif doc_config.type == "gmail":
+            from chonk.loader import DocumentLoader
+            from chonk.transports import GmailCrawler
+            token_path = doc_config.token_file
+            if token_path and not Path(token_path).is_absolute() and self.config.config_dir:
+                token_path = str((Path(self.config.config_dir) / token_path).resolve())
+            crawler = GmailCrawler(
+                client_id=doc_config.client_id,
+                client_secret=doc_config.client_secret,
+                token_path=token_path,
+            )
+            loader = DocumentLoader(extra_transports=[crawler])
+            _chunks = []
+            for label in (doc_config.labels or ["INBOX"]):
+                _chunks.extend(loader.load_crawl(f"gmail://me/{label}", crawler=crawler))
+            content = "\n\n".join(c.content for c in _chunks)
+            doc_format = "text"
+
         else:
             raise NotImplementedError(f"Document type not yet implemented: {doc_config.type}")
 
@@ -1602,22 +1554,10 @@ class DocumentDiscoveryTools:
             return
 
         # Handle other file types
-        if suffix == ".pdf":
-            content = self._extract_pdf_text(filepath)
-            doc_format = "text"
-        elif suffix == ".docx":
-            content = self._extract_docx_text(filepath)
-            doc_format = "text"
-        elif suffix == ".xlsx":
-            content = self._extract_xlsx_text(filepath)
-            doc_format = "text"
-        elif suffix == ".pptx":
-            content = self._extract_pptx_text(filepath)
-            doc_format = "text"
-        else:
-            content = filepath.read_text()
-            if doc_format == "auto" or not doc_format:
-                doc_format = self._detect_format(suffix)
+        from chonk.loader import DocumentLoader
+        _chunks = DocumentLoader().load(str(filepath))
+        content = "\n\n".join(c.content for c in _chunks)
+        doc_format = "text"
 
         # Extract sections for markdown
         sections = []

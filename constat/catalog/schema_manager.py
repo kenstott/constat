@@ -972,6 +972,23 @@ class SchemaManager:
 
         chunks = DocumentLoader().load_schema(chonk_tables)
 
+        # Augment with stored procedures, views, and triggers from SQL databases
+        try:
+            from chonk.transports import DatabaseSchemaCrawler
+            config_dir = self.config.config_dir if self.config else None
+            for db_name, db_config in self.config.databases.items():
+                if db_config.is_file_source() or db_config.is_nosql():
+                    continue
+                try:
+                    url = db_config.get_connection_uri(config_dir)
+                    crawler = DatabaseSchemaCrawler(url)
+                    loader = DocumentLoader(extra_transports=[crawler])
+                    chunks += loader.load_crawl(url, crawler=crawler)
+                except Exception as exc:
+                    logger.debug(f"DatabaseSchemaCrawler skipped for {db_name}: {exc}")
+        except ImportError:
+            pass
+
         if not chunks:
             logger.debug("No schema metadata to create chunks from")
             return
@@ -1011,6 +1028,20 @@ class SchemaManager:
         ]
 
         chunks = DocumentLoader().load_schema(chonk_tables)
+
+        # Augment with stored procedures, views, and triggers for this database
+        if db_name in self.config.databases:
+            db_config = self.config.databases[db_name]
+            if not db_config.is_file_source() and not db_config.is_nosql():
+                try:
+                    from chonk.transports import DatabaseSchemaCrawler
+                    config_dir = self.config.config_dir if self.config else None
+                    url = db_config.get_connection_uri(config_dir)
+                    crawler = DatabaseSchemaCrawler(url)
+                    loader = DocumentLoader(extra_transports=[crawler])
+                    chunks += loader.load_crawl(url, crawler=crawler)
+                except Exception as exc:
+                    logger.debug(f"DatabaseSchemaCrawler skipped for {db_name}: {exc}")
 
         if not chunks:
             logger.debug(f"No tables found for database {db_name}")

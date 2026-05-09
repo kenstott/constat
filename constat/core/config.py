@@ -572,11 +572,11 @@ class DocumentConfig(BaseModel):
               - Churn: Customer inactive for 90+ days
             description: "Business glossary"
     """
-    # Acquisition type: file | http | inline | confluence | notion
+    # Acquisition type: file | http | inline | directory | github | sharepoint | gmail | confluence | notion
     type: str = "file"
 
-    # For type=file
-    path: Optional[str] = None  # Local file path (supports glob: ./docs/*.md)
+    # For type=file / type=directory
+    path: Optional[str] = None  # Local file path or directory root
 
     # For type=http
     url: Optional[str] = None  # URL to fetch
@@ -586,7 +586,7 @@ class DocumentConfig(BaseModel):
     space_key: Optional[str] = None  # Confluence space key
     page_title: Optional[str] = None  # Page title to fetch
     page_id: Optional[str] = None  # Or page ID directly
-    username: Optional[str] = None  # Confluence username
+    username: Optional[str] = None  # Confluence / SharePoint (ntlm) username
     api_token: Optional[str] = None  # Confluence API token
 
     # For type=notion
@@ -595,6 +595,28 @@ class DocumentConfig(BaseModel):
 
     # For type=inline
     content: Optional[str] = None  # Inline content
+
+    # For type=github
+    token: Optional[str] = None  # GitHub personal access token (falls back to GITHUB_TOKEN env)
+    branch: Optional[str] = None  # Branch/tag to crawl (default: repo default branch)
+    extensions: Optional[list[str]] = None  # File extensions to include
+
+    # For type=sharepoint
+    tenant_id: Optional[str] = None  # Azure AD tenant ID
+    client_id: Optional[str] = None  # App client ID (SharePoint / Gmail)
+    client_secret: Optional[str] = None  # App client secret (SharePoint / Gmail)
+    password: Optional[str] = None  # Password for ntlm auth
+    auth_mode: Optional[str] = None  # azure_ad | ntlm | legacy (SharePoint)
+    artifacts: Optional[list[str]] = None  # documents | lists | calendars | pages
+
+    # For type=gmail
+    token_file: Optional[str] = None  # Path to stored OAuth2 token
+    labels: Optional[list[str]] = None  # Gmail labels to index (default: INBOX)
+    max_messages: int = 100  # Maximum messages to fetch
+
+    # For type=directory
+    recursive: bool = True  # Recurse into subdirectories
+    max_files: int = 1000  # Maximum files to index
 
     # Metadata
     description: str = ""  # What this document contains

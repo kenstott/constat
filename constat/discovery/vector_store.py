@@ -830,6 +830,50 @@ class DuckDBVectorStore:
         )
         return len(entity_ids)
 
+    # =========================================================================
+    # Document hash wrappers (chonk documents table, namespace-scoped)
+    # =========================================================================
+
+    def _scoped_doc_name(self, source_id: str, doc_name: str) -> str:
+        return f"{source_id}::{doc_name}"
+
+    def list_doc_hashes(self, source_id: str) -> dict[str, str]:
+        prefix = f"{source_id}::"
+        rows = self._conn.execute(
+            "SELECT document_name, content_hash FROM documents WHERE document_name LIKE ?",
+            [prefix + "%"],
+        ).fetchall()
+        return {row[0][len(prefix):]: row[1] for row in rows}
+
+    def get_doc_hash(self, source_id: str, doc_name: str) -> str | None:
+        result = self._conn.execute(
+            "SELECT content_hash FROM documents WHERE document_name = ?",
+            [self._scoped_doc_name(source_id, doc_name)],
+        ).fetchone()
+        return result[0] if result else None
+
+    def set_doc_hash(self, source_id: str, doc_name: str, content_hash: str,
+                     source_uri: str = "", chunk_count: int = 0) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO documents (document_name, content_hash, source_uri, indexed_at, chunk_count)
+            VALUES (?, ?, ?, now(), ?)
+            ON CONFLICT (document_name) DO UPDATE SET
+                content_hash = excluded.content_hash,
+                source_uri   = excluded.source_uri,
+                indexed_at   = excluded.indexed_at,
+                chunk_count  = excluded.chunk_count
+            """,
+            [self._scoped_doc_name(source_id, doc_name), content_hash, source_uri, chunk_count],
+        ).fetchall()
+
+    def delete_doc_hash(self, source_id: str, doc_name: str) -> bool:
+        result = self._conn.execute(
+            "DELETE FROM documents WHERE document_name = ? RETURNING document_name",
+            [self._scoped_doc_name(source_id, doc_name)],
+        ).fetchone()
+        return result is not None
+
     def close(self) -> None:
         pass  # chonk Store manages its own connection lifecycle
 

@@ -263,7 +263,7 @@ def _warmup_vector_store(config: Config) -> None:
         else:
             # Slow path: source changed, check each document individually
             logger.info(f"  Base documents: checking {len(config.documents)} documents...")
-            cached_resource_hashes = vector_store.get_resource_hashes_for_source("__base__", "document")
+            cached_resource_hashes = vector_store.list_doc_hashes("__base__")
             indexed_count = 0
             skipped_count = 0
 
@@ -297,7 +297,7 @@ def _warmup_vector_store(config: Config) -> None:
                                 skip_entity_extraction=True,  # NER done at session creation
                             )
                             if success:
-                                vector_store.set_resource_hash("__base__", "document", doc_name, resource_hash)
+                                vector_store.set_doc_hash("__base__", doc_name, resource_hash)
                                 indexed_count += 1
                                 logger.info(f"  Base: vectorized {doc_name}")
                             else:
@@ -311,7 +311,7 @@ def _warmup_vector_store(config: Config) -> None:
             for old_doc_name in cached_resource_hashes.keys():
                 if old_doc_name not in config.documents:
                     vector_store.delete_resource_chunks("__base__", "document", old_doc_name)
-                    vector_store.delete_resource_hash("__base__", "document", old_doc_name)
+                    vector_store.delete_doc_hash("__base__", old_doc_name)
                     logger.info(f"  Base: removed deleted document {old_doc_name}")
 
             vector_store.set_source_hash("__base__", 'doc', doc_hash)
@@ -334,7 +334,7 @@ def _warmup_vector_store(config: Config) -> None:
 
         # Slow path: source changed, check each document individually
         logger.info(f"  Project {filename} documents: checking {len(project.documents)} documents...")
-        cached_resource_hashes = vector_store.get_resource_hashes_for_source(filename, "document")
+        cached_resource_hashes = vector_store.list_doc_hashes(filename)
         config_dir = Path(config.config_dir) if config.config_dir else Path.cwd()
         indexed_count = 0
         skipped_count = 0
@@ -369,7 +369,7 @@ def _warmup_vector_store(config: Config) -> None:
                             skip_entity_extraction=True,  # NER done at session creation
                         )
                         if success:
-                            vector_store.set_resource_hash(filename, "document", doc_name, resource_hash)
+                            vector_store.set_doc_hash(filename, doc_name, resource_hash)
                             indexed_count += 1
                             logger.info(f"  Project {filename}: vectorized {doc_name}")
                         else:
@@ -383,7 +383,7 @@ def _warmup_vector_store(config: Config) -> None:
         for old_doc_name in cached_resource_hashes.keys():
             if old_doc_name not in project.documents:
                 vector_store.delete_resource_chunks(filename, "document", old_doc_name)
-                vector_store.delete_resource_hash(filename, "document", old_doc_name)
+                vector_store.delete_doc_hash(filename, old_doc_name)
                 logger.info(f"  Project {filename}: removed deleted document {old_doc_name}")
 
         vector_store.set_source_hash(filename, 'doc', doc_hash)
