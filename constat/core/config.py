@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: f9c14643-c328-4f9e-9f90-4b8cf5778af2
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -13,11 +14,18 @@ import glob
 import os
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from constat.core.source_config import (  # noqa: F401
+    APIConfig,
+    DatabaseConfig,
+    DatabaseCredentials,
+    DocumentConfig,
+)
 
 
 def _resolve_refs(data: Any, base_dir: Path) -> Any:
@@ -102,254 +110,6 @@ def _load_ref(ref_path: str, base_dir: Path) -> Any:
         return data
 
 
-class DatabaseCredentials(BaseModel):
-    """Database credentials for authentication."""
-    username: Optional[str] = None
-    password: Optional[str] = None
-
-    def is_complete(self) -> bool:
-        """Check if both username and password are provided and non-empty."""
-        return bool(self.username) and bool(self.password)
-
-
-class DatabaseConfig(BaseModel):
-    """Database connection configuration.
-
-    Supports SQL databases (via SQLAlchemy URI) and NoSQL databases
-    (via type-specific options).
-
-    SQL Example:
-        databases:
-          main:
-            uri: postgresql://localhost/mydb
-            description: Main application database
-
-    MongoDB Example:
-        databases:
-          mongo:
-            type: mongodb
-            uri: mongodb://localhost:27017
-            database: mydb
-            description: Document store
-
-    Cassandra Example:
-        databases:
-          cassandra:
-            type: cassandra
-            keyspace: my_keyspace
-            hosts: [node1, node2]
-            username: ${CASSANDRA_USER}
-            password: ${CASSANDRA_PASS}
-
-    DynamoDB Example:
-        databases:
-          dynamo:
-            type: dynamodb
-            region: us-east-1
-            profile_name: myprofile
-
-    Elasticsearch Example:
-        databases:
-          elastic:
-            type: elasticsearch
-            hosts: [http://localhost:9200]
-            api_key: ${ES_API_KEY}
-
-    CosmosDB Example:
-        databases:
-          cosmos:
-            type: cosmosdb
-            endpoint: https://myaccount.documents.azure.com
-            key: ${COSMOS_KEY}
-            database: mydb
-            container: mycontainer
-
-    Firestore Example:
-        databases:
-          firestore:
-            type: firestore
-            project: my-gcp-project
-            collection: users
-            credentials_path: /path/to/credentials.json
-    """
-    model_config = {"extra": "allow"}  # Allow type-specific fields
-
-    # Database type: sql (default), mongodb, cassandra, elasticsearch, dynamodb, cosmosdb, firestore
-    type: str = "sql"
-
-    # Common fields
-    description: str = ""
-    read_only: bool = False  # If True, block write operations (INSERT, UPDATE, DELETE, etc.)
-
-    # SQL databases (SQLAlchemy)
-    uri: Optional[str] = None
-
-    # Credentials (used by SQL and some NoSQL)
-    username: Optional[str] = None
-    password: Optional[str] = None
-
-    # MongoDB
-    database: Optional[str] = None  # Also used by CosmosDB
-    sample_size: int = 100  # For schema inference
-
-    # Cassandra
-    keyspace: Optional[str] = None
-    hosts: Optional[list[str]] = None
-    port: Optional[int] = None
-    cloud_config: Optional[dict] = None  # For DataStax Astra
-
-    # DynamoDB
-    region: Optional[str] = None
-    endpoint_url: Optional[str] = None  # For local DynamoDB
-    aws_access_key_id: Optional[str] = None
-    aws_secret_access_key: Optional[str] = None
-    aws_session_token: Optional[str] = None
-    profile_name: Optional[str] = None
-
-    # Elasticsearch
-    api_key: Optional[str] = None
-    # hosts: already defined above
-
-    # CosmosDB
-    endpoint: Optional[str] = None
-    key: Optional[str] = None
-    container: Optional[str] = None
-    # database: already defined above
-
-    # Firestore
-    project: Optional[str] = None
-    collection: Optional[str] = None
-    credentials_path: Optional[str] = None
-
-    # File-based data sources (csv, json, jsonl, parquet, arrow)
-    # Supports local paths, s3://, https://, etc.
-    path: Optional[str] = None
-
-    def get_connection_uri(self, config_dir: Optional[str] = None) -> str:
-        """
-        Get the connection URI with credentials applied.
-
-        Only valid for SQL and MongoDB databases.
-
-        Args:
-            config_dir: Directory containing config.yaml for resolving relative paths
-
-        Returns:
-            Connection URI with credentials applied
-        """
-        # Allow None type for SQL databases (inferred from URI)
-        if self.type is not None and self.type not in ("sql", "mongodb"):
-            raise ValueError(f"get_connection_uri() not supported for type: {self.type}")
-
-        if not self.uri:
-            raise ValueError("URI not configured")
-
-        uri = self.uri
-
-        # Resolve relative paths in SQLite URIs
-        if uri.startswith("sqlite:///") and config_dir:
-            # sqlite:///path means path after the 3 slashes
-            db_path = uri[10:]  # Remove "sqlite:///"
-            if db_path and not db_path.startswith("/"):
-                # Relative path - resolve from config_dir
-                from pathlib import Path
-                resolved = (Path(config_dir) / db_path).resolve()
-                uri = f"sqlite:///{resolved}"
-
-        # Apply read-only mode for SQLite
-        if self.read_only and uri.startswith("sqlite:///"):
-            # SQLite read-only mode: file:path?mode=ro
-            # Convert sqlite:///path to sqlite:///file:path?mode=ro
-            db_path = uri[10:]  # Remove "sqlite:///"
-            if "?" in db_path:
-                uri = f"sqlite:///file:{db_path}&mode=ro"
-            else:
-                uri = f"sqlite:///file:{db_path}?mode=ro"
-
-        # Use credentials if provided
-        if self.username and self.password:
-            return self._inject_credentials(self.username, self.password, uri)
-
-        return uri
-
-    def get_resolved_path(self, config_dir: Optional[str] = None) -> Optional[str]:
-        """
-        Get the file path resolved relative to config directory.
-
-        For file-based data sources (csv, json, parquet, etc.).
-
-        Args:
-            config_dir: Directory containing config.yaml for resolving relative paths
-
-        Returns:
-            Resolved file path, or None if no path configured
-        """
-        if not self.path:
-            return None
-
-        # Remote paths (s3://, https://, etc.) - return as-is
-        if "://" in self.path:
-            return self.path
-
-        # Absolute paths - return as-is
-        from pathlib import Path
-        path = Path(self.path)
-        if path.is_absolute():
-            return str(path)
-
-        # Relative path - resolve from config_dir
-        if config_dir:
-            resolved = (Path(config_dir) / self.path).resolve()
-            return str(resolved)
-
-        return self.path
-
-    def _inject_credentials(self, username: str, password: str, uri: Optional[str] = None) -> str:
-        """
-        Inject credentials into the URI.
-
-        Handles URIs like:
-        - postgresql://localhost/db -> postgresql://user:pass@localhost/db
-        - postgresql://@localhost/db -> postgresql://user:pass@localhost/db
-        - postgresql://old:creds@localhost/db -> postgresql://user:pass@localhost/db
-        - mongodb://host1:27017,host2:27017/db -> mongodb://user:pass@host1:27017,host2:27017/db
-        """
-        import urllib.parse
-        from urllib.parse import quote_plus
-
-        # Parse the URI
-        target_uri = uri if uri is not None else self.uri
-        parsed = urllib.parse.urlparse(target_uri)
-
-        # Build new netloc with credentials
-        # Quote special characters in username/password
-        safe_user = quote_plus(username)
-        safe_pass = quote_plus(password)
-
-        # Extract the host portion from netloc (strip any existing credentials)
-        netloc = parsed.netloc
-        if "@" in netloc:
-            # Remove existing credentials (everything before @)
-            host_part = netloc.split("@", 1)[1]
-        else:
-            host_part = netloc
-
-        # Build new netloc with credentials and host
-        new_netloc = f"{safe_user}:{safe_pass}@{host_part}"
-
-        # Reconstruct URI
-        new_parsed = parsed._replace(netloc=new_netloc)
-        return urllib.parse.urlunparse(new_parsed)
-
-    def is_nosql(self) -> bool:
-        """Check if this is a NoSQL database."""
-        return self.type in ("mongodb", "cassandra", "elasticsearch", "dynamodb", "cosmosdb", "firestore")
-
-    def is_file_source(self) -> bool:
-        """Check if this is a file-based data source."""
-        return self.type in ("csv", "json", "jsonl", "parquet", "arrow", "feather")
-
-
 class ModelSpec(BaseModel):
     """Specification for a model in a routing chain.
 
@@ -366,6 +126,7 @@ class ModelSpec(BaseModel):
     model: str
 
     # Provider-specific options
+    api_key: Optional[str] = None  # Per-model API key (supports ${ENV_VAR})
     base_url: Optional[str] = None
     timeout_seconds: Optional[int] = None
     max_tokens: Optional[int] = None
@@ -383,10 +144,13 @@ class TaskRoutingEntry(BaseModel):
             - provider: ollama
               model: sqlcoder:7b
             - provider: anthropic
-              model: claude-3-5-haiku-20241022
+              model: claude-haiku-4-5-20251001
     """
     # Ordered list of models to try (first = preferred, subsequent = fallback)
     models: list[ModelSpec]
+
+    # Optional: models to use for low-complexity tasks (e.g., simple lookups)
+    low_complexity_models: Optional[list[ModelSpec]] = None
 
     # Optional: models to use for high-complexity tasks
     high_complexity_models: Optional[list[ModelSpec]] = None
@@ -405,7 +169,7 @@ class TaskRoutingConfig(BaseModel):
               - provider: ollama
                 model: sqlcoder:7b
               - provider: anthropic
-                model: claude-3-5-haiku-20241022
+                model: claude-haiku-4-5-20251001
           planning:
             models:
               - provider: anthropic
@@ -422,6 +186,27 @@ class TaskRoutingConfig(BaseModel):
     """
     # Dict of task_type name -> routing entry
     routes: dict[str, TaskRoutingEntry] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_flat_routing(cls, data: Any) -> Any:
+        """Accept flat YAML format where task types are top-level keys."""
+        if isinstance(data, dict) and "routes" not in data:
+            # All keys are task type names → wrap as routes
+            routes = {}
+            for key, val in data.items():
+                if isinstance(val, dict) and "models" in val:
+                    routes[key] = val
+            if routes:
+                return {"routes": routes}
+        return data
+
+    def prepend_model(self, task_type: str, spec: ModelSpec) -> None:
+        """Prepend a model to the routing chain for a task type."""
+        if task_type not in self.routes:
+            self.routes[task_type] = TaskRoutingEntry(models=[spec])
+        else:
+            self.routes[task_type].models.insert(0, spec)
 
     def get_models_for_task(
         self,
@@ -441,6 +226,9 @@ class TaskRoutingConfig(BaseModel):
         entry = self.routes.get(task_type)
         if not entry:
             return []
+
+        if complexity == "low" and entry.low_complexity_models:
+            return entry.low_complexity_models
 
         if complexity == "high" and entry.high_complexity_models:
             return entry.high_complexity_models
@@ -463,12 +251,27 @@ DEFAULT_TASK_ROUTING = {
         models=[ModelSpec(model="claude-sonnet-4-20250514")]
     ),
     "intent_classification": TaskRoutingEntry(
-        models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+        models=[ModelSpec(model="claude-haiku-4-5-20251001")]
+    ),
+    "clarification": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
     ),
     "summarization": TaskRoutingEntry(
-        models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+        models=[ModelSpec(model="claude-haiku-4-5-20251001")]
     ),
     "fact_resolution": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
+    "derivation_logic": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
+    "relationship_extraction": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-haiku-4-5-20251001")]
+    ),
+    "structured_extraction": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
+    "synthesis": TaskRoutingEntry(
         models=[ModelSpec(model="claude-sonnet-4-20250514")]
     ),
     "general": TaskRoutingEntry(
@@ -516,6 +319,42 @@ class LLMConfig(BaseModel):
         )
 
 
+class VectorStoreConfig(BaseModel):
+    """Configuration for the vector store backend.
+
+    The vector store handles document embedding storage and similarity search.
+
+    Uses DuckDB VSS extension with array_cosine_similarity() for efficient
+    vector search. Data persists across restarts.
+
+    Example YAML:
+        storage:
+          vector_store:
+            backend: duckdb
+            db_path: ~/.constat/system.duckdb
+    """
+    # Backend type: "duckdb" or "numpy"
+    backend: str = "duckdb"
+
+    # Path to DuckDB database file (only for duckdb backend)
+    # Default: ~/.constat/system.duckdb
+    db_path: Optional[str] = None
+
+    # Cross-encoder model for reranking search results.
+    # When set, retrieves extra candidates then reranks with this model.
+    # Example: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_model: Optional[str] = None
+
+    # Store original chunk text in embeddings table (useful for diagnostics)
+    # When False, only embeddings are stored — reduces DB size for large datasets
+    store_chunk_text: bool = True
+
+    # Clustering parameters for glossary term grouping
+    cluster_min_terms: int = 2        # minimum terms to trigger clustering
+    cluster_divisor: int = 5          # k = max(2, n_terms // divisor)
+    cluster_max_k: Optional[int] = None  # optional cap on k
+
+
 class StorageConfig(BaseModel):
     """Storage configuration for artifact store and vector store."""
     # SQLAlchemy URI for the artifact store
@@ -528,197 +367,6 @@ class StorageConfig(BaseModel):
 
     # Directory for chonk Store files
     store_dir: str = "~/.constat/stores"
-
-
-class DocumentConfig(BaseModel):
-    """Reference document configuration for inclusion in reasoning.
-
-    Documents provide domain knowledge, business rules, API documentation,
-    or any reference material the LLM should consider during analysis.
-
-    File Example:
-        documents:
-          business_rules:
-            type: file
-            path: ./docs/business-rules.md
-            description: "Revenue calculation rules and thresholds"
-
-    HTTP Example (works for wiki pages, GitHub raw files, etc.):
-        documents:
-          wiki_page:
-            type: http
-            url: https://wiki.example.com/api/v2/pages/12345/export/view
-            headers:
-              Authorization: Bearer ${WIKI_TOKEN}
-            description: "Data dictionary from wiki"
-
-    Confluence Example:
-        documents:
-          confluence:
-            type: confluence
-            url: https://mycompany.atlassian.net
-            space_key: ANALYTICS
-            page_title: "Business Rules"
-            username: ${CONFLUENCE_USER}
-            api_token: ${CONFLUENCE_TOKEN}
-
-    Inline Example:
-        documents:
-          glossary:
-            type: inline
-            content: |
-              ## Key Terms
-              - VIP: Customer with lifetime value > $100k
-              - Churn: Customer inactive for 90+ days
-            description: "Business glossary"
-    """
-    # Acquisition type: file | http | inline | directory | github | sharepoint | gmail | confluence | notion
-    type: str = "file"
-
-    # For type=file / type=directory
-    path: Optional[str] = None  # Local file path or directory root
-
-    # For type=http
-    url: Optional[str] = None  # URL to fetch
-    headers: dict[str, str] = Field(default_factory=dict)  # HTTP headers
-
-    # For type=confluence
-    space_key: Optional[str] = None  # Confluence space key
-    page_title: Optional[str] = None  # Page title to fetch
-    page_id: Optional[str] = None  # Or page ID directly
-    username: Optional[str] = None  # Confluence / SharePoint (ntlm) username
-    api_token: Optional[str] = None  # Confluence API token
-
-    # For type=notion
-    page_url: Optional[str] = None  # Notion page URL
-    notion_token: Optional[str] = None  # Notion integration token
-
-    # For type=inline
-    content: Optional[str] = None  # Inline content
-
-    # For type=github
-    token: Optional[str] = None  # GitHub personal access token (falls back to GITHUB_TOKEN env)
-    branch: Optional[str] = None  # Branch/tag to crawl (default: repo default branch)
-    extensions: Optional[list[str]] = None  # File extensions to include
-
-    # For type=sharepoint
-    tenant_id: Optional[str] = None  # Azure AD tenant ID
-    client_id: Optional[str] = None  # App client ID (SharePoint / Gmail)
-    client_secret: Optional[str] = None  # App client secret (SharePoint / Gmail)
-    password: Optional[str] = None  # Password for ntlm auth
-    auth_mode: Optional[str] = None  # azure_ad | ntlm | legacy (SharePoint)
-    artifacts: Optional[list[str]] = None  # documents | lists | calendars | pages
-
-    # For type=gmail
-    token_file: Optional[str] = None  # Path to stored OAuth2 token
-    labels: Optional[list[str]] = None  # Gmail labels to index (default: INBOX)
-    max_messages: int = 100  # Maximum messages to fetch
-
-    # For type=directory
-    recursive: bool = True  # Recurse into subdirectories
-    max_files: int = 1000  # Maximum files to index
-
-    # Metadata
-    description: str = ""  # What this document contains
-    format: str = "auto"  # auto | markdown | text | html | pdf | docx | xlsx | pptx
-    tags: list[str] = Field(default_factory=list)  # For categorization/search
-
-    # PDF/Office extraction options
-    extract_tables: bool = True  # Extract tables from PDFs/docs as markdown
-    extract_images: bool = False  # Extract and describe images (requires vision model)
-    page_range: Optional[str] = None  # e.g., "1-5" or "1,3,5-10" for PDFs
-
-    # Loading behavior
-    cache: bool = True  # Cache fetched content
-    cache_ttl: Optional[int] = None  # Cache TTL in seconds (None = forever)
-
-    # Link following (build corpus from linked documents)
-    follow_links: bool = False  # Follow links in document to build corpus
-    max_depth: int = 2  # Max link depth to follow (1 = direct links only)
-    max_documents: int = 20  # Max documents to fetch via link following
-    link_pattern: Optional[str] = None  # Regex to filter which links to follow
-    same_domain_only: bool = True  # Only follow links to same domain
-
-
-class APIConfig(BaseModel):
-    """External API configuration (GraphQL or OpenAPI).
-
-    GraphQL Example:
-        apis:
-          countries:
-            type: graphql
-            url: https://countries.trevorblades.com/graphql
-
-    OpenAPI Example (auto-discovers endpoints from spec URL):
-        apis:
-          petstore:
-            type: openapi
-            spec_url: https://petstore.swagger.io/v2/swagger.json
-
-    OpenAPI from local file:
-        apis:
-          internal:
-            type: openapi
-            spec_path: ./specs/internal-api.yaml
-
-    OpenAPI inline (for simple APIs without a spec file):
-        apis:
-          simple_api:
-            type: openapi
-            url: https://api.example.com
-            spec_inline:
-              openapi: "3.0.0"
-              info:
-                title: Simple API
-                version: "1.0"
-              paths:
-                /users/{userId}:
-                  get:
-                    operationId: getUser
-                    parameters:
-                      - name: userId
-                        in: path
-                        required: true
-                        schema:
-                          type: string
-                    responses:
-                      "200":
-                        description: User details
-
-    Auth can be provided at multiple levels:
-    1. In headers (engine config) - shared across all users
-    2. In user config - user-specific credentials override engine config
-    """
-    # API type: graphql | openapi
-    type: str = "graphql"
-
-    # GraphQL implementation flavor (affects filter syntax hints)
-    # Options: hasura | prisma | apollo | relay | custom
-    # If not specified, generic hints are provided
-    graphql_flavor: Optional[str] = None
-
-    # Base URL for the API
-    url: Optional[str] = None
-
-    # OpenAPI spec location (for type=openapi)
-    spec_url: Optional[str] = None  # URL to download OpenAPI spec
-    spec_path: Optional[str] = None  # Local path to OpenAPI spec file
-    spec_inline: Optional[dict] = None  # Inline OpenAPI spec (embedded in config)
-
-    description: str = ""  # What this API provides
-    headers: dict[str, str] = Field(default_factory=dict)  # Auth headers, etc.
-
-    # Auth configuration (alternative to headers)
-    auth_type: Optional[str] = None  # bearer | basic | api_key
-    auth_token: Optional[str] = None  # Token for bearer auth
-    auth_username: Optional[str] = None  # Username for basic auth
-    auth_password: Optional[str] = None  # Password for basic auth
-    api_key: Optional[str] = None  # API key value
-    api_key_header: str = "X-API-Key"  # Header name for API key
-
-    # Schema introspection (GraphQL introspection or OpenAPI spec parsing)
-    introspect: bool = True  # Fetch and cache schema at startup
-    _schema_cache: Optional[dict] = None  # Cached schema (internal, not serialized)
 
 
 class ExecutionConfig(BaseModel):
@@ -814,13 +462,32 @@ class ContextPreloadConfig(BaseModel):
     max_columns_per_table: int = 30
 
 
-class ProjectConfig(BaseModel):
-    """Project configuration - a reusable collection of data sources.
+class EntityResolutionConfig(BaseModel):
+    """Maps an entity type to a data source for NER + vector resolution."""
+    entity_type: str                        # Custom NER label (e.g., "COUNTRY")
+    source: str = ""                        # Database or API name (from config)
+    # DB sources (shorthand)
+    table: str | None = None                # Table to query
+    name_column: str | None = None          # Column with entity names
+    # DB sources (custom query — for graph DBs, complex joins, etc.)
+    query: str | None = None                # Custom query returning a 'name' column
+    # API sources
+    endpoint: str | None = None             # GET endpoint path
+    items_path: str | None = None           # JSON path to items array (default: root)
+    name_field: str = "name"                # Field in each item
+    # Static list
+    values: list[str] | None = None         # Inline values (no query needed)
+    # Common
+    max_values: int = 10000                 # Cap on distinct values
 
-    Projects are defined in YAML files and can be shared across sessions.
-    A session can select a project to load its databases, APIs, and documents.
 
-    Example project file (projects/sales-analytics.yaml):
+class DomainConfig(BaseModel):
+    """Domain configuration - a reusable collection of data sources.
+
+    Domains are defined in YAML files and can be shared across sessions.
+    A session can select domains to load their databases, APIs, and documents.
+
+    Example domain file (domains/sales-analytics.yaml):
         name: Sales Analytics
         description: Sales data from warehouse and CRM
 
@@ -842,24 +509,60 @@ class ProjectConfig(BaseModel):
 
     name: str
     description: str = ""
-    filename: str = ""  # Source filename, auto-populated from _source_file
+    owner: str = ""
+    steward: str = ""
+    definition: str = ""
+    filename: str = ""  # Source filename, autopopulated from _source_file
     source_path: str = ""  # Full path to source file, for editing
+    path: str = ""  # Dot-delimited hierarchy path (e.g. "sales.north-america.retail")
+    tier: str = "system"  # "system" | "shared" | "user"
+    active: bool = True
+    order: int = 0
+
+    # Composition: child domain filenames (DAG references)
+    domains: list[str] = Field(default_factory=list, description="Child domain filenames for composition")
 
     # Data sources (same structure as main config)
     databases: dict[str, DatabaseConfig] = Field(default_factory=dict)
     apis: dict[str, APIConfig] = Field(default_factory=dict)
     documents: dict[str, DocumentConfig] = Field(default_factory=dict)
 
-    # Optional project-specific settings
+    # Domain-specific config sections
+    relationships: dict[str, Any] = Field(default_factory=dict)
+    rights: dict[str, Any] = Field(default_factory=dict)
+    facts: dict[str, Any] = Field(default_factory=dict)
+    learnings: dict[str, Any] = Field(default_factory=dict)
+
+    # Golden questions for regression testing
+    golden_questions: list[dict[str, Any]] = Field(default_factory=list)
+
+    # NER stop list — terms to filter out during entity extraction
+    ner_stop_list: list[str] = Field(default_factory=list)
+
+    # Optional domain-scoped permissions (loaded from permissions.yaml in domain directory)
+    permissions: Optional[Any] = Field(default=None, description="Domain-scoped PermissionsConfig (restricts global permissions)")
+
+    # Optional domain-specific task routing (fine-tuned models, local models)
+    # Same structure as llm.task_routing — maps task_type to model chain
+    task_routing: dict[str, Any] = Field(default_factory=dict)
+
+    # Entity resolution — map entity types to data source values for NER + vector search
+    entity_resolution: list[EntityResolutionConfig] = Field(default_factory=list)
+
+    # Resource key aliases per child domain — rename keys to avoid conflicts
+    # Structure: {child_domain_filename: {resource_type: {old_key: new_key}}}
+    aliases: dict[str, dict[str, dict[str, str]]] = Field(default_factory=dict)
+
+    # Optional domain-specific settings
     databases_description: str = ""
     system_prompt: str = ""
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "ProjectConfig":
-        """Load project config from YAML file."""
+    def from_yaml(cls, path: str | Path) -> "DomainConfig":
+        """Load domain config from YAML file."""
         path = Path(path)
         if not path.exists():
-            raise FileNotFoundError(f"Project file not found: {path}")
+            raise FileNotFoundError(f"Domain file not found: {path}")
 
         with open(path) as f:
             raw_content = f.read()
@@ -869,19 +572,78 @@ class ProjectConfig(BaseModel):
         data = yaml.safe_load(substituted)
         data["filename"] = path.name
         data["source_path"] = str(path.resolve())
+        # Default path to filename stem if not set
+        if not data.get("path"):
+            data["path"] = path.stem
 
         return cls.model_validate(data)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ProjectConfig":
-        """Create ProjectConfig from dict, handling _source_file/_source_path."""
+    def from_dict(cls, data: dict) -> "DomainConfig":
+        """Create DomainConfig from dict, handling _source_file/_source_path."""
         # Map _source_file to filename if present
         if "_source_file" in data and not data.get("filename"):
-            data["filename"] = data["_source_file"]
+            source_file = data["_source_file"]
+            # For directory-based domains (config.yaml), use parent dir name
+            if source_file == "config.yaml" and "_source_path" in data:
+                data["filename"] = Path(data["_source_path"]).parent.name
+            else:
+                data["filename"] = source_file
         # Map _source_path to source_path if present
         if "_source_path" in data and not data.get("source_path"):
             data["source_path"] = data["_source_path"]
         return cls.model_validate(data)
+
+    @classmethod
+    def from_directory(cls, path: str | Path, parent_path: str = "") -> "DomainConfig":
+        """Load domain config from a directory structure.
+
+        Expected structure:
+            <path>/config.yaml          — domain config
+            <path>/permissions.yaml     — optional domain-scoped permissions
+            <path>/skills/              — domain-specific skills
+            <path>/domains/<sub>/       — nested sub-domains
+
+        Sub-domains are merged alphabetically, then parent config overlays.
+
+        Args:
+            path: Path to domain directory
+            parent_path: Dot-delimited parent hierarchy path
+
+        Returns:
+            DomainConfig with sub-domains merged in
+        """
+        path = Path(path)
+        config_file = path / "config.yaml"
+        if not config_file.exists():
+            raise FileNotFoundError(f"Domain config not found: {config_file}")
+
+        # Load parent config
+        parent = cls.from_yaml(config_file)
+
+        # Use directory name as filename (not "config.yaml")
+        parent.filename = path.name
+
+        # Compute hierarchy path
+        stem = path.stem
+        parent.path = f"{parent_path}.{stem}" if parent_path else stem
+
+        # Load domain-scoped permissions if present
+        permissions_file = path / "permissions.yaml"
+        if permissions_file.exists():
+            from constat.server.config import PermissionsConfig
+            with open(permissions_file) as f:
+                raw_content = f.read()
+            substituted = _substitute_env_vars(raw_content)
+            perms_data = yaml.safe_load(substituted)
+            if perms_data:
+                parent.permissions = PermissionsConfig.model_validate(perms_data)
+
+        return parent
+
+
+# Backwards compatibility alias
+ProjectConfig = DomainConfig
 
 
 class Config(BaseModel):
@@ -893,14 +655,16 @@ class Config(BaseModel):
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
 
-    # Projects keyed by filename
-    # YAML format: projects: { sales.yaml: { $ref: ./projects/sales.yaml } }
-    projects: dict[str, ProjectConfig] = Field(default_factory=dict)
+    # Domains keyed by filename (populated from filesystem or $ref dict)
+    domains: dict[str, DomainConfig] = Field(default_factory=dict)
 
-    @field_validator("projects", mode="before")
+    # Root composition list (domain filenames)
+    domain_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("domains", mode="before")
     @classmethod
-    def _convert_projects(cls, v):
-        """Convert raw project dicts, mapping _source_file/_source_path."""
+    def _convert_domains(cls, v):
+        """Convert raw domain dicts, mapping _source_file/_source_path."""
         if not v:
             return {}
         result = {}
@@ -908,7 +672,11 @@ class Config(BaseModel):
             if isinstance(item, dict):
                 # Map _source_file to filename
                 if "_source_file" in item and not item.get("filename"):
-                    item["filename"] = item["_source_file"]
+                    source_file = item["_source_file"]
+                    if source_file == "config.yaml" and "_source_path" in item:
+                        item["filename"] = Path(item["_source_path"]).parent.name
+                    else:
+                        item["filename"] = source_file
                 # Map _source_path to source_path
                 if "_source_path" in item and not item.get("source_path"):
                     item["source_path"] = item["_source_path"]
@@ -943,31 +711,53 @@ class Config(BaseModel):
     # YAML format: facts: {company_name: "Acme Corp", fiscal_year_start: "April 1"}
     facts: dict[str, Any] = Field(default_factory=dict)
 
-    def list_projects(self) -> list[dict]:
-        """List available projects.
+    # New first-class config sections
+    rights: dict[str, Any] = Field(default_factory=dict)
+    relationships: dict[str, Any] = Field(default_factory=dict)
+
+    # Entity resolution — system-level entity type mappings
+    entity_resolution: list[EntityResolutionConfig] = Field(default_factory=list)
+
+    # NER stop list — system-level terms to filter out during entity extraction
+    ner_stop_list: list[str] = Field(default_factory=list)
+
+    @property
+    def projects(self) -> dict[str, DomainConfig]:
+        """Backwards compatibility: access domains as projects."""
+        return self.domains
+
+    def list_domains(self) -> list[dict]:
+        """List available domains.
 
         Returns:
-            List of project info dicts with 'filename', 'name', 'description'
+            List of domain info dicts with 'filename', 'name', 'description'
         """
         return [
             {
                 "filename": filename,
-                "name": project.name,
-                "description": project.description,
+                "name": domain.name,
+                "description": domain.description,
+                "steward": domain.steward,
+                "tier": domain.tier,
+                "owner": domain.owner,
             }
-            for filename, project in self.projects.items()
+            for filename, domain in self.domains.items()
         ]
 
-    def load_project(self, filename: str) -> Optional["ProjectConfig"]:
-        """Load a project by filename.
+    def load_domain(self, filename: str) -> Optional["DomainConfig"]:
+        """Load a domain by filename.
 
         Args:
-            filename: Project YAML filename (e.g., 'sales-analytics.yaml')
+            filename: Domain YAML filename (e.g., 'sales-analytics.yaml')
 
         Returns:
-            ProjectConfig or None if not found
+            DomainConfig or None if not found
         """
-        return self.projects.get(filename)
+        return self.domains.get(filename)
+
+    # Backwards compatibility aliases
+    list_projects = list_domains
+    load_project = load_domain
 
     @classmethod
     def from_yaml(
@@ -1037,7 +827,25 @@ class Config(BaseModel):
         substituted = _substitute_env_vars(raw_content)
         # Parse YAML and resolve $ref references
         data = yaml.safe_load(substituted)
+
+        # domains: list = composition (DAG); filesystem = authority
+        domain_refs = data.pop("domains", []) or []
         data = _resolve_refs(data, config_dir)
+
+        # Discover domains from filesystem
+        domains_dict: dict[str, Any] = {}
+        domains_dir = config_dir / "domains"
+        if domains_dir.is_dir():
+            for entry in sorted(domains_dir.iterdir()):
+                if entry.is_dir() and (entry / "config.yaml").exists():
+                    cfg_path = entry / "config.yaml"
+                    cfg_raw = _substitute_env_vars(cfg_path.read_text())
+                    cfg_data = yaml.safe_load(cfg_raw) or {}
+                    cfg_data = _resolve_refs(cfg_data, entry)
+                    cfg_data["_source_file"] = "config.yaml"
+                    cfg_data["_source_path"] = str(cfg_path.resolve())
+                    domains_dict[entry.name] = cfg_data
+        data["domains"] = domains_dict
 
         # Load user config from file if provided
         user_data = None
@@ -1059,7 +867,9 @@ class Config(BaseModel):
         # Store config directory for resolving relative paths
         data["config_dir"] = str(config_dir)
 
-        return cls.model_validate(data)
+        config = cls.model_validate(data)
+        config.domain_refs = domain_refs
+        return config
 
     @staticmethod
     def _merge_configs(engine: dict, user: dict) -> dict:
@@ -1082,7 +892,7 @@ class Config(BaseModel):
         merged = dict(engine)
 
         # Dict-keyed sections to deep merge
-        dict_sections = ["databases", "apis", "documents"]
+        dict_sections = ["databases", "apis", "documents", "relationships", "rights"]
 
         # Fields that user config cannot override (security protection)
         protected_fields = {"uri", "hosts", "endpoint", "endpoint_url"}
@@ -1123,7 +933,7 @@ class Config(BaseModel):
 
 def _substitute_env_vars(content: str) -> str:
     """Replace ${VAR_NAME} with environment variable values."""
-    pattern = re.compile(r'\$\{([^}]+)\}')
+    pattern = re.compile(r'\$\{([A-Za-z0-9_]+)}')
 
     def replacer(match: re.Match) -> str:
         var_name = match.group(1)

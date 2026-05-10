@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 12190d16-ae4b-4b95-b340-d9bf52b16673
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -14,13 +15,15 @@ Manages server-side Session instances, tracking lifecycle, timeout, and cleanup.
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Lock
-from typing import Optional, Any
+from typing import Callable, Optional, Any
 
 from constat.api.impl import ConstatAPIImpl
 from constat.core.config import Config
+from constat.core.tiered_config import ResolvedConfig, TieredConfigLoader
 from constat.server.config import ServerConfig
 from constat.server.models import EventType, SessionStatus
 from constat.session import Session, SessionConfig
@@ -48,16 +51,52 @@ class ManagedSession:
     # This is different from session_id which is the server/client UUID
     _history_session_id: Optional[str] = None
 
-    # Active project filenames (e.g., ['sales-analytics.yaml', 'hr-reporting.yaml'])
-    active_projects: list[str] = field(default_factory=list)
+    # Per-session system prompt (seeded from global config on creation)
+    session_prompt: Optional[str] = None
+
+    # Active domain filenames (e.g., ['sales-analytics.yaml', 'hr-reporting.yaml'])
+    active_domains: list[str] = field(default_factory=list)
+
+    # Resolved tiered config (rebuilt on domain/source changes)
+    resolved_config: Optional[ResolvedConfig] = None
 
     # Dynamic resources (databases, APIs, file refs) added during the session
     _dynamic_dbs: list[dict[str, Any]] = field(default_factory=list)
     _dynamic_apis: list[dict[str, Any]] = field(default_factory=list)
     _file_refs: list[dict[str, Any]] = field(default_factory=list)
 
-    # Event queue for WebSocket bridging (sync Session events -> async WebSocket)
-    event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    # Last entity_rebuild_complete event — replayed on subscription connect
+    # (scope cache may finish before WS connects, losing the event)
+    _entity_rebuild_event: Optional[dict] = None
+
+    # Unified data source registry (providers registered at session creation)
+    registry: Optional["DataSourceRegistry"] = None
+
+    # Last session_ready event — replayed on GraphQL subscription connect
+    # (background init may finish before subscription connects)
+    _session_ready_event: Optional[dict] = None
+
+    # Entity state cache tracking for JSON Patch diffs
+    _entity_state_version: int = 0
+    _last_entity_state: Optional[dict] = None
+    _client_entity_version: Optional[int] = None
+
+    # Cancellation flag for background glossary generation
+    _glossary_cancelled: threading.Event = field(default_factory=threading.Event)
+
+    # Cancellation flag for background NER / entity extraction
+    _ner_cancelled: threading.Event = field(default_factory=threading.Event)
+
+    # Active NER thread (for checking if NER is in-flight)
+    _ner_thread: Optional[threading.Thread] = None
+
+
+    # Whether session initialization is complete (domains loaded, schema entities set)
+    # Prevents heartbeat from triggering NER before init finishes
+    _init_complete: bool = False
+
+    # Whether glossary generation is currently in progress (for WS reconnect replay)
+    _glossary_generating: bool = False
 
     # Approval event for blocking on plan approval
     approval_event: Optional[asyncio.Event] = None
@@ -82,14 +121,14 @@ class ManagedSession:
         return datetime.now(timezone.utc) > expiry
 
     def has_database(self, db_name: str) -> bool:
-        """Check if a database exists in any source (config, project, dynamic, schema_manager)."""
+        """Check if a database exists in any source (config, domain, dynamic, schema_manager)."""
         # Config databases
         if db_name in self.session.config.databases:
             return True
-        # Project databases
-        for project_filename in self.active_projects:
-            project = self.session.config.load_project(project_filename)
-            if project and db_name in project.databases:
+        # Domain databases
+        for domain_filename in self.active_domains:
+            domain = self.session.config.load_domain(domain_filename)
+            if domain and db_name in domain.databases:
                 return True
         # Dynamic databases
         if any(db["name"] == db_name for db in self._dynamic_dbs):
@@ -115,10 +154,10 @@ class ManagedSession:
         """Return union of all database names from every source."""
         names: set[str] = set()
         names.update(self.session.config.databases.keys())
-        for project_filename in self.active_projects:
-            project = self.session.config.load_project(project_filename)
-            if project:
-                names.update(project.databases.keys())
+        for domain_filename in self.active_domains:
+            domain = self.session.config.load_domain(domain_filename)
+            if domain:
+                names.update(domain.databases.keys())
         names.update(db["name"] for db in self._dynamic_dbs)
         sm = self.session.schema_manager
         if sm:
@@ -128,7 +167,11 @@ class ManagedSession:
         return names
 
     def save_resources(self) -> None:
-        """Save dynamic resources (dbs, file_refs, projects) to disk."""
+        """Save dynamic resources (dbs, file_refs, domains) to disk.
+
+        Also persists dynamic databases to user-level config so they
+        appear in all future sessions via TieredConfigLoader (Tier 3).
+        """
         from constat.storage.history import SessionHistory
 
         history_id = self.history_session_id
@@ -142,7 +185,7 @@ class ManagedSession:
             "dynamic_dbs": self._dynamic_dbs,
             "dynamic_apis": self._dynamic_apis,
             "file_refs": self._file_refs,
-            "active_projects": self.active_projects or [],
+            "active_domains": self.active_domains or [],
         }
 
         # Save to state file
@@ -150,6 +193,119 @@ class ManagedSession:
         state["resources"] = resources
         history.save_state(history_id, state)
         logger.debug(f"Saved session resources: {len(resources['dynamic_dbs'])} dbs, {len(resources['dynamic_apis'])} apis, {len(resources['file_refs'])} refs")
+
+        # Persist dynamic databases and documents to user-level config
+        self._persist_dbs_to_user_config()
+        self._persist_docs_to_user_config()
+
+    def _persist_dbs_to_user_config(self) -> None:
+        """Write dynamic databases to .constat/{user_id}/config.yaml."""
+        import yaml
+        from pathlib import Path
+
+        from constat.core.paths import user_vault_dir
+        config_path = user_vault_dir(Path(".constat"), self.user_id) / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing = {}
+        if config_path.exists():
+            existing = yaml.safe_load(config_path.read_text()) or {}
+
+        databases = existing.get("databases", {})
+
+        # Remove stale session-sourced entries not in current dynamic_dbs
+        dynamic_names = {db["name"] for db in self._dynamic_dbs}
+        databases = {
+            name: cfg for name, cfg in databases.items()
+            if cfg.get("source") != "session" or name in dynamic_names
+        }
+
+        # Upsert current dynamic databases
+        for db in self._dynamic_dbs:
+            databases[db["name"]] = {
+                "type": db.get("type", "sql"),
+                "uri": db.get("uri", ""),
+                "description": db.get("description", ""),
+                "source": "session",
+            }
+
+        existing["databases"] = databases
+        config_path.write_text(yaml.dump(existing, default_flow_style=False, sort_keys=False))
+        logger.debug(f"Persisted {len(self._dynamic_dbs)} dynamic databases to user config")
+
+    def _persist_docs_to_user_config(self) -> None:
+        """Write dynamic documents (file_refs) to .constat/{user_id}.vault/config.yaml."""
+        import yaml
+        from pathlib import Path
+        from constat.core.paths import user_vault_dir
+
+        config_path = user_vault_dir(Path(".constat"), self.user_id) / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing = {}
+        if config_path.exists():
+            existing = yaml.safe_load(config_path.read_text()) or {}
+
+        documents = existing.get("documents", {})
+
+        # Remove stale session-sourced entries not in current file_refs
+        ref_names = {ref["name"] for ref in self._file_refs}
+        documents = {
+            name: cfg for name, cfg in documents.items()
+            if cfg.get("source") != "session" or name in ref_names
+        }
+
+        # Upsert current file_refs as DocumentConfig entries
+        for ref in self._file_refs:
+            doc_entry = ref.get("document_config", {})
+            if not doc_entry:
+                doc_entry = {"url": ref.get("uri", "")}
+            doc_entry["source"] = "session"
+            if ref.get("description"):
+                doc_entry["description"] = ref["description"]
+            documents[ref["name"]] = doc_entry
+
+        existing["documents"] = documents
+        config_path.write_text(yaml.dump(existing, default_flow_style=False, sort_keys=False))
+        logger.debug(f"Persisted {len(self._file_refs)} documents to user config")
+
+    @staticmethod
+    def _remove_doc_from_user_config(user_id: str, doc_name: str) -> None:
+        """Remove a document entry from the user-level config."""
+        import yaml
+        from pathlib import Path
+
+        from constat.core.paths import user_vault_dir
+        config_path = user_vault_dir(Path(".constat"), user_id) / "config.yaml"
+        if not config_path.exists():
+            return
+
+        existing = yaml.safe_load(config_path.read_text()) or {}
+        documents = existing.get("documents", {})
+        if doc_name in documents:
+            del documents[doc_name]
+            existing["documents"] = documents
+            config_path.write_text(yaml.dump(existing, default_flow_style=False, sort_keys=False))
+            logger.debug(f"Removed document '{doc_name}' from user config")
+
+    @staticmethod
+    def _remove_db_from_user_config(user_id: str, db_name: str) -> None:
+        """Remove a database entry from the user-level config."""
+        import yaml
+        from pathlib import Path
+        from constat.core.paths import user_vault_dir
+
+        config_path = user_vault_dir(Path(".constat"), user_id) / "config.yaml"
+        if not config_path.exists():
+            return
+
+        existing = yaml.safe_load(config_path.read_text()) or {}
+        databases = existing.get("databases", {})
+        if db_name in databases:
+            del databases[db_name]
+            existing["databases"] = databases
+            config_path.write_text(yaml.dump(existing, default_flow_style=False, sort_keys=False))
+            logger.debug(f"Removed database '{db_name}' from user config")
 
     def restore_resources(self) -> None:
         """Restore dynamic resources from disk."""
@@ -170,9 +326,9 @@ class ManagedSession:
         self._dynamic_dbs = resources.get("dynamic_dbs", [])
         self._dynamic_apis = resources.get("dynamic_apis", [])
         self._file_refs = resources.get("file_refs", [])
-        self.active_projects = resources.get("active_projects", [])
+        self.active_domains = resources.get("active_domains", [])
 
-        logger.info(f"Restored session resources: {len(self._dynamic_dbs)} dbs, {len(self._dynamic_apis)} apis, {len(self._file_refs)} refs, {len(self.active_projects)} projects")
+        logger.info(f"Restored session resources: {len(self._dynamic_dbs)} dbs, {len(self._dynamic_apis)} apis, {len(self._file_refs)} refs, {len(self.active_domains)} domains")
 
         # Re-add databases to schema_manager
         if self._dynamic_dbs and self.session.schema_manager:
@@ -203,6 +359,48 @@ class ManagedSession:
                 except Exception as e:
                     logger.warning(f"Failed to restore API {api['name']}: {e}")
 
+        # Re-index URI documents (IMAP deferred to background thread)
+        deferred_imap: list[dict] = []
+        if self._file_refs and self.session and hasattr(self.session, "doc_tools") and self.session.doc_tools:
+            from constat.core.config import DocumentConfig
+            from constat.discovery.doc_tools._transport import infer_transport
+            for ref in self._file_refs:
+                if "document_config" in ref:
+                    try:
+                        doc_config = DocumentConfig(**ref["document_config"])
+                        transport = infer_transport(doc_config)
+                        if transport == "imap":
+                            deferred_imap.append(ref)
+                            continue
+                        self.session.doc_tools.add_document_from_config(
+                            ref["name"], doc_config, session_id=self.session_id,
+                        )
+                        logger.debug(f"Restored URI document: {ref['name']}")
+                    except Exception as e:
+                        logger.warning(f"Failed to restore URI document {ref['name']}: {e}")
+
+        # Ingest IMAP sources in background (don't block session creation)
+        if deferred_imap:
+            import threading
+            def _ingest_imap():
+                from constat.core.config import DocumentConfig
+                for ref in deferred_imap:
+                    try:
+                        doc_config = DocumentConfig(**ref["document_config"])
+                        logger.info(f"Background IMAP ingest: {ref['name']}")
+                        success, msg = self.session.doc_tools.add_document_from_config(
+                            ref["name"], doc_config, session_id=self.session_id,
+                        )
+                        from datetime import datetime, timezone
+                        ref["last_refreshed"] = datetime.now(timezone.utc).isoformat()
+                        if success:
+                            logger.info(f"Background IMAP ingest complete: {ref['name']} — {msg}")
+                        else:
+                            logger.error(f"Background IMAP ingest returned failure: {ref['name']} — {msg}")
+                    except Exception as e:
+                        logger.error(f"Background IMAP ingest failed for {ref['name']}: {e}")
+            threading.Thread(target=_ingest_imap, name=f"imap-ingest-{self.session_id[:8]}", daemon=True).start()
+
 
 class SessionManager:
     """Manages server-side Session instances.
@@ -230,11 +428,116 @@ class SessionManager:
         self._lock = Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
 
+        # Diff generator registry (heartbeat-triggered)
+        from constat.server.diff_generators import EntityDiffGenerator
+        self._diff_generators = [EntityDiffGenerator()]
+
+        # GraphQL subscription pub/sub
+        self._glossary_subscribers: dict[str, list[asyncio.Queue]] = {}
+        self._execution_subscribers: dict[str, list[asyncio.Queue]] = {}
+
+    def get_user_db(self, user_id: str) -> "ThreadLocalDuckDB":
+        """Get a DuckDB connection for a user's vault.
+
+        Reuses the connection from an existing session if available,
+        otherwise opens a standalone connection.
+        """
+        for managed in self._sessions.values():
+            if managed.user_id == user_id and hasattr(managed.session, '_split_store'):
+                return managed.session._split_store.db
+        # No active session — open standalone
+        from constat.core.paths import user_vault_dir, migrate_db_name
+        from constat.storage.duckdb_pool import ThreadLocalDuckDB
+        vault = user_vault_dir(self._server_config.data_dir, user_id)
+        vault.mkdir(parents=True, exist_ok=True)
+        db_path = migrate_db_name(vault, "vectors.duckdb", "user.duckdb")
+        return ThreadLocalDuckDB(
+            str(db_path),
+            init_sql=["INSTALL vss", "LOAD vss", "INSTALL fts", "LOAD fts"],
+        )
+
+    @staticmethod
+    def _create_registry() -> "DataSourceRegistry":
+        """Create a DataSourceRegistry with all known providers."""
+        from constat.core.sources import DataSourceKind, DataSourceRegistry
+        from constat.providers.sql_provider import SqlDatabaseProvider
+        from constat.providers.document_providers import (
+            FileDocumentProvider, HttpDocumentProvider, ImapDocumentProvider,
+        )
+        from constat.providers.api_providers import GraphQLApiProvider, OpenApiProvider
+        from constat.mcp.document_provider import McpDocumentProvider
+        from constat.mcp.api_provider import McpApiProvider
+
+        registry = DataSourceRegistry()
+        registry.register(DataSourceKind.DATABASE, "sql", SqlDatabaseProvider())
+        registry.register(DataSourceKind.DOCUMENT, "file", FileDocumentProvider())
+        registry.register(DataSourceKind.DOCUMENT, "http", HttpDocumentProvider())
+        registry.register(DataSourceKind.DOCUMENT, "imap", ImapDocumentProvider())
+        registry.register(DataSourceKind.DOCUMENT, "mcp", McpDocumentProvider())
+        registry.register(DataSourceKind.API, "graphql", GraphQLApiProvider())
+        registry.register(DataSourceKind.API, "openapi", OpenApiProvider())
+        registry.register(DataSourceKind.API, "mcp", McpApiProvider())
+        return registry
+
+    # ------------------------------------------------------------------
+    # GraphQL subscription pub/sub
+    # ------------------------------------------------------------------
+
+    def subscribe_glossary(self, session_id: str) -> asyncio.Queue:
+        if session_id not in self._glossary_subscribers:
+            self._glossary_subscribers[session_id] = []
+        queue: asyncio.Queue = asyncio.Queue()
+        self._glossary_subscribers[session_id].append(queue)
+        return queue
+
+    def unsubscribe_glossary(self, session_id: str, queue: asyncio.Queue) -> None:
+        subs = self._glossary_subscribers.get(session_id, [])
+        if queue in subs:
+            subs.remove(queue)
+
+    def publish_glossary_change(self, session_id: str, event) -> None:
+        for queue in self._glossary_subscribers.get(session_id, []):
+            queue.put_nowait(event)
+
+    def subscribe_execution(self, session_id: str) -> asyncio.Queue:
+        if session_id not in self._execution_subscribers:
+            self._execution_subscribers[session_id] = []
+        queue: asyncio.Queue = asyncio.Queue()
+        self._execution_subscribers[session_id].append(queue)
+        return queue
+
+    def unsubscribe_execution(self, session_id: str, queue: asyncio.Queue) -> None:
+        subs = self._execution_subscribers.get(session_id, [])
+        if queue in subs:
+            subs.remove(queue)
+
+    def publish_execution_event(self, session_id: str, event: dict) -> None:
+        for queue in self._execution_subscribers.get(session_id, []):
+            queue.put_nowait(event)
+
+    # ------------------------------------------------------------------
+    # Heartbeat processing
+    # ------------------------------------------------------------------
+
+    def process_heartbeat(self, session_id: str, since: str | None) -> str:
+        """Process a heartbeat: run eligible diff generators, return server_time."""
+        managed = self._sessions.get(session_id)
+        if not managed:
+            return datetime.now(timezone.utc).isoformat()
+        managed.touch()
+        for gen in self._diff_generators:
+            try:
+                if gen.should_run(managed, since):
+                    gen.run(managed, self, since)
+            except Exception as e:
+                logger.warning(f"Diff generator '{gen.name}' error: {e}")
+        return datetime.now(timezone.utc).isoformat()
+
     def create_session(self, session_id: str, user_id: str = "default") -> str:
         """Create or restore a Session instance.
 
         If session_id exists in history (on disk), restores it with all artifacts,
-        tables, and context. Otherwise creates a new session.
+        tables, and context. Otherwise, creates a new session.
 
         Args:
             session_id: Session ID provided by client
@@ -271,7 +574,7 @@ class SessionManager:
                 verbose=False,
                 require_approval=self._server_config.require_plan_approval,
                 auto_approve=not self._server_config.require_plan_approval,
-                ask_clarifications=True,  # Clarifications via WebSocket dialog
+                ask_clarifications=True,  # Clarifications via GraphQL subscription
                 skip_clarification=False,
             )
 
@@ -301,9 +604,15 @@ class SessionManager:
                 )
                 logger.info(f"Created session directory: {history_session_id} (server_id={session_id})")
 
-            # Create stores for API
-            fact_store = FactStore(user_id=user_id)
-            learning_store = LearningStore(user_id=user_id)
+            # Create stores for API — share the session's DuckDB connection
+            user_db = session._split_store.db
+            fact_store = FactStore(user_id=user_id, db=user_db)
+            learning_store = LearningStore(user_id=user_id, db=user_db)
+
+            # Wire DuckDB-backed history into the session
+            from constat.storage.history import create_session_history
+            db_history = create_session_history(user_id=user_id, db=user_db)
+            session.history = db_history
 
             # Load persisted facts for this user
             fact_store.load_into_session(session)
@@ -326,22 +635,211 @@ class SessionManager:
                 _history_session_id=history_session_id,
             )
 
+            # Initialize unified data source registry
+            managed.registry = self._create_registry()
+
             self._sessions[session_id] = managed
 
-            # Restore dynamic resources (dbs, file_refs, projects) if this is a restore
+            # Restore dynamic resources (dbs, file_refs, domains) if this is a restore
             if is_restore:
                 managed.restore_resources()
 
             logger.info(f"Created session {session_id} for user {user_id}")
 
-        # Run NER in background (non-blocking session creation)
-        # Entity links populate progressively; queries work via vector search until done
-        # MUST be outside `with self._lock:` — refresh_entities_async acquires the same lock
-        self.refresh_entities_async(session_id)
+        # Build initial resolved config (tier 1 + user tier; domains added later)
+        self.resolve_config(session_id)
+
+        # NER is NOT started here — the route handler calls _run_entity_extraction
+        # after domain loading completes, so schema entities are available for
+        # pattern matching. Starting async NER here caused a race condition where
+        # set_schema_entities (during domain loading) cleared all chunk_entity
+        # links and the background thread's extraction was lost.
 
         return session_id
 
-    def _run_entity_extraction(self, session_id: str, session: Session) -> None:
+    @staticmethod
+    def _build_session_overrides(managed: ManagedSession) -> dict:
+        """Build session-tier overrides from dynamic resources."""
+        overrides: dict = {}
+        if managed._dynamic_dbs:
+            overrides["databases"] = {
+                db["name"]: {
+                    "type": db.get("type", "sql"),
+                    "uri": db.get("uri", ""),
+                    "description": db.get("description", ""),
+                }
+                for db in managed._dynamic_dbs
+            }
+        if managed._dynamic_apis:
+            overrides["apis"] = {
+                api["name"]: {
+                    "type": api.get("type", "rest"),
+                    "url": api.get("base_url", ""),
+                    "description": api.get("description", ""),
+                }
+                for api in managed._dynamic_apis
+            }
+        if managed._file_refs:
+            overrides["documents"] = {
+                ref["name"]: {
+                    "type": "file",
+                    "path": ref.get("uri", ""),
+                    "description": ref.get("description", ""),
+                }
+                for ref in managed._file_refs
+            }
+        return overrides
+
+    def resolve_config(self, session_id: str) -> Optional[ResolvedConfig]:
+        """Build or rebuild the tiered ResolvedConfig for a session.
+
+        Merges system, system-domain, user, user-domain, and session tiers.
+        Stores result on both ManagedSession and Session.
+
+        Args:
+            session_id: Session ID to resolve config for
+
+        Returns:
+            ResolvedConfig or None if session not found
+        """
+        with self._lock:
+            if session_id not in self._sessions:
+                logger.warning(f"Cannot resolve config: session {session_id} not found")
+                return None
+            managed = self._sessions[session_id]
+
+        session_overrides = self._build_session_overrides(managed)
+        loader = TieredConfigLoader(
+            config=self._config,
+            user_id=managed.user_id,
+            base_dir=self._server_config.data_dir,
+            domain_names=managed.active_domains or [],
+            session_overrides=session_overrides,
+        )
+        resolved = loader.resolve()
+        managed.resolved_config = resolved
+        managed.session.resolved_config = resolved
+
+        # Wire domain task routing into the session's TaskRouter
+        self._apply_domain_routing(managed.session, resolved)
+
+        # Materialize domain rules into LearningStore
+        if resolved.learnings and managed.session.learning_store:
+            _seed_domain_rules(managed.session.learning_store, resolved.learnings)
+
+        # Materialize domain facts into fact_resolver
+        if resolved.facts:
+            _seed_domain_facts(managed.session, resolved.facts)
+
+        logger.info(f"Resolved tiered config for session {session_id}: "
+                     f"{len(resolved.sources.databases)} dbs, "
+                     f"{len(resolved.sources.apis)} apis, "
+                     f"domains={resolved.active_domains}")
+        return resolved
+
+    def write_config_tombstone(
+        self, session_id: str, section: str, key: str,
+    ) -> bool:
+        """Write a null tombstone to user config for a config-seeded element.
+
+        Only writes tombstones for items sourced from SYSTEM or SYSTEM_DOMAIN
+        tiers. Items created by the user (USER, USER_DOMAIN, SESSION) are
+        managed via their own YAML files and don't need tombstones.
+
+        Args:
+            session_id: Session ID to look up resolved config
+            section: Config section (e.g. "facts", "learnings", "relationships")
+            key: Item key, may be dotted (e.g. "rules.my_rule")
+
+        Returns:
+            True if tombstone was written, False if skipped
+        """
+        import yaml
+        from constat.core.tiered_config import ConfigSource
+
+        managed = self.get_session_or_none(session_id)
+        if not managed or not managed.resolved_config:
+            return False
+
+        # Check attribution — only tombstone system-tier items.
+        # Walk up from the exact path (e.g. "facts.revenue") to section
+        # root (e.g. "facts") because _deep_merge may attribute the whole
+        # section rather than individual keys when the base dict was empty.
+        rc = managed.resolved_config
+        attr_key = f"{section}.{key}"
+        source = rc._attribution.get(attr_key)
+        if source is None:
+            # Walk up dotted path to find parent attribution
+            parts = attr_key.split(".")
+            for i in range(len(parts) - 1, 0, -1):
+                parent = ".".join(parts[:i])
+                source = rc._attribution.get(parent)
+                if source is not None:
+                    break
+        if source not in (ConfigSource.SYSTEM, ConfigSource.SYSTEM_DOMAIN):
+            return False
+
+        # Load user config YAML
+        from constat.core.paths import user_vault_dir
+        config_path = user_vault_dir(self._server_config.data_dir, managed.user_id) / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        data: dict = {}
+        if config_path.exists():
+            data = yaml.safe_load(config_path.read_text()) or {}
+
+        # Navigate dotted key path, setting nested dicts as needed
+        parts = key.split(".")
+        target = data.setdefault(section, {})
+        for part in parts[:-1]:
+            target = target.setdefault(part, {})
+        target[parts[-1]] = None
+
+        config_path.write_text(
+            yaml.dump(data, default_flow_style=False, sort_keys=False)
+        )
+        logger.info(f"Wrote config tombstone: {section}.{key} for user {managed.user_id}")
+        return True
+
+    @staticmethod
+    def _apply_domain_routing(session: Session, resolved: ResolvedConfig) -> None:
+        """Apply per-domain and user task routing to the session's router.
+
+        Domain task_routing is kept separate from the merged config because each
+        domain's routing is independent — the router walks the domain hierarchy
+        (domain → user → system) per step to find the appropriate model chain.
+        """
+        from constat.core.config import TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+
+        router = session.router
+
+        # Set per-domain routing
+        for domain_path, raw_routing in resolved.domain_task_routing.items():
+            routes = {}
+            for task_type, entry_data in raw_routing.items():
+                if isinstance(entry_data, dict) and "models" in entry_data:
+                    models = [
+                        ModelSpec(**m) if isinstance(m, dict) else m
+                        for m in entry_data["models"]
+                    ]
+                    routes[task_type] = TaskRoutingEntry(models=models)
+            if routes:
+                router.set_domain_routing(domain_path, TaskRoutingConfig(routes=routes))
+
+        # Set user-level routing
+        if resolved.user_task_routing:
+            routes = {}
+            for task_type, entry_data in resolved.user_task_routing.items():
+                if isinstance(entry_data, dict) and "models" in entry_data:
+                    models = [
+                        ModelSpec(**m) if isinstance(m, dict) else m
+                        for m in entry_data["models"]
+                    ]
+                    routes[task_type] = TaskRoutingEntry(models=models)
+            if routes:
+                router.set_user_routing(TaskRoutingConfig(routes=routes))
+
+    def _run_entity_extraction(self, session_id: str, session: Session) -> dict | None:
         """Run NER for session's visible documents.
 
         Creates chunk-entity links scoped to this session's entity catalog.
@@ -349,22 +847,28 @@ class SessionManager:
         Args:
             session_id: Server session ID for storing links
             session: Session with doc_tools and schema/api entity info
+
+        Returns:
+            Entity diff dict with added/removed lists, or None
         """
         if not session.doc_tools:
             logger.debug(f"Session {session_id}: no doc_tools, skipping entity extraction")
             return
 
-        # Get project IDs (config + active) and session database names
-        project_ids = list(session.config.projects.keys()) if session.config.projects else []
+        # Get domain IDs (config + active) and session database names
+        domain_ids = list(session.config.domains.keys()) if session.config.domains else []
         session_db_names = []
         if hasattr(self, '_sessions') and session_id in self._sessions:
             managed = self._sessions[session_id]
-            # Merge active projects (may include dynamically activated ones)
-            for p in (managed.active_projects or []):
-                if p not in project_ids:
-                    project_ids.append(p)
+            # Merge active domains (may include dynamically activated ones)
+            for p in (managed.active_domains or []):
+                if p not in domain_ids:
+                    domain_ids.append(p)
             # Get names of dynamically added databases (include their columns in entities)
             session_db_names = [db["name"] for db in managed._dynamic_dbs]
+            # Include user-domain chunks in NER visibility
+            if managed.user_id and managed.user_id not in domain_ids:
+                domain_ids.append(managed.user_id)
 
         # Get session's entity catalog
         # Include columns only for session-added databases (their columns are meaningful)
@@ -373,34 +877,143 @@ class SessionManager:
             include_columns_for_dbs=session_db_names
         ))
         api_entities = list(session._get_api_entity_names())
-        logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema entities, {len(api_entities)} API entities")
-        logger.debug(f"Session {session_id}: schema_entities={schema_entities[:20]}, session_dbs={session_db_names}")
+
+        # Collect relationship terms from resolved config (already merged from all tiers)
+        from constat.catalog.glossary_builder import get_relationship_terms_for_ner
+        business_terms: list[str] = []
+        resolved = self._sessions[session_id].resolved_config if session_id in self._sessions else None
+        if resolved and resolved.relationships:
+            business_terms.extend(get_relationship_terms_for_ner(resolved.relationships))
+        elif session.config.relationships:
+            business_terms.extend(get_relationship_terms_for_ner(session.config.relationships))
+
+        # Build NER stop list from resolved config (already merged from all tiers)
+        stop_words: set[str] = set()
+        if resolved and resolved.ner_stop_list:
+            for w in resolved.ner_stop_list:
+                stop_words.add(w.lower())
+        else:
+            for w in (session.config.ner_stop_list or []):
+                stop_words.add(w.lower())
+        if stop_words:
+            session.doc_tools._stop_list = stop_words
+
+        # Read cached entity resolution names (populated during warmup)
+        entity_terms: dict[str, list[str]] = {}
+        entity_details: dict[str, list[str]] = {}
+        vector_store = session.doc_tools._vector_store if hasattr(session.doc_tools, '_vector_store') else None
+        if vector_store and hasattr(vector_store, 'get_entity_resolution_names'):
+            er_source_ids = ["__base__", "__image_labels__"] + domain_ids
+            entity_terms = vector_store.get_entity_resolution_names(er_source_ids)
+            # Image labels flow as business_terms (TERM patterns), not entity_terms (data patterns)
+            image_labels = entity_terms.pop("LABEL", [])
+            if image_labels:
+                business_terms.extend(image_labels)
+                logger.info(f"Session {session_id}: loaded {len(image_labels)} image labels as business terms")
+            if entity_terms:
+                logger.info(f"Session {session_id}: loaded cached entity resolution: "
+                            f"{', '.join(f'{k}={len(v)}' for k, v in entity_terms.items())}")
+
+        logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business entities, {len(stop_words)} stop words")
+
+        # Fingerprint caching — skip NER if scope unchanged
+        from constat.discovery.ner_fingerprint import compute_ner_fingerprint, should_skip_ner, update_ner_fingerprint
+        chunk_ids = []
+        if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
+            try:
+                # Use global-only chunks (session_id IS NULL) for fingerprinting.
+                # Session-scoped chunks differ per session_id, making the fingerprint
+                # unique per session even when the semantic scope is identical.
+                chunk_ids = session.doc_tools._vector_store.get_all_chunk_ids(global_only=True)
+            except Exception:
+                pass
+        fingerprint = compute_ner_fingerprint(chunk_ids, schema_entities, api_entities, business_terms, entity_terms=entity_terms)
+        logger.info(f"Session {session_id}: NER fingerprint={fingerprint} ({len(chunk_ids)} chunks, {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business)")
+
+        if should_skip_ner(session_id, fingerprint):
+            # Even when NER is skipped, always rebuild clusters (in-memory state lost on restart)
+            if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
+                vs = session.doc_tools._vector_store
+                if hasattr(vs, '_rebuild_clusters'):
+                    vs._clusters_dirty = True
+                    vs._rebuild_clusters(session_id)
+                    logger.info(f"Session {session_id}: rebuilt clusters (NER skipped)")
+            return
 
         # Run entity extraction
         try:
-            # Clear existing entity links before re-extraction (handles db add/remove)
+            # Snapshot old entities for diff
+            old_entities: dict[str, tuple[str, str]] = {}  # name -> (display_name, semantic_type)
             if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
-                logger.info(f"Session {session_id}: clearing existing entities and links")
-                session.doc_tools._vector_store.clear_session_entities(session_id)
-                logger.info(f"Session {session_id}: cleared existing entity links")
-            else:
-                logger.warning(f"Session {session_id}: no vector_store to clear entities from")
+                vs = session.doc_tools._vector_store
+                try:
+                    rows = vs._conn.execute(
+                        "SELECT name, display_name, semantic_type FROM entities WHERE session_id = ?",
+                        [session_id],
+                    ).fetchall()
+                    old_entities = {r[0]: (r[1], r[2]) for r in rows}
+                except Exception:
+                    pass
 
-            logger.info(f"Session {session_id}: running extract_entities_for_session with project_ids={project_ids}, {len(schema_entities)} schema entities")
+            logger.info(f"Session {session_id}: running extract_entities_for_session with domain_ids={domain_ids}, {len(schema_entities)} schema entities")
             if schema_entities:
                 logger.debug(f"Session {session_id}: sample schema_entities: {schema_entities[:10]}")
             link_count = session.doc_tools.extract_entities_for_session(
                 session_id=session_id,
-                project_ids=project_ids,
+                domain_ids=domain_ids,
                 schema_entities=schema_entities,
                 api_entities=api_entities,
+                business_terms=business_terms or None,
+                entity_terms=entity_terms or None,
             )
+
             if link_count and link_count > 0:
                 logger.info(f"Session {session_id}: created {link_count} entity links")
             else:
                 logger.warning(f"Session {session_id}: NO entity links created (link_count={link_count})")
+            # Cache fingerprint on successful extraction
+            update_ner_fingerprint(session_id, fingerprint)
+
+            # Rebuild clusters eagerly so they're ready for the glossary panel
+            if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
+                vs = session.doc_tools._vector_store
+                if hasattr(vs, '_rebuild_clusters'):
+                    vs._clusters_dirty = True
+                    vs._rebuild_clusters(session_id)
+                    logger.info(f"Session {session_id}: rebuilt clusters after entity extraction")
+
+            # Compute entity diff
+            new_entities: dict[str, tuple[str, str]] = {}
+            if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
+                try:
+                    rows = session.doc_tools._vector_store._conn.execute(
+                        "SELECT name, display_name, semantic_type FROM entities WHERE session_id = ?",
+                        [session_id],
+                    ).fetchall()
+                    new_entities = {r[0]: (r[1], r[2]) for r in rows}
+                except Exception:
+                    pass
+
+            added_names = set(new_entities.keys()) - set(old_entities.keys())
+            removed_names = set(old_entities.keys()) - set(new_entities.keys())
+
+            return {
+                "entities_added": len(added_names),
+                "entities_removed": len(removed_names),
+                "diff": {
+                    "added": [
+                        {"name": new_entities[n][0], "type": new_entities[n][1]}
+                        for n in sorted(added_names)[:50]
+                    ],
+                    "removed": [
+                        {"name": old_entities[n][0], "type": old_entities[n][1]}
+                        for n in sorted(removed_names)[:50]
+                    ],
+                },
+            }
         except Exception as e:
             logger.exception(f"Session {session_id}: entity extraction failed: {e}")
+            return None
 
     def refresh_entities(self, session_id: str) -> None:
         """Refresh entity extraction for a session (synchronous).
@@ -417,15 +1030,45 @@ class SessionManager:
                 logger.warning(f"Cannot refresh entities: session {session_id} not found")
                 return
             managed = self._sessions[session_id]
-            logger.info(f"refresh_entities({session_id}): calling _run_entity_extraction")
-            self._run_entity_extraction(session_id, managed.session)
-            logger.info(f"refresh_entities({session_id}): complete")
+        # Run extraction OUTSIDE the lock to avoid blocking other operations
+        logger.info(f"refresh_entities({session_id}): calling _run_entity_extraction")
+        self._run_entity_extraction(session_id, managed.session)
+        logger.info(f"refresh_entities({session_id}): complete")
+
+    def push_entity_state(self, session_id: str) -> None:
+        """Build compact entity state and push as full state or JSON Patch delta."""
+        from constat.server.entity_state import build_compact_state, compute_entity_patch
+
+        managed = self._sessions.get(session_id)
+        if not managed or not managed.session or not managed.session.doc_tools:
+            return
+        vs = getattr(managed.session.doc_tools, '_vector_store', None)
+        if not vs:
+            return
+
+        new_state = build_compact_state(session_id, managed)
+        managed._entity_state_version += 1
+        version = managed._entity_state_version
+
+        if managed._last_entity_state is not None:
+            patch_ops = compute_entity_patch(managed._last_entity_state, new_state)
+            if patch_ops:
+                self._push_event(managed, EventType.ENTITY_PATCH, {
+                    "patch": patch_ops,
+                    "version": version,
+                })
+            # No patch needed if states are identical
+
+        # Never push full ENTITY_STATE over WS — client fetches initial state
+        # via REST/GraphQL. Only patches are pushed for incremental sync.
+        managed._last_entity_state = new_state
 
     def refresh_entities_async(self, session_id: str) -> None:
         """Refresh entity extraction in a background thread.
 
         Non-blocking — returns immediately and pushes ENTITY_REBUILD_START
-        and ENTITY_REBUILD_COMPLETE events via the session's WebSocket queue.
+        and ENTITY_REBUILD_COMPLETE events via GraphQL subscription.
+        Skips if NER is already running for this session.
 
         Args:
             session_id: Session ID to refresh
@@ -436,61 +1079,518 @@ class SessionManager:
                 return
             managed = self._sessions[session_id]
 
+        # Skip if session init hasn't completed (domains not loaded yet)
+        if not managed._init_complete:
+            logger.debug(f"refresh_entities_async({session_id}): init not complete, skipping")
+            return
+
+        # Skip if NER is already in-flight — don't cancel and restart
+        if managed._ner_thread and managed._ner_thread.is_alive():
+            logger.debug(f"refresh_entities_async({session_id}): NER already running, skipping")
+            return
+
+        # Create a fresh cancellation flag for this run
+        cancel_event = threading.Event()
+        managed._ner_cancelled = cancel_event
+
         def _run():
             import time
             t0 = time.time()
             try:
+                if cancel_event.is_set():
+                    logger.info(f"refresh_entities_async({session_id}): cancelled before start")
+                    return
                 self._push_event(managed, EventType.ENTITY_REBUILD_START, {
                     "session_id": session_id,
                 })
-                self._run_entity_extraction(session_id, managed.session)
+                diff = self._run_entity_extraction(session_id, managed.session)
+                if cancel_event.is_set():
+                    logger.info(f"refresh_entities_async({session_id}): cancelled during extraction")
+                    return
+                duration_ms = int((time.time() - t0) * 1000)
+                event_data = {
+                    "session_id": session_id,
+                    "duration_ms": duration_ms,
+                }
+                if diff:
+                    event_data.update(diff)
+                self._push_event(managed, EventType.ENTITY_REBUILD_COMPLETE, event_data)
+                self.push_entity_state(session_id)
+                logger.info(f"refresh_entities_async({session_id}): complete in {duration_ms}ms")
+            except Exception as e:
+                if cancel_event.is_set():
+                    logger.info(f"refresh_entities_async({session_id}): cancelled (exception during extraction)")
+                    return
+                logger.exception(f"refresh_entities_async({session_id}): failed: {e}")
                 duration_ms = int((time.time() - t0) * 1000)
                 self._push_event(managed, EventType.ENTITY_REBUILD_COMPLETE, {
                     "session_id": session_id,
                     "duration_ms": duration_ms,
+                    "error": str(e),
                 })
-                logger.info(f"refresh_entities_async({session_id}): complete in {duration_ms}ms")
-            except Exception as e:
-                logger.exception(f"refresh_entities_async({session_id}): failed: {e}")
+            finally:
+                managed._ner_thread = None
 
-        import threading
         thread = threading.Thread(target=_run, name=f"entity-rebuild-{session_id}", daemon=True)
+        managed._ner_thread = thread
         thread.start()
 
-    @staticmethod
-    def _push_event(managed: "ManagedSession", event_type: EventType, data: dict) -> None:
-        """Push an event to a managed session's WebSocket queue."""
-        from constat.server.models import StepEventWS
+    def _run_glossary_generation(
+        self, session_id: str, managed: "ManagedSession",
+        phases: dict[str, bool] | None = None,
+    ) -> None:
+        """Run LLM glossary generation after entity extraction.
+
+        Args:
+            session_id: Server session ID
+            managed: ManagedSession instance
+            phases: Optional dict controlling which phases to run.
+                Keys: early_relationships, definitions, late_relationships, clustering.
+                Missing keys default to True.
+        """
+        if phases is None:
+            phases = {}
+        import time
+
+        session = managed.session
+        if not session.doc_tools or not hasattr(session.doc_tools, '_vector_store'):
+            return
+
+        vector_store = session.doc_tools._vector_store
+        if not vector_store:
+            return
+
+        # Need a router for LLM calls
+        if not hasattr(session, 'router') or not session.router:
+            logger.debug(f"Session {session_id}: no router available, skipping glossary generation")
+            return
+
         try:
-            ws_event = StepEventWS(
-                event_type=event_type,
-                session_id=managed.session_id,
-                step_number=0,
-                timestamp=datetime.now(timezone.utc),
-                data=data,
+            t0 = time.time()
+            managed._glossary_cancelled.clear()
+            managed._glossary_generating = True
+            self._push_event(managed, EventType.GLOSSARY_REBUILD_START, {
+                "session_id": session_id,
+            })
+
+            from constat.discovery.glossary_generator import generate_glossary
+
+            # Prune deprecated LLM-generated terms before generating new ones.
+            # User-edited terms (provenance != 'llm') are kept.
+            active_domains = getattr(managed, "active_domains", []) or []
+            deprecated = vector_store.get_deprecated_glossary(
+                session_id, active_domains=active_domains, user_id=managed.user_id,
             )
-            managed.event_queue.put_nowait(ws_event.model_dump(mode="json"))
-        except asyncio.QueueFull:
-            logger.warning(f"Event queue full for session {managed.session_id}, dropping {event_type}")
+            pruned = 0
+            for term in deprecated:
+                if term.provenance == "llm" and term.status == "draft":
+                    vector_store.delete_glossary_term(term.name, session_id, user_id=managed.user_id)
+                    pruned += 1
+            if pruned:
+                logger.info(f"Glossary pre-generation prune for {session_id}: removed {pruned} deprecated draft terms")
+
+            def on_batch(batch_terms):
+                if managed._glossary_cancelled.is_set():
+                    return
+                term_dicts = []
+                for t in batch_terms:
+                    term_dicts.append({
+                        "name": t.name,
+                        "display_name": t.display_name,
+                        "definition": t.definition,
+                        "domain": t.domain,
+                        "parent_id": t.parent_id,
+                        "aliases": t.aliases or [],
+                        "semantic_type": t.semantic_type,
+                        "status": t.status,
+                        "provenance": t.provenance,
+                        "glossary_status": "defined",
+                        "connected_resources": [],
+                    })
+                self._push_event(managed, EventType.GLOSSARY_TERMS_ADDED, {"terms": term_dicts})
+
+            def on_progress(stage: str, pct: int):
+                self._push_event(managed, EventType.GLOSSARY_GENERATION_PROGRESS, {
+                    "stage": stage, "percent": pct,
+                })
+
+            terms = []
+
+            # Early relationships: SVO + LLM before glossary (text-driven discovery)
+            if phases.get("early_relationships", True):
+                self._run_early_relationships(session_id, managed, vector_store, on_progress=on_progress)
+
+            if phases.get("definitions", True):
+                # Build doc_configs and domain descriptions for definition gating
+                doc_configs: dict = {}
+                doc_configs.update(session.config.documents)
+                doc_configs.update(session.config.databases)
+                doc_configs.update(session.config.apis)
+                domain_descriptions: list[str] = []
+                for _dname, dcfg in session.config.domains.items():
+                    if dcfg.description:
+                        domain_descriptions.append(dcfg.description)
+                    doc_configs.update(dcfg.documents)
+                    doc_configs.update(dcfg.databases)
+                    doc_configs.update(dcfg.apis)
+
+                terms = generate_glossary(
+                    session_id=session_id,
+                    vector_store=vector_store,
+                    router=session.router,
+                    domain=session_id,
+                    active_domains=active_domains,
+                    on_batch_complete=on_batch,
+                    on_progress=on_progress,
+                    user_id=managed.user_id,
+                    cancelled=managed._glossary_cancelled.is_set,
+                    doc_configs=doc_configs,
+                    domain_descriptions=domain_descriptions,
+                )
+
+                # Reconcile alias entities (rename "platinum" → "platinum tier")
+                from constat.discovery.glossary_generator import reconcile_alias_entities
+                reconcile_alias_entities(session_id, vector_store, active_domains=active_domains, user_id=managed.user_id)
+
+                # Embed generated terms as glossary chunks
+                if terms:
+                    on_progress("Embedding terms", 78)
+                    active_domains = getattr(managed, "active_domains", []) or []
+                    self._embed_glossary_terms(terms, session_id, vector_store, session, active_domains)
+
+            # Late relationships: FK + glossary inference (needs glossary)
+            if phases.get("late_relationships", True):
+                self._run_late_relationships(session_id, managed, vector_store, on_progress=on_progress)
+
+            # Rebuild clusters with new glossary terms
+            if phases.get("clustering", True):
+                if hasattr(vector_store, '_rebuild_clusters'):
+                    vector_store._clusters_dirty = True
+                    vector_store._rebuild_clusters(session_id)
+                    logger.info(f"Session {session_id}: rebuilt clusters after glossary generation")
+
+            # Final prune: delete any draft LLM terms that are now deprecated
+            deprecated = vector_store.get_deprecated_glossary(
+                session_id, active_domains=active_domains, user_id=managed.user_id,
+            )
+            post_pruned = 0
+            for term in deprecated:
+                if term.provenance == "llm" and term.status == "draft":
+                    vector_store.delete_glossary_term(term.name, session_id, user_id=managed.user_id)
+                    post_pruned += 1
+            if post_pruned:
+                logger.info(f"Post-generation prune for {session_id}: removed {post_pruned} deprecated draft terms")
+
+            on_progress("Complete", 100)
+            duration_ms = int((time.time() - t0) * 1000)
+            managed._glossary_generating = False
+            self._push_event(managed, EventType.GLOSSARY_REBUILD_COMPLETE, {
+                "session_id": session_id,
+                "terms_count": len(terms),
+                "duration_ms": duration_ms,
+            })
+            logger.info(f"Glossary generation for {session_id}: {len(terms)} terms in {duration_ms}ms")
+            self.push_entity_state(session_id)
+        except Exception as e:
+            logger.exception(f"Glossary generation for {session_id} failed: {e}")
+            duration_ms = int((time.time() - t0) * 1000)
+            managed._glossary_generating = False
+            self._push_event(managed, EventType.GLOSSARY_REBUILD_COMPLETE, {
+                "session_id": session_id,
+                "terms_count": 0,
+                "duration_ms": duration_ms,
+                "error": str(e),
+            })
+
+    @staticmethod
+    def _embed_glossary_terms(
+        terms: list,
+        session_id: str,
+        vector_store,
+        session,
+        domain_ids: list[str] | None = None,
+    ) -> None:
+        """Embed glossary terms as searchable chunks."""
+        from constat.catalog.glossary_builder import glossary_term_to_chunk
+        from constat.discovery.glossary_generator import resolve_physical_resources
+
+        chunks = []
+        for term in terms:
+            resources = resolve_physical_resources(term.name, session_id, vector_store, domain_ids=domain_ids, user_id=term.user_id)
+            entity_sources = []
+            for r in resources:
+                for s in r.get("sources", []):
+                    entity_sources.append(f"{s.get('document_name', '')} ({s.get('source', '')})")
+            rels = vector_store.get_relationships_for_entity(term.name, session_id)
+            chunk = glossary_term_to_chunk(term, entity_sources, relationships=rels)
+            chunks.append(chunk)
+
+        if chunks and session.doc_tools:
+            try:
+                # Use the doc_tools model to encode and vector store to add
+                doc_tools = session.doc_tools
+                if hasattr(doc_tools, '_model') and doc_tools._model:
+                    texts = [c.content for c in chunks]
+                    embeddings = doc_tools._model.encode(texts, normalize_embeddings=True)
+                    vector_store.add_chunks(chunks, embeddings, source="document")
+                    logger.info(f"Embedded {len(chunks)} glossary term chunks")
+            except Exception as e:
+                logger.warning(f"Failed to embed glossary chunks: {e}")
+
+    def _make_relationship_batch_callback(self, managed: "ManagedSession"):
+        """Create a reusable on_batch callback for relationship extraction phases."""
+        def on_batch(batch_rels):
+            rel_dicts = [
+                {
+                    "subject_name": r.subject_name,
+                    "verb": r.verb,
+                    "object_name": r.object_name,
+                    "sentence": r.sentence,
+                    "confidence": r.confidence,
+                    "verb_category": r.verb_category,
+                }
+                for r in batch_rels
+            ]
+            self._push_event(managed, EventType.RELATIONSHIPS_EXTRACTED, {
+                "relationships": rel_dicts,
+            })
+        return on_batch
+
+    def _run_early_relationships(
+        self,
+        session_id: str,
+        managed: "ManagedSession",
+        vector_store,
+        on_progress: Callable[[str, int], None] | None = None,
+    ) -> None:
+        """Run text-driven relationship extraction before glossary generation.
+
+        Phase 1: SpaCy SVO (optional — graceful skip if no spaCy)
+        Phase 2: LLM refinement (if router available)
+        Early dedup pass (no taxonomy pairs yet)
+        """
+        session = managed.session
+        rel_config = managed.resolved_config.relationships if managed.resolved_config else {}
+        preferred_verbs = rel_config.get("preferred_verbs") if rel_config else None
+
+        # Clear non-user-edited relationships before regeneration
+        cleared = vector_store.clear_non_user_relationships(session_id)
+        if cleared:
+            logger.info(f"Cleared {cleared} non-user-edited relationships for {session_id}")
+
+        on_batch = self._make_relationship_batch_callback(managed)
+
+        # Phase -1: Structural seeding (FK constraints + Neo4j graph patterns)
+        if on_progress:
+            on_progress("Seeding structural relationships", 3)
+        if session.schema_manager:
+            try:
+                from constat.discovery.relationship_extractor import seed_structural_relationships
+                structural_rels = seed_structural_relationships(
+                    session_id, session.schema_manager, vector_store, on_batch,
+                )
+                if structural_rels:
+                    logger.info(f"Phase -1 structural seeding for {session_id}: {len(structural_rels)} relationships")
+            except Exception as e:
+                logger.exception(f"Phase -1 structural seeding for {session_id} failed: {e}")
+
+        # Phase 1: spaCy SVO (optional)
+        if on_progress:
+            on_progress("Extracting text relationships", 7)
+        svo_rels = []
+        try:
+            from constat.discovery.entity_extractor import get_nlp
+            from constat.discovery.relationship_extractor import extract_svo_relationships
+            try:
+                nlp = get_nlp()
+            except Exception as e:
+                logger.debug(f"Session {session_id}: spaCy model not available ({e}), skipping Phase 1 SVO extraction")
+                nlp = None
+
+            if nlp:
+                svo_rels = extract_svo_relationships(
+                    session_id=session_id,
+                    vector_store=vector_store,
+                    nlp=nlp,
+                    on_batch=on_batch,
+                    preferred_verbs=preferred_verbs,
+                )
+                logger.info(f"Phase 1 SVO extraction for {session_id}: {len(svo_rels)} relationships")
+        except Exception as e:
+            logger.exception(f"Phase 1 SVO extraction for {session_id} failed: {e}")
+
+        # Phase 2: LLM refinement (if router available)
+        if on_progress:
+            on_progress("Refining relationships", 14)
+        if hasattr(session, 'router') and session.router:
+            try:
+                from constat.discovery.relationship_extractor import (
+                    get_co_occurring_pairs,
+                    refine_relationships_with_llm,
+                )
+                co_pairs = get_co_occurring_pairs(session_id, vector_store)
+                if co_pairs:
+                    llm_rels = refine_relationships_with_llm(
+                        session_id=session_id,
+                        vector_store=vector_store,
+                        router=session.router,
+                        svo_candidates=svo_rels,
+                        co_occurring_pairs=co_pairs,
+                        on_batch=on_batch,
+                        preferred_verbs=preferred_verbs,
+                    )
+                    logger.info(f"Phase 2 LLM refinement for {session_id}: {len(llm_rels)} relationships")
+            except Exception as e:
+                logger.exception(f"Phase 2 LLM refinement for {session_id} failed: {e}")
+        else:
+            logger.debug(f"Session {session_id}: no router available, skipping Phase 2 LLM refinement")
+
+        # Early dedup pass (no taxonomy pairs yet — just pair-level dedup)
+        try:
+            from constat.discovery.relationship_extractor import deduplicate_relationships
+            removed = deduplicate_relationships(session_id, vector_store)
+            if removed:
+                logger.info(f"Early relationship dedup for {session_id}: removed {removed} duplicates")
+        except Exception as e:
+            logger.exception(f"Early relationship dedup for {session_id} failed: {e}")
+
+        if on_progress:
+            on_progress("Early relationships complete", 20)
+
+    def _run_late_relationships(
+        self,
+        session_id: str,
+        managed: "ManagedSession",
+        vector_store,
+        on_progress: Callable[[str, int], None] | None = None,
+    ) -> None:
+        """Run glossary-dependent relationship extraction after glossary generation.
+
+        Phase 0: FK relationships (needs glossary terms)
+        Phase 3: Glossary-informed LLM inference (needs term definitions)
+        Full dedup (now taxonomy edges exist for parent-child filtering)
+        Promote HAS_* to taxonomy
+        """
+        session = managed.session
+        rel_config = managed.resolved_config.relationships if managed.resolved_config else {}
+        preferred_verbs = rel_config.get("preferred_verbs") if rel_config else None
+        on_batch = self._make_relationship_batch_callback(managed)
+
+        # Phase 0: FK relationships
+        if on_progress:
+            on_progress("Extracting FK relationships", 80)
+        try:
+            from constat.discovery.relationship_extractor import store_fk_relationships
+            glossary_terms = vector_store.list_glossary_terms(session_id, user_id=managed.user_id)
+            if glossary_terms and session.schema_manager:
+                fk_rels = store_fk_relationships(
+                    session_id=session_id,
+                    glossary_terms=glossary_terms,
+                    schema_manager=session.schema_manager,
+                    vector_store=vector_store,
+                    on_batch=on_batch,
+                )
+                logger.info(f"Phase 0 FK relationships for {session_id}: {len(fk_rels)} relationships")
+        except Exception as e:
+            logger.exception(f"Phase 0 FK relationships for {session_id} failed: {e}")
+
+        # Phase 3: Glossary-informed LLM inference
+        if on_progress:
+            on_progress("Inferring relationships", 88)
+        if hasattr(session, 'router') and session.router:
+            try:
+                from constat.discovery.relationship_extractor import infer_glossary_relationships
+                glossary_rels = infer_glossary_relationships(
+                    session_id=session_id,
+                    vector_store=vector_store,
+                    router=session.router,
+                    on_batch=on_batch,
+                    user_id=managed.user_id,
+                    preferred_verbs=preferred_verbs,
+                )
+                logger.info(f"Phase 3 glossary inference for {session_id}: {len(glossary_rels)} relationships")
+            except Exception as e:
+                logger.exception(f"Phase 3 glossary inference for {session_id} failed: {e}")
+
+        # Full dedup (now has taxonomy pairs for parent-child filtering)
+        if on_progress:
+            on_progress("Deduplicating relationships", 93)
+        try:
+            from constat.discovery.relationship_extractor import deduplicate_relationships
+            removed = deduplicate_relationships(session_id, vector_store)
+            if removed:
+                logger.info(f"Relationship dedup for {session_id}: removed {removed} duplicates")
+        except Exception as e:
+            logger.exception(f"Relationship dedup for {session_id} failed: {e}")
+
+        # Promote orphan HAS_* relationships to taxonomy edges
+        if on_progress:
+            on_progress("Promoting taxonomy", 96)
+        try:
+            from constat.discovery.relationship_extractor import promote_has_relationships
+            promoted = promote_has_relationships(session_id, vector_store, user_id=managed.user_id)
+            if promoted:
+                logger.info(f"Promoted {promoted} HAS relationships to taxonomy for {session_id}")
+        except Exception as e:
+            logger.exception(f"HAS promotion for {session_id} failed: {e}")
+
+    def _push_event(self, managed: "ManagedSession", event_type: EventType, data: dict) -> None:
+        """Push an event to GraphQL subscribers, with caching for replay."""
+        from constat.server.models import StepEventWS
+        ws_event = StepEventWS(
+            event_type=event_type,
+            session_id=managed.session_id,
+            step_number=0,
+            timestamp=datetime.now(timezone.utc),
+            data=data,
+        )
+        event_dict = ws_event.model_dump(mode="json")
+
+        # Cache events for subscription replay
+        # (background init may finish before client connects)
+        if event_type == EventType.ENTITY_REBUILD_COMPLETE:
+            managed._entity_rebuild_event = event_dict
+        elif event_type == EventType.ENTITY_REBUILD_START:
+            managed._entity_rebuild_event = None
+        elif event_type == EventType.SESSION_READY:
+            managed._session_ready_event = event_dict
+
+        self.publish_execution_event(managed.session_id, event_dict)
+
+        # Also publish glossary generation events to the glossaryChanged subscription
+        from constat.server.graphql.types.glossary_types import GlossaryChangeAction, GlossaryChangeEvent
+        _glossary_action_map = {
+            EventType.GLOSSARY_REBUILD_START: GlossaryChangeAction.GENERATION_STARTED,
+            EventType.GLOSSARY_GENERATION_PROGRESS: GlossaryChangeAction.GENERATION_PROGRESS,
+            EventType.GLOSSARY_REBUILD_COMPLETE: GlossaryChangeAction.GENERATION_COMPLETE,
+        }
+        if event_type in _glossary_action_map:
+            glossary_event = GlossaryChangeEvent(
+                session_id=managed.session_id,
+                action=_glossary_action_map[event_type],
+                term_name="",
+                stage=data.get("stage"),
+                percent=data.get("percent"),
+                terms_count=data.get("terms_count"),
+                duration_ms=data.get("duration_ms"),
+                error=data.get("error"),
+            )
+            self.publish_glossary_change(managed.session_id, glossary_event)
 
     def get_session(self, session_id: str) -> ManagedSession:
         """Get a managed session by ID.
 
-        Args:
-            session_id: Session ID to retrieve
-
-        Returns:
-            ManagedSession instance
+        Lock-free read — dict access is GIL-atomic in CPython.
+        Avoids blocking the asyncio event loop when create_session holds _lock.
 
         Raises:
             KeyError: If session not found
         """
-        with self._lock:
-            if session_id not in self._sessions:
-                raise KeyError(f"Session not found: {session_id}")
-            managed = self._sessions[session_id]
-            managed.touch()
-            return managed
+        managed = self._sessions.get(session_id)
+        if managed is None:
+            raise KeyError(f"Session not found: {session_id}")
+        managed.touch()
+        return managed
 
     def get_session_or_none(self, session_id: str) -> Optional[ManagedSession]:
         """Get a managed session by ID, returning None if not found.
@@ -552,27 +1652,12 @@ class SessionManager:
             return True
 
     def cleanup_expired(self) -> int:
-        """Remove sessions that have exceeded the timeout.
+        """No-op — sessions persist until explicitly deleted.
 
         Returns:
-            Number of sessions cleaned up
+            0
         """
-        timeout = self._server_config.session_timeout_minutes
-        expired_ids = []
-
-        with self._lock:
-            for session_id, managed in self._sessions.items():
-                if managed.is_expired(timeout):
-                    expired_ids.append(session_id)
-
-        # Delete expired sessions outside the lock
-        for session_id in expired_ids:
-            self.delete_session(session_id)
-
-        if expired_ids:
-            logger.info(f"Cleaned up {len(expired_ids)} expired sessions")
-
-        return len(expired_ids)
+        return 0
 
     async def start_cleanup_task(self, interval_seconds: int = 60) -> None:
         """Start the periodic cleanup background task.
@@ -649,4 +1734,99 @@ class SessionManager:
                 "max_sessions": self._server_config.max_concurrent_sessions,
                 "by_status": by_status,
             }
+
+
+def _seed_domain_rules(
+    learning_store: "LearningStore",
+    learnings_config: dict,
+) -> None:
+    """Seed domain-config rules into the LearningStore.
+
+    Deduplicates by summary text against existing rules.
+    """
+    from constat.storage.learnings import LearningCategory
+
+    rules_config = learnings_config.get("rules", {})
+    if not rules_config:
+        return
+
+    existing_rules = learning_store.list_rules()
+    existing_summaries = {r["summary"] for r in existing_rules}
+
+    for rule_id, rule_data in rules_config.items():
+        if isinstance(rule_data, str):
+            summary = rule_data
+            category = LearningCategory.USER_CORRECTION
+            confidence = 1.0
+            tags: list[str] = []
+        elif isinstance(rule_data, dict):
+            summary = rule_data.get("summary", "")
+            cat_str = rule_data.get("category", "user_correction")
+            try:
+                category = LearningCategory(cat_str)
+            except ValueError:
+                category = LearningCategory.USER_CORRECTION
+            confidence = rule_data.get("confidence", 1.0)
+            tags = rule_data.get("tags", [])
+        else:
+            continue
+
+        if not summary or summary in existing_summaries:
+            continue
+
+        learning_store.save_rule(
+            summary=summary,
+            category=category,
+            confidence=confidence,
+            source_learnings=[],
+            tags=tags,
+            domain="__system__",
+        )
+        existing_summaries.add(summary)
+
+    logger.info("Seeded domain rules into LearningStore")
+
+
+def _seed_domain_facts(
+    session: "Session",
+    facts_config: dict,
+) -> None:
+    """Seed domain-config facts into the session's fact_resolver.
+
+    Skips facts that already exist in the resolver (user-provided facts
+    take precedence over config-defined ones).
+    """
+    from constat.execution.fact_resolver._types import FactSource
+
+    if not hasattr(session, "fact_resolver") or not session.fact_resolver:
+        return
+
+    seeded = 0
+    for fact_name, fact_data in facts_config.items():
+        # Skip if fact already exists
+        existing = session.fact_resolver.get_fact(fact_name)
+        if existing:
+            continue
+
+        if isinstance(fact_data, str):
+            value = fact_data
+            description = None
+        elif isinstance(fact_data, dict):
+            value = fact_data.get("value", fact_data.get("definition", ""))
+            description = fact_data.get("description")
+        else:
+            value = fact_data
+            description = None
+
+        session.fact_resolver.add_user_fact(
+            fact_name,
+            value,
+            reasoning="From domain config",
+            source=FactSource.CONFIG,
+            description=description,
+        )
+        seeded += 1
+
+    if seeded:
+        logger.info(f"Seeded {seeded} domain facts into fact_resolver")
 

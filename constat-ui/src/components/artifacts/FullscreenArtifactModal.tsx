@@ -1,22 +1,164 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 97ff88d6-df41-476e-a792-3236e00f1740
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Fullscreen Artifact Modal - triggered from View Result button
 
-import { useState, useEffect } from 'react'
-import { XMarkIcon } from '@heroicons/react/24/outline'
-import { useUIStore } from '@/store/uiStore'
-import { useSessionStore } from '@/store/sessionStore'
-import * as sessionsApi from '@/api/sessions'
-import type { ArtifactContent, TableData } from '@/types/api'
-import type { DatabaseTablePreview } from '@/api/sessions'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { XMarkIcon, ArrowDownTrayIcon, ChevronDownIcon, ClipboardDocumentIcon, ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline'
+import { useReactiveVar } from '@apollo/client'
+import { fullscreenArtifactVar, closeFullscreenArtifact } from '@/graphql/ui-state'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { apolloClient } from '@/graphql/client'
+import { TABLE_DATA_QUERY, ARTIFACT_QUERY, toTableData, toArtifactContent } from '@/graphql/operations/data'
+import type { ArtifactContent, TableData, DatabaseTablePreview } from '@/types/api'
+import { DATABASE_TABLE_PREVIEW_QUERY, toDatabaseTablePreview } from '@/graphql/operations/sources'
+
+const MODAL_SIZE_KEY = 'constat.artifactModalSize'
+
+function getInitialSize() {
+  try {
+    const saved = localStorage.getItem(MODAL_SIZE_KEY)
+    if (saved) return JSON.parse(saved) as { width: number; height: number }
+  } catch { /* ignore */ }
+  return { width: Math.round(window.innerWidth * 0.9), height: Math.round(window.innerHeight * 0.9) }
+}
 
 export function FullscreenArtifactModal() {
-  const { fullscreenArtifact, closeFullscreenArtifact } = useUIStore()
-  const { session } = useSessionStore()
+  const fullscreenArtifact = useReactiveVar(fullscreenArtifactVar)
+  const { session } = useSessionContext()
   const [content, setContent] = useState<ArtifactContent | null>(null)
   const [tableData, setTableData] = useState<TableData | null>(null)
   const [dbTableData, setDbTableData] = useState<DatabaseTablePreview | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [tablePage, setTablePage] = useState(1)
+  const [downloadOpen, setDownloadOpen] = useState(false)
+  const downloadRef = useRef<HTMLDivElement>(null)
+  const [copied, setCopied] = useState<'csv' | 'json' | null>(null)
+  const [showCopyMenu, setShowCopyMenu] = useState(false)
+  const copyMenuRef = useRef<HTMLDivElement>(null)
+  const [size, setSize] = useState<{ width: number; height: number }>(getInitialSize)
+  const modalPanelRef = useRef<HTMLDivElement>(null)
+
+  const startResize = useCallback((e: React.MouseEvent, dir: 'right' | 'bottom' | 'corner') => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startY = e.clientY
+    const startW = modalPanelRef.current?.offsetWidth ?? size.width
+    const startH = modalPanelRef.current?.offsetHeight ?? size.height
+
+    const onMove = (ev: MouseEvent) => {
+      const w = dir !== 'bottom' ? Math.max(320, startW + ev.clientX - startX) : startW
+      const h = dir !== 'right' ? Math.max(240, startH + ev.clientY - startY) : startH
+      setSize({ width: w, height: h })
+    }
+    const onUp = (ev: MouseEvent) => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      const w = dir !== 'bottom' ? Math.max(320, startW + ev.clientX - startX) : startW
+      const h = dir !== 'right' ? Math.max(240, startH + ev.clientY - startY) : startH
+      const next = { width: w, height: h }
+      setSize(next)
+      try { localStorage.setItem(MODAL_SIZE_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [size])
+
+  const downloadFormats = [
+    { key: 'csv', label: 'CSV', ext: '.csv' },
+    { key: 'parquet', label: 'Parquet', ext: '.parquet' },
+    { key: 'arrow', label: 'Arrow', ext: '.arrow' },
+    { key: 'excel', label: 'Excel', ext: '.xlsx' },
+    { key: 'text', label: 'Text', ext: '.txt' },
+    { key: 'markdown', label: 'Markdown', ext: '.md' },
+  ] as const
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (downloadRef.current && !downloadRef.current.contains(e.target as Node)) {
+        setDownloadOpen(false)
+      }
+      if (copyMenuRef.current && !copyMenuRef.current.contains(e.target as Node)) {
+        setShowCopyMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const getActiveTableData = useCallback(() => {
+    if (tableData) return tableData
+    if (dbTableData) return { columns: dbTableData.columns, data: dbTableData.data }
+    return null
+  }, [tableData, dbTableData])
+
+  const handleCopy = useCallback((format: 'csv' | 'json') => {
+    const active = getActiveTableData()
+    if (!active) return
+    let text: string
+    if (format === 'csv') {
+      const header = active.columns.join(',')
+      const rows = active.data.map(row =>
+        active.columns.map(col => {
+          const v = row[col]
+          const s = v != null && typeof v === 'object' ? JSON.stringify(v) : String(v ?? '')
+          return s.includes(',') || s.includes('"') || s.includes('\n')
+            ? `"${s.replace(/"/g, '""')}"`
+            : s
+        }).join(',')
+      )
+      text = [header, ...rows].join('\n')
+    } else {
+      text = JSON.stringify(active.data, null, 2)
+    }
+    navigator.clipboard.writeText(text)
+    setCopied(format)
+    setShowCopyMenu(false)
+    setTimeout(() => setCopied(null), 2000)
+  }, [getActiveTableData])
+
+  const handleDownload = async (fmt: string, ext: string) => {
+    if (!session || !fullscreenArtifact) return
+    setDownloadOpen(false)
+
+    let url: string
+    let filename: string
+    if (fullscreenArtifact.type === 'table' && fullscreenArtifact.name) {
+      url = `/api/sessions/${session.session_id}/tables/${fullscreenArtifact.name}/download?format=${fmt}`
+      filename = `${fullscreenArtifact.name}${ext}`
+    } else if (fullscreenArtifact.type === 'database_table' && fullscreenArtifact.dbName && fullscreenArtifact.tableName) {
+      url = `/api/sessions/${session.session_id}/databases/${fullscreenArtifact.dbName}/tables/${fullscreenArtifact.tableName}/download?format=${fmt}`
+      filename = `${fullscreenArtifact.dbName}_${fullscreenArtifact.tableName}${ext}`
+    } else {
+      return
+    }
+
+    try {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error('Failed to download')
+      const blob = await response.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(blobUrl)
+    } catch (err) {
+      console.error('Download failed:', err)
+    }
+  }
 
   // Close on Escape
   useEffect(() => {
@@ -48,26 +190,26 @@ export function FullscreenArtifactModal() {
 
       try {
         if (fullscreenArtifact.type === 'table' && fullscreenArtifact.name) {
-          const data = await sessionsApi.getTableData(
-            session.session_id,
-            fullscreenArtifact.name,
-            tablePage
-          )
-          setTableData(data)
+          const { data: result } = await apolloClient.query({
+            query: TABLE_DATA_QUERY,
+            variables: { sessionId: session.session_id, tableName: fullscreenArtifact.name, page: tablePage },
+            fetchPolicy: 'network-only',
+          })
+          setTableData(toTableData(result.tableData))
         } else if (fullscreenArtifact.type === 'database_table' && fullscreenArtifact.dbName && fullscreenArtifact.tableName) {
-          const data = await sessionsApi.getDatabaseTablePreview(
-            session.session_id,
-            fullscreenArtifact.dbName,
-            fullscreenArtifact.tableName,
-            tablePage
-          )
-          setDbTableData(data)
+          const { data: dbResult } = await apolloClient.query({
+            query: DATABASE_TABLE_PREVIEW_QUERY,
+            variables: { sessionId: session.session_id, dbName: fullscreenArtifact.dbName, tableName: fullscreenArtifact.tableName, page: tablePage },
+            fetchPolicy: 'network-only',
+          })
+          setDbTableData(toDatabaseTablePreview(dbResult.databaseTablePreview))
         } else if (fullscreenArtifact.type === 'artifact' && fullscreenArtifact.id) {
-          const artifactContent = await sessionsApi.getArtifact(
-            session.session_id,
-            fullscreenArtifact.id
-          )
-          setContent(artifactContent)
+          const { data: result } = await apolloClient.query({
+            query: ARTIFACT_QUERY,
+            variables: { sessionId: session.session_id, artifactId: fullscreenArtifact.id },
+            fetchPolicy: 'network-only',
+          })
+          setContent(toArtifactContent(result.artifact))
         }
       } catch (err) {
         setError(String(err))
@@ -429,8 +571,12 @@ export function FullscreenArtifactModal() {
     : content?.title || content?.name || 'Artifact'
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl w-full h-full max-w-[95vw] max-h-[95vh] flex flex-col">
+    <div className="fixed inset-0 z-[110] bg-black/50 flex items-center justify-center">
+      <div
+        ref={modalPanelRef}
+        className="bg-white dark:bg-gray-900 rounded-lg shadow-xl flex flex-col relative select-none"
+        style={{ width: size.width, height: size.height, maxWidth: '100vw', maxHeight: '100vh' }}
+      >
         {/* Modal Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center gap-2">
@@ -448,18 +594,98 @@ export function FullscreenArtifactModal() {
               </span>
             )}
           </div>
-          <button
-            onClick={closeFullscreenArtifact}
-            className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-            title="Close (Esc)"
-          >
-            <XMarkIcon className="w-5 h-5 text-gray-500" />
-          </button>
+          <div className="flex items-center gap-2">
+            {(fullscreenArtifact.type === 'table' || fullscreenArtifact.type === 'database_table') && (
+              <>
+                {/* Copy button */}
+                <div className="relative" ref={copyMenuRef}>
+                  <button
+                    onClick={() => setShowCopyMenu(!showCopyMenu)}
+                    className={`flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors ${
+                      copied ? 'text-green-500 dark:text-green-400' : 'text-gray-700 dark:text-gray-300'
+                    }`}
+                  >
+                    {copied ? (
+                      <ClipboardDocumentCheckIcon className="w-4 h-4" />
+                    ) : (
+                      <ClipboardDocumentIcon className="w-4 h-4" />
+                    )}
+                    <span>{copied ? `Copied ${copied.toUpperCase()}` : 'Copy'}</span>
+                  </button>
+                  {showCopyMenu && (
+                    <div className="absolute right-0 mt-1 w-40 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10">
+                      <button
+                        onClick={() => handleCopy('csv')}
+                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-t-lg"
+                      >
+                        Copy as CSV
+                      </button>
+                      <button
+                        onClick={() => handleCopy('json')}
+                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-b-lg"
+                      >
+                        Copy as JSON
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {/* Download button */}
+                <div className="relative" ref={downloadRef}>
+                  <button
+                    onClick={() => setDownloadOpen((o) => !o)}
+                    className="flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                  >
+                    <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
+                    <span className="text-gray-700 dark:text-gray-300">Download</span>
+                    <ChevronDownIcon className="w-3 h-3 text-gray-500" />
+                  </button>
+                  {downloadOpen && (
+                    <div className="absolute right-0 mt-1 w-40 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10">
+                      {downloadFormats.map((f) => (
+                        <button
+                          key={f.key}
+                          onClick={() => handleDownload(f.key, f.ext)}
+                          className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 first:rounded-t-lg last:rounded-b-lg"
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+            <button
+              onClick={closeFullscreenArtifact}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+              title="Close (Esc)"
+            >
+              <XMarkIcon className="w-5 h-5 text-gray-500" />
+            </button>
+          </div>
         </div>
 
         {/* Modal Content */}
         <div className="flex-1 overflow-hidden">
           {renderContent()}
+        </div>
+
+        {/* Resize handles */}
+        <div
+          className="absolute top-0 right-0 bottom-4 w-1.5 cursor-ew-resize hover:bg-primary-400/30 transition-colors"
+          onMouseDown={(e) => startResize(e, 'right')}
+        />
+        <div
+          className="absolute left-0 right-4 bottom-0 h-1.5 cursor-ns-resize hover:bg-primary-400/30 transition-colors"
+          onMouseDown={(e) => startResize(e, 'bottom')}
+        />
+        <div
+          className="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize flex items-end justify-end pb-0.5 pr-0.5"
+          onMouseDown={(e) => startResize(e, 'corner')}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" className="text-gray-400 dark:text-gray-600">
+            <path d="M0 10 L10 0 L10 10 Z" fill="currentColor" opacity="0.5" />
+          </svg>
         </div>
       </div>
     </div>

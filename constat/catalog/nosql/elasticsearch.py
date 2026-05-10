@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 14d8a419-c8fe-4d48-87e3-bb9e949e77ef
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -99,6 +100,11 @@ class ElasticsearchConnector(NoSQLConnector):
                 "Install with: pip install elasticsearch"
             )
 
+        # Ensure hosts use https:// when use_ssl is True (v8 removed use_ssl param)
+        hosts = self.hosts
+        if self.use_ssl:
+            hosts = [h.replace("http://", "https://") if h.startswith("http://") else h for h in hosts]
+
         if self.cloud_id:
             # Elastic Cloud connection
             self._client = Elasticsearch(
@@ -107,22 +113,19 @@ class ElasticsearchConnector(NoSQLConnector):
             )
         elif self.api_key:
             self._client = Elasticsearch(
-                hosts=self.hosts,
+                hosts=hosts,
                 api_key=self.api_key,
-                use_ssl=self.use_ssl,
                 verify_certs=self.verify_certs,
             )
         elif self.basic_auth:
             self._client = Elasticsearch(
-                hosts=self.hosts,
+                hosts=hosts,
                 basic_auth=self.basic_auth,
-                use_ssl=self.use_ssl,
                 verify_certs=self.verify_certs,
             )
         else:
             self._client = Elasticsearch(
-                hosts=self.hosts,
-                use_ssl=self.use_ssl,
+                hosts=hosts,
                 verify_certs=self.verify_certs,
             )
 

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: c6a353d4-e487-45e9-b2f5-223b653d566e
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -23,6 +24,47 @@ from typing import Optional
 from constat.storage.learnings import LearningStore, LearningCategory
 
 logger = logging.getLogger(__name__)
+
+
+def _scope_group_key(scope: dict) -> str:
+    """Grouping key from scope. Same-type learnings land in the same group."""
+    if not scope:
+        return "_global"
+    sources = scope.get("data_sources", [])
+    if sources:
+        types = sorted({s.get("type", "") for s in sources if s.get("type")})
+        if types:
+            return ":".join(types)
+    return "_global"
+
+
+def _build_rule_scope(rule_data: dict, group: list[dict]) -> dict | None:
+    """Build scope dict for a rule from LLM output and source learnings."""
+    level = rule_data.get("scope_level", "global")
+    if level == "global":
+        return None
+
+    # Collect source types from learnings
+    source_types: set[str] = set()
+    source_names: set[str] = set()
+    for l in group:
+        for s in l.get("scope", {}).get("data_sources", []):
+            if s.get("type"):
+                source_types.add(s["type"])
+            if s.get("name"):
+                source_names.add(s["name"])
+
+    scope: dict = {"level": level}
+    if level == "instance" and source_names:
+        scope["data_sources"] = [
+            {"name": n, "type": t}
+            for n in sorted(source_names)
+            for t in sorted(source_types)
+        ] or [{"type": t} for t in sorted(source_types)]
+    elif level == "type" and source_types:
+        scope["data_sources"] = [{"type": t} for t in sorted(source_types)]
+
+    return scope if scope.get("data_sources") else None
 
 
 @dataclass
@@ -97,14 +139,15 @@ class LearningCompactor:
         if len(all_learnings) < self.MIN_GROUP_SIZE:
             return result
 
-        # Group by category first
-        by_category = defaultdict(list)
+        # Group by (category, scope_key) to prevent cross-engine merging
+        by_scope = defaultdict(list)
         for learning in all_learnings:
             cat = learning.get("category", "unknown")
-            by_category[cat].append(learning)
+            scope_key = _scope_group_key(learning.get("scope", {}))
+            by_scope[(cat, scope_key)].append(learning)
 
-        # Process each category
-        for category, learnings in by_category.items():
+        # Process each group
+        for (category, scope_key), learnings in by_scope.items():
             if len(learnings) < self.MIN_GROUP_SIZE:
                 continue
 
@@ -157,6 +200,9 @@ class LearningCompactor:
                         continue
 
                     if not dry_run:
+                        # Build scope from LLM's scope_level judgment
+                        rule_scope = _build_rule_scope(rule_data, group)
+
                         # Create rule
                         rule_id = self.store.save_rule(
                             summary=rule_data["summary"],
@@ -164,6 +210,7 @@ class LearningCompactor:
                             confidence=confidence,
                             source_learnings=[l["id"] for l in group],
                             tags=rule_data.get("tags", []),
+                            scope=rule_scope,
                         )
 
                         # Archive source learnings
@@ -228,6 +275,16 @@ class LearningCompactor:
 
         return merged_count
 
+    @staticmethod
+    def _extract_content(response) -> str:
+        """Extract text content from an LLM response, stripping markdown fences."""
+        content = response.strip() if isinstance(response, str) else response.content.strip()
+        if "```" in content:
+            match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
+            if match:
+                content = match.group(1)
+        return content
+
     def _find_duplicate_rules(self, rules: list[dict]) -> list[list[dict]]:
         """Find groups of duplicate/overlapping rules.
 
@@ -266,11 +323,7 @@ Output ONLY valid JSON, no explanation."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            content = response.strip() if isinstance(response, str) else response.content.strip()
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             data = json.loads(content)
             duplicate_indices = data.get("duplicates", [])
@@ -327,16 +380,12 @@ Output ONLY valid JSON."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            content = response.strip() if isinstance(response, str) else response.content.strip()
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             data = json.loads(content)
             idx = data.get("overlapping_rule_index", -1)
 
-            if idx >= 0 and idx < len(rules):
+            if 0 <= idx < len(rules):
                 logger.info(f"[find_overlap] Found overlapping rule at index {idx}: {rules[idx]['id']}")
                 return rules[idx]
             else:
@@ -394,11 +443,7 @@ Output ONLY valid JSON."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            content = response.strip() if isinstance(response, str) else response.content.strip()
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             data = json.loads(content)
             new_summary = data.get("strengthened_summary")
@@ -454,18 +499,14 @@ Output ONLY valid JSON."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            content = response.strip() if isinstance(response, str) else response.content.strip()
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             data = json.loads(content)
             # Combine tags from LLM with existing tags
             data["tags"] = list(set(data.get("tags", [])) | all_tags)
             return data
 
-        except Exception:
+        except (json.JSONDecodeError, ValueError, KeyError):
             return None
 
     def _find_similar_groups(self, learnings: list[dict]) -> list[list[dict]]:
@@ -510,13 +551,7 @@ Output ONLY valid JSON, no explanation."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            # Parse response (generate returns string, not object)
-            content = response.strip() if isinstance(response, str) else response.content.strip()
-            # Extract JSON if wrapped in markdown
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             data = json.loads(content)
             groups_indices = data.get("groups", [])
@@ -586,7 +621,7 @@ Output ONLY valid JSON, no explanation."""
             )
             # generate() returns string directly
             return "yes" in response.lower()
-        except Exception:
+        except (ValueError, KeyError):
             return False
 
     def _generate_rule_summary(self, group: list[dict]) -> Optional[dict]:
@@ -596,7 +631,7 @@ Output ONLY valid JSON, no explanation."""
             group: List of similar learning dicts
 
         Returns:
-            Dict with summary, confidence, tags or None on failure
+            Dict with summary, confidence, tags, scope_level or None on failure
         """
         corrections = [l["correction"] for l in group]
         contexts = []
@@ -605,21 +640,48 @@ Output ONLY valid JSON, no explanation."""
             if isinstance(ctx, dict):
                 contexts.append(str(ctx)[:200])
 
+        # Collect scope info from learnings
+        scope_levels = set()
+        source_types = set()
+        source_names = set()
+        for l in group:
+            scope = l.get("scope", {})
+            if scope:
+                scope_levels.add(scope.get("level", "global"))
+                for s in scope.get("data_sources", []):
+                    if s.get("type"):
+                        source_types.add(s["type"])
+                    if s.get("name"):
+                        source_names.add(s["name"])
+
+        scope_desc = ""
+        if source_types:
+            scope_desc = f"\nData source types: {', '.join(sorted(source_types))}"
+            if source_names:
+                scope_desc += f"\nDatabase names: {', '.join(sorted(source_names))}"
+            scope_desc += f"\nIndividual scope levels: {', '.join(sorted(scope_levels)) if scope_levels else 'unscoped'}"
+
         prompt = f"""Create a single rule from these {len(group)} similar learnings.
 
 Learnings:
 {chr(10).join(f'- {c}' for c in corrections)}
 
 Context examples:
-{chr(10).join(contexts) if contexts else 'N/A'}
+{chr(10).join(contexts) if contexts else 'N/A'}{scope_desc}
 
 Output JSON with:
 - summary: A clear, actionable rule (1-2 sentences)
 - confidence: How confident you are this is a valid pattern (0.0-1.0)
 - tags: 2-4 relevant keywords for finding this rule later
+- scope_level: "instance" | "type" | "global" (judge the RULE's scope, not just echo the learnings)
+
+Scope guidance:
+- "instance": Pattern tied to a specific database's config/schema/data
+- "type": Pattern about a database ENGINE's behavior or SQL dialect
+- "global": General coding practice regardless of database
 
 Example:
-{{"summary": "Always cast date columns to datetime before comparison in SQL queries", "confidence": 0.85, "tags": ["datetime", "sql", "cast"]}}
+{{"summary": "Always cast date columns to datetime before comparison in SQL queries", "confidence": 0.85, "tags": ["datetime", "sql", "cast"], "scope_level": "global"}}
 
 Output ONLY valid JSON, no explanation."""
 
@@ -630,13 +692,7 @@ Output ONLY valid JSON, no explanation."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            # generate() returns string directly
-            content = response.strip()
-            # Extract JSON if wrapped in markdown
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             result = json.loads(content)
             logger.debug(f"[generate_rule] Generated: {result}")

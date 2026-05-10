@@ -1,0 +1,163 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: 5ae37db1-c8c4-4600-a666-7b01621356d8
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
+"""ConstatClient — GraphQL-based client for a Constat server."""
+
+from __future__ import annotations
+
+import uuid
+
+import httpx
+
+from .config import ConstatConfig
+from .graphql import (
+    GraphQLClient,
+    CREATE_SESSION, DELETE_SESSION, SESSIONS_QUERY, SESSION_QUERY,
+    DOMAINS_QUERY, SKILLS_QUERY, SKILL_QUERY, LEARNINGS_QUERY,
+    COMPACT_LEARNINGS, CREATE_RULE, UPDATE_RULE, DELETE_RULE,
+    CREATE_SKILL, UPDATE_SKILL, DELETE_SKILL, DRAFT_SKILL,
+)
+from .session import Session
+
+
+class ConstatClient:
+    """HTTP client for a running Constat server.
+
+    Usage::
+
+        client = ConstatClient("http://localhost:8000")
+        session = client.create_session()
+        result = await session.solve("What are the top 10 items by value?")
+    """
+
+    def __init__(self, server_url: str | None = None, token: str | None = None):
+        cfg = ConstatConfig.resolve(server_url, token)
+        self._base_url = cfg.server_url.rstrip("/")
+        self._token = cfg.token
+        headers = {"Authorization": f"Bearer {cfg.token}"} if cfg.token else {}
+        self._http = httpx.Client(base_url=self._base_url, headers=headers, timeout=120)
+        self._gql = GraphQLClient(self._base_url, cfg.token, timeout=120)
+
+    # ── Session management ──────────────────────────────────────────────
+
+    def create_session(self, session_id: str | None = None) -> Session:
+        sid = session_id or str(uuid.uuid4())
+        self._gql.query(CREATE_SESSION, {"sessionId": sid})
+        return Session(self._gql, self._http, sid)
+
+    def get_session(self, session_id: str) -> Session:
+        self._gql.query(SESSION_QUERY, {"sessionId": session_id})
+        return Session(self._gql, self._http, session_id)
+
+    def list_sessions(self) -> list[dict]:
+        data = self._gql.query(SESSIONS_QUERY)
+        return data.get("sessions", {}).get("sessions", [])
+
+    def delete_session(self, session_id: str) -> None:
+        self._gql.query(DELETE_SESSION, {"sessionId": session_id})
+
+    # ── Schema browsing (REST — no GQL equivalent for /api/schema) ──────
+
+    def databases(self) -> list[dict]:
+        resp = self._http.get("/api/schema")
+        resp.raise_for_status()
+        return resp.json()["databases"]
+
+    def table_schema(self, database: str, table: str) -> dict:
+        resp = self._http.get(f"/api/schema/databases/{database}/tables/{table}")
+        resp.raise_for_status()
+        return resp.json()
+
+    # ── Domains ─────────────────────────────────────────────────────────
+
+    def domains(self) -> list[dict]:
+        data = self._gql.query(DOMAINS_QUERY)
+        return data.get("domains", {}).get("domains", [])
+
+    # ── Skills ──────────────────────────────────────────────────────────
+
+    def skills(self) -> list[dict]:
+        data = self._gql.query(SKILLS_QUERY)
+        return data.get("skills", {}).get("skills", [])
+
+    def skill_info(self, name: str) -> dict:
+        data = self._gql.query(SKILL_QUERY, {"name": name})
+        return data.get("skill", {})
+
+    def create_skill(self, name: str, prompt: str, description: str = "") -> dict:
+        """Create a new skill via GraphQL."""
+        data = self._gql.query(CREATE_SKILL, {
+            "input": {"name": name, "prompt": prompt, "description": description},
+        })
+        return data.get("create_skill", {})
+
+    def edit_skill(self, name: str, content: str) -> dict:
+        """Update skill content via GraphQL."""
+        data = self._gql.query(UPDATE_SKILL, {
+            "name": name, "input": {"content": content},
+        })
+        return data.get("update_skill", {})
+
+    def delete_skill(self, name: str, domain: str | None = None) -> None:
+        """Delete a skill via GraphQL."""
+        self._gql.query(DELETE_SKILL, {"name": name, "domain": domain})
+
+    def draft_skill(self, session_id: str, name: str, description: str) -> dict:
+        """Draft a skill via GraphQL (requires a session for LLM access)."""
+        data = self._gql.query(DRAFT_SKILL, {
+            "sessionId": session_id,
+            "input": {"name": name, "userDescription": description},
+        })
+        return data.get("draft_skill", {})
+
+    def download_skill(self, name: str) -> bytes:
+        resp = self._http.get(f"/api/skills/{name}/download")
+        resp.raise_for_status()
+        return resp.content
+
+    # ── Schema search (REST — no GQL equivalent) ───────────────────────
+
+    def search_schema(self, query: str) -> dict:
+        resp = self._http.get("/api/schema/search", params={"query": query})
+        resp.raise_for_status()
+        return resp.json()
+
+    # ── Learnings & Rules ──────────────────────────────────────────────
+
+    def learnings(self, category: str | None = None) -> list[dict]:
+        data = self._gql.query(LEARNINGS_QUERY, {"category": category})
+        return data.get("learnings", {}).get("learnings", [])
+
+    def compact_learnings(self) -> dict:
+        data = self._gql.query(COMPACT_LEARNINGS)
+        return data.get("compact_learnings", {})
+
+    def add_rule(self, text: str) -> dict:
+        data = self._gql.query(CREATE_RULE, {"text": text})
+        return data.get("create_rule", {})
+
+    def edit_rule(self, rule_id: int, text: str) -> dict:
+        data = self._gql.query(UPDATE_RULE, {"ruleId": rule_id, "text": text})
+        return data.get("update_rule", {})
+
+    def delete_rule(self, rule_id: int) -> None:
+        self._gql.query(DELETE_RULE, {"ruleId": rule_id})
+
+    # ── Lifecycle ──────────────────────────────────────────────────────
+
+    def close(self) -> None:
+        self._gql.close()
+        self._http.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()

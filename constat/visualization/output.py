@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 5e3300f2-c6c6-4695-b7c9-26f808405dfa
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -177,10 +178,11 @@ class VisualizationHelper:
         if output_dir is None:
             # Use session directory under user-scoped storage
             # "artifacts" = user-requested outputs (charts, files, visualizations)
+            from constat.core.paths import user_vault_dir
             if session_id:
-                output_dir = Path(".constat") / user_id / "sessions" / session_id / "artifacts"
+                output_dir = user_vault_dir(Path(".constat"), user_id) / "sessions" / session_id / "artifacts"
             else:
-                output_dir = Path(".constat") / user_id / "artifacts"
+                output_dir = user_vault_dir(Path(".constat"), user_id) / "artifacts"
 
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -195,11 +197,13 @@ class VisualizationHelper:
         safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
         return self.output_dir / f"{safe_name}.{extension}"
 
-    def _file_uri(self, path: Path) -> str:
+    @staticmethod
+    def _file_uri(path: Path) -> str:
         """Convert a path to a file:// URI for clickable terminal links."""
         return path.resolve().as_uri()
 
-    def _open_in_system_viewer(self, filepath: Path) -> None:
+    @staticmethod
+    def _open_in_system_viewer(filepath: Path) -> None:
         """Open the file in the OS default application (non-blocking).
 
         Uses platform-appropriate methods:
@@ -508,7 +512,7 @@ class VisualizationHelper:
                 f'<p><small>Preview unavailable: {e}</small></p>'
             )
 
-    def _convert_docx_to_html_fallback(self, content: bytes, title: str, file_uri: str, filename: str) -> str:
+    def _convert_docx_to_html_fallback(self, content: bytes, title: str, _file_uri: str, filename: str) -> str:
         """Fallback DOCX to HTML using python-docx for text extraction."""
         from io import BytesIO
         try:
@@ -542,7 +546,8 @@ class VisualizationHelper:
                 f'<p><small>Preview unavailable: {e}</small></p>'
             )
 
-    def _convert_pdf_to_html(self, content: bytes, title: str, file_uri: str, filename: str) -> str:
+    @staticmethod
+    def _convert_pdf_to_html(content: bytes, title: str, _file_uri: str, filename: str) -> str:
         """Convert PDF to HTML with embedded viewer using PDF.js."""
         import base64
         # Base64 encode PDF for embedding
@@ -607,7 +612,8 @@ function nextPage() {{ if (pageNum < pdfDoc.numPages) {{ pageNum++; renderPage(p
 </body>
 </html>"""
 
-    def _wrap_html_preview(self, body_content: str) -> str:
+    @staticmethod
+    def _wrap_html_preview(body_content: str) -> str:
         """Wrap content in a styled HTML document for artifact preview."""
         return f"""<!DOCTYPE html>
 <html>
@@ -733,7 +739,7 @@ a:hover {{ text-decoration: underline; }}
         name: str,
         figure: Any,
         title: Optional[str] = None,
-        description: Optional[str] = None,
+        _description: Optional[str] = None,
         chart_type: str = "plotly",
     ) -> Path:
         """Save a Plotly or Altair chart to file and artifact store.
@@ -742,7 +748,7 @@ a:hover {{ text-decoration: underline; }}
             name: Name for the chart (used in filename and artifact)
             figure: Plotly Figure or Altair Chart object
             title: Human-readable title for the artifact
-            description: Description of the chart
+            _description: Description of the chart (unused, kept for API compat)
             chart_type: Type of chart ("plotly" or "altair")
 
         Returns:
@@ -754,7 +760,7 @@ a:hover {{ text-decoration: underline; }}
         if chart_type == "plotly" or hasattr(figure, "write_html"):
             # Plotly figure
             figure.write_html(str(filepath), include_plotlyjs=True, full_html=True)
-            html_content = filepath.read_text(encoding="utf-8")
+            _html_content = filepath.read_text(encoding="utf-8")
 
             # Also save chart spec as artifact
             if self.datastore:
@@ -774,7 +780,7 @@ a:hover {{ text-decoration: underline; }}
         elif chart_type == "altair" or hasattr(figure, "save"):
             # Altair chart
             figure.save(str(filepath))
-            html_content = filepath.read_text(encoding="utf-8")
+            _html_content = filepath.read_text(encoding="utf-8")
 
             # Also save chart spec as artifact
             if self.datastore:
@@ -803,47 +809,47 @@ a:hover {{ text-decoration: underline; }}
         self,
         name: str,
         figure: Any,
-        format: str = "png",
+        fmt: str = "png",
         title: Optional[str] = None,
-        description: Optional[str] = None,
+        _description: Optional[str] = None,
     ) -> Path:
         """Save a matplotlib figure or image to file.
 
         Args:
             name: Name for the image
             figure: Matplotlib figure or image data
-            format: Image format (png, svg, jpg)
+            fmt: Image format (png, svg, jpg)
             title: Human-readable title
-            description: Description of the image
+            _description: Description of the image (unused, kept for API compat)
 
         Returns:
             Path to the saved image file
         """
-        filepath = self._generate_filename(name, format)
+        filepath = self._generate_filename(name, fmt)
 
         # Handle matplotlib figures
         if hasattr(figure, "savefig"):
-            figure.savefig(str(filepath), format=format, bbox_inches="tight", dpi=150)
+            figure.savefig(str(filepath), format=fmt, bbox_inches="tight", dpi=150)
         else:
             # Assume raw bytes
             filepath.write_bytes(figure)
 
         # Register as artifact if datastore available
-        if self.datastore and format in ("png", "svg", "jpg", "jpeg"):
+        if self.datastore and fmt in ("png", "svg", "jpg", "jpeg"):
             try:
                 image_data = filepath.read_bytes()
                 from constat.core.models import ArtifactType
-                artifact_type = {
+                _artifact_type = {
                     "png": ArtifactType.PNG,
                     "svg": ArtifactType.SVG,
                     "jpg": ArtifactType.JPEG,
                     "jpeg": ArtifactType.JPEG,
-                }.get(format, ArtifactType.PNG)
+                }.get(fmt, ArtifactType.PNG)
 
                 self.datastore.save_image(
                     name=name,
                     image_data=image_data,
-                    image_format=format,
+                    image_format=fmt,
                     step_number=self.step_number,
                     title=title or name,
                 )
@@ -881,6 +887,7 @@ def create_viz_helper(
         session_id: Session ID for organizing outputs by session
         user_id: User ID for user-scoped storage (default: "default")
         registry: Central registry for artifact tracking
+        open_with_system_viewer: If True, open generated files with system viewer
 
     Returns:
         Configured VisualizationHelper instance

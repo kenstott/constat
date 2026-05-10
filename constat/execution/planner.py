@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: da873267-ed65-4c96-a46d-6d7294444675
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -7,7 +8,7 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""Multi-step planner for problem decomposition."""
+"""Multistep planner for problem decomposition."""
 
 import json
 import logging
@@ -62,7 +63,7 @@ def _parse_post_validations(raw: list[dict]) -> list[PostValidation]:
 
 class Planner:
     """
-    Generates multi-step plans from natural language problems.
+    Generates multistep plans from natural language problems.
 
     The planner uses the LLM to break down complex questions into
     sequential steps that can be executed by the session.
@@ -105,8 +106,9 @@ class Planner:
         self.allowed_databases = allowed_databases
         self.allowed_apis = allowed_apis
         self.allowed_documents = allowed_documents
-        self._available_roles: list[dict] = []  # For role-based step assignment
+        self._available_agents: list[dict] = []  # For agent-based step assignment
         self._skill_manager = None  # Set via set_skill_manager()
+        self._glossary_context: str = ""  # Set via set_glossary_context()
 
         # Support both direct provider (backward compat) and router (new)
         if isinstance(router_or_provider, TaskRouter):
@@ -158,13 +160,21 @@ class Planner:
         """
         self._learning_store = learning_store
 
-    def set_available_roles(self, roles: list[dict]) -> None:
-        """Set available roles for role-based step assignment.
+    def set_available_agents(self, agents: list[dict]) -> None:
+        """Set available agents for agent-based step assignment.
 
         Args:
-            roles: List of role dicts with 'name' and 'description' keys
+            agents: List of agent dicts with 'name' and 'description' keys
         """
-        self._available_roles = roles or []
+        self._available_agents = agents or []
+
+    def set_glossary_context(self, context: str) -> None:
+        """Set glossary context for inclusion in planning prompts.
+
+        Args:
+            context: Formatted glossary context string
+        """
+        self._glossary_context = context or ""
 
     def set_skill_manager(self, skill_manager) -> None:
         """Set skill manager for injecting active skills into planning prompts."""
@@ -183,6 +193,7 @@ class Planner:
         )
 
         # Build API overview if configured (filtered by permissions)
+        # noinspection DuplicatedCode
         api_overview = ""
         if self.config.apis:
             api_lines = ["\n## Available APIs"]
@@ -241,45 +252,53 @@ class Planner:
 
                 if rules_count > 0:
                     learnings_text = "\n".join(rule_lines)
-            except Exception:
+            except (KeyError, ValueError, OSError):
                 pass  # Don't fail planning if learnings can't be loaded
 
-        # Build available roles section for role-based step assignment
+        # Build available agents section for agent-based step assignment
         roles_text = ""
-        if self._available_roles:
-            role_lines = ["\n## Available Roles - ASSIGN TO EACH STEP"]
-            role_lines.append("**You MUST assign one of these role_id values to each step based on what the step does:**")
-            for role in self._available_roles:
-                name = role.get("name", "")
-                desc = role.get("description", "")
-                role_lines.append(f"- **{name}**: {desc}")
-            role_lines.append("\nChoose the most appropriate role for each step. Use `null` only if no role applies.")
-            roles_text = "\n".join(role_lines)
-            logger.info(f"[PLANNER] Including {len(self._available_roles)} roles in prompt")
+        if self._available_agents:
+            agent_lines = [
+                "\n## Available Agents - ASSIGN TO EACH STEP",
+                "**You MUST assign one of these agent_id values to each step based on what the step does:**",
+            ]
+            for agent in self._available_agents:
+                name = agent.get("name", "")
+                desc = agent.get("description", "")
+                agent_lines.append(f"- **{name}**: {desc}")
+            agent_lines.append("\nChoose the most appropriate agent for each step. Use `null` only if no agent applies.")
+            roles_text = "\n".join(agent_lines)
+            logger.info(f"[PLANNER] Including {len(self._available_agents)} agents in prompt")
         else:
-            logger.debug("[PLANNER] No roles available for prompt")
+            logger.debug("[PLANNER] No agents available for prompt")
 
-        # Build active skills section
+        # Build active skills section — names only, no prompt content.
+        # Full skill prompts are injected at step codegen time based on step goal relevance.
         active_skills_text = ""
         if self._skill_manager:
             active_skill_objects = self._skill_manager.active_skill_objects
             if active_skill_objects:
                 parts = []
                 for skill in active_skill_objects:
-                    # Discover scripts in the skill's scripts/ directory
                     skill_dir = self._skill_manager.skills_dir / skill.filename
                     scripts_dir = skill_dir / "scripts"
-                    script_files = []
-                    if scripts_dir.exists():
-                        script_files = sorted(
-                            str(f) for f in scripts_dir.iterdir() if f.is_file()
+                    has_scripts = scripts_dir.exists() and any(scripts_dir.iterdir())
+                    if has_scripts:
+                        parts.append(
+                            f"- **{skill.name}** (executable script): "
+                            f"Use step goal `\"Execute {skill.name} skill script (run_proof)\"` "
+                            f"with task_type: python_analysis"
                         )
-                    header = f"## Skill: {skill.name}"
-                    if script_files:
-                        header += f" (scripts: {', '.join(script_files)})"
-                    parts.append(f"{header}\n{skill.prompt}")
-                active_skills_text = "\n\n".join(parts)
-                logger.info(f"[PLANNER] Including {len(active_skill_objects)} active skills in prompt")
+                    else:
+                        parts.append(
+                            f"- **{skill.name}** (reference): {skill.description or 'domain knowledge'}"
+                        )
+                active_skills_text = "## Available Skills\n" + "\n".join(parts)
+                logger.info(f"[PLANNER] Listing {len(active_skill_objects)} available skills")
+
+        domain_text = self.config.system_prompt or "No additional domain context provided."
+        if self._glossary_context:
+            domain_text += "\n" + self._glossary_context
 
         return PLANNER_PROMPT_TEMPLATE.format(
             system_prompt=PLANNER_SYSTEM_PROMPT,
@@ -287,7 +306,7 @@ class Planner:
             schema_overview=self.schema_manager.get_brief_summary(self.allowed_databases),
             api_overview=api_overview,
             doc_overview=doc_overview,
-            domain_context=self.config.system_prompt or "No additional domain context provided.",
+            domain_context=domain_text,
             active_skills=active_skills_text,
             user_facts=user_facts_text,
             learnings=learnings_text,
@@ -305,6 +324,7 @@ class Planner:
 
         # Add document discovery tools if available
         if self.doc_tools:
+            # noinspection PyTypeChecker
             handlers["list_documents"] = self.doc_tools.list_documents
             handlers["search_documents"] = lambda query, limit=5: self.doc_tools.search_documents(query, limit)
             handlers["get_document"] = lambda name: self.doc_tools.get_document(name)
@@ -313,7 +333,9 @@ class Planner:
         if self.config.apis:
             from constat.catalog.api_executor import APIExecutor
             api_executor = APIExecutor(self.config)
+            # noinspection PyTypeChecker
             handlers["get_api_schema_overview"] = lambda api_name: api_executor.get_schema_overview(api_name)
+            # noinspection PyTypeChecker
             handlers["get_api_query_schema"] = lambda api_name, query_name: api_executor.get_query_schema(api_name, query_name)
 
             # Add semantic search for APIs if api_schema_manager is available
@@ -322,27 +344,61 @@ class Planner:
 
         return handlers
 
-    def _parse_plan_response(self, response: str) -> dict:
+    @staticmethod
+    def _parse_plan_response(response: str) -> dict:
         """Parse the LLM's plan response as JSON."""
-        # Try to extract JSON from markdown code block
+        # Try to extract JSON from Markdown code block
         json_pattern = r"```(?:json)?\s*(.*?)\s*```"
         match = re.search(json_pattern, response, re.DOTALL)
         if match:
             json_str = match.group(1)
         else:
-            json_str = response.strip()
+            # Strip preamble text before first { and after last }
+            first_brace = response.find('{')
+            last_brace = response.rfind('}')
+            if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                json_str = response[first_brace:last_brace + 1]
+            else:
+                json_str = response.strip()
 
         try:
             return json.loads(json_str)
         except json.JSONDecodeError as e:
             raise ValueError(f"Failed to parse plan response as JSON: {e}\nResponse: {response[:500]}")
 
-    def plan(self, problem: str) -> PlannerResponse:
+    @staticmethod
+    def _build_steps_from_plan_data(plan_data: dict) -> list[Step]:
+        """Build Step objects from parsed plan data."""
+        steps = []
+        for step_data in plan_data.get("steps", []):
+            task_type_str = step_data.get("task_type", "python_analysis")
+            try:
+                task_type = TaskType(task_type_str)
+            except ValueError:
+                task_type = TaskType.PYTHON_ANALYSIS
+
+            steps.append(Step(
+                number=step_data.get("number", len(steps) + 1),
+                goal=step_data.get("goal", ""),
+                expected_inputs=step_data.get("inputs", []),
+                expected_outputs=step_data.get("outputs", []),
+                depends_on=step_data.get("depends_on", []),
+                step_type=StepType.PYTHON,
+                task_type=task_type,
+                complexity=step_data.get("complexity", "medium"),
+                role_id=step_data.get("role_id"),
+                domain=step_data.get("domain"),
+                post_validations=_parse_post_validations(step_data.get("post_validations", [])),
+            ))
+        return steps
+
+    def plan(self, problem: str, complexity: str = "medium") -> PlannerResponse:
         """
-        Generate a multi-step plan for a problem.
+        Generate a multistep plan for a problem.
 
         Args:
             problem: Natural language problem to solve
+            complexity: Routing complexity hint ("low", "medium", "high")
 
         Returns:
             PlannerResponse with the generated plan
@@ -507,14 +563,30 @@ class Planner:
 
         system_prompt = self._build_system_prompt(problem)
 
+        # Build user message — add brevity directive for simple queries
+        user_message = f"Create a plan to answer this question:\n\n{problem}"
+        if complexity == "low":
+            user_message += (
+                "\n\nIMPORTANT: This is a simple request. Use a SINGLE step. "
+                "Do NOT add separate formatting, summary, or synthesis steps."
+            )
+        else:
+            user_message += (
+                "\n\nDo NOT add a final summarize, format, or synthesis step "
+                "unless the user explicitly asked for summarization or formatting. "
+                "Synthesis is handled automatically after execution."
+            )
+
         # Use router for planning task
         if self.router:
             result = self.router.execute(
                 task_type=TaskType.PLANNING,
                 system=system_prompt,
-                user_message=f"Create a plan to answer this question:\n\n{problem}",
+                user_message=user_message,
                 tools=schema_tools,
                 tool_handlers=self._get_tool_handlers(),
+                max_tokens=16384,
+                complexity=complexity,
             )
             if not result.success:
                 raise ValueError(f"Planning failed: {result.content}")
@@ -530,29 +602,7 @@ class Planner:
 
         # Parse the response
         plan_data = self._parse_plan_response(response)
-
-        # Build Step objects
-        steps = []
-        for step_data in plan_data.get("steps", []):
-            # Parse task_type from response
-            task_type_str = step_data.get("task_type", "python_analysis")
-            try:
-                task_type = TaskType(task_type_str)
-            except ValueError:
-                task_type = TaskType.PYTHON_ANALYSIS
-
-            steps.append(Step(
-                number=step_data.get("number", len(steps) + 1),
-                goal=step_data.get("goal", ""),
-                expected_inputs=step_data.get("inputs", []),
-                expected_outputs=step_data.get("outputs", []),
-                depends_on=step_data.get("depends_on", []),
-                step_type=StepType.PYTHON,  # Phase 1: Python only
-                task_type=task_type,
-                complexity=step_data.get("complexity", "medium"),
-                role_id=step_data.get("role_id"),  # Role context for this step
-                post_validations=_parse_post_validations(step_data.get("post_validations", [])),
-            ))
+        steps = self._build_steps_from_plan_data(plan_data)
 
         plan = Plan(
             problem=problem,
@@ -578,6 +628,7 @@ class Planner:
         return PlannerResponse(
             plan=plan,
             reasoning=plan_data.get("reasoning", ""),
+            raw_response=response,
         )
 
     def replan(
@@ -659,6 +710,7 @@ Return the plan in JSON format."""
                 user_message=prompt,
                 tools=schema_tools,
                 tool_handlers=self._get_tool_handlers(),
+                max_tokens=16384,
             )
             if not result.success:
                 raise ValueError(f"Replanning failed: {result.content}")
@@ -673,28 +725,7 @@ Return the plan in JSON format."""
             )
 
         plan_data = self._parse_plan_response(response)
-
-        steps = []
-        for step_data in plan_data.get("steps", []):
-            # Parse task_type from response
-            task_type_str = step_data.get("task_type", "python_analysis")
-            try:
-                task_type = TaskType(task_type_str)
-            except ValueError:
-                task_type = TaskType.PYTHON_ANALYSIS
-
-            steps.append(Step(
-                number=step_data.get("number", len(steps) + 1),
-                goal=step_data.get("goal", ""),
-                expected_inputs=step_data.get("inputs", []),
-                expected_outputs=step_data.get("outputs", []),
-                depends_on=step_data.get("depends_on", []),
-                step_type=StepType.PYTHON,
-                task_type=task_type,
-                complexity=step_data.get("complexity", "medium"),
-                role_id=step_data.get("role_id"),  # Role context for this step
-                post_validations=_parse_post_validations(step_data.get("post_validations", [])),
-            ))
+        steps = self._build_steps_from_plan_data(plan_data)
 
         # Mark completed steps
         revised_plan = Plan(
@@ -715,4 +746,5 @@ Return the plan in JSON format."""
         return PlannerResponse(
             plan=revised_plan,
             reasoning=plan_data.get("reasoning", ""),
+            raw_response=response,
         )

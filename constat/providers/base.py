@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 6751801a-9dc3-4be0-98ae-cca6cc47b1bc
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -76,6 +77,7 @@ class BaseLLMProvider(ABC):
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 4096,
         model: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         Generate a response, automatically handling tool calls.
@@ -87,11 +89,36 @@ class BaseLLMProvider(ABC):
             tool_handlers: Dict mapping tool names to handler functions
             max_tokens: Maximum tokens to generate
             model: Override model for this call
+            timeout: Per-request timeout in seconds (overrides client default)
 
         Returns:
             Final text response after all tool calls are resolved
         """
         pass
+
+    def generate_vision(
+        self,
+        system: str,
+        image_bytes: bytes,
+        mime_type: str,
+        text_prompt: str,
+        max_tokens: int = 1024,
+        model: str | None = None,
+    ) -> str:
+        """Generate a response from an image using vision capabilities.
+
+        Args:
+            system: System prompt
+            image_bytes: Raw image bytes
+            mime_type: Image MIME type (e.g., "image/png")
+            text_prompt: Text prompt to accompany the image
+            max_tokens: Maximum tokens to generate
+            model: Override model for this call
+
+        Returns:
+            Generated text response
+        """
+        raise NotImplementedError("Vision not supported by this provider")
 
     def generate_code(
         self,
@@ -103,7 +130,7 @@ class BaseLLMProvider(ABC):
         model: Optional[str] = None,
     ) -> str:
         """
-        Generate code, extracting from markdown code blocks if present.
+        Generate code, extracting from Markdown code blocks if present.
 
         Returns just the code string, stripped of markdown fencing.
         Uses high token limit (16k) since there's no cost penalty for unused headroom.
@@ -122,7 +149,7 @@ class BaseLLMProvider(ABC):
         return code
 
     def _extract_code(self, text: str) -> str:
-        """Extract Python code from markdown code blocks.
+        """Extract Python code from Markdown code blocks.
 
         Handles various cases:
         - Complete markdown blocks: ```python ... ```
@@ -179,7 +206,8 @@ class BaseLLMProvider(ABC):
 
         return text, was_truncated
 
-    def _looks_truncated(self, code: str) -> bool:
+    @staticmethod
+    def _looks_truncated(code: str) -> bool:
         """Detect if code appears truncated based on common patterns."""
         if not code:
             return False
@@ -253,6 +281,7 @@ class BaseLLMProvider(ABC):
         """
         loop = asyncio.get_event_loop()
         exec_pool = executor or _DEFAULT_EXECUTOR
+        # noinspection PyTypeChecker
         return await loop.run_in_executor(
             exec_pool,
             lambda: self.generate(

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 46835873-5ed6-43ea-9232-ed6d4cd5b9e6
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -34,10 +35,14 @@ class SessionStatus(str, Enum):
 
 
 class EventType(str, Enum):
-    """Types of events emitted via WebSocket."""
+    """Types of events emitted via GraphQL subscription."""
+
+    # Heartbeat
+    HEARTBEAT_ACK = "heartbeat_ack"
 
     # Session events
     SESSION_CREATED = "session_created"
+    SESSION_READY = "session_ready"
     SESSION_CLOSED = "session_closed"
 
     # Planning events
@@ -45,6 +50,7 @@ class EventType(str, Enum):
     PROOF_START = "proof_start"
     REPLANNING = "replanning"
     PLAN_READY = "plan_ready"
+    PLAN_UPDATED = "plan_updated"
     PLAN_APPROVED = "plan_approved"
     PLAN_REJECTED = "plan_rejected"
 
@@ -55,6 +61,7 @@ class EventType(str, Enum):
     STEP_COMPLETE = "step_complete"
     STEP_ERROR = "step_error"
     STEP_FAILED = "step_failed"
+    MODEL_ESCALATION = "model_escalation"
 
     # Fact events
     FACTS_EXTRACTED = "facts_extracted"
@@ -64,6 +71,11 @@ class EventType(str, Enum):
     FACT_EXECUTING = "fact_executing"  # Derivation/query executing
     FACT_FAILED = "fact_failed"  # Resolution failed
     DAG_EXECUTION_START = "dag_execution_start"  # DAG ready, execution beginning
+    INFERENCE_CODE = "inference_code"  # Inference code generated, about to execute
+    PREMISE_RESOLVING = "premise_resolving"  # Premise resolution started
+    PREMISE_RESOLVED = "premise_resolved"  # Premise resolved with value
+    INFERENCE_EXECUTING = "inference_executing"  # Inference step executing
+    INFERENCE_COMPLETE = "inference_complete"  # Inference step completed
     PROOF_COMPLETE = "proof_complete"  # All facts resolved, DAG complete
     PROOF_SUMMARY_READY = "proof_summary_ready"  # LLM-generated summary available
 
@@ -83,6 +95,7 @@ class EventType(str, Enum):
     # Table/artifact events
     TABLE_CREATED = "table_created"
     ARTIFACT_CREATED = "artifact_created"
+    STEPS_TRUNCATED = "steps_truncated"
 
     # Synthesis events
     SYNTHESIZING = "synthesizing"
@@ -91,6 +104,27 @@ class EventType(str, Enum):
     # Entity extraction events
     ENTITY_REBUILD_START = "entity_rebuild_start"
     ENTITY_REBUILD_COMPLETE = "entity_rebuild_complete"
+    ENTITY_STATE = "entity_state"
+    ENTITY_PATCH = "entity_patch"
+
+    # Glossary generation events
+    GLOSSARY_REBUILD_START = "glossary_rebuild_start"
+    GLOSSARY_TERMS_ADDED = "glossary_terms_added"
+    GLOSSARY_REBUILD_COMPLETE = "glossary_rebuild_complete"
+    GLOSSARY_GENERATION_PROGRESS = "glossary_generation_progress"
+
+    # Source ingestion events
+    SOURCE_INGEST_START = "source_ingest_start"
+    SOURCE_INGEST_COMPLETE = "source_ingest_complete"
+    SOURCE_INGEST_ERROR = "source_ingest_error"
+    SOURCE_INGEST_PROGRESS = "source_ingest_progress"
+
+    # Source refresh events
+    SOURCE_REFRESH_COMPLETE = "source_refresh_complete"
+    SOURCE_REFRESH_ERROR = "source_refresh_error"
+
+    # Relationship extraction events
+    RELATIONSHIPS_EXTRACTED = "relationships_extracted"
 
 
 # ============================================================================
@@ -114,6 +148,33 @@ class SessionCreate(BaseModel):
     )
 
 
+class TogglePublicRequest(BaseModel):
+    """Request to toggle public sharing for a session."""
+
+    public: bool = Field(description="Whether to make the session publicly accessible")
+
+
+class TogglePublicResponse(BaseModel):
+    """Response after toggling public sharing."""
+
+    status: str = Field(description="Result status")
+    public: bool = Field(description="New public status")
+    share_url: str = Field(description="Public share URL")
+
+
+class ShareSessionRequest(BaseModel):
+    """Request to share a session with another user."""
+
+    email: str = Field(description="Email address of user to share with")
+
+
+class ShareSessionResponse(BaseModel):
+    """Response after sharing a session."""
+
+    status: str = Field(description="Result status")
+    share_url: str = Field(description="Deep link URL for the shared session")
+
+
 class SessionResponse(BaseModel):
     """Response containing session details."""
 
@@ -130,9 +191,9 @@ class SessionResponse(BaseModel):
         default=None,
         description="Brief summary/description of the session",
     )
-    active_projects: list[str] = Field(
+    active_domains: list[str] = Field(
         default_factory=list,
-        description="Active project filenames (e.g., ['sales-analytics.yaml'])",
+        description="Active domain filenames (e.g., ['sales-analytics.yaml'])",
     )
     tables_count: int = Field(
         default=0,
@@ -141,6 +202,14 @@ class SessionResponse(BaseModel):
     artifacts_count: int = Field(
         default=0,
         description="Number of artifacts produced",
+    )
+    shared_with: list[str] = Field(
+        default_factory=list,
+        description="User IDs/emails this session is shared with",
+    )
+    is_public: bool = Field(
+        default=False,
+        description="Whether this session is publicly accessible via share link",
     )
 
 
@@ -166,6 +235,18 @@ class QueryRequest(BaseModel):
     is_followup: bool = Field(
         default=False,
         description="Whether this is a follow-up to the previous query",
+    )
+    require_approval: bool | None = Field(
+        default=None,
+        description="Override server auto-approval. When True, always require plan approval even for simple plans.",
+    )
+    replay: bool = Field(
+        default=False,
+        description="Re-execute stored scratchpad code without LLM codegen.",
+    )
+    objective_index: int | None = Field(
+        default=None,
+        description="Replay only scratchpad entries with this objective_index.",
     )
 
 
@@ -203,6 +284,10 @@ class StepResponse(BaseModel):
     code: Optional[str] = Field(
         default=None,
         description="Generated code (after execution)",
+    )
+    domain: Optional[str] = Field(
+        default=None,
+        description="Domain this step operates in (for domain-aware model routing)",
     )
     result: Optional[dict[str, Any]] = Field(
         default=None,
@@ -275,6 +360,7 @@ class TableInfo(BaseModel):
         description="Column names",
     )
     is_starred: bool = Field(default=False, description="Whether the table is starred/promoted")
+    is_view: bool = Field(default=False, description="Whether this is a lazy view rather than a materialized table")
     version: int = Field(default=1, description="Current version number")
     version_count: int = Field(default=1, description="Total number of versions")
 
@@ -377,6 +463,7 @@ class FactInfo(BaseModel):
     confidence: Optional[float] = Field(default=None, description="Confidence score")
     is_persisted: bool = Field(default=False, description="Whether the fact is persisted globally")
     role_id: Optional[str] = Field(default=None, description="Role that created this fact (provenance)")
+    domain: Optional[str] = Field(default=None, description="Owning domain filename (None = user-level)")
 
 
 class FactListResponse(BaseModel):
@@ -427,12 +514,12 @@ class TableSchemaResponse(BaseModel):
 
 
 # ============================================================================
-# WebSocket Event Models
+# Subscription Event Models
 # ============================================================================
 
 
 class StepEventWS(BaseModel):
-    """WebSocket event format for step events."""
+    """Event format for GraphQL subscription events."""
 
     event_type: EventType = Field(description="Type of event")
     session_id: str = Field(description="Session this event belongs to")
@@ -444,23 +531,6 @@ class StepEventWS(BaseModel):
     data: dict[str, Any] = Field(
         default_factory=dict,
         description="Event-specific data",
-    )
-
-
-class WebSocketMessage(BaseModel):
-    """Generic WebSocket message envelope."""
-
-    type: str = Field(description="Message type (event, command, error)")
-    payload: dict[str, Any] = Field(description="Message payload")
-
-
-class WebSocketCommand(BaseModel):
-    """Command sent from client via WebSocket."""
-
-    action: str = Field(description="Command action (approve, reject, cancel)")
-    data: Optional[dict[str, Any]] = Field(
-        default=None,
-        description="Command-specific data",
     )
 
 
@@ -597,7 +667,8 @@ class SessionDatabaseInfo(BaseModel):
     added_at: datetime = Field(description="When the database was added")
     is_dynamic: bool = Field(description="Whether dynamically added (vs config)")
     file_id: Optional[str] = Field(default=None, description="Uploaded file ID if any")
-    source: str = Field(default="config", description="Source: 'config', project filename, or 'session'")
+    source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
+    tier: Optional[str] = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
 
 
 class SessionDatabaseListResponse(BaseModel):
@@ -615,8 +686,9 @@ class SessionApiInfo(BaseModel):
     base_url: Optional[str] = Field(default=None, description="Base URL")
     connected: bool = Field(description="Whether API is reachable")
     from_config: bool = Field(description="Whether from config (vs session-added)")
-    source: str = Field(default="config", description="Source: 'config', project filename, or 'session'")
+    source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
     is_dynamic: bool = Field(default=False, description="Whether dynamically added (vs config)")
+    tier: Optional[str] = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
 
 
 class SessionDocumentInfo(BaseModel):
@@ -628,7 +700,8 @@ class SessionDocumentInfo(BaseModel):
     path: Optional[str] = Field(default=None, description="File path")
     indexed: bool = Field(description="Whether document is indexed")
     from_config: bool = Field(description="Whether from config (vs session-added)")
-    source: str = Field(default="config", description="Source: 'config', project filename, or 'session'")
+    source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
+    tier: Optional[str] = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
 
 
 class SessionDataSourcesResponse(BaseModel):
@@ -666,6 +739,7 @@ class LearningInfo(BaseModel):
     )
     applied_count: int = Field(default=0, description="Times applied")
     created_at: datetime = Field(description="When captured")
+    scope: Optional[dict[str, Any]] = Field(default=None, description="Data source scope")
 
 
 class LearningCreateRequest(BaseModel):
@@ -687,6 +761,9 @@ class RuleInfo(BaseModel):
     confidence: float = Field(description="Confidence score 0-1")
     source_count: int = Field(default=0, description="Number of source learnings")
     tags: list[str] = Field(default_factory=list, description="Tags for searching")
+    domain: str = Field(default="", description="Owning domain filename")
+    source: str = Field(default="", description="Source tier")
+    scope: Optional[dict[str, Any]] = Field(default=None, description="Data source scope")
 
 
 class RuleCreateRequest(BaseModel):
@@ -716,6 +793,18 @@ class LearningListResponse(BaseModel):
     rules: list[RuleInfo] = Field(default_factory=list, description="List of compacted rules")
 
 
+class ExemplarGenerateResponse(BaseModel):
+    """Response from exemplar generation."""
+
+    status: str = Field(description="Result status")
+    coverage: str = Field(description="Coverage level used")
+    rule_pairs: int = Field(description="Number of rule-derived pairs")
+    glossary_pairs: int = Field(description="Number of glossary-derived pairs")
+    relationship_pairs: int = Field(description="Number of relationship-derived pairs")
+    total: int = Field(description="Total exemplar pairs generated")
+    download_urls: dict[str, str] = Field(description="Format name to download URL")
+
+
 # ============================================================================
 # Entity Models
 # ============================================================================
@@ -739,9 +828,94 @@ class EntityListResponse(BaseModel):
 
 
 # ============================================================================
+# Glossary Models
+# ============================================================================
+
+
+class GlossaryTermResponse(BaseModel):
+    """Information about a glossary term."""
+
+    name: str = Field(description="Canonical term name")
+    display_name: str = Field(description="Display name")
+    definition: Optional[str] = Field(default=None, description="Business definition")
+    domain: Optional[str] = Field(default=None, description="Owning domain")
+    domain_path: Optional[str] = Field(default=None, description="Full domain hierarchy path")
+    parent_id: Optional[str] = Field(default=None, description="Parent term ID")
+    parent_verb: str = Field(default="HAS_KIND", description="Hierarchy type: HAS_ONE (composition), HAS_KIND (taxonomy), HAS_MANY (collection)")
+    aliases: list[str] = Field(default_factory=list, description="Alternate names")
+    semantic_type: Optional[str] = Field(default=None, description="Semantic type")
+    cardinality: str = Field(default="many", description="Cardinality")
+    status: Optional[str] = Field(default=None, description="Editorial status")
+    provenance: Optional[str] = Field(default=None, description="Source of definition")
+    glossary_status: str = Field(default="self_describing", description="defined or self_describing")
+    entity_id: Optional[str] = Field(default=None, description="Matching entity ID")
+    glossary_id: Optional[str] = Field(default=None, description="Glossary term ID (for parent_id linking)")
+    ner_type: Optional[str] = Field(default=None, description="NER type")
+    connected_resources: list[dict[str, Any]] = Field(default_factory=list, description="Physical resources")
+    tags: dict[str, Any] = Field(default_factory=dict, description="Classification tags (e.g. PII, GDPR)")
+    ignored: bool = Field(default=False, description="Whether term is excluded from graphs and similarity")
+    canonical_source: Optional[str] = Field(default=None, description="Document name of the authoritative source for this term")
+
+
+class GlossaryListResponse(BaseModel):
+    """Response containing glossary terms."""
+
+    terms: list[GlossaryTermResponse] = Field(description="Glossary terms")
+    total_defined: int = Field(default=0, description="Count of defined terms")
+    total_self_describing: int = Field(default=0, description="Count of self-describing terms")
+
+
+class GlossaryCreateRequest(BaseModel):
+    """Request to add a glossary definition."""
+
+    name: str = Field(description="Term name")
+    definition: str = Field(description="Business definition")
+    domain: Optional[str] = Field(default=None, description="Owning domain")
+    aliases: list[str] = Field(default_factory=list, description="Alternate names")
+    parent_id: Optional[str] = Field(default=None, description="Parent term ID")
+    semantic_type: Optional[str] = Field(default=None, description="Semantic type")
+
+
+class GlossaryUpdateRequest(BaseModel):
+    """Request to update a glossary term."""
+
+    definition: Optional[str] = Field(default=None, description="New definition")
+    aliases: Optional[list[str]] = Field(default=None, description="New aliases")
+    parent_id: Optional[str] = Field(default=None, description="New parent")
+    parent_verb: Optional[str] = Field(default=None, description="Verb for parent-child edge")
+    status: Optional[str] = Field(default=None, description="New status")
+    domain: Optional[str] = Field(default=None, description="New domain")
+    semantic_type: Optional[str] = Field(default=None, description="New semantic type")
+    tags: Optional[dict[str, Any]] = Field(default=None, description="Classification tags (e.g. {\"PII\": {}, \"GDPR\": {}})")
+    ignored: Optional[bool] = Field(default=None, description="Mark term as ignored")
+    canonical_source: Optional[str] = Field(default=None, description="Document name of the authoritative source")
+
+
+class GlossaryBulkStatusRequest(BaseModel):
+    """Request to update status for multiple glossary terms."""
+
+    names: list[str] = Field(description="Term names to update")
+    status: str = Field(description="New status value")
+
+
+class TaxonomySuggestion(BaseModel):
+    """A suggested parent-child relationship between terms."""
+
+    child: str = Field(description="Child term name")
+    parent: str = Field(description="Suggested parent term name")
+    confidence: str = Field(description="Confidence level: high, medium, low")
+    reason: str = Field(default="", description="Why this relationship is suggested")
+
+
+# ============================================================================
 # Config Models
 # ============================================================================
 
+
+class ModelRouteInfo(BaseModel):
+    """Single model in a routing chain."""
+    provider: str
+    model: str
 
 class ConfigResponse(BaseModel):
     """Sanitized configuration response."""
@@ -752,36 +926,69 @@ class ConfigResponse(BaseModel):
     llm_provider: str = Field(description="LLM provider")
     llm_model: str = Field(description="LLM model")
     execution_timeout: int = Field(description="Execution timeout seconds")
+    task_routing: dict[str, list[ModelRouteInfo]] = Field(default_factory=dict, description="Task type to model chain")
 
 
 # ============================================================================
-# Project Models
+# Domain Models
 # ============================================================================
 
 
-class ProjectInfo(BaseModel):
-    """Summary info for a project."""
+class DomainInfo(BaseModel):
+    """Summary info for a domain."""
 
-    filename: str = Field(description="Project YAML filename")
-    name: str = Field(description="Project display name")
-    description: str = Field(default="", description="Project description")
+    filename: str = Field(description="Domain YAML filename")
+    name: str = Field(description="Domain display name")
+    description: str = Field(default="", description="Domain description")
+    path: str = Field(default="", description="Dot-delimited hierarchy path")
+    tier: str = Field(default="system", description="system | shared | user")
+    active: bool = Field(default=True, description="Whether domain is active")
+    owner: str = Field(default="", description="Owner user ID")
+    steward: str = Field(default="", description="Data steward for governance")
 
 
-class ProjectListResponse(BaseModel):
-    """List of available projects."""
+class DomainTreeNode(BaseModel):
+    """Nested domain tree node."""
 
-    projects: list[ProjectInfo] = Field(description="Available projects")
+    filename: str = Field(description="Domain YAML filename")
+    name: str = Field(description="Domain display name")
+    path: str = Field(default="", description="Dot-delimited hierarchy path")
+    description: str = Field(default="", description="Domain description")
+    tier: str = Field(default="system", description="system | shared | user")
+    active: bool = Field(default=True, description="Whether domain is active")
+    steward: str = Field(default="", description="Data steward for governance")
+    owner: str = Field(default="", description="Owner user ID")
+    databases: list[str] = Field(default_factory=list)
+    apis: list[str] = Field(default_factory=list)
+    documents: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    agents: list[str] = Field(default_factory=list)
+    rules: list[str] = Field(default_factory=list)
+    facts: list[str] = Field(default_factory=list)
+    system_prompt: str = Field(default="", description="Domain system prompt")
+    domains: list[str] = Field(default_factory=list, description="DAG composition children (filenames)")
+    children: list["DomainTreeNode"] = Field(default_factory=list)
 
 
-class ProjectDetailResponse(BaseModel):
-    """Full project details."""
+class DomainListResponse(BaseModel):
+    """List of available domains."""
 
-    filename: str = Field(description="Project YAML filename")
-    name: str = Field(description="Project display name")
-    description: str = Field(default="", description="Project description")
-    databases: list[str] = Field(description="Database names in project")
-    apis: list[str] = Field(description="API names in project")
-    documents: list[str] = Field(description="Document names in project")
+    domains: list[DomainInfo] = Field(description="Available domains")
+
+
+class DomainDetailResponse(BaseModel):
+    """Full domain details."""
+
+    filename: str = Field(description="Domain YAML filename")
+    name: str = Field(description="Domain display name")
+    description: str = Field(default="", description="Domain description")
+    tier: str = Field(default="system", description="system | shared | user")
+    active: bool = Field(default=True, description="Whether domain is active")
+    owner: str = Field(default="", description="Owner user ID")
+    steward: str = Field(default="", description="Data steward for governance")
+    databases: list[str] = Field(description="Database names in domain")
+    apis: list[str] = Field(description="API names in domain")
+    documents: list[str] = Field(description="Document names in domain")
 
 
 # ============================================================================
@@ -809,3 +1016,88 @@ class ValidationErrorResponse(BaseModel):
         default_factory=list,
         description="Field-specific errors",
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression Testing
+# ---------------------------------------------------------------------------
+
+
+class TestLayerResult(BaseModel):
+    layer: str
+    passed: int
+    total: int
+    failures: list[str] = Field(default_factory=list)
+
+
+class TestEndToEndResult(BaseModel):
+    passed: bool
+    answer: str | None = None
+    judge_reasoning: str | None = None
+    failures: list[str] = Field(default_factory=list)
+    duration_s: float = 0.0
+
+
+class TestQuestionResult(BaseModel):
+    question: str
+    tags: list[str] = Field(default_factory=list)
+    passed: bool
+    layers: list[TestLayerResult] = Field(default_factory=list)
+    end_to_end: TestEndToEndResult | None = None
+
+
+class TestDomainResult(BaseModel):
+    domain: str
+    domain_name: str = ""
+    passed_count: int
+    failed_count: int
+    questions: list[TestQuestionResult] = Field(default_factory=list)
+
+
+class TestRunResponse(BaseModel):
+    domains: list[TestDomainResult] = Field(default_factory=list)
+    total_passed: int
+    total_failed: int
+
+
+class TestableDomainInfo(BaseModel):
+    filename: str
+    name: str
+    question_count: int
+    tags: list[str] = Field(default_factory=list)
+
+
+class ExpectedOutputModel(BaseModel):
+    name: str
+    type: str = "table"  # table, image, document, markdown, json, xml, pdf, ...
+    columns: list[str] = Field(default_factory=list)  # only for type=table
+
+
+class GoldenQuestionExpectations(BaseModel):
+    terms: list[dict[str, Any]] = Field(default_factory=list)
+    grounding: list[dict[str, Any]] = Field(default_factory=list)
+    relationships: list[dict[str, Any]] = Field(default_factory=list)
+    expected_outputs: list[ExpectedOutputModel] = Field(default_factory=list)
+    end_to_end: dict[str, Any] | None = None
+    suggested_question: str | None = None
+    objectives: list[str] = Field(default_factory=list)
+    step_hints: list[dict[str, Any]] = Field(default_factory=list)
+    system_prompt: str | None = None
+
+
+class GoldenQuestionRequest(BaseModel):
+    question: str
+    tags: list[str] = Field(default_factory=list)
+    expect: GoldenQuestionExpectations = Field(default_factory=GoldenQuestionExpectations)
+    objectives: list[str] = Field(default_factory=list)
+    system_prompt: str | None = None
+
+
+class GoldenQuestionResponse(BaseModel):
+    index: int
+    question: str
+    tags: list[str] = Field(default_factory=list)
+    expect: GoldenQuestionExpectations = Field(default_factory=GoldenQuestionExpectations)
+    objectives: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    system_prompt: str | None = None

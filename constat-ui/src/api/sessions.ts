@@ -1,6 +1,16 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: fc03bb48-c1dd-4d64-9026-271f5cb80b8e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Session API calls
 
-import { get, post, put, del } from './client'
+import { get, post, put, patch, del } from './client'
 import type {
   Session,
   SessionListResponse,
@@ -12,12 +22,17 @@ import type {
   ArtifactVersionsResponse,
   Fact,
   Entity,
+  GlossaryTerm,
+  GlossaryListResponse,
   UploadedFile,
   FileReference,
   SessionDatabase,
   Config,
   Learning,
   Rule,
+  FineTuneJob,
+  FineTuneProvider,
+  ModelRouteInfo,
 } from '@/types/api'
 
 // Session ID persistence (matches key used in App.tsx)
@@ -246,6 +261,14 @@ export async function editFact(
   return post<{ status: string }>(`/sessions/${sessionId}/facts/${factName}`, { value })
 }
 
+export async function moveFact(
+  sessionId: string,
+  factName: string,
+  toDomain: string
+): Promise<{ status: string }> {
+  return post<{ status: string }>(`/sessions/${sessionId}/facts/${encodeURIComponent(factName)}/move`, { to_domain: toDomain })
+}
+
 // Star/Promote
 export async function toggleArtifactStar(
   sessionId: string,
@@ -254,6 +277,59 @@ export async function toggleArtifactStar(
   return post<{ artifact_id: number; is_starred: boolean }>(
     `/sessions/${sessionId}/artifacts/${artifactId}/star`
   )
+}
+
+export async function deleteArtifact(
+  sessionId: string,
+  artifactId: number
+): Promise<{ status: string; artifact_id: number }> {
+  return del<{ status: string; artifact_id: number }>(
+    `/sessions/${sessionId}/artifacts/${artifactId}`
+  )
+}
+
+export async function deleteTable(
+  sessionId: string,
+  tableName: string
+): Promise<{ status: string; table_name: string }> {
+  return del<{ status: string; table_name: string }>(
+    `/sessions/${sessionId}/tables/${tableName}`
+  )
+}
+
+// Public Sharing
+export async function togglePublicSharing(
+  sessionId: string,
+  isPublic: boolean
+): Promise<{ status: string; public: boolean; share_url: string }> {
+  return post<{ status: string; public: boolean; share_url: string }>(
+    `/sessions/${sessionId}/public`,
+    { public: isPublic }
+  )
+}
+
+// Session Sharing
+export async function shareSession(
+  sessionId: string,
+  email: string
+): Promise<{ status: string; share_url: string }> {
+  return post<{ status: string; share_url: string }>(
+    `/sessions/${sessionId}/share`,
+    { email }
+  )
+}
+
+export async function getShares(
+  sessionId: string
+): Promise<{ shared_with: string[] }> {
+  return get<{ shared_with: string[] }>(`/sessions/${sessionId}/shares`)
+}
+
+export async function removeShare(
+  sessionId: string,
+  userId: string
+): Promise<{ status: string }> {
+  return del<{ status: string }>(`/sessions/${sessionId}/share/${encodeURIComponent(userId)}`)
 }
 
 export async function toggleTableStar(
@@ -281,6 +357,214 @@ export async function addEntityToGlossary(
   return post<{ status: string }>(`/sessions/${sessionId}/entities/${entityId}/glossary`)
 }
 
+// Glossary
+export async function getGlossary(
+  sessionId: string,
+  scope: string = 'all',
+  domain?: string
+): Promise<GlossaryListResponse> {
+  const params = new URLSearchParams({ scope })
+  if (domain) params.set('domain', domain)
+  return get<GlossaryListResponse>(`/sessions/${sessionId}/glossary?${params}`)
+}
+
+export async function getGlossaryTerm(
+  sessionId: string,
+  name: string
+): Promise<GlossaryTerm & { grounded: boolean; connected_resources: unknown[] }> {
+  return get(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}`)
+}
+
+export async function addDefinition(
+  sessionId: string,
+  name: string,
+  definition: string,
+  domain?: string,
+  aliases?: string[]
+): Promise<{ status: string; name: string }> {
+  return post(`/sessions/${sessionId}/glossary`, {
+    name,
+    definition,
+    domain,
+    aliases: aliases || [],
+  })
+}
+
+export async function updateGlossaryTerm(
+  sessionId: string,
+  name: string,
+  updates: Record<string, unknown>
+): Promise<{ status: string }> {
+  return put(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}`, updates)
+}
+
+export async function getDeprecatedTerms(
+  sessionId: string,
+): Promise<{ terms: Array<{ name: string; display_name: string; definition: string; domain?: string; status: string; provenance: string }>; count: number }> {
+  return get(`/sessions/${sessionId}/glossary/deprecated`)
+}
+
+export async function deleteGlossaryByStatus(
+  sessionId: string,
+  status: string = 'draft'
+): Promise<{ status: string; count: number }> {
+  return del(`/sessions/${sessionId}/glossary?status=${encodeURIComponent(status)}`)
+}
+
+export async function deleteGlossaryTerm(
+  sessionId: string,
+  name: string
+): Promise<{ status: string; deleted?: string; reparented?: string[]; deprecated?: string[] }> {
+  return del(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}`)
+}
+
+export async function renameTerm(
+  sessionId: string,
+  name: string,
+  newName: string
+): Promise<{ status: string; old_name: string; new_name: string; display_name: string; relationships_updated: number }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/rename`, { new_name: newName })
+}
+
+export async function reconnectTerm(
+  sessionId: string,
+  name: string,
+  updates: { parent_id?: string; domain?: string }
+): Promise<{ status: string; name: string; still_deprecated: boolean }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/reconnect`, updates)
+}
+
+export interface DomainTreeNode {
+  filename: string
+  name: string
+  path: string
+  description: string
+  tier: string
+  active: boolean
+  owner: string
+  steward: string
+  databases: string[]
+  apis: string[]
+  documents: string[]
+  skills: string[]
+  agents: string[]
+  rules: string[]
+  facts: string[]
+  system_prompt: string
+  domains: string[]
+  children: DomainTreeNode[]
+}
+
+export async function getDomainTree(): Promise<DomainTreeNode[]> {
+  return get('/domains/tree')
+}
+
+export async function moveDomainSource(body: {
+  source_type: 'databases' | 'apis' | 'documents'
+  source_name: string
+  from_domain: string
+  to_domain: string
+  session_id?: string
+}): Promise<{ status: string }> {
+  return post('/domains/move-source', body)
+}
+
+export async function draftGlossaryDefinition(
+  sessionId: string,
+  name: string
+): Promise<{ status: string; name: string; draft: string }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/draft-definition`)
+}
+
+export async function draftGlossaryAliases(
+  sessionId: string,
+  name: string
+): Promise<{ status: string; name: string; aliases: string[] }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/draft-aliases`)
+}
+
+export async function draftGlossaryTags(
+  sessionId: string,
+  name: string
+): Promise<{ status: string; name: string; tags: string[] }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/draft-tags`)
+}
+
+export async function refineGlossaryTerm(
+  sessionId: string,
+  name: string
+): Promise<{ status: string; before: string; after: string }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/refine`)
+}
+
+export async function generateGlossary(
+  sessionId: string,
+  phases?: Record<string, boolean>,
+): Promise<{ status: string }> {
+  return post(`/sessions/${sessionId}/glossary/generate`, phases ? { phases } : undefined)
+}
+
+export async function suggestTaxonomy(
+  sessionId: string
+): Promise<{ suggestions: Array<{ child: string; parent: string; confidence: string; reason: string }> }> {
+  return post(`/sessions/${sessionId}/glossary/suggest-taxonomy`)
+}
+
+export async function bulkUpdateStatus(
+  sessionId: string,
+  names: string[],
+  status: string
+): Promise<{ status: string; updated: string[]; failed: string[]; count: number }> {
+  return fetch(`/api/sessions/${sessionId}/glossary/bulk-status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ names, status }),
+  }).then(r => r.json())
+}
+
+// Relationships
+export async function createRelationship(
+  sessionId: string,
+  subjectName: string,
+  verb: string,
+  objectName: string
+): Promise<{ status: string; id: string }> {
+  return post(`/sessions/${sessionId}/relationships`, {
+    subject_name: subjectName,
+    verb,
+    object_name: objectName,
+  })
+}
+
+export async function updateRelationshipVerb(
+  sessionId: string,
+  relId: string,
+  verb: string
+): Promise<{ status: string }> {
+  return put(`/sessions/${sessionId}/relationships/${relId}`, { verb })
+}
+
+export async function approveRelationship(
+  sessionId: string,
+  relId: string
+): Promise<{ status: string }> {
+  return put(`/sessions/${sessionId}/relationships/${relId}/approve`, {})
+}
+
+export async function deleteRelationship(
+  sessionId: string,
+  relId: string
+): Promise<{ status: string }> {
+  return del(`/sessions/${sessionId}/relationships/${relId}`)
+}
+
+export async function persistGlossary(
+  sessionId: string,
+  domain?: string
+): Promise<{ status: string; count: number }> {
+  return post(`/sessions/${sessionId}/glossary/persist`, { domain })
+}
+
 // Proof Tree
 export async function getProofTree(
   sessionId: string
@@ -295,6 +579,8 @@ export interface StepCode {
   step_number: number
   goal: string
   code: string
+  prompt?: string
+  model?: string
 }
 
 export async function listStepCodes(
@@ -312,6 +598,8 @@ export interface InferenceCode {
   operation: string
   code: string
   attempt: number
+  prompt?: string
+  model?: string
 }
 
 export async function listInferenceCodes(
@@ -320,6 +608,32 @@ export async function listInferenceCodes(
   return get<{ inferences: InferenceCode[]; total: number }>(
     `/sessions/${sessionId}/inference-codes`
   )
+}
+
+// Scratchpad (execution narrative per step)
+export interface ScratchpadEntry {
+  step_number: number
+  goal: string
+  narrative: string
+  tables_created: string[]
+  code: string
+  user_query: string
+  objective_index: number | null
+}
+
+export async function getScratchpad(
+  sessionId: string
+): Promise<{ entries: ScratchpadEntry[]; total: number }> {
+  return get<{ entries: ScratchpadEntry[]; total: number }>(
+    `/sessions/${sessionId}/scratchpad`
+  )
+}
+
+// DDL (session store schema)
+export async function getDDL(
+  sessionId: string
+): Promise<{ ddl: string }> {
+  return get<{ ddl: string }>(`/sessions/${sessionId}/ddl`)
 }
 
 // Output
@@ -407,8 +721,10 @@ export interface DocumentContent {
   type?: 'file' | 'content'  // 'file' = open with system app, 'content' = render in modal
   content?: string
   format?: string
+  url?: string
   sections?: string[]
   path?: string  // For type='file', the local file path
+  image_path?: string  // Resolved path for inline image preview
   metadata?: Record<string, unknown>
 }
 
@@ -522,6 +838,12 @@ export async function getConfig(): Promise<Config> {
   return get<Config>(`/config`)
 }
 
+export async function getSessionRouting(
+  sessionId: string
+): Promise<Record<string, Record<string, ModelRouteInfo[]>>> {
+  return get<Record<string, Record<string, ModelRouteInfo[]>>>(`/sessions/${sessionId}/routing`)
+}
+
 // Learnings (global, not per-session)
 export async function listLearnings(
   category?: string
@@ -573,6 +895,87 @@ export async function deleteLearning(learningId: string): Promise<{ status: stri
   return del<{ status: string; id: string }>(`/learnings/${learningId}`)
 }
 
+export async function downloadSimpleExemplars(params: {
+  format?: 'messages' | 'alpaca' | 'sharegpt'
+  include?: string[]
+  domain?: string
+  min_confidence?: number
+  since?: string
+}): Promise<void> {
+  const query = new URLSearchParams()
+  if (params.format) query.set('format', params.format)
+  if (params.include) query.set('include', params.include.join(','))
+  if (params.domain) query.set('domain', params.domain)
+  if (params.min_confidence) query.set('min_confidence', String(params.min_confidence))
+  if (params.since) query.set('since', params.since)
+
+  // Build headers with auth
+  const { getAuthHeaders } = await import('@/config/auth-helpers')
+  const headers = await getAuthHeaders()
+
+  const response = await fetch(`/api/learnings/exemplars/simple?${query}`, { headers })
+  if (!response.ok) throw new Error(`Download failed: ${response.statusText}`)
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `exemplars_${params.format || 'messages'}.jsonl`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// Document URI addition
+export async function addDocumentURI(
+  sessionId: string,
+  body: {
+    name: string
+    url: string
+    description?: string
+    headers?: Record<string, string>
+    follow_links?: boolean
+    max_depth?: number
+    max_documents?: number
+    same_domain_only?: boolean
+    exclude_patterns?: string[]
+    type?: string
+  }
+): Promise<{ status: string; name: string; message: string }> {
+  return post<{ status: string; name: string; message: string }>(
+    `/sessions/${sessionId}/documents/add-uri`,
+    body
+  )
+}
+
+// Email (IMAP) source addition
+export async function addEmailSource(
+  sessionId: string,
+  body: {
+    name: string
+    url: string
+    username: string
+    password?: string
+    auth_type?: string
+    mailbox?: string
+    since?: string
+    max_messages?: number
+    include_headers?: boolean
+    extract_attachments?: boolean
+    oauth2_client_id?: string
+    oauth2_client_secret?: string
+    oauth2_tenant_id?: string
+    oauth2_refresh_token?: string
+  }
+): Promise<{ status: string; name: string; message: string }> {
+  return post<{ status: string; name: string; message: string }>(
+    `/sessions/${sessionId}/documents/add-email`,
+    body
+  )
+}
+
+export async function getEmailOAuthProviders(): Promise<{ google: boolean; microsoft: boolean }> {
+  return get<{ google: boolean; microsoft: boolean }>('/oauth/email/providers')
+}
+
 // Messages (for session restoration)
 export interface StoredMessage {
   id: string
@@ -581,6 +984,9 @@ export interface StoredMessage {
   timestamp: string
   stepNumber?: number
   isFinalInsight?: boolean
+  stepDurationMs?: number
+  role?: string
+  skills?: string[]
 }
 
 export async function getMessages(sessionId: string): Promise<{ messages: StoredMessage[] }> {
@@ -594,18 +1000,21 @@ export async function saveMessages(
   return post<{ status: string; count: number }>(`/sessions/${sessionId}/messages`, { messages })
 }
 
-// Projects
-export interface ProjectInfo {
+// Domains
+export interface DomainInfo {
   filename: string
   name: string
   description: string
+  tier: string
+  active: boolean
+  owner: string
 }
 
-export async function listProjects(): Promise<{ projects: ProjectInfo[] }> {
-  return get<{ projects: ProjectInfo[] }>('/projects')
+export async function listDomains(): Promise<{ domains: DomainInfo[] }> {
+  return get<{ domains: DomainInfo[] }>('/domains')
 }
 
-export async function getProject(filename: string): Promise<{
+export async function getDomain(filename: string): Promise<{
   filename: string
   name: string
   description: string
@@ -613,31 +1022,124 @@ export async function getProject(filename: string): Promise<{
   apis: string[]
   documents: string[]
 }> {
-  return get(`/projects/${encodeURIComponent(filename)}`)
+  return get(`/domains/${encodeURIComponent(filename)}`)
 }
 
-export async function setActiveProjects(
+export async function setActiveDomains(
   sessionId: string,
-  projects: string[]
-): Promise<{ status: string; session_id: string; active_projects: string[] }> {
-  return post(`/sessions/${sessionId}/projects`, { projects })
+  domains: string[]
+): Promise<{ status: string; session_id: string; active_domains: string[] }> {
+  return post(`/sessions/${sessionId}/domains`, { domains })
 }
 
-export async function getProjectContent(
+export async function getDomainContent(
   filename: string
 ): Promise<{ content: string; path: string; filename: string }> {
-  return get(`/projects/${encodeURIComponent(filename)}/content`)
+  return get(`/domains/${encodeURIComponent(filename)}/content`)
 }
 
-export async function updateProjectContent(
+export async function createDomain(
+  name: string,
+  description: string = '',
+  parentDomain: string = '',
+  initialDomains: string[] = [],
+  systemPrompt: string = ''
+): Promise<{ status: string; filename: string; name: string; description: string }> {
+  return post('/domains', { name, description, parent_domain: parentDomain, initial_domains: initialDomains, system_prompt: systemPrompt })
+}
+
+export async function updateDomainContent(
   filename: string,
   content: string
 ): Promise<{ status: string; filename: string; path: string }> {
-  return put(`/projects/${encodeURIComponent(filename)}/content`, { content })
+  return put(`/domains/${encodeURIComponent(filename)}/content`, { content })
+}
+
+export async function updateDomain(
+  filename: string,
+  data: { name?: string; description?: string; order?: number; active?: boolean }
+): Promise<{ status: string; filename: string }> {
+  return patch(`/domains/${encodeURIComponent(filename)}`, data)
+}
+
+export async function deleteDomain(
+  filename: string
+): Promise<{ status: string; filename: string }> {
+  return del(`/domains/${encodeURIComponent(filename)}`)
+}
+
+// Domain-scoped content
+export interface DomainSkillInfo {
+  name: string
+  description: string
+  domain: string
+}
+
+export interface DomainAgentInfo {
+  name: string
+  description: string
+  domain: string
+}
+
+export interface DomainRuleInfo {
+  id: string
+  summary: string
+  category: string
+  confidence: number
+  domain: string
+}
+
+export async function listDomainSkills(
+  filename: string
+): Promise<{ skills: DomainSkillInfo[] }> {
+  return get(`/domains/${encodeURIComponent(filename)}/skills`)
+}
+
+export async function listDomainAgents(
+  filename: string
+): Promise<{ agents: DomainAgentInfo[] }> {
+  return get(`/domains/${encodeURIComponent(filename)}/agents`)
+}
+
+export async function listDomainRules(
+  filename: string
+): Promise<{ rules: DomainRuleInfo[] }> {
+  return get(`/domains/${encodeURIComponent(filename)}/rules`)
+}
+
+export async function moveSkill(body: {
+  skill_name: string
+  from_domain: string
+  to_domain: string
+  validate_only?: boolean
+}): Promise<{ status: string; warnings?: string[] }> {
+  return post('/domains/move-skill', body)
+}
+
+export async function moveAgent(body: {
+  agent_name: string
+  from_domain: string
+  to_domain: string
+}): Promise<{ status: string }> {
+  return post('/domains/move-agent', body)
+}
+
+export async function moveRule(body: {
+  rule_id: string
+  to_domain: string
+}): Promise<{ status: string }> {
+  return post('/domains/move-rule', body)
+}
+
+export async function promoteDomain(
+  filename: string,
+  targetName?: string
+): Promise<{ status: string; filename: string; new_tier: string }> {
+  return post(`/domains/${encodeURIComponent(filename)}/promote`, { target_name: targetName })
 }
 
 // Prompt Context
-export interface ActiveRole {
+export interface ActiveAgent {
   name: string
   prompt: string
 }
@@ -650,7 +1152,7 @@ export interface ActiveSkill {
 
 export interface PromptContext {
   system_prompt: string
-  active_role: ActiveRole | null
+  active_agent: ActiveAgent | null
   active_skills: ActiveSkill[]
 }
 
@@ -672,11 +1174,14 @@ export async function updateSystemPrompt(
 export interface UserPermissions {
   user_id: string
   email: string | null
-  admin: boolean
-  projects: string[]
+  persona: string
+  domains: string[]
   databases: string[]
   documents: string[]
   apis: string[]
+  visibility: Record<string, boolean>
+  writes: Record<string, boolean>
+  feedback: Record<string, boolean>
 }
 
 export async function getMyPermissions(): Promise<UserPermissions> {
@@ -722,4 +1227,60 @@ export async function getProofFacts(
   return get<{ facts: StoredProofFact[]; summary: string | null }>(
     `/sessions/${sessionId}/proof-facts`
   )
+}
+
+// Objectives
+export interface ObjectivesEntry {
+  type: 'question' | 'clarification' | 'redo'
+  text?: string       // for type=question
+  question?: string   // for type=clarification
+  answer?: string     // for type=clarification
+  mode?: string       // for type=redo
+  guidance?: string   // for type=redo
+  ts: string
+}
+
+export async function getObjectives(sessionId: string): Promise<{ objectives: ObjectivesEntry[] }> {
+  return get<{ objectives: ObjectivesEntry[] }>(`/sessions/${sessionId}/objectives`)
+}
+
+// Fine-Tuning
+export async function listFineTuneJobs(params?: {
+  status?: string
+  domain?: string
+}): Promise<FineTuneJob[]> {
+  const query = new URLSearchParams()
+  if (params?.status) query.set('status', params.status)
+  if (params?.domain) query.set('domain', params.domain)
+  const qs = query.toString()
+  return get<FineTuneJob[]>(`/fine-tune/jobs${qs ? `?${qs}` : ''}`)
+}
+
+export async function startFineTuneJob(body: {
+  name: string
+  provider: string
+  base_model: string
+  task_types: string[]
+  domain?: string
+  include?: string[]
+  min_confidence?: number
+  hyperparams?: Record<string, unknown>
+}): Promise<FineTuneJob> {
+  return post<FineTuneJob>('/fine-tune/jobs', body)
+}
+
+export async function getFineTuneJob(modelId: string): Promise<FineTuneJob> {
+  return get<FineTuneJob>(`/fine-tune/jobs/${modelId}`)
+}
+
+export async function cancelFineTuneJob(modelId: string): Promise<void> {
+  await post(`/fine-tune/jobs/${modelId}/cancel`)
+}
+
+export async function deleteFineTuneJob(modelId: string): Promise<void> {
+  await del(`/fine-tune/jobs/${modelId}`)
+}
+
+export async function listFineTuneProviders(): Promise<FineTuneProvider[]> {
+  return get<FineTuneProvider[]>('/fine-tune/providers')
 }

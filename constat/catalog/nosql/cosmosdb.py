@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 696555e9-5f73-4c0b-9e86-768d68dbfc25
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -81,6 +82,7 @@ class CosmosDBConnector(NoSQLConnector):
     def connect(self) -> None:
         """Connect to Cosmos DB."""
         try:
+            # noinspection PyUnresolvedReferences
             from azure.cosmos import CosmosClient
         except ImportError:
             raise ImportError(
@@ -385,6 +387,7 @@ class CosmosDBConnector(NoSQLConnector):
         if not self._db:
             raise RuntimeError("Not connected to Cosmos DB")
 
+        # noinspection PyUnresolvedReferences
         from azure.cosmos import PartitionKey
 
         container_kwargs = {
@@ -408,6 +411,7 @@ class CosmosDBConnector(NoSQLConnector):
 
         self._db.delete_container(collection)
 
+    # noinspection DuplicatedCode
     def get_overview(self) -> str:
         """Generate token-optimized overview for system prompt."""
         collections = self.get_collections()

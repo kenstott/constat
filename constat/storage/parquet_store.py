@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 50c60909-47a7-49af-b938-c6e54bb5e703
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -67,7 +68,8 @@ class ParquetDataStore:
         self.base_dir = Path(base_dir) if base_dir else Path(".constat")
 
         # Session directory structure
-        self.session_dir = self.base_dir / user_id / "sessions" / session_id
+        from constat.core.paths import user_vault_dir
+        self.session_dir = user_vault_dir(self.base_dir, user_id) / "sessions" / session_id
         self.tables_dir = self.session_dir / "tables"
         self.state_file = self.session_dir / "state.json"
 
@@ -151,6 +153,7 @@ class ParquetDataStore:
             step_number: Which step created this table
             description: Human-readable description
         """
+        _ = step_number  # accepted for API compatibility
         if df.empty or len(df.columns) == 0:
             return
 
@@ -179,7 +182,7 @@ class ParquetDataStore:
         if self._duckdb:
             try:
                 self._duckdb.execute(f"DROP VIEW IF EXISTS {name}")
-            except Exception:
+            except duckdb.Error:
                 pass
 
     def load_dataframe(self, name: str) -> Optional[pd.DataFrame]:
@@ -198,7 +201,7 @@ class ParquetDataStore:
 
         try:
             return pd.read_parquet(parquet_path)
-        except Exception:
+        except (OSError, ValueError):
             return None
 
     def query(self, sql: str) -> pd.DataFrame:
@@ -224,7 +227,7 @@ class ParquetDataStore:
                     CREATE OR REPLACE VIEW {table_name} AS
                     SELECT * FROM read_parquet('{parquet_file}')
                 """)
-            except Exception:
+            except duckdb.Error:
                 pass
 
         # Execute query
@@ -281,7 +284,7 @@ class ParquetDataStore:
         if self._duckdb:
             try:
                 self._duckdb.execute(f"DROP VIEW IF EXISTS {name}")
-            except Exception:
+            except duckdb.Error:
                 pass
 
         return True

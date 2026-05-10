@@ -1,9 +1,11 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 34a72548-6ef2-4673-bea3-da8053f02d72
 #
 # Tests for the commands module.
 
 """Tests for the shared command module."""
 
+from __future__ import annotations
 import pytest
 from unittest.mock import Mock
 

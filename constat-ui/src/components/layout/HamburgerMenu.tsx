@@ -1,30 +1,42 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: b267904f-97dc-4e27-b330-21cb8ef1b130
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Hamburger Menu (drawer) component
 
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useState } from 'react'
 import { Dialog, Transition } from '@headlessui/react'
 import { XMarkIcon } from '@heroicons/react/24/outline'
 import {
   Cog6ToothIcon,
   ChatBubbleLeftRightIcon,
   PlusIcon,
-  PencilIcon,
   ArrowRightOnRectangleIcon,
   UserCircleIcon,
+  ChevronRightIcon,
+  GlobeAltIcon,
 } from '@heroicons/react/24/outline'
-import { useUIStore } from '@/store/uiStore'
-import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import { useAuthStore, isAuthDisabled } from '@/store/authStore'
-import * as sessionsApi from '@/api/sessions'
+import { useQuery } from '@apollo/client'
+import { useReactiveVar } from '@apollo/client'
+import { menuOpenVar, themeVar, setTheme } from '@/graphql/ui-state'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useAuth } from '@/contexts/AuthContext'
 import type { Session } from '@/types/api'
-import type { ProjectInfo } from '@/api/sessions'
+import DomainPanel from '@/components/artifacts/DomainPanel'
+import { SESSIONS_QUERY, toSession } from '@/graphql/operations/sessions'
 
 interface HamburgerMenuProps {
   onNewSession?: () => void
 }
 
 function AccountSection({ onClose }: { onClose: () => void }) {
-  const { user, logout } = useAuthStore()
+  const { user, logout } = useAuth()
   const [imageError, setImageError] = useState(false)
 
   const handleLogout = async () => {
@@ -74,55 +86,30 @@ function AccountSection({ onClose }: { onClose: () => void }) {
 }
 
 export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
-  const { menuOpen, setMenuOpen, theme, setTheme } = useUIStore()
-  const { session: currentSession, setSession, updateSession, createSession } = useSessionStore()
-  const [sessions, setSessions] = useState<Session[]>([])
-  const [loadingSessions, setLoadingSessions] = useState(false)
-  const [projects, setProjects] = useState<ProjectInfo[]>([])
-  const [loadingProjects, setLoadingProjects] = useState(false)
-
+  const menuOpen = useReactiveVar(menuOpenVar)
+  const setMenuOpen = (v: boolean) => menuOpenVar(v)
+  const theme = useReactiveVar(themeVar)
+  const { session: currentSession, createSession, switchSession } = useSessionContext()
+  const { isAuthDisabled } = useAuth()
   // Loading state for session operations
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null)
   const [creatingSession, setCreatingSession] = useState(false)
+  const [domainCollapsed, setDomainCollapsed] = useState(false)
 
-  // Project editor modal state
-  const [editingProject, setEditingProject] = useState<string | null>(null)
-  const [projectContent, setProjectContent] = useState('')
-  const [projectPath, setProjectPath] = useState('')
-  const [savingProject, setSavingProject] = useState(false)
-  const [projectSaveError, setProjectSaveError] = useState<string | null>(null)
+  // Fetch sessions via GraphQL when menu opens
+  const { data: sessionsData, loading: loadingSessions } = useQuery(SESSIONS_QUERY, {
+    skip: !menuOpen,
+    fetchPolicy: 'network-only',
+  })
 
-  // Fetch sessions, projects, and skills when menu opens
-  useEffect(() => {
-    if (menuOpen) {
-      // Fetch sessions
-      setLoadingSessions(true)
-      sessionsApi.listSessions()
-        .then((response) => {
-          // Sort by last_activity descending (most recent first)
-          // Exclude current session - it will be shown separately at the top
-          // Exclude empty sessions (no tables and no query executed)
-          const sorted = [...response.sessions]
-            .filter(s => s.session_id !== currentSession?.session_id)
-            .filter(s => s.tables_count > 0 || s.current_query)
-            .sort(
-              (a, b) => new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
-            )
-          setSessions(sorted)
-        })
-        .catch(console.error)
-        .finally(() => setLoadingSessions(false))
-
-      // Fetch projects
-      setLoadingProjects(true)
-      sessionsApi.listProjects()
-        .then((response) => {
-          setProjects(response.projects)
-        })
-        .catch(console.error)
-        .finally(() => setLoadingProjects(false))
-    }
-  }, [menuOpen, currentSession?.session_id])
+  // Sort by last_activity descending, exclude current session and empty sessions
+  const sessions: Session[] = (sessionsData?.sessions?.sessions || [])
+    .map(toSession)
+    .filter((s: Session) => s.session_id !== currentSession?.session_id)
+    .filter((s: Session) => s.tables_count > 0 || s.current_query)
+    .sort(
+      (a: Session, b: Session) => new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
+    )
 
   const handleSwitchSession = async (sessionId: string) => {
     if (sessionId === currentSession?.session_id) {
@@ -132,60 +119,7 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
 
     setSwitchingSessionId(sessionId)
     try {
-      console.log('[switchSession] Switching to session:', sessionId)
-      // Use createSession to restore/reconnect - it handles both in-memory and historical sessions
-      // getSession only looks in memory and returns 404 for historical sessions
-      const [session, messagesResult] = await Promise.all([
-        sessionsApi.createSession(currentSession?.user_id || 'default', sessionId),
-        sessionsApi.getMessages(sessionId).catch((err) => {
-          console.warn('[switchSession] Failed to fetch messages:', err)
-          return { messages: [] }
-        }),
-      ])
-      console.log('[switchSession] Restored session:', session.session_id)
-      console.log('[switchSession] Fetched messages:', messagesResult.messages?.length || 0)
-
-      // Clear current state
-      useArtifactStore.getState().clear()
-
-      // Restore messages BEFORE connecting WebSocket (prevents welcome message overwrite)
-      if (messagesResult.messages && messagesResult.messages.length > 0) {
-        const restoredMessages = messagesResult.messages.map(m => ({
-          id: m.id,
-          type: m.type as 'user' | 'system' | 'plan' | 'step' | 'output' | 'error' | 'thinking',
-          content: m.content,
-          timestamp: new Date(m.timestamp),
-          stepNumber: m.stepNumber,
-          isFinalInsight: m.isFinalInsight,
-        }))
-        console.log('[switchSession] Restored messages:', restoredMessages.length)
-        useSessionStore.setState({ messages: restoredMessages, suggestions: [], plan: null })
-      } else {
-        console.log('[switchSession] No messages to restore, clearing')
-        useSessionStore.getState().clearMessages()
-      }
-
-      // Set session with preserveMessages to avoid clearing restored messages
-      setSession(session, { preserveMessages: true })
-
-      // Update localStorage with user-specific session key
-      sessionsApi.storeSessionId(sessionId, session.user_id)
-
-      // Fetch all session data to restore state (parallel for speed)
-      const artifactStore = useArtifactStore.getState()
-      await Promise.all([
-        artifactStore.fetchTables(sessionId),
-        artifactStore.fetchArtifacts(sessionId),
-        artifactStore.fetchFacts(sessionId),
-        artifactStore.fetchEntities(sessionId),
-        artifactStore.fetchDataSources(sessionId),
-        artifactStore.fetchStepCodes(sessionId),
-        artifactStore.fetchInferenceCodes(sessionId),
-        artifactStore.fetchLearnings(),
-        artifactStore.fetchAllRoles(sessionId),
-        artifactStore.fetchPromptContext(sessionId),
-      ])
-
+      await switchSession(sessionId)
       setMenuOpen(false)
     } catch (error) {
       console.error('Failed to switch session:', error)
@@ -203,80 +137,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
       onNewSession?.()
     } finally {
       setCreatingSession(false)
-    }
-  }
-
-  const [projectError, setProjectError] = useState<string | null>(null)
-
-  const handleToggleProject = async (projectFilename: string) => {
-    if (!currentSession) return
-
-    setProjectError(null)
-    const currentProjects = currentSession.active_projects || []
-    const isSelected = currentProjects.includes(projectFilename)
-
-    // Toggle: remove if selected, add if not
-    const newProjects = isSelected
-      ? currentProjects.filter(p => p !== projectFilename)
-      : [...currentProjects, projectFilename]
-
-    try {
-      await sessionsApi.setActiveProjects(currentSession.session_id, newProjects)
-      // Update local session state without clearing messages or reconnecting WebSocket
-      updateSession({ active_projects: newProjects })
-      // Refresh data sources and entities to show merged sources
-      const artifactStore = useArtifactStore.getState()
-      await artifactStore.fetchDataSources(currentSession.session_id)
-      // Entities refresh via entity_rebuild_complete WS event
-    } catch (error: unknown) {
-      console.error('Failed to set projects:', error)
-      // Handle conflict errors
-      if (error && typeof error === 'object' && 'message' in error) {
-        const errObj = error as { message?: string; response?: { data?: { detail?: { message?: string; conflicts?: string[] } } } }
-        const detail = errObj.response?.data?.detail
-        if (detail && typeof detail === 'object' && detail.conflicts) {
-          setProjectError(detail.conflicts.join('\n'))
-        } else {
-          setProjectError(errObj.message || 'Failed to update projects')
-        }
-      }
-    }
-  }
-
-  // Open project editor
-  const handleEditProject = async (filename: string) => {
-    try {
-      setProjectSaveError(null)
-      const result = await sessionsApi.getProjectContent(filename)
-      setProjectContent(result.content)
-      setProjectPath(result.path)
-      setEditingProject(filename)
-    } catch (error) {
-      console.error('Failed to load project:', error)
-    }
-  }
-
-  // Save project content
-  const handleSaveProject = async () => {
-    if (!editingProject) return
-
-    setSavingProject(true)
-    setProjectSaveError(null)
-    try {
-      await sessionsApi.updateProjectContent(editingProject, projectContent)
-      // Refresh projects list
-      const response = await sessionsApi.listProjects()
-      setProjects(response.projects)
-      setEditingProject(null)
-    } catch (error: unknown) {
-      console.error('Failed to save project:', error)
-      if (error && typeof error === 'object' && 'message' in error) {
-        setProjectSaveError((error as { message: string }).message)
-      } else {
-        setProjectSaveError('Failed to save project')
-      }
-    } finally {
-      setSavingProject(false)
     }
   }
 
@@ -353,13 +213,13 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                     <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                       <div className="flex items-center justify-between mb-2">
                         <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                          Sessions
+                          Query History
                         </h3>
                         <button
                           onClick={handleNewSession}
                           disabled={creatingSession || switchingSessionId !== null}
                           className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                          title="New session"
+                          title="New query"
                         >
                           {creatingSession ? (
                             <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -434,75 +294,20 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                       </div>
                     </div>
 
-                    {/* Projects section */}
-                    {projects.length > 0 && (
-                      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-                        <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-                          Projects
+                    {/* Domain */}
+                    <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                      <button
+                        onClick={() => setDomainCollapsed(!domainCollapsed)}
+                        className="w-full flex items-center justify-between mb-2"
+                      >
+                        <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide flex items-center gap-1.5">
+                          <GlobeAltIcon className="w-4 h-4" />
+                          Domain
                         </h3>
-                        {projectError && (
-                          <div className="mb-2 p-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-md">
-                            {projectError}
-                          </div>
-                        )}
-                        <div className="space-y-1">
-                          {loadingProjects ? (
-                            <p className="text-xs text-gray-400 py-2">Loading projects...</p>
-                          ) : (
-                            <>
-                              {/* Project options with checkboxes */}
-                              {projects.map((project) => {
-                                const isSelected = currentSession?.active_projects?.includes(project.filename) ?? false
-                                return (
-                                  <div
-                                    key={project.filename}
-                                    className={`flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors ${
-                                      isSelected
-                                        ? 'bg-primary-100 dark:bg-primary-900/30'
-                                        : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-                                    }`}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={isSelected}
-                                      onChange={() => handleToggleProject(project.filename)}
-                                      className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500 dark:bg-gray-700"
-                                    />
-                                    <button
-                                      onClick={() => handleToggleProject(project.filename)}
-                                      className="flex-1 min-w-0 text-left"
-                                    >
-                                      <p className={`text-sm font-medium truncate ${
-                                        isSelected
-                                          ? 'text-primary-700 dark:text-primary-300'
-                                          : 'text-gray-900 dark:text-gray-100'
-                                      }`}>
-                                        {project.name}
-                                      </p>
-                                      {project.description && (
-                                        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                          {project.description}
-                                        </p>
-                                      )}
-                                    </button>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation()
-                                        handleEditProject(project.filename)
-                                      }}
-                                      className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600"
-                                      title="Edit project YAML"
-                                    >
-                                      <PencilIcon className="w-4 h-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" />
-                                    </button>
-                                  </div>
-                                )
-                              })}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    )}
+                        <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${domainCollapsed ? '' : 'rotate-90'}`} />
+                      </button>
+                      {!domainCollapsed && <DomainPanel />}
+                    </div>
 
                     {/* Settings */}
                     <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-4 space-y-4">
@@ -538,83 +343,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
       </Dialog>
     </Transition.Root>
 
-      {/* Project Editor Modal */}
-      <Transition.Root show={editingProject !== null} as={Fragment}>
-        <Dialog as="div" className="relative z-[60]" onClose={() => setEditingProject(null)}>
-          <Transition.Child
-            as={Fragment}
-            enter="ease-out duration-300"
-            enterFrom="opacity-0"
-            enterTo="opacity-100"
-            leave="ease-in duration-200"
-            leaveFrom="opacity-100"
-            leaveTo="opacity-0"
-          >
-            <div className="fixed inset-0 bg-gray-500/75 dark:bg-gray-900/75 transition-opacity" />
-          </Transition.Child>
-
-          <div className="fixed inset-0 z-10 overflow-y-auto">
-            <div className="flex min-h-full items-center justify-center p-4">
-              <Transition.Child
-                as={Fragment}
-                enter="ease-out duration-300"
-                enterFrom="opacity-0 scale-95"
-                enterTo="opacity-100 scale-100"
-                leave="ease-in duration-200"
-                leaveFrom="opacity-100 scale-100"
-                leaveTo="opacity-0 scale-95"
-              >
-                <Dialog.Panel className="w-full max-w-3xl transform overflow-hidden rounded-lg bg-white dark:bg-gray-800 shadow-xl transition-all">
-                  <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-                    <Dialog.Title className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                      Edit Project: {editingProject}
-                    </Dialog.Title>
-                    <button
-                      onClick={() => setEditingProject(null)}
-                      className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                      <XMarkIcon className="w-5 h-5 text-gray-500" />
-                    </button>
-                  </div>
-
-                  <div className="p-4">
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-                      {projectPath}
-                    </p>
-                    <textarea
-                      value={projectContent}
-                      onChange={(e) => setProjectContent(e.target.value)}
-                      className="w-full h-96 font-mono text-sm p-3 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      spellCheck={false}
-                    />
-                    {projectSaveError && (
-                      <p className="mt-2 text-sm text-red-600 dark:text-red-400">
-                        {projectSaveError}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
-                    <button
-                      onClick={() => setEditingProject(null)}
-                      className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSaveProject}
-                      disabled={savingProject}
-                      className="px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors"
-                    >
-                      {savingProject ? 'Saving...' : 'Save'}
-                    </button>
-                  </div>
-                </Dialog.Panel>
-              </Transition.Child>
-            </div>
-          </div>
-        </Dialog>
-      </Transition.Root>
     </>
   )
 }

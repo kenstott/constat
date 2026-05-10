@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: b516dd85-08df-4f45-ba69-fe404fdb952b
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -39,6 +40,7 @@ from sqlalchemy import (
     inspect,
     text,
 )
+from sqlalchemy.exc import OperationalError as SAOperationalError, ProgrammingError as SAProgrammingError
 
 from constat.core.models import Artifact, ArtifactType, ARTIFACT_MIME_TYPES
 
@@ -193,6 +195,8 @@ class DataStore:
                     narrative TEXT,
                     tables_created TEXT,
                     code TEXT,
+                    user_query TEXT,
+                    objective_index INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
@@ -216,21 +220,35 @@ class DataStore:
                 )
             """))
 
-            # Add version column to existing databases (v1 dev, no migrations)
-            try:
-                conn.execute(text(
-                    "ALTER TABLE _constat_artifacts ADD COLUMN version INTEGER DEFAULT 1"
-                ))
-            except Exception:
-                pass  # Column already exists
+            # Add version column to existing databases (v1 dev, no migrations).
+            # PostgreSQL aborts the whole transaction on any error, so use
+            # savepoints there.  DuckDB doesn't support SAVEPOINT, so use
+            # plain try/except (DuckDB doesn't poison the transaction).
+            _use_savepoint = self.engine.dialect.name == "postgresql"
+            for tbl in ("_constat_artifacts", "_constat_table_registry"):
+                nested = conn.begin_nested() if _use_savepoint else None
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE {tbl} ADD COLUMN version INTEGER DEFAULT 1"
+                    ))
+                    if nested:
+                        nested.commit()
+                except (SAOperationalError, SAProgrammingError):
+                    if nested:
+                        nested.rollback()  # Column already exists
 
-            # Add version column to table registry for existing databases
-            try:
-                conn.execute(text(
-                    "ALTER TABLE _constat_table_registry ADD COLUMN version INTEGER DEFAULT 1"
-                ))
-            except Exception:
-                pass  # Column already exists
+            # Add user_query and objective_index columns to scratchpad for existing databases
+            for col_def in ("user_query TEXT", "objective_index INTEGER"):
+                nested = conn.begin_nested() if _use_savepoint else None
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE _constat_scratchpad ADD COLUMN {col_def}"
+                    ))
+                    if nested:
+                        nested.commit()
+                except (SAOperationalError, SAProgrammingError):
+                    if nested:
+                        nested.rollback()  # Column already exists
 
             # Session metadata
             conn.execute(text("""
@@ -268,7 +286,8 @@ class DataStore:
                 result = conn.execute(text(sql))
             return result
 
-    def _to_named_params(self, sql: str, params: list) -> dict:
+    @staticmethod
+    def _to_named_params(sql: str, params: list) -> dict:
         """Convert positional params to named params."""
         # Replace ? with :p0, :p1, etc.
         named_sql = sql
@@ -321,7 +340,8 @@ class DataStore:
                     data
                 )
 
-    def _serialize_complex_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+    @staticmethod
+    def _serialize_complex_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Serialize dict/list columns to JSON strings for SQLite compatibility."""
         df = df.copy()
         for col in df.columns:
@@ -377,7 +397,7 @@ class DataStore:
                         f"CREATE TABLE {self._validate_table_name(backup_name)} AS SELECT * FROM {self._validate_table_name(name)}"
                     ))
                     conn.commit()
-                except Exception:
+                except (SAOperationalError, SAProgrammingError):
                     pass  # Table may not exist yet (first save after registry entry)
 
         # Use pandas to_sql for cross-database compatibility
@@ -586,7 +606,7 @@ class DataStore:
                             text(f"SELECT COUNT(*) FROM {validated}")
                         ).fetchone()
                     row_count = count_result[0] if count_result else 0
-                except Exception:
+                except (SAOperationalError, SAProgrammingError):
                     row_count = 0
                 versions.append({
                     "version": v,
@@ -724,6 +744,14 @@ class DataStore:
                 {"step": step_number}
             )
 
+    def update_table_step_number(self, name: str, step_number: int) -> None:
+        """Update step_number for a table in the registry."""
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("UPDATE _constat_table_registry SET step_number = :step WHERE table_name = :name"),
+                {"step": step_number, "name": name},
+            )
+
     def export_state_summary(self) -> dict:
         """
         Export a summary of datastore state for context.
@@ -747,6 +775,8 @@ class DataStore:
         narrative: str,
         tables_created: Optional[list[str]] = None,
         code: Optional[str] = None,
+        user_query: Optional[str] = None,
+        objective_index: Optional[int] = None,
     ) -> None:
         """
         Add or update a scratchpad entry for a step.
@@ -757,20 +787,27 @@ class DataStore:
             narrative: Step result narrative (printed output)
             tables_created: List of table names created by this step
             code: Generated Python code for this step (for replay)
+            user_query: The user query that produced this step
+            objective_index: Index into user_queries list for this step's objective
         """
         tables_str = ",".join(tables_created) if tables_created else ""
+        data = {"goal": goal, "narrative": narrative, "tables_created": tables_str, "code": code or ""}
+        if user_query is not None:
+            data["user_query"] = user_query
+        if objective_index is not None:
+            data["objective_index"] = objective_index
         self._upsert(
             "_constat_scratchpad",
             "step_number",
             step_number,
-            {"goal": goal, "narrative": narrative, "tables_created": tables_str, "code": code or ""}
+            data,
         )
 
     def get_scratchpad_entry(self, step_number: int) -> Optional[dict]:
         """Get scratchpad entry for a step."""
         with self.engine.connect() as conn:
             result = conn.execute(
-                text("SELECT goal, narrative, tables_created, code FROM _constat_scratchpad WHERE step_number = :step"),
+                text("SELECT goal, narrative, tables_created, code, user_query, objective_index FROM _constat_scratchpad WHERE step_number = :step"),
                 {"step": step_number}
             ).fetchone()
 
@@ -781,6 +818,8 @@ class DataStore:
                 "narrative": result[1],
                 "tables_created": result[2].split(",") if result[2] else [],
                 "code": result[3] or "",
+                "user_query": result[4] or "",
+                "objective_index": result[5],
             }
         return None
 
@@ -788,7 +827,7 @@ class DataStore:
         """Get all scratchpad entries in order."""
         with self.engine.connect() as conn:
             rows = conn.execute(text("""
-                SELECT step_number, goal, narrative, tables_created, code
+                SELECT step_number, goal, narrative, tables_created, code, user_query, objective_index
                 FROM _constat_scratchpad
                 ORDER BY step_number
             """)).fetchall()
@@ -800,6 +839,8 @@ class DataStore:
                 "narrative": row[2],
                 "tables_created": row[3].split(",") if row[3] else [],
                 "code": row[4] or "",
+                "user_query": row[5] or "",
+                "objective_index": row[6],
             }
             for row in rows
         ]
@@ -838,12 +879,39 @@ class DataStore:
             conn.execute(text("DELETE FROM _constat_state"))
             conn.commit()
 
+    def truncate_from_step(self, from_step: int) -> list[str]:
+        """Delete scratchpad entries >= from_step, drop their tables, clean state.
+
+        Returns list of dropped table names.
+        """
+        entries = self.get_scratchpad()
+        tables_dropped = []
+        for e in entries:
+            if e['step_number'] >= from_step:
+                if e.get('tables_created'):
+                    for t in e['tables_created']:
+                        t = t.strip()
+                        if t and self.drop_table(t):
+                            tables_dropped.append(t)
+
+        with self.engine.begin() as conn:
+            conn.execute(text("DELETE FROM _constat_scratchpad WHERE step_number >= :step"),
+                         {"step": from_step})
+            conn.execute(text("DELETE FROM _constat_state WHERE step_number >= :step"),
+                         {"step": from_step})
+            conn.execute(text("DELETE FROM _constat_artifacts WHERE step_number >= :step"),
+                         {"step": from_step})
+            conn.execute(text("DELETE FROM _constat_plan_steps WHERE step_number >= :step"),
+                         {"step": from_step})
+
+        return tables_dropped
+
     def get_execution_history_table(self, include_all_attempts: bool = True) -> Optional["pd.DataFrame"]:
         """
         Get execution history as a queryable DataFrame.
 
         Returns a table with step_number, attempt, goal, code, output, error for each execution.
-        By default includes ALL attempts (both successful and failed) to show what didn't work
+        By default, includes ALL attempts (both successful and failed) to show what didn't work
         alongside what did work.
 
         Args:
@@ -853,7 +921,8 @@ class DataStore:
         Returns:
             DataFrame with execution history, or None if no history
         """
-        import pandas as pd
+        # Note: pandas is also imported at module level; this local import
+        # is intentionally removed to use the module-level `pd`.
 
         # Get scratchpad entries for step info (one per step)
         scratchpad_entries = self.get_scratchpad()
@@ -974,21 +1043,23 @@ class DataStore:
         Returns:
             Artifact ID
         """
-        # Get next ID
-        with self.engine.connect() as conn:
+        # Serialize metadata
+        metadata_json = json.dumps(metadata) if metadata else None
+
+        # All ID generation and insert in one transaction to avoid parallel race
+        with self.engine.begin() as conn:
             result = conn.execute(
                 text("SELECT COALESCE(MAX(id), 0) + 1 FROM _constat_artifacts")
             ).fetchone()
             artifact_id = result[0]
 
-        # Auto-generate name if not provided
-        if name is None:
-            name = f"artifact_{artifact_id}_{artifact_type}"
+            # Auto-generate name if not provided
+            if name is None:
+                name = f"artifact_{artifact_id}_{artifact_type}"
 
-        # Determine version: if name already exists, increment
-        version = 1
-        if name and not name.startswith("artifact_"):
-            with self.engine.connect() as conn:
+            # Determine version: if name already exists, increment
+            version = 1
+            if name and not name.startswith("artifact_"):
                 result = conn.execute(
                     text("SELECT MAX(version) FROM _constat_artifacts WHERE name = :name"),
                     {"name": name}
@@ -996,10 +1067,6 @@ class DataStore:
                 if result[0] is not None:
                     version = result[0] + 1
 
-        # Serialize metadata
-        metadata_json = json.dumps(metadata) if metadata else None
-
-        with self.engine.begin() as conn:
             conn.execute(
                 text("""
                     INSERT INTO _constat_artifacts
@@ -1028,7 +1095,7 @@ class DataStore:
         self,
         name: str,
         artifact_type: Union[ArtifactType, str],
-        content: str,
+        content: Union[str, bytes],
         step_number: int = 0,
         attempt: int = 1,
         title: Optional[str] = None,
@@ -1059,6 +1126,8 @@ class DataStore:
         if isinstance(artifact_type, str):
             try:
                 artifact_type = ArtifactType(artifact_type)
+                type_str = artifact_type.value
+                content_type = ARTIFACT_MIME_TYPES.get(artifact_type)
             except ValueError:
                 type_str = artifact_type
                 content_type = None
@@ -1192,7 +1261,7 @@ class DataStore:
     def save_image(
         self,
         name: str,
-        image_data: str,
+        image_data: Union[str, bytes],
         image_format: str = "png",
         step_number: int = 0,
         title: Optional[str] = None,
@@ -1261,6 +1330,7 @@ class DataStore:
             ).fetchone()
 
         if result:
+            # noinspection PyTypeChecker
             return self._row_to_artifact(result)
         return None
 
@@ -1286,10 +1356,12 @@ class DataStore:
             ).fetchone()
 
         if result:
+            # noinspection PyTypeChecker
             return self._row_to_artifact(result)
         return None
 
-    def _row_to_artifact(self, row: tuple) -> Artifact:
+    @staticmethod
+    def _row_to_artifact(row: tuple) -> Artifact:
         """Convert a database row to an Artifact object."""
         # Try to convert artifact_type string to enum
         type_str = row[4]
@@ -1356,6 +1428,7 @@ class DataStore:
         with self.engine.connect() as conn:
             rows = conn.execute(text(query), params).fetchall()
 
+        # noinspection PyTypeChecker
         return [self._row_to_artifact(row) for row in rows]
 
     def list_artifacts(self, include_content: bool = False) -> list[dict]:
@@ -1385,6 +1458,7 @@ class DataStore:
                     ORDER BY step_number, attempt, id
                 """)).fetchall()
 
+            # noinspection PyTypeChecker
             return [self._row_to_artifact(row).to_dict() for row in rows]
         else:
             with self.engine.connect() as conn:
@@ -1506,6 +1580,37 @@ class DataStore:
 
         return True
 
+    def delete_artifact(self, artifact_id: int) -> bool:
+        """
+        Delete an artifact and all its versions (by name).
+
+        Args:
+            artifact_id: ID of any version of the artifact
+
+        Returns:
+            True if deleted, False if not found
+        """
+        # Look up the artifact name by ID
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT name FROM _constat_artifacts WHERE id = :id"),
+                {"id": artifact_id}
+            ).fetchone()
+
+        if not result:
+            return False
+
+        artifact_name = result[0]
+
+        # Delete all versions with that name
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM _constat_artifacts WHERE name = :name"),
+                {"name": artifact_name}
+            )
+
+        return True
+
     def set_starred_tables(self, table_names: list[str]) -> None:
         """Set the list of starred table names."""
         self.set_state("_starred_tables", table_names)
@@ -1533,6 +1638,34 @@ class DataStore:
             is_starred = True
         self.set_starred_tables(starred)
         return is_starred
+
+    # --- Session sharing methods ---
+
+    def get_shared_users(self) -> list[str]:
+        """Get list of user IDs this session is shared with."""
+        return self.get_state("_shared_with") or []
+
+    def add_shared_user(self, user_id: str) -> None:
+        """Add a user to the shared list (deduped)."""
+        shared = self.get_shared_users()
+        if user_id not in shared:
+            shared.append(user_id)
+            self.set_state("_shared_with", shared)
+
+    def remove_shared_user(self, user_id: str) -> None:
+        """Remove a user from the shared list."""
+        shared = self.get_shared_users()
+        if user_id in shared:
+            shared.remove(user_id)
+            self.set_state("_shared_with", shared)
+
+    def is_public(self) -> bool:
+        """Check if this session is publicly accessible."""
+        return self.get_state("_public") is True
+
+    def set_public(self, public: bool) -> None:
+        """Set the public sharing flag."""
+        self.set_state("_public", public)
 
     # --- Session metadata methods ---
 

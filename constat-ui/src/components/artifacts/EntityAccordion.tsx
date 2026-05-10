@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: c76cc616-b93c-40d4-b2e1-03d9e1fc8cb2
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Entity Accordion with alphabetical ordering and reference locations
 
 import { useMemo, useState } from 'react'

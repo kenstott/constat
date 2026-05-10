@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: afb66a13-1ec9-4eeb-b9b4-94eddfa61d9a
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -352,22 +353,7 @@ class ContextCompactor:
 
         # Clear old state variables
         if clear_old_state:
-            # Get state with step numbers
-            with self.datastore.engine.connect() as conn:
-                from sqlalchemy import text
-                rows = conn.execute(
-                    text("SELECT key, step_number FROM _constat_state WHERE step_number < :cutoff"),
-                    {"cutoff": cutoff_step}
-                ).fetchall()
-
-            for key, _ in rows:
-                with self.datastore.engine.begin() as conn:
-                    from sqlalchemy import text
-                    conn.execute(
-                        text("DELETE FROM _constat_state WHERE key = :key"),
-                        {"key": key}
-                    )
-                    state_cleared += 1
+            state_cleared = self.datastore.clear_state_before_step(cutoff_step)
 
         # Estimate tokens after
         tokens_after = estimator.estimate().total_tokens
@@ -397,28 +383,20 @@ class ContextCompactor:
         artifacts = self.datastore.list_artifacts()
 
         # Clear scratchpad
-        with self.datastore.engine.begin() as conn:
-            from sqlalchemy import text
-            conn.execute(text("DELETE FROM _constat_scratchpad"))
+        self.datastore.clear_scratchpad()
 
         # Clear state
-        with self.datastore.engine.begin() as conn:
-            from sqlalchemy import text
-            conn.execute(text("DELETE FROM _constat_state"))
+        self.datastore.clear_state()
 
         # Drop all user tables
         for table in tables:
             self.datastore.drop_table(table['name'])
 
         # Clear artifacts
-        with self.datastore.engine.begin() as conn:
-            from sqlalchemy import text
-            conn.execute(text("DELETE FROM _constat_artifacts"))
+        self.datastore.clear_artifacts()
 
         # Clear plan steps
-        with self.datastore.engine.begin() as conn:
-            from sqlalchemy import text
-            conn.execute(text("DELETE FROM _constat_plan_steps"))
+        self.datastore.clear_plan_steps()
 
         return CompactionResult(
             success=True,

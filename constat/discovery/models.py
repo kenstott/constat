@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 807dd21c-6298-4e97-b0f9-da28e875690a
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -21,9 +22,7 @@ from chonk.models import DocumentChunk
 
 
 def singularize(word: str) -> str:
-    """Convert a word to its singular form.
-
-    Simple heuristic-based singularization for common English patterns.
+    """Convert a word to its singular form using lemminflect dictionary lookup.
 
     Args:
         word: Word to singularize (e.g., "orders", "employees", "categories")
@@ -34,56 +33,17 @@ def singularize(word: str) -> str:
     if not word or len(word) < 3:
         return word
 
-    lower = word.lower()
+    from lemminflect import getLemma
 
-    # Handle common irregular plurals
-    irregulars = {
-        'people': 'person',
-        'children': 'child',
-        'men': 'man',
-        'women': 'woman',
-        'mice': 'mouse',
-        'geese': 'goose',
-        'teeth': 'tooth',
-        'feet': 'foot',
-        'data': 'datum',
-        'criteria': 'criterion',
-        'indices': 'index',
-        'vertices': 'vertex',
-        'matrices': 'matrix',
-    }
-    if lower in irregulars:
-        # Preserve original case pattern
-        if word[0].isupper():
-            return irregulars[lower].capitalize()
-        return irregulars[lower]
-
-    # Don't singularize words ending in 'ss', 'us', 'is'
-    if lower.endswith(('ss', 'us', 'is')):
+    lemmas = getLemma(word.lower(), upos='NOUN')
+    if not lemmas:
         return word
 
-    # Handle -ies -> -y (categories -> category)
-    if lower.endswith('ies') and len(word) > 3:
-        return word[:-3] + 'y'
-
-    # Handle -es -> remove (boxes -> box, watches -> watch)
-    if lower.endswith('es') and len(word) > 2:
-        # Check for -ches, -shes, -xes, -zes, -ses
-        if lower.endswith(('ches', 'shes', 'xes', 'zes', 'ses')):
-            return word[:-2]
-        # Check for -oes (heroes -> hero, but not shoes)
-        if lower.endswith('oes') and lower not in ('shoes', 'toes'):
-            return word[:-2]
-        # Default: try removing -es, fall back to -s
-        if lower.endswith('ves'):
-            return word[:-3] + 'f'  # leaves -> leaf
-        return word[:-1]  # Just remove the 's'
-
-    # Handle simple -s -> remove
-    if lower.endswith('s') and not lower.endswith('ss'):
-        return word[:-1]
-
-    return word
+    result = lemmas[0]
+    # Preserve original case
+    if word[0].isupper():
+        result = result[0].upper() + result[1:]
+    return result
 
 
 def is_camel_case(name: str) -> bool:
@@ -259,6 +219,13 @@ def extract_resource_from_path(path: str) -> str:
     return meaningful_segments[-1]
 
 
+class EntityClass:
+    """Classifies vector records for resolution routing."""
+    METADATA_ENTITY = "metadata_entity"  # Structured data metadata: tables, columns, API endpoints
+    DATA_ENTITY = "data_entity"          # Data-level values: France, IBM, customer names
+    MIXED = "mixed"                       # Unstructured docs — can reference either
+
+
 class SemanticType:
     """Semantic type constants - linguistic role of the entity."""
     CONCEPT = "concept"      # Noun/thing: customer, order, user, product
@@ -311,6 +278,80 @@ class EntityType:
 
 
 @dataclass
+class EntityRelationship:
+    """An SVO relationship triple between two entities (keyed by name)."""
+    id: str
+    subject_name: str
+    verb: str
+    object_name: str
+    sentence: str = ""
+    confidence: float = 1.0
+    verb_category: str = "other"
+    session_id: str = ""
+    user_edited: bool = False
+    domain: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    def __post_init__(self):
+        if self.created_at is None:
+            self.created_at = datetime.now()
+
+
+@dataclass
+class GlossaryTerm:
+    """A curated glossary term with business definition.
+
+    Attributes:
+        id: Primary key
+        name: Singular canonical form (matches entity.name)
+        display_name: Title case singular for UI
+        definition: Business meaning
+        domain: Owning domain (required, never None). New terms use session_id.
+        parent_id: Taxonomy parent (self-referential)
+        aliases: Alternate names
+        semantic_type: CONCEPT, ATTRIBUTE, ACTION, TERM
+        cardinality: many | distinct | singular
+        plural: Irregular plural form
+        (list_of removed — use parent_verb HAS_MANY instead)
+        tags: Map of tags
+        owner: Term-level owner
+        status: draft | reviewed | approved
+        provenance: llm | human | hybrid
+        session_id: Session that owns this term
+    """
+    id: str
+    name: str
+    display_name: str
+    definition: str
+    domain: Optional[str] = None
+    parent_id: Optional[str] = None
+    parent_verb: str = "HAS_KIND"  # HAS_ONE (composition), HAS_KIND (taxonomy), HAS_MANY (collection)
+    aliases: list[str] = field(default_factory=list)
+    semantic_type: Optional[str] = None
+    cardinality: str = "many"
+    plural: Optional[str] = None
+    tags: dict[str, dict] = field(default_factory=dict)
+    owner: Optional[str] = None
+    status: str = "draft"
+    provenance: str = "llm"
+    session_id: str = ""
+    user_id: str = "default"
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    ignored: bool = False
+    canonical_source: Optional[str] = None
+
+    def __post_init__(self):
+        if self.domain is None:
+            raise ValueError("GlossaryTerm.domain is required — every term must have an explicit domain")
+        now = datetime.now()
+        if self.created_at is None:
+            self.created_at = now
+        if self.updated_at is None:
+            self.updated_at = now
+
+
+@dataclass
 class Entity:
     """An NER-extracted entity from document chunks.
 
@@ -321,7 +362,7 @@ class Entity:
         semantic_type: Linguistic role (CONCEPT, ATTRIBUTE, ACTION, TERM)
         ner_type: spaCy NER type (ORG, PERSON, etc.) or None for schema/API patterns
         session_id: Session that owns this entity (required)
-        project_id: Project this entity came from
+        domain_id: Domain this entity came from
     """
     id: str
     name: str  # Normalized: lowercase, singular
@@ -329,8 +370,9 @@ class Entity:
     semantic_type: str  # SemanticType value
     session_id: str
     ner_type: Optional[str] = None  # NerType value or None
-    project_id: Optional[str] = None
+    domain_id: Optional[str] = None
     created_at: Optional[datetime] = None
+    entity_class: Optional[str] = None  # EntityClass value (metadata_entity, data_entity, mixed)
 
     # Backwards compatibility: expose 'type' as alias for semantic_type
     @property
@@ -348,6 +390,8 @@ class ChunkEntity:
     chunk_id: str
     entity_id: str
     confidence: float = 1.0  # NER confidence
+    mention_count: int = 1
+    mention_text: str = ""
 
 
 @dataclass
@@ -369,6 +413,7 @@ class LoadedDocument:
     loaded_at: Optional[str] = None
     file_mtime: Optional[float] = None  # File modification time for change detection
     content_hash: Optional[str] = None  # Hash of content for change detection
+    source_url: Optional[str] = None  # Original URL for crawled sub-documents
 
 
 @dataclass

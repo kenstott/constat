@@ -1,6 +1,16 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: a6e4de53-3567-403a-b332-20d99f660a3d
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // API Client - base fetch wrapper with auth support
 
-import {useAuthStore, isAuthDisabled} from '@/store/authStore'
+import { getAuthHeaders as getAuthHeadersBase, isAuthDisabled } from '@/config/auth-helpers'
 
 const API_BASE = '/api'
 
@@ -21,22 +31,8 @@ export class ApiError extends Error {
 }
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
-    const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-    }
-
-    // Add auth token if auth is enabled
-    if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`
-            console.log('[API] Auth token attached (length:', token.length, ')')
-        } else {
-            console.warn('[API] Auth enabled but no token available')
-        }
-    }
-
-    return headers
+    const base = await getAuthHeadersBase()
+    return { 'Content-Type': 'application/json', ...base }
 }
 
 function isRetryableError(error: unknown): boolean {
@@ -81,9 +77,9 @@ async function fetchWithRetry<T>(
 
 async function handleResponse<T>(response: Response): Promise<T> {
     if (!response.ok) {
-        // Handle 401 by triggering logout
+        // Handle 401 — caller should handle auth redirect
         if (response.status === 401 && !isAuthDisabled) {
-            useAuthStore.getState().logout()
+            console.warn('[API] 401 Unauthorized')
         }
         let data: unknown
         try {
@@ -92,6 +88,10 @@ async function handleResponse<T>(response: Response): Promise<T> {
             // Response body not JSON
         }
         throw new ApiError(response.status, response.statusText, data)
+    }
+    // 204 No Content has no body
+    if (response.status === 204) {
+        return undefined as T
     }
     return response.json()
 }
@@ -128,6 +128,18 @@ export async function put<T>(path: string, body: unknown): Promise<T> {
     )
 }
 
+export async function patch<T>(path: string, body: unknown): Promise<T> {
+    const headers = await getAuthHeaders()
+    return fetchWithRetry(
+        () => fetch(`${API_BASE}${path}`, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify(body),
+        }),
+        handleResponse<T>
+    )
+}
+
 export async function del<T>(path: string): Promise<T> {
     const headers = await getAuthHeaders()
     return fetchWithRetry(
@@ -144,13 +156,7 @@ export async function uploadFile(
     formData.append('file', file)
 
     // For file uploads, don't set Content-Type (browser sets it with boundary)
-    const headers: Record<string, string> = {}
-    if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`
-        }
-    }
+    const headers = await getAuthHeadersBase()
 
     return fetchWithRetry(
         () => fetch(`${API_BASE}${path}`, {
@@ -172,13 +178,7 @@ export async function uploadFiles(
     })
 
     // For file uploads, don't set Content-Type (browser sets it with boundary)
-    const headers: Record<string, string> = {}
-    if (!isAuthDisabled) {
-        const token = await useAuthStore.getState().getToken()
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`
-        }
-    }
+    const headers = await getAuthHeadersBase()
 
     return fetchWithRetry(
         () => fetch(`${API_BASE}${path}`, {

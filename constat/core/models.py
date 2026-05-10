@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: d17bad05-3d25-40b4-a589-65896920580d
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -7,7 +8,7 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""Core data structures for multi-step planning and execution."""
+"""Core data structures for multistep planning and execution."""
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -27,7 +28,7 @@ class TaskType(Enum):
     The router will try each model in order until success.
     """
     # Planning and orchestration
-    PLANNING = "planning"              # Multi-step plan generation
+    PLANNING = "planning"              # Multistep plan generation
     REPLANNING = "replanning"          # Plan revision with feedback
 
     # Code generation
@@ -36,6 +37,7 @@ class TaskType(Enum):
 
     # Classification and routing
     INTENT_CLASSIFICATION = "intent_classification"  # User intent
+    CLARIFICATION = "clarification"  # Ambiguity detection — needs strong judgment
     MODE_SELECTION = "mode_selection"  # Exploratory vs auditable
 
     # Fact resolution (auditable mode)
@@ -49,6 +51,16 @@ class TaskType(Enum):
     SUMMARIZATION = "summarization"
     ERROR_ANALYSIS = "error_analysis"  # Analyzing execution errors for retry
     SYNTHESIS = "synthesis"  # Generate final response from resolved facts
+    STRUCTURED_EXTRACTION = "structured_extraction"  # Extract tables/facts from docs
+
+    # Glossary generation
+    GLOSSARY_GENERATION = "glossary_generation"
+
+    # Relationship extraction
+    RELATIONSHIP_EXTRACTION = "relationship_extraction"
+
+    # User interaction
+    USER_INPUT = "user_input"
 
     # Default fallback
     GENERAL = "general"
@@ -140,7 +152,7 @@ ARTIFACT_MIME_TYPES = {
 @dataclass
 class Step:
     """
-    A single step in a multi-step plan.
+    A single step in a multistep plan.
 
     Each step has a goal described in natural language,
     and will be translated into executable code.
@@ -174,6 +186,11 @@ class Step:
     # Detected from patterns like "as a [role]" or "acting as [role]"
     role_id: Optional[str] = None
 
+    # Domain this step operates in (for domain-aware model routing)
+    # Set by the planner based on which domain's data the step touches.
+    # Router walks: domain hierarchy → user → system to find the model chain.
+    domain: Optional[str] = None
+
     # Skills to apply for this step (None = use query-level skills)
     # Skills provide domain-specific instructions for code generation
     skill_ids: Optional[list[str]] = None
@@ -185,6 +202,18 @@ class Step:
     status: StepStatus = StepStatus.PENDING
     code: Optional[str] = None
     result: Optional["StepResult"] = None
+
+    def __setattr__(self, name: str, value) -> None:
+        if name == "code" and value is not None and not isinstance(value, str):
+            import logging
+            import traceback
+            logging.getLogger(__name__).error(
+                "Step.code assigned non-string value (type=%s, value=%r)\n%s",
+                type(value).__name__,
+                value,
+                "".join(traceback.format_stack()),
+            )
+        object.__setattr__(self, name, value)
 
     # Phase 2 extensions
     prolog_code: Optional[str] = None
@@ -229,7 +258,7 @@ class StepResult:
 @dataclass
 class Plan:
     """
-    A multi-step plan for solving a problem.
+    A multistep plan for solving a problem.
 
     The plan is generated from natural language and contains
     steps to be executed sequentially.
@@ -368,9 +397,26 @@ class Plan:
                 # Circular dependency or bug - break to avoid infinite loop
                 break
 
-            waves.append(sorted(wave))
-            completed.update(wave)
-            remaining -= set(wave)
+            # Isolate user_input steps: they block on user interaction and must
+            # not run in parallel with other steps (causes ordering issues in UI
+            # and prevents subsequent steps from using the user's answer).
+            user_input_in_wave = [
+                n for n in wave
+                if (s := self.get_step(n)) and s.task_type == TaskType.USER_INPUT
+            ]
+            if user_input_in_wave and len(wave) > 1:
+                # Put user_input steps first (each in its own wave), then the rest
+                non_ui = sorted(set(wave) - set(user_input_in_wave))
+                for ui_num in sorted(user_input_in_wave):
+                    waves.append([ui_num])
+                    completed.add(ui_num)
+                    remaining.discard(ui_num)
+                # Re-evaluate remaining steps (some may now be unblocked)
+                continue
+            else:
+                waves.append(sorted(wave))
+                completed.update(wave)
+                remaining -= set(wave)
 
         return waves
 
@@ -395,6 +441,7 @@ class PlannerResponse:
     """Response from the planner."""
     plan: Plan
     reasoning: str = ""  # Why this plan was chosen
+    raw_response: str = ""  # Raw LLM output before parsing
 
 
 @dataclass
@@ -408,7 +455,7 @@ class Artifact:
     id: int
     name: str
     artifact_type: ArtifactType
-    content: str  # The artifact content (may be base64 for binary)
+    content: str  # The artifact content (maybe base64 for binary)
     step_number: int = 0
     attempt: int = 1
 

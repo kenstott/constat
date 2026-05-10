@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 2901ffb9-3198-440f-9d7b-e7a6ffca0dd2
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -63,6 +64,8 @@ class DiscoveryTools:
         api_catalog: Optional[APICatalog] = None,
         config: Optional[Config] = None,
         fact_resolver: Optional[FactResolver] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ):
         self.config = config
 
@@ -73,6 +76,8 @@ class DiscoveryTools:
             schema_manager,
             doc_tools=self.doc_tools,
             api_tools=self.api_tools,
+            session_id=session_id,
+            user_id=user_id,
         ) if schema_manager else None
         self.fact_tools = FactResolutionTools(fact_resolver, self.doc_tools)
 
@@ -100,6 +105,7 @@ class DiscoveryTools:
                 "get_sample_values": self.schema_tools.get_sample_values,
                 "find_entity": self.schema_tools.find_entity,
                 "search_all": self.schema_tools.search_all,
+                "lookup_glossary_term": self.schema_tools.lookup_glossary_term,
             })
 
         # API tools
@@ -283,7 +289,8 @@ class PromptBuilder:
 
         return prompt, use_tools
 
-    def _build_tool_prompt(self, custom_prompt: str) -> str:
+    @staticmethod
+    def _build_tool_prompt(custom_prompt: str) -> str:
         """Build minimal prompt for tool-based discovery."""
         parts = [DISCOVERY_SYSTEM_PROMPT]
         if custom_prompt:

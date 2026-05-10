@@ -14,6 +14,7 @@ dependencies = [
     "pandas>=3.0.0",
     "pyarrow>=20.0.0",
     "httpx>=0.28.1",
+    "msal>=1.28.0",
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",
     # CLI & REPL
@@ -34,6 +35,7 @@ dependencies = [
     "openpyxl>=3.1.5",
     "python-pptx>=1.0.2",
     "mammoth>=1.11.0",  # DOCX to HTML conversion
+    "pytesseract>=0.3.10",
     # Database backends (SQLite is built-in)
     "psycopg2-binary>=2.9.11",
     "duckdb>=1.4.4",
@@ -53,6 +55,9 @@ dependencies = [
     "graphviz>=0.21",
     # NLP / Named Entity Recognition
     "spacy>=3.8.11",
+    "lemminflect>=0.2.3",
+    # JSON Patch (RFC 6902) for entity cache diffs
+    "jsonpatch>=1.33",
     # GraphRAG / document chunking
     "chonk @ git+https://github.com/kenstott/chonk.git",
 ]
@@ -60,6 +65,9 @@ dependencies = [
 [project.optional-dependencies]
 # Additional SQL Database backends
 mysql = ["pymysql>=1.1.2"]
+bigquery = ["sqlalchemy-bigquery>=1.11.0", "google-cloud-bigquery>=3.25.0"]
+snowflake = ["snowflake-sqlalchemy>=1.7.0"]
+databricks = ["databricks-sql-connector>=3.6.0", "sqlalchemy-databricks>=0.2.0"]
 
 # NoSQL connectors
 mongodb = ["pymongo>=4.16.0"]
@@ -68,12 +76,21 @@ elasticsearch = ["elasticsearch>=9.3.0"]
 dynamodb = ["boto3>=1.42.44"]
 cosmosdb = ["azure-cosmos>=4.14.6"]
 firestore = ["google-cloud-firestore>=2.23.0"]
+neo4j = ["neo4j>=5.0.0"]
+jdbc = ["JayDeBeApi>=1.2.3", "JPype1>=1.4.0"]
+
+# Document transports
+s3 = ["boto3>=1.42.44"]
+sftp = ["paramiko>=3.4.0"]
 
 # Additional LLM providers
 openai = ["openai>=2.17.0"]
 
 # Email formatting
 email = ["markdown>=3.10.1"]
+
+# Audio/video transcription
+audio = ["faster-whisper>=1.1.0", "whisperx>=3.3.0"]
 
 # Extended data processing and document generation
 extras = [
@@ -97,10 +114,12 @@ dev = [
 
 # All optional dependencies
 all = [
-    "constat[mysql]",
-    "constat[mongodb,cassandra,elasticsearch,dynamodb,cosmosdb,firestore]",
+    "constat[mysql,bigquery,snowflake,databricks]",
+    "constat[mongodb,cassandra,elasticsearch,dynamodb,cosmosdb,firestore,neo4j,jdbc]",
+    "constat[s3,sftp]",
     "constat[openai]",
     "constat[email]",
+    "constat[audio]",
     "constat[extras]",
 ]
 
@@ -110,6 +129,9 @@ constat = "constat.cli:main"
 [tool.hatch.metadata]
 allow-direct-references = true
 
+[project.entry-points."pytest11"]
+bug_queue = "constat.testing.bug_queue_plugin"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -118,7 +140,64 @@ build-backend = "hatchling.build"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+addopts = "-p no:faulthandler"
 markers = [
     "slow: requires LLM API calls or external services (deselect with '-m \"not slow\"')",
     "run_sequentially: loads embedding/reranking models; must not run concurrently (OOM risk)",
 ]
+
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [
+    "build",
+    ".venv",
+    ".idea",
+    ".mypy_cache",
+    ".ruff_cache",
+]
+
+[tool.ruff.lint]
+# Common useful rulesets: pyflakes/pycodestyle (E,F), isort (I), bugbear (B),
+# pyupgrade (UP), annotations (ANN), security (S), flake8-builtins (A),
+# comprehensions (C4), print (T20), pytest (PT), pathlib (PTH), simplify (SIM),
+# unnecessary args (ARG)
+select = [
+    "E", "F", "I", "B", "UP", "ANN", "S", "A", "C4", "T20", "PT", "PTH", "SIM", "ARG"
+]
+# Relax some noisy rules project-wide
+ignore = [
+    "ANN101",  # Missing type annotation for self in method
+    "ANN102",  # Missing type annotation for cls in classmethod
+    "S101",    # Use of assert (allowed in tests)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "ANN"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | build
+  | dist
+  | \.mypy_cache
+  | \.ruff_cache
+)/
+'''
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+show_error_codes = true
+exclude = '^(build|dist|\.venv|tests/fixtures)/'

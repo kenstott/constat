@@ -1,18 +1,35 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: fd838aaa-dc68-4cb7-8f18-edfbbd9218aa
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Table Accordion - individual table with expandable details and fullscreen mode
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   ChevronDownIcon,
   ChevronRightIcon,
   ArrowsPointingOutIcon,
   ArrowDownTrayIcon,
+  ClipboardDocumentIcon,
+  ClipboardDocumentCheckIcon,
+  TrashIcon,
   XMarkIcon,
   StarIcon as StarOutline,
+  EllipsisVerticalIcon,
+  EyeIcon,
+  TableCellsIcon,
 } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
-import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import * as sessionsApi from '@/api/sessions'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useTableMutations } from '@/hooks/useTables'
+import { apolloClient } from '@/graphql/client'
+import { TABLE_DATA_QUERY, TABLE_VERSIONS_QUERY, TABLE_VERSION_DATA_QUERY, toTableData, toTableVersions } from '@/graphql/operations/data'
 import type { TableData, TableInfo, TableVersionInfo } from '@/types/api'
 
 interface TableAccordionProps {
@@ -21,8 +38,8 @@ interface TableAccordionProps {
 }
 
 export function TableAccordion({ table, initiallyOpen = false }: TableAccordionProps) {
-  const { session } = useSessionStore()
-  const { toggleTableStar } = useArtifactStore()
+  const { session } = useSessionContext()
+  const { toggleStar: toggleTableStar, deleteTable: removeTable } = useTableMutations()
   const [isOpen, setIsOpen] = useState(initiallyOpen)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [data, setData] = useState<TableData | null>(null)
@@ -33,6 +50,10 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
   const [versions, setVersions] = useState<TableVersionInfo[] | null>(null)
   const [viewingVersion, setViewingVersion] = useState<number | null>(null)
   const versionDropdownRef = useRef<HTMLDivElement>(null)
+
+  const [copied, setCopied] = useState<'csv' | 'json' | null>(null)
+  const [showCopyMenu, setShowCopyMenu] = useState(false)
+  const copyMenuRef = useRef<HTMLDivElement>(null)
 
   const hasVersions = (table.version_count ?? 1) > 1
 
@@ -46,12 +67,12 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
       setLoading(true)
       setError(null)
       try {
-        const tableData = await sessionsApi.getTableData(
-          session.session_id,
-          table.name,
-          page
-        )
-        setData(tableData)
+        const { data: result } = await apolloClient.query({
+          query: TABLE_DATA_QUERY,
+          variables: { sessionId: session.session_id, tableName: table.name, page },
+          fetchPolicy: 'network-only',
+        })
+        setData(toTableData(result.tableData))
       } catch (err) {
         setError(String(err))
       } finally {
@@ -98,8 +119,15 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
   const handleToggleStar = (e: React.MouseEvent) => {
     e.stopPropagation()
     if (session) {
-      toggleTableStar(session.session_id, table.name)
+      toggleTableStar(table.name)
     }
+  }
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!session) return
+    if (!confirm(`Remove table "${table.name}"?`)) return
+    removeTable(table.name)
   }
 
   const handleVersionBadgeClick = async (e: React.MouseEvent) => {
@@ -114,8 +142,13 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
     // Fetch versions if not loaded
     if (!versions) {
       try {
-        const resp = await sessionsApi.getTableVersions(session.session_id, table.name)
-        setVersions(resp.versions)
+        const { data: result } = await apolloClient.query({
+          query: TABLE_VERSIONS_QUERY,
+          variables: { sessionId: session.session_id, name: table.name },
+          fetchPolicy: 'network-only',
+        })
+        const mapped = toTableVersions(result.tableVersions)
+        setVersions(mapped.versions)
       } catch (err) {
         console.error('Failed to load table versions:', err)
         return
@@ -140,13 +173,12 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
     setLoading(true)
     setError(null)
     try {
-      const tableData = await sessionsApi.getTableVersionData(
-        session.session_id,
-        table.name,
-        version,
-        1 // reset to page 1
-      )
-      setData(tableData)
+      const { data: result } = await apolloClient.query({
+        query: TABLE_VERSION_DATA_QUERY,
+        variables: { sessionId: session.session_id, name: table.name, version, page: 1 },
+        fetchPolicy: 'network-only',
+      })
+      setData(toTableData(result.tableVersionData))
       setPage(1)
       setIsOpen(true)
     } catch (err) {
@@ -179,6 +211,43 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
       alert('Failed to download. Please try again.')
     }
   }
+
+  const handleCopy = useCallback((format: 'csv' | 'json', e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!data) return
+    let text: string
+    if (format === 'csv') {
+      const header = data.columns.join(',')
+      const rows = data.data.map(row =>
+        data.columns.map(col => {
+          const v = row[col]
+          const s = v != null && typeof v === 'object' ? JSON.stringify(v) : String(v ?? '')
+          return s.includes(',') || s.includes('"') || s.includes('\n')
+            ? `"${s.replace(/"/g, '""')}"`
+            : s
+        }).join(',')
+      )
+      text = [header, ...rows].join('\n')
+    } else {
+      text = JSON.stringify(data.data, null, 2)
+    }
+    navigator.clipboard.writeText(text)
+    setCopied(format)
+    setShowCopyMenu(false)
+    setTimeout(() => setCopied(null), 2000)
+  }, [data])
+
+  // Close copy menu on outside click
+  useEffect(() => {
+    if (!showCopyMenu) return
+    const handleClick = (e: MouseEvent) => {
+      if (copyMenuRef.current && !copyMenuRef.current.contains(e.target as Node)) {
+        setShowCopyMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showCopyMenu])
 
   const renderTable = (maxHeight?: string) => {
     if (loading) {
@@ -277,9 +346,12 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
       {/* Accordion Item */}
       <div className="border border-gray-200 dark:border-gray-700 rounded-lg">
         {/* Header - overflow-visible to allow version dropdown to escape */}
-        <button
+        <div
+          role="button"
+          tabIndex={0}
           onClick={toggleOpen}
-          className="relative w-full flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors rounded-t-lg"
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleOpen() }}
+          className="relative w-full flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors rounded-t-lg cursor-pointer"
         >
           <div className="flex items-center gap-2 min-w-0">
             {isOpen ? (
@@ -290,7 +362,12 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
             <span className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">
               {table.name}
             </span>
-            <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">
+            <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0 flex items-center gap-0.5" title={table.is_view ? 'Lazy view' : 'Materialized table'}>
+              {table.is_view ? (
+                <EyeIcon className="w-3.5 h-3.5" />
+              ) : (
+                <TableCellsIcon className="w-3.5 h-3.5" />
+              )}
               ({table.row_count} rows)
             </span>
             <div className="relative flex-shrink-0" ref={versionDropdownRef}>
@@ -341,24 +418,11 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
             )}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
-            <button
-              onClick={handleToggleStar}
-              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
-              title={table.is_starred ? "Unstar" : "Star"}
-            >
-              {table.is_starred ? (
-                <StarSolid className="w-4 h-4 text-yellow-500" />
-              ) : (
-                <StarOutline className="w-4 h-4 text-gray-400 hover:text-yellow-500" />
-              )}
-            </button>
-            <button
-              onClick={handleDownload}
-              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
-              title="Download as CSV"
-            >
-              <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
-            </button>
+            {copied && (
+              <span className="text-[10px] text-green-500 dark:text-green-400 mr-1">
+                Copied {copied.toUpperCase()}
+              </span>
+            )}
             <button
               onClick={openFullscreen}
               className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
@@ -366,8 +430,60 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
             >
               <ArrowsPointingOutIcon className="w-4 h-4 text-gray-500" />
             </button>
+            <div className="relative" ref={copyMenuRef}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowCopyMenu(!showCopyMenu) }}
+                className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
+                title="More actions"
+              >
+                <EllipsisVerticalIcon className="w-4 h-4 text-gray-500" />
+              </button>
+              {showCopyMenu && (
+                <div className="absolute right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[140px]">
+                  <button
+                    onClick={(e) => { handleToggleStar(e); setShowCopyMenu(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    {table.is_starred ? (
+                      <StarSolid className="w-4 h-4 text-yellow-500" />
+                    ) : (
+                      <StarOutline className="w-4 h-4 text-gray-400" />
+                    )}
+                    {table.is_starred ? 'Unstar' : 'Star'}
+                  </button>
+                  <button
+                    onClick={(e) => { handleCopy('csv', e); setShowCopyMenu(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <ClipboardDocumentIcon className="w-4 h-4 text-gray-500" />
+                    Copy as CSV
+                  </button>
+                  <button
+                    onClick={(e) => { handleCopy('json', e); setShowCopyMenu(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <ClipboardDocumentIcon className="w-4 h-4 text-gray-500" />
+                    Copy as JSON
+                  </button>
+                  <button
+                    onClick={(e) => { handleDownload(e); setShowCopyMenu(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
+                    Download CSV
+                  </button>
+                  <button
+                    onClick={(e) => { handleDelete(e); setShowCopyMenu(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <TrashIcon className="w-4 h-4" />
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-        </button>
+        </div>
 
         {/* Collapsible Content */}
         {isOpen && (
@@ -387,17 +503,64 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
                 <span className="text-lg font-semibold text-gray-800 dark:text-gray-200">
                   {table.name}
                 </span>
-                <span className="text-sm text-gray-500 dark:text-gray-400">
+                <span className="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-1" title={table.is_view ? 'Lazy view' : 'Materialized table'}>
+                  {table.is_view ? (
+                    <EyeIcon className="w-4 h-4" />
+                  ) : (
+                    <TableCellsIcon className="w-4 h-4" />
+                  )}
                   ({table.row_count} rows)
                 </span>
               </div>
-              <button
-                onClick={() => setIsFullscreen(false)}
-                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-                title="Close (Esc)"
-              >
-                <XMarkIcon className="w-5 h-5 text-gray-500" />
-              </button>
+              <div className="flex items-center gap-2">
+                {/* Copy button */}
+                <div className="relative" ref={copyMenuRef}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setShowCopyMenu(!showCopyMenu) }}
+                    className={`flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors ${
+                      copied ? 'text-green-500 dark:text-green-400' : 'text-gray-700 dark:text-gray-300'
+                    }`}
+                  >
+                    {copied ? (
+                      <ClipboardDocumentCheckIcon className="w-4 h-4" />
+                    ) : (
+                      <ClipboardDocumentIcon className="w-4 h-4" />
+                    )}
+                    <span>{copied ? `Copied ${copied.toUpperCase()}` : 'Copy'}</span>
+                  </button>
+                  {showCopyMenu && (
+                    <div className="absolute right-0 mt-1 w-40 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10">
+                      <button
+                        onClick={(e) => handleCopy('csv', e)}
+                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-t-lg"
+                      >
+                        Copy as CSV
+                      </button>
+                      <button
+                        onClick={(e) => handleCopy('json', e)}
+                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-b-lg"
+                      >
+                        Copy as JSON
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {/* Download button */}
+                <button
+                  onClick={handleDownload}
+                  className="flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-700 dark:text-gray-300"
+                >
+                  <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
+                  <span>Download</span>
+                </button>
+                <button
+                  onClick={() => setIsFullscreen(false)}
+                  className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+                  title="Close (Esc)"
+                >
+                  <XMarkIcon className="w-5 h-5 text-gray-500" />
+                </button>
+              </div>
             </div>
 
             {/* Modal Content */}

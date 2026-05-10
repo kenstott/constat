@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 55973f59-a1cf-44d8-8846-583d6142b1df
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -80,6 +81,7 @@ class FirestoreConnector(NoSQLConnector):
     def connect(self) -> None:
         """Connect to Firestore."""
         try:
+            # noinspection PyUnresolvedReferences
             from google.cloud import firestore
         except ImportError:
             raise ImportError(
@@ -394,6 +396,7 @@ class FirestoreConnector(NoSQLConnector):
         if not self._client:
             raise RuntimeError("Not connected to Firestore")
 
+        # noinspection PyUnresolvedReferences
         from google.cloud.firestore import transactional
 
         @transactional

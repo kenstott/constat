@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 363a0d22-98cc-4fa2-ad7a-36d3f054c80d
 #
 # Session management commands - state, reset, facts, context, preferences.
 
@@ -55,10 +56,10 @@ def state_command(ctx: CommandContext) -> KeyValueResult:
         facts = session.fact_resolver.get_all_facts()
         pairs["Facts"] = len(facts)
 
-    # Active role
-    if hasattr(session, "role_manager"):
-        role_name = session.role_manager.active_role_name
-        pairs["Role"] = role_name or "None"
+    # Active agent
+    if hasattr(session, "agent_manager"):
+        agent_name = session.agent_manager.active_agent_name
+        pairs["Agent"] = agent_name or "None"
 
     return KeyValueResult(
         success=True,
@@ -338,91 +339,91 @@ def correct_command(ctx: CommandContext) -> CommandResult:
         return ErrorResult(error=f"Failed to record correction: {e}")
 
 
-def role_command(ctx: CommandContext) -> CommandResult:
-    """Set or show the current role."""
+def agent_command(ctx: CommandContext) -> CommandResult:
+    """Set or show the current agent."""
     session = ctx.session
 
-    if not hasattr(session, "role_manager"):
-        return ErrorResult(error="Role manager not available.")
+    if not hasattr(session, "agent_manager"):
+        return ErrorResult(error="Agent manager not available.")
 
-    role_manager = session.role_manager
+    agent_manager = session.agent_manager
     args = ctx.args.strip()
 
     if not args:
-        # Show current role
-        if role_manager.active_role_name:
-            role = role_manager.active_role
+        # Show current agent
+        if agent_manager.active_agent_name:
+            agent = agent_manager.active_agent
             return TextResult(
                 success=True,
-                content=f"**Current role:** {role_manager.active_role_name}\n\n> {role.prompt[:200]}{'...' if len(role.prompt) > 200 else ''}",
+                content=f"**Current agent:** {agent_manager.active_agent_name}\n\n> {agent.prompt[:200]}{'...' if len(agent.prompt) > 200 else ''}",
             )
         else:
             return TextResult(
                 success=True,
-                content="No role active. Use `/role <name>` to set one, or `/roles` to list available roles.",
+                content="No agent active. Use `/agent <name>` to set one, or `/agents` to list available agents.",
             )
 
-    # Set role
-    if role_manager.set_active_role(args):
+    # Set agent
+    if agent_manager.set_active_agent(args):
         if args.lower() == "none":
-            return TextResult(success=True, content="Role cleared.")
-        role = role_manager.active_role
+            return TextResult(success=True, content="Agent cleared.")
+        agent = agent_manager.active_agent
         return TextResult(
             success=True,
-            content=f"Role set to **{args}**\n\n> {role.prompt[:200]}{'...' if len(role.prompt) > 200 else ''}",
+            content=f"Agent set to **{args}**\n\n> {agent.prompt[:200]}{'...' if len(agent.prompt) > 200 else ''}",
         )
     else:
-        available = ", ".join(role_manager.list_roles()) or "none"
+        available = ", ".join(agent_manager.list_agents()) or "none"
         return ErrorResult(
-            error=f"Role not found: {args}",
-            details=f"Available roles: {available}",
+            error=f"Agent not found: {args}",
+            details=f"Available agents: {available}",
         )
 
 
-def roles_command(ctx: CommandContext) -> CommandResult:
-    """List available roles."""
+def agents_command(ctx: CommandContext) -> CommandResult:
+    """List available agents."""
     session = ctx.session
 
-    if not hasattr(session, "role_manager"):
-        return ErrorResult(error="Role manager not available.")
+    if not hasattr(session, "agent_manager"):
+        return ErrorResult(error="Agent manager not available.")
 
-    role_manager = session.role_manager
+    agent_manager = session.agent_manager
 
-    if not role_manager.has_roles:
+    if not agent_manager.has_agents:
         return TextResult(
             success=True,
-            content=f"No roles defined.\n\nCreate roles with `/role-create <name>` or in: `{role_manager.roles_file_path}`",
+            content=f"No agents defined.\n\nCreate agents with `/agent-create <name>` or in: `{agent_manager.agents_file_path}`",
         )
 
     items = []
-    for name in role_manager.list_roles():
-        role = role_manager.get_role(name)
-        is_active = name == role_manager.active_role_name
+    for name in agent_manager.list_agents():
+        agent = agent_manager.get_agent(name)
+        is_active = name == agent_manager.active_agent_name
         items.append({
             "name": f"{'→ ' if is_active else ''}{name}",
-            "description": role.description or role.prompt[:60] + "...",
+            "description": agent.description or agent.prompt[:60] + "...",
         })
 
     return ListResult(
         success=True,
-        title="Available Roles",
+        title="Available Agents",
         items=items,
-        empty_message="No roles defined.",
+        empty_message="No agents defined.",
     )
 
 
-def role_create_command(ctx: CommandContext) -> CommandResult:
-    """Create a new role."""
+def agent_create_command(ctx: CommandContext) -> CommandResult:
+    """Create a new agent."""
     session = ctx.session
 
-    if not hasattr(session, "role_manager"):
-        return ErrorResult(error="Role manager not available.")
+    if not hasattr(session, "agent_manager"):
+        return ErrorResult(error="Agent manager not available.")
 
     args = ctx.args.strip()
     if not args:
         return ErrorResult(
-            error="Usage: /role-create <name> [description]",
-            details="Creates a role. You'll be prompted to enter the prompt content.",
+            error="Usage: /agent-create <name> [description]",
+            details="Creates an agent. You'll be prompted to enter the prompt content.",
         )
 
     # Parse name and optional description
@@ -430,115 +431,115 @@ def role_create_command(ctx: CommandContext) -> CommandResult:
     name = parts[0]
     description = parts[1] if len(parts) > 1 else ""
 
-    role_manager = session.role_manager
+    agent_manager = session.agent_manager
 
     # Check if exists
-    if role_manager.get_role(name):
-        return ErrorResult(error=f"Role '{name}' already exists. Use /role-edit to modify it.")
+    if agent_manager.get_agent(name):
+        return ErrorResult(error=f"Agent '{name}' already exists. Use /agent-edit to modify it.")
 
     # Create with placeholder prompt (user should edit)
     try:
-        role_manager.create_role(
+        agent_manager.create_agent(
             name=name,
-            prompt="[Enter your role prompt here - describe the persona, communication style, and priorities]",
+            prompt="[Enter your agent prompt here - describe the persona, communication style, and priorities]",
             description=description,
         )
         return TextResult(
             success=True,
-            content=f"Role **{name}** created.\n\nEdit the prompt with: `/role-edit {name} <prompt>`\n\nOr use `/role-draft {name} <description>` to generate a prompt with AI.",
+            content=f"Agent **{name}** created.\n\nEdit the prompt with: `/agent-edit {name} <prompt>`\n\nOr use `/agent-draft {name} <description>` to generate a prompt with AI.",
         )
     except Exception as e:
-        return ErrorResult(error=f"Failed to create role: {e}")
+        return ErrorResult(error=f"Failed to create agent: {e}")
 
 
-def role_edit_command(ctx: CommandContext) -> CommandResult:
-    """Edit an existing role."""
+def agent_edit_command(ctx: CommandContext) -> CommandResult:
+    """Edit an existing agent."""
     session = ctx.session
 
-    if not hasattr(session, "role_manager"):
-        return ErrorResult(error="Role manager not available.")
+    if not hasattr(session, "agent_manager"):
+        return ErrorResult(error="Agent manager not available.")
 
     args = ctx.args.strip()
     if not args:
-        return ErrorResult(error="Usage: /role-edit <name> <prompt>")
+        return ErrorResult(error="Usage: /agent-edit <name> <prompt>")
 
     parts = args.split(maxsplit=1)
     if len(parts) < 2:
-        return ErrorResult(error="Usage: /role-edit <name> <prompt>")
+        return ErrorResult(error="Usage: /agent-edit <name> <prompt>")
 
     name, prompt = parts[0], parts[1]
-    role_manager = session.role_manager
+    agent_manager = session.agent_manager
 
     # Check if exists
-    if not role_manager.get_role(name):
-        return ErrorResult(error=f"Role '{name}' not found. Use /roles to list available roles.")
+    if not agent_manager.get_agent(name):
+        return ErrorResult(error=f"Agent '{name}' not found. Use /agents to list available agents.")
 
     try:
-        role_manager.update_role(name=name, prompt=prompt)
+        agent_manager.update_agent(name=name, prompt=prompt)
         return TextResult(
             success=True,
-            content=f"Role **{name}** updated.\n\n> {prompt[:100]}{'...' if len(prompt) > 100 else ''}",
+            content=f"Agent **{name}** updated.\n\n> {prompt[:100]}{'...' if len(prompt) > 100 else ''}",
         )
     except Exception as e:
-        return ErrorResult(error=f"Failed to update role: {e}")
+        return ErrorResult(error=f"Failed to update agent: {e}")
 
 
-def role_delete_command(ctx: CommandContext) -> CommandResult:
-    """Delete a role."""
+def agent_delete_command(ctx: CommandContext) -> CommandResult:
+    """Delete an agent."""
     session = ctx.session
 
-    if not hasattr(session, "role_manager"):
-        return ErrorResult(error="Role manager not available.")
+    if not hasattr(session, "agent_manager"):
+        return ErrorResult(error="Agent manager not available.")
 
     name = ctx.args.strip()
     if not name:
-        return ErrorResult(error="Usage: /role-delete <name>")
+        return ErrorResult(error="Usage: /agent-delete <name>")
 
-    role_manager = session.role_manager
+    agent_manager = session.agent_manager
 
-    if role_manager.delete_role(name):
-        return TextResult(success=True, content=f"Role **{name}** deleted.")
+    if agent_manager.delete_agent(name):
+        return TextResult(success=True, content=f"Agent **{name}** deleted.")
     else:
-        return ErrorResult(error=f"Role '{name}' not found.")
+        return ErrorResult(error=f"Agent '{name}' not found.")
 
 
-def role_draft_command(ctx: CommandContext) -> CommandResult:
-    """Draft a role using AI based on description."""
+def agent_draft_command(ctx: CommandContext) -> CommandResult:
+    """Draft an agent using AI based on description."""
     session = ctx.session
 
-    if not hasattr(session, "role_manager"):
-        return ErrorResult(error="Role manager not available.")
+    if not hasattr(session, "agent_manager"):
+        return ErrorResult(error="Agent manager not available.")
     if not hasattr(session, "llm"):
         return ErrorResult(error="LLM not available.")
 
     args = ctx.args.strip()
     if not args:
         return ErrorResult(
-            error="Usage: /role-draft <name> <description>",
-            details="Example: /role-draft cfo Focus on financial impact and executive summaries",
+            error="Usage: /agent-draft <name> <description>",
+            details="Example: /agent-draft cfo Focus on financial impact and executive summaries",
         )
 
     parts = args.split(maxsplit=1)
     if len(parts) < 2:
-        return ErrorResult(error="Usage: /role-draft <name> <description>")
+        return ErrorResult(error="Usage: /agent-draft <name> <description>")
 
     name, description = parts[0], parts[1]
-    role_manager = session.role_manager
+    agent_manager = session.agent_manager
 
     # Check if exists
-    if role_manager.get_role(name):
-        return ErrorResult(error=f"Role '{name}' already exists. Delete it first with /role-delete.")
+    if agent_manager.get_agent(name):
+        return ErrorResult(error=f"Agent '{name}' already exists. Delete it first with /agent-delete.")
 
     try:
-        role = role_manager.draft_role(name, description, session.llm)
-        # Save the drafted role
-        role_manager.create_role(name=role.name, prompt=role.prompt, description=role.description)
+        agent = agent_manager.draft_agent(name, description, session.llm)
+        # Save the drafted agent
+        agent_manager.create_agent(name=agent.name, prompt=agent.prompt, description=agent.description)
         return TextResult(
             success=True,
-            content=f"Role **{name}** drafted and saved.\n\n**Description:** {role.description}\n\n**Prompt:**\n> {role.prompt[:300]}{'...' if len(role.prompt) > 300 else ''}\n\nUse `/role {name}` to activate.",
+            content=f"Agent **{name}** drafted and saved.\n\n**Description:** {agent.description}\n\n**Prompt:**\n> {agent.prompt[:300]}{'...' if len(agent.prompt) > 300 else ''}\n\nUse `/agent {name}` to activate.",
         )
     except Exception as e:
-        return ErrorResult(error=f"Failed to draft role: {e}")
+        return ErrorResult(error=f"Failed to draft agent: {e}")
 
 
 # ============================================================================
@@ -772,6 +773,154 @@ def skill_draft_command(ctx: CommandContext) -> CommandResult:
         return ErrorResult(error=f"Failed to draft skill: {e}")
 
 
+def skill_download_command(ctx: CommandContext) -> CommandResult:
+    """Download a skill as a Claude Desktop compatible zip.
+
+    Usage: /skill-download <name> [filename]
+    """
+    from constat.core.skill_packager import package_skill
+
+    session = ctx.session
+    if not hasattr(session, "skill_manager"):
+        return ErrorResult(error="Skill manager not available.")
+
+    args = ctx.args.strip()
+    if not args:
+        return ErrorResult(error="Usage: /skill-download <name> [filename]")
+
+    parts = args.split(maxsplit=1)
+    name = parts[0]
+    filename = parts[1] if len(parts) > 1 else f"{name}.zip"
+    if not filename.endswith(".zip"):
+        filename += ".zip"
+
+    try:
+        zip_bytes = package_skill(name, session.skill_manager)
+    except ValueError as e:
+        return ErrorResult(error=str(e))
+
+    from pathlib import Path
+    out_path = Path(filename).resolve()
+    out_path.write_bytes(zip_bytes)
+
+    size_kb = len(zip_bytes) / 1024
+    return TextResult(
+        success=True,
+        content=f"Saved **{out_path}** ({size_kb:.1f} KB)",
+    )
+
+
+def objective_edit_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /objective-edit <index> <new_text>"""
+    parts = ctx.args.strip().split(None, 1)
+    if len(parts) < 2:
+        return ErrorResult(error="Usage: /objective-edit <index> <new_text>")
+    idx = int(parts[0])
+    new_text = parts[1]
+    result = ctx.session.edit_objective(idx, new_text)
+    return TextResult(success=True, content=result.get('output', 'Replanned.'))
+
+
+def objective_delete_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /objective-delete <index>"""
+    if not ctx.args.strip():
+        return ErrorResult(error="Usage: /objective-delete <index>")
+    idx = int(ctx.args.strip())
+    result = ctx.session.delete_objective(idx)
+    return TextResult(success=True, content=result.get('output', 'Replanned.'))
+
+
+def objectives_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /objectives — list session objectives"""
+    session = ctx.session
+    if not session.datastore:
+        return ErrorResult(error="No active session")
+    queries = session.datastore.get_state("user_queries") or []
+    if not queries:
+        return TextResult(success=True, content="No objectives yet.")
+    lines = [f"  [{i}] {q}" for i, q in enumerate(queries)]
+    return TextResult(success=True, content="Session objectives:\n" + "\n".join(lines))
+
+
+def replay_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /replay — re-execute stored code without LLM codegen"""
+    session = ctx.session
+    if not session.datastore:
+        return ErrorResult(error="No previous session to replay.")
+    problem = session.datastore.get_session_meta("problem")
+    if not problem:
+        return ErrorResult(error="No previous problem found to replay.")
+    try:
+        result = session.replay(problem)
+    except ValueError as e:
+        return ErrorResult(error=str(e))
+    return TextResult(success=result.get("success", False), content=result.get("output", "Replay complete."))
+
+
+def redo_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /redo [guidance] — replan and re-execute the last query"""
+    session = ctx.session
+    if not session.datastore:
+        return ErrorResult(error="No previous session to redo. Please run an analysis first.")
+    problem = session.datastore.get_session_meta("problem")
+    if not problem:
+        return ErrorResult(error="No previous problem found to redo.")
+    guidance = ctx.args.strip() if ctx.args else None
+    session_mode = session.datastore.get_session_meta("mode")
+    if session_mode == "auditable":
+        result = session.prove_conversation(guidance=guidance)
+    else:
+        if guidance:
+            problem = f"{problem}\n\nAdditional instructions: {guidance}"
+        result = session.solve(problem, force_plan=True)
+    return TextResult(success=result.get("success", False), content=result.get("output", "Redo complete."))
+
+
+def step_redo_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /step-redo <step_number>"""
+    if not ctx.args.strip():
+        return ErrorResult(error="Usage: /step-redo <step_number>")
+    step = int(ctx.args.strip())
+    result = ctx.session.replan_from_step(step, mode='redo')
+    return TextResult(success=True, content=result.get('output', 'Replanned.'))
+
+
+def step_delete_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /step-delete <step_number>"""
+    if not ctx.args.strip():
+        return ErrorResult(error="Usage: /step-delete <step_number>")
+    step = int(ctx.args.strip())
+    result = ctx.session.replan_from_step(step, mode='delete')
+    return TextResult(success=True, content=result.get('output', 'Replanned.'))
+
+
+def step_edit_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /step-edit <step_number> <new_goal>"""
+    parts = ctx.args.strip().split(None, 1)
+    if not parts:
+        return ErrorResult(error="Usage: /step-edit <step_number> <new_goal>")
+    step = int(parts[0])
+    new_goal = parts[1] if len(parts) > 1 else None
+    if not new_goal:
+        return ErrorResult(error="Usage: /step-edit <step_number> <new_goal>")
+    result = ctx.session.replan_from_step(step, mode='edit', edited_goal=new_goal)
+    return TextResult(success=True, content=result.get('output', 'Replanned.'))
+
+
+def replay_reason_command(ctx: CommandContext) -> CommandResult:
+    """Usage: /replay-reason — re-execute stored proof code without LLM codegen"""
+    session = ctx.session
+    if not session.datastore:
+        return ErrorResult(error="No active session to replay proof.")
+    result = session.replay_proof()
+    if result.get("error"):
+        return ErrorResult(error=result["error"])
+    return TextResult(
+        success=result.get("success", False),
+        content="Proof replay complete. See the Reasoning Chain panel for results.",
+    )
+
+
 def prove_command(ctx: CommandContext) -> CommandResult:
     """Run proof verification on the current conversation.
 
@@ -788,7 +937,7 @@ def prove_command(ctx: CommandContext) -> CommandResult:
     if not original_problem:
         return TextResult(
             success=True,
-            content="No conversation to prove. Submit a query first, then use /prove to verify it.",
+            content="No conversation to reason about. Submit a query first, then use /reason to verify it.",
         )
 
     # Run the proof (events will be emitted to UI)
@@ -807,5 +956,5 @@ def prove_command(ctx: CommandContext) -> CommandResult:
     # The actual proof facts are streamed via events
     return TextResult(
         success=True,
-        content="Proof verification complete. See the Proof panel for the full audit trail.",
+        content="Reasoning chain complete. See the Reasoning Chain panel for the full audit trail.",
     )

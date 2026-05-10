@@ -1,0 +1,39 @@
+name: Sales Analytics
+description: Sales and customer data for revenue analysis
+databases:
+  sales:
+    uri: sqlite:///data/sales.db
+    description: |
+      Sales data with customers, products, orders, and order items.
+      Customer tiers: bronze/silver/gold/platinum with different discounts.
+
+entity_resolution:
+  - entity_type: CUSTOMER
+    source: sales
+    query: "SELECT name, tier FROM customers"
+  - entity_type: CUSTOMER_TIER
+    values: [bronze, silver, gold, platinum]
+
+documents:
+  business_rules:
+    path: docs/business_rules.md
+    description: Business policies for customer tiers and discounts
+task_routing:
+  sql_generation:
+    models:
+      - provider: together
+        model: meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
+        timeout_seconds: 30
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
+        timeout_seconds: 120
+  python_analysis:
+    models:
+      - provider: together
+        model: meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
+        timeout_seconds: 30
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
+        timeout_seconds: 120
+
+golden_questions: []

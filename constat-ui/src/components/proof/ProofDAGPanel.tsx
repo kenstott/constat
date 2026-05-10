@@ -1,13 +1,51 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: adb6754f-7812-4237-bf21-89bbea79487e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Proof DAG Panel - Floating panel for auditable mode fact resolution visualization
 // Uses d3-dag for proper directed acyclic graph layout
 
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
-import { XMarkIcon, TableCellsIcon } from '@heroicons/react/24/outline'
+import { useState, useCallback, useMemo, useRef, useEffect, useImperativeHandle } from 'react'
+import { XMarkIcon, TableCellsIcon, ChevronDownIcon } from '@heroicons/react/24/outline'
 import * as d3dag from 'd3-dag'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { useUIStore } from '@/store/uiStore'
-import { createSkillFromProof } from '@/api/skills'
+import { openFullscreenArtifact } from '@/graphql/ui-state'
+import { addToast } from '@/graphql/ui-state'
+import { useTestingMutations } from '@/hooks/useTesting'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { CREATE_SKILL_FROM_PROOF } from '@/graphql/operations/learnings'
+import { apolloClient } from '@/graphql/client'
+import { EXTRACT_EXPECTATIONS, toExpectations } from '@/graphql/operations/testing'
+import { DOMAINS_QUERY } from '@/graphql/operations/domains'
+import { OBJECTIVES_QUERY } from '@/graphql/operations/state'
+
+interface DomainInfo {
+  filename: string
+  name: string
+  description: string
+  tier: string
+  active: boolean
+}
+
+interface ObjectivesEntry {
+  type: 'question' | 'clarification' | 'redo'
+  text?: string
+  question?: string
+  answer?: string
+  mode?: string
+  guidance?: string
+  ts: string
+}
+import type { GoldenQuestionRequest } from '@/types/api'
+import { MermaidBlock } from './MermaidBlock'
+import { CodeViewer } from '@/components/artifacts/CodeViewer'
 
 // Node status types matching server events
 type NodeStatus = 'pending' | 'planning' | 'executing' | 'resolved' | 'failed' | 'blocked'
@@ -26,8 +64,19 @@ interface FactNode {
   reason?: string
   dependencies: string[]
   elapsed_ms?: number
+  attempt?: number
+  code?: string
   validations?: string[]
   profile?: string[]
+}
+
+export interface ProofDAGActions {
+  showSkillForm: () => void
+  showTestForm: () => Promise<void>
+  showSummary: () => void
+  showRedoForm: () => void
+  showFinalResult: () => void
+  showObjectives: () => void
 }
 
 interface ProofDAGPanelProps {
@@ -40,6 +89,8 @@ interface ProofDAGPanelProps {
   sessionId?: string
   onSkillCreated?: () => void
   onRedo?: (guidance?: string) => void
+  embedded?: boolean  // When true, renders as flex column filling parent (no overlay/drag/resize)
+  actionsRef?: React.Ref<ProofDAGActions>  // Expose form triggers for external buttons
 }
 
 // Status symbols as per design doc
@@ -244,21 +295,35 @@ function NodeTooltip({ node, position }: { node: FactNode; position: { x: number
   )
 }
 
-export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary, isSummaryGenerating = false, sessionId, onSkillCreated, onRedo }: ProofDAGPanelProps) {
+
+export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary, isSummaryGenerating = false, sessionId, onSkillCreated, onRedo, embedded = false, actionsRef }: ProofDAGPanelProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  // addToast imported from ui-state
+  const [allDomains, setAllDomains] = useState<DomainInfo[]>([])
+  const { createGoldenQuestion } = useTestingMutations()
+  const { currentQuery } = useSessionContext()
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
-  const [selectedNodeStack, setSelectedNodeStack] = useState<FactNode[]>([])
+  const [selectedIdStack, setSelectedIdStack] = useState<string[]>([])
+  // Derive selectedNode from live facts map so updates (code, elapsed_ms) are reflected
+  const selectedNodeStack = selectedIdStack.map(id => facts.get(id)).filter((n): n is FactNode => !!n)
   const selectedNode = selectedNodeStack.length > 0 ? selectedNodeStack[selectedNodeStack.length - 1] : null
   const [showSkillForm, setShowSkillForm] = useState(false)
   const [skillName, setSkillName] = useState('')
   const [isSavingSkill, setIsSavingSkill] = useState(false)
   const [showRedoForm, setShowRedoForm] = useState(false)
   const [redoGuidance, setRedoGuidance] = useState('')
-  const pushSelectedNode = (node: FactNode) => setSelectedNodeStack(prev => [...prev, node])
-  const popSelectedNode = () => setSelectedNodeStack(prev => prev.slice(0, -1))
-  const clearSelectedNodes = () => setSelectedNodeStack([])
+  const [isSavingTest, setIsSavingTest] = useState(false)
+  const [codeExpanded, setCodeExpanded] = useState(false)
+  const pushSelectedNode = (node: FactNode) => { setSelectedIdStack(prev => [...prev, node.id]); setCodeExpanded(false) }
+  const popSelectedNode = () => { setSelectedIdStack(prev => prev.slice(0, -1)); setCodeExpanded(false) }
+  const clearSelectedNodes = () => setSelectedIdStack([])
   const [dimensions, setDimensions] = useState({ width: 600, height: 400 })
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const isPanningDag = useRef(false)
+  const panStart = useRef({ x: 0, y: 0 })
+  const dagDragDistance = useRef(0)
   const [panelSize, setPanelSize] = useState(() => {
     try {
       const saved = localStorage.getItem('constat-proof-panel-geometry')
@@ -282,6 +347,16 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   const [, setIsResizing] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [showSummary, setShowSummary] = useState(false)
+  const [showObjectives, setShowObjectives] = useState(false)
+  const [objectives, setObjectives] = useState<ObjectivesEntry[]>([])
+
+  // Fetch objectives when panel opens
+  useEffect(() => {
+    if (showObjectives && sessionId) {
+      apolloClient.query({ query: OBJECTIVES_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+        .then(({ data }) => setObjectives(data.objectives))
+    }
+  }, [showObjectives, sessionId])
 
   // Persist panel geometry to localStorage when size or position changes
   useEffect(() => {
@@ -292,6 +367,29 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     }
     localStorage.setItem('constat-proof-panel-geometry', JSON.stringify(data))
   }, [panelSize, panelPosition])
+
+  // Native wheel listener (passive:false required for preventDefault to work)
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg) return
+    const handler = (e: WheelEvent) => {
+      e.preventDefault()
+      const scale = e.deltaY > 0 ? 0.9 : 1.1
+      setZoom(prev => {
+        const newZoom = Math.min(3, Math.max(0.3, prev * scale))
+        const svgRect = svg.getBoundingClientRect()
+        const cx = e.clientX - svgRect.left
+        const cy = e.clientY - svgRect.top
+        setPan(p => ({
+          x: cx - (cx - p.x) * (newZoom / prev),
+          y: cy - (cy - p.y) * (newZoom / prev),
+        }))
+        return newZoom
+      })
+    }
+    svg.addEventListener('wheel', handler, { passive: false })
+    return () => svg.removeEventListener('wheel', handler)
+  }, [svgRef])
 
   // Handle drag
   const handleDragStart = useCallback((e: React.MouseEvent) => {
@@ -367,6 +465,12 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
 
   // Convert facts Map to DAG structure
   // Recalculate when isPlanningComplete changes to ensure all dependencies are resolved
+  // Structural key: only changes when nodes are added/removed or edges change
+  const structuralKey = useMemo(() => {
+    const nodes = Array.from(facts.values())
+    return nodes.map(n => `${n.id}:${n.dependencies.filter(d => facts.has(d)).join(',')}`).sort().join('|')
+  }, [facts])
+
   const dagData = useMemo(() => {
     const nodes = Array.from(facts.values())
     if (nodes.length === 0) return null
@@ -382,7 +486,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     }))
 
     return dagNodes
-  }, [facts, isPlanningComplete])
+  }, [facts, structuralKey])
 
   // Compute DAG layout
   const layout = useMemo(() => {
@@ -422,10 +526,12 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     }
   }, [dagData])
 
-  // Update dimensions when layout changes
+  // Update dimensions and reset zoom/pan only when graph structure changes
   useEffect(() => {
     if (layout) {
       setDimensions({ width: layout.width, height: layout.height })
+      setZoom(1)
+      setPan({ x: 0, y: 0 })
     }
   }, [layout])
 
@@ -466,6 +572,91 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   }, [finalNode, nodes])
 
   const isProofComplete = pendingCount === 0 && (resolvedCount > 0 || failedCount > 0)
+
+  // Save test directly to user domain (no picker needed)
+  const handleSaveTest = async () => {
+    if (!sessionId || isSavingTest) return
+    setIsSavingTest(true)
+    try {
+      let domains = allDomains
+      if (domains.length === 0) {
+        const { data } = await apolloClient.query({ query: DOMAINS_QUERY, fetchPolicy: 'network-only' })
+        domains = data.domains.map((d: any) => ({ filename: d.filename, name: d.name, description: d.description, tier: d.tier, active: d.active }))
+        setAllDomains(domains)
+      }
+      const userDomain = domains.find(d => d.tier === 'user')
+      if (!userDomain) {
+        alert('No user domain available')
+        return
+      }
+      const fallbackNodes = Array.from(facts.values()).map(f => ({
+        id: f.id,
+        name: f.name,
+        source: f.source,
+        status: f.status,
+      }))
+      // Build test question from objectives_log: raw question + clarifications + redos
+      let questionText = currentQuery || ''
+      try {
+        const { data: objData } = await apolloClient.query({ query: OBJECTIVES_QUERY, variables: { sessionId }, fetchPolicy: 'network-only' })
+        const entries = objData.objectives as ObjectivesEntry[]
+        const qEntry = entries.find(o => o.type === 'question')
+        if (qEntry?.text) {
+          const parts: string[] = [qEntry.text]
+          const clarifs = entries.filter(o => o.type === 'clarification')
+          if (clarifs.length > 0) {
+            parts.push('\nClarifications:')
+            for (const c of clarifs) parts.push(`${c.question}: ${c.answer}`)
+          }
+          const redos = entries.filter(o => o.type === 'redo')
+          if (redos.length > 0) {
+            parts.push('\nRedos:')
+            for (const r of redos) parts.push(`[${r.mode}] ${r.guidance}`)
+          }
+          questionText = parts.join('\n')
+        }
+      } catch { /* use currentQuery as fallback */ }
+      const extractResult = await apolloClient.mutate({
+        mutation: EXTRACT_EXPECTATIONS,
+        variables: {
+          sessionId,
+          input: {
+            proofNodes: fallbackNodes,
+            originalQuestion: questionText || undefined,
+            proofSummary: summary ?? undefined,
+          },
+        },
+      })
+      const expect = toExpectations(extractResult.data.extractExpectations)
+      const body: GoldenQuestionRequest = {
+        question: questionText,
+        tags: ['from-reason-chain'],
+        expect,
+        objectives: expect.objectives ?? [],
+      }
+      await createGoldenQuestion(userDomain.filename, body as unknown as Record<string, unknown>)
+      addToast('Test saved successfully')
+    } catch (err) {
+      console.error('Failed to save test:', err)
+      addToast(`Failed to save test: ${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setIsSavingTest(false)
+    }
+  }
+
+  // Keep a stable ref to handleSaveTest so imperative handle never goes stale
+  const handleSaveTestRef = useRef(handleSaveTest)
+  handleSaveTestRef.current = handleSaveTest
+
+  // Expose form triggers for external buttons (used by ReasonChainCommandStrip)
+  useImperativeHandle(actionsRef, () => ({
+    showSkillForm: () => setShowSkillForm(true),
+    showTestForm: () => handleSaveTestRef.current(),
+    showSummary: () => setShowSummary(true),
+    showRedoForm: () => setShowRedoForm(true),
+    showFinalResult: () => { if (resultNode) pushSelectedNode(resultNode) },
+    showObjectives: () => setShowObjectives(true),
+  }), [resultNode])
 
   // Compute critical path: longest dependency chain by elapsed_ms (or node count)
   const criticalPath = useMemo(() => {
@@ -543,7 +734,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     return pathSet
   }, [nodes, isProofComplete, failedCount, finalNode])
 
-  if (!isOpen) return null
+  if (!embedded && !isOpen) return null
 
   // Render edge path with curve
   const renderEdge = (
@@ -627,7 +818,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
           })
         }}
         onMouseLeave={() => setHoveredNode(null)}
-        onClick={() => pushSelectedNode(nodeData)}
+        onClick={() => { if (dagDragDistance.current < 5) pushSelectedNode(nodeData) }}
       >
         {/* Critical path glow */}
         {isOnCriticalPath && (
@@ -669,10 +860,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
         <text
           x={32}
           y={NODE_HEIGHT / 2 + 4}
-          fill="#1F2937"
+          className="select-none fill-gray-800 dark:fill-gray-100"
           fontSize={12}
           fontWeight={500}
-          className="select-none"
         >
           {nodeData.name.length > 27 ? nodeData.name.slice(0, 24) + '...' : nodeData.name}
         </text>
@@ -681,11 +871,17 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   }
 
   return (
-    <div className={`fixed inset-0 z-40 ${panelPosition ? '' : 'flex items-center justify-center'} pointer-events-none`}>
+    <div className={embedded
+      ? "flex-1 flex flex-col overflow-hidden"
+      : `fixed inset-0 z-40 ${panelPosition ? '' : 'flex items-center justify-center'} pointer-events-none`
+    }>
       <div
-        ref={panelRef}
-        className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl flex flex-col pointer-events-auto border border-gray-200 dark:border-gray-700 relative"
-        style={{
+        ref={embedded ? undefined : panelRef}
+        className={embedded
+          ? "flex-1 flex flex-col min-h-0 bg-white dark:bg-gray-900"
+          : "bg-white dark:bg-gray-900 rounded-xl shadow-2xl flex flex-col pointer-events-auto border border-gray-200 dark:border-gray-700 relative"
+        }
+        style={embedded ? undefined : {
           width: panelSize.width,
           height: panelSize.height,
           maxWidth: '95vw',
@@ -693,33 +889,43 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
           ...(panelPosition ? { position: 'absolute', left: panelPosition.x, top: panelPosition.y } : {}),
         }}
       >
-        {/* Resize handles */}
-        <div className="absolute -top-1 -left-1 w-3 h-3 cursor-nw-resize" onMouseDown={(e) => handleMouseDown(e, 'nw')} />
-        <div className="absolute -top-1 -right-1 w-3 h-3 cursor-ne-resize" onMouseDown={(e) => handleMouseDown(e, 'ne')} />
-        <div className="absolute -bottom-1 -left-1 w-3 h-3 cursor-sw-resize" onMouseDown={(e) => handleMouseDown(e, 'sw')} />
-        <div className="absolute -bottom-1 -right-1 w-3 h-3 cursor-se-resize" onMouseDown={(e) => handleMouseDown(e, 'se')} />
-        <div className="absolute top-0 left-3 right-3 h-1 cursor-n-resize" onMouseDown={(e) => handleMouseDown(e, 'n')} />
-        <div className="absolute bottom-0 left-3 right-3 h-1 cursor-s-resize" onMouseDown={(e) => handleMouseDown(e, 's')} />
-        <div className="absolute left-0 top-3 bottom-3 w-1 cursor-w-resize" onMouseDown={(e) => handleMouseDown(e, 'w')} />
-        <div className="absolute right-0 top-3 bottom-3 w-1 cursor-e-resize" onMouseDown={(e) => handleMouseDown(e, 'e')} />
-        {/* Header - draggable */}
-        <div
-          className={`flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
-          onMouseDown={handleDragStart}
-        >
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-            Proof
-          </h2>
-          <button
-            onClick={onClose}
-            className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+        {!embedded && (
+          <>
+            {/* Resize handles */}
+            <div className="absolute -top-1 -left-1 w-3 h-3 cursor-nw-resize" onMouseDown={(e) => handleMouseDown(e, 'nw')} />
+            <div className="absolute -top-1 -right-1 w-3 h-3 cursor-ne-resize" onMouseDown={(e) => handleMouseDown(e, 'ne')} />
+            <div className="absolute -bottom-1 -left-1 w-3 h-3 cursor-sw-resize" onMouseDown={(e) => handleMouseDown(e, 'sw')} />
+            <div className="absolute -bottom-1 -right-1 w-3 h-3 cursor-se-resize" onMouseDown={(e) => handleMouseDown(e, 'se')} />
+            <div className="absolute top-0 left-3 right-3 h-1 cursor-n-resize" onMouseDown={(e) => handleMouseDown(e, 'n')} />
+            <div className="absolute bottom-0 left-3 right-3 h-1 cursor-s-resize" onMouseDown={(e) => handleMouseDown(e, 's')} />
+            <div className="absolute left-0 top-3 bottom-3 w-1 cursor-w-resize" onMouseDown={(e) => handleMouseDown(e, 'w')} />
+            <div className="absolute right-0 top-3 bottom-3 w-1 cursor-e-resize" onMouseDown={(e) => handleMouseDown(e, 'e')} />
+          </>
+        )}
+        {/* Header */}
+        {embedded ? (
+          <div className="flex items-center px-4 py-2">
+            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Reason-Chain</h2>
+          </div>
+        ) : (
+          <div
+            className={`flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+            onMouseDown={handleDragStart}
           >
-            <XMarkIcon className="w-5 h-5" />
-          </button>
-        </div>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Reason-Chain
+            </h2>
+            <button
+              onClick={onClose}
+              className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            >
+              <XMarkIcon className="w-5 h-5" />
+            </button>
+          </div>
+        )}
 
         {/* DAG Content */}
-        <div className="flex-1 overflow-auto p-4">
+        <div className="flex-1 overflow-hidden p-2">
           {nodes.length === 0 ? (
             <div className="text-center text-gray-500 py-8 min-w-[500px]">
               <div className="animate-pulse">
@@ -729,24 +935,43 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                     <div className="absolute top-0 left-0 w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
                   </div>
                 </div>
-                <p className="text-lg">{STATUS_SYMBOLS.planning} Generating proof plan...</p>
+                <p className="text-lg">{STATUS_SYMBOLS.planning} Generating reasoning plan...</p>
                 <p className="text-sm mt-2">Analyzing the problem and identifying required facts.</p>
               </div>
             </div>
           ) : !isPlanningComplete ? (
             <div className="text-center text-gray-500 py-8 min-w-[500px]">
               <div className="animate-pulse">
-                <p className="text-lg">{STATUS_SYMBOLS.planning} Planning proof...</p>
+                <p className="text-lg">{STATUS_SYMBOLS.planning} Building reason-chain...</p>
                 <p className="text-sm mt-2">Analyzing dependencies and building resolution graph.</p>
                 <p className="text-xs mt-4 text-gray-400">{nodes.length} facts identified</p>
               </div>
             </div>
           ) : layout ? (
+            <div className="relative w-full h-full">
             <svg
               ref={svgRef}
-              width={dimensions.width}
-              height={dimensions.height}
-              className="block mx-auto"
+              width="100%"
+              height="100%"
+              viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
+              preserveAspectRatio="xMidYMid meet"
+              className="block"
+              style={{ cursor: isPanningDag.current ? 'grabbing' : 'grab' }}
+              onMouseDown={(e) => {
+                if (e.button !== 0) return
+                isPanningDag.current = true
+                panStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y }
+                dagDragDistance.current = 0
+              }}
+              onMouseMove={(e) => {
+                if (!isPanningDag.current) return
+                const dx = e.clientX - panStart.current.x - pan.x
+                const dy = e.clientY - panStart.current.y - pan.y
+                dagDragDistance.current += Math.sqrt(dx * dx + dy * dy)
+                setPan({ x: e.clientX - panStart.current.x, y: e.clientY - panStart.current.y })
+              }}
+              onMouseUp={() => { isPanningDag.current = false }}
+              onMouseLeave={() => { isPanningDag.current = false }}
             >
               {/* Definitions for markers */}
               <defs>
@@ -791,6 +1016,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                 </marker>
               </defs>
 
+              <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
               {/* Render edges first (below nodes) */}
               <g className="edges">
                 {Array.from(layout.graph.links()).map((link) => {
@@ -828,7 +1054,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                   )
                 })}
               </g>
+              </g>
             </svg>
+            </div>
           ) : (
             <div className="text-center text-gray-500 py-8 min-w-[500px]">
               <p>Building graph layout...</p>
@@ -893,58 +1121,43 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
 
         {/* Footer */}
         <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
-          <span className="text-xs text-gray-500">Click nodes for details</span>
-          <div className="flex gap-2 items-center">
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-gray-500">Click nodes for details</span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => setZoom(z => Math.min(3, z * 1.2))}
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-sm font-bold hover:bg-gray-100 dark:hover:bg-gray-700"
+              >+</button>
+              <button
+                onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-xs hover:bg-gray-100 dark:hover:bg-gray-700"
+              >1:1</button>
+              <button
+                onClick={() => setZoom(z => Math.max(0.3, z / 1.2))}
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-sm font-bold hover:bg-gray-100 dark:hover:bg-gray-700"
+              >−</button>
+              <button
+                onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}
+                title="Fit to window"
+                className="w-7 h-7 rounded bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="2" width="12" height="12" rx="1" />
+                  <polyline points="2,6 5,6 5,2" />
+                  <polyline points="14,10 11,10 11,14" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          {!embedded && <div className="flex gap-2 items-center">
             {isProofComplete && onRedo && (
               <button
                 onClick={() => setShowRedoForm(true)}
                 className="px-4 py-2 text-sm font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors"
+                title="Re-run proof with optional guidance"
               >
                 Redo
               </button>
-            )}
-            {showRedoForm && onRedo && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}>
-                <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-[480px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
-                  <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
-                    <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Redo Proof</h3>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Provide guidance for the new proof attempt</p>
-                  </div>
-                  <form
-                    className="px-5 py-4"
-                    onSubmit={(e) => {
-                      e.preventDefault()
-                      onRedo(redoGuidance.trim() || undefined)
-                      setShowRedoForm(false)
-                      setRedoGuidance('')
-                    }}
-                  >
-                    <textarea
-                      value={redoGuidance}
-                      onChange={(e) => setRedoGuidance(e.target.value)}
-                      placeholder="What should be different this time? (optional)"
-                      className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
-                      rows={4}
-                      autoFocus
-                    />
-                    <div className="flex justify-end gap-2 mt-4">
-                      <button
-                        type="button"
-                        onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}
-                        className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="submit"
-                        className="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors"
-                      >
-                        Prove
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              </div>
             )}
             {isProofComplete && sessionId && !showSkillForm && (
               <button
@@ -954,50 +1167,14 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                 Save as Skill
               </button>
             )}
-            {showSkillForm && sessionId && (
-              <form
-                className="flex items-center gap-2"
-                onSubmit={async (e) => {
-                  e.preventDefault()
-                  if (!skillName.trim() || isSavingSkill) return
-                  setIsSavingSkill(true)
-                  try {
-                    await createSkillFromProof(sessionId, skillName.trim())
-                    setShowSkillForm(false)
-                    setSkillName('')
-                    onSkillCreated?.()
-                  } catch (err) {
-                    console.error('Failed to save skill:', err)
-                  } finally {
-                    setIsSavingSkill(false)
-                  }
-                }}
+            {isProofComplete && sessionId && (
+              <button
+                onClick={handleSaveTest}
+                disabled={isSavingTest}
+                className="px-4 py-2 text-sm font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <input
-                  type="text"
-                  value={skillName}
-                  onChange={(e) => setSkillName(e.target.value)}
-                  placeholder="Skill name..."
-                  className="px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  autoFocus
-                  disabled={isSavingSkill}
-                />
-                <button
-                  type="submit"
-                  disabled={!skillName.trim() || isSavingSkill}
-                  className="px-3 py-1 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-600/70 disabled:cursor-not-allowed rounded transition-colors flex items-center gap-1.5"
-                >
-                  {isSavingSkill ? (<><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Saving...</>) : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setShowSkillForm(false); setSkillName('') }}
-                  disabled={isSavingSkill}
-                  className="px-2 py-1 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-                >
-                  Cancel
-                </button>
-              </form>
+                Save as Test
+              </button>
             )}
             {resultNode && resultNode.status === 'resolved' && (
               <button
@@ -1031,7 +1208,108 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
             >
               Close
             </button>
-          </div>
+          </div>}
+          {/* Modal forms — render in both embedded and floating modes */}
+          {showRedoForm && onRedo && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}>
+              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-[480px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
+                <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Redo Reason-Chain</h3>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Provide guidance for the new reasoning attempt</p>
+                </div>
+                <form
+                  className="px-5 py-4"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    onRedo(redoGuidance.trim() || undefined)
+                    setShowRedoForm(false)
+                    setRedoGuidance('')
+                  }}
+                >
+                  <textarea
+                    value={redoGuidance}
+                    onChange={(e) => setRedoGuidance(e.target.value)}
+                    placeholder="What should be different this time? (optional)"
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+                    rows={4}
+                    autoFocus
+                  />
+                  <div className="flex justify-end gap-2 mt-4">
+                    <button
+                      type="button"
+                      onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}
+                      className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors"
+                    >
+                      Reason
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+          {showSkillForm && sessionId && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setShowSkillForm(false); setSkillName('') }}>
+              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-[400px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
+                <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Save as Skill</h3>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Create a reusable skill from this proof</p>
+                </div>
+                <form
+                  className="px-5 py-4"
+                  onSubmit={async (e) => {
+                    e.preventDefault()
+                    if (!skillName.trim() || isSavingSkill) return
+                    setIsSavingSkill(true)
+                    try {
+                      await apolloClient.mutate({ mutation: CREATE_SKILL_FROM_PROOF, variables: { sessionId, input: { name: skillName.trim() } } })
+                      setShowSkillForm(false)
+                      setSkillName('')
+                      onSkillCreated?.()
+                      addToast(`Skill "${skillName.trim()}" created successfully`)
+                    } catch (err) {
+                      console.error('Failed to save skill:', err)
+                      addToast(`Failed to save skill: ${err instanceof Error ? err.message : String(err)}`, 'error')
+                    } finally {
+                      setIsSavingSkill(false)
+                    }
+                  }}
+                >
+                  <input
+                    type="text"
+                    value={skillName}
+                    onChange={(e) => setSkillName(e.target.value)}
+                    placeholder="Skill name..."
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    autoFocus
+                    disabled={isSavingSkill}
+                  />
+                  <div className="flex justify-end gap-2 mt-4">
+                    <button
+                      type="button"
+                      onClick={() => { setShowSkillForm(false); setSkillName('') }}
+                      disabled={isSavingSkill}
+                      className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!skillName.trim() || isSavingSkill}
+                      className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-600/70 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-1.5"
+                    >
+                      {isSavingSkill ? (<><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Saving...</>) : 'Save'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1122,7 +1400,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                       {isTable && (
                         <button
                           onClick={() => {
-                            useUIStore.getState().openFullscreenArtifact({
+                            openFullscreenArtifact({
                               type: 'proof_value',
                               name: selectedNode.name,
                               content: String(selectedNode.value),
@@ -1157,7 +1435,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                       ) : isDbSourceRef && dbName && dbTableName ? (
                         <button
                           onClick={() => {
-                            useUIStore.getState().openFullscreenArtifact({
+                            openFullscreenArtifact({
                               type: 'database_table',
                               dbName,
                               tableName: dbTableName,
@@ -1172,7 +1450,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                       ) : isClickableRowCount ? (
                         <button
                           onClick={() => {
-                            useUIStore.getState().openFullscreenArtifact({
+                            openFullscreenArtifact({
                               type: 'table',
                               name: materializedTableName,
                             })
@@ -1255,10 +1533,40 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                   <p className="text-red-600 dark:text-red-400 mt-1">{selectedNode.reason}</p>
                 </div>
               )}
-              {selectedNode.elapsed_ms !== undefined && (
+              {(selectedNode.elapsed_ms !== undefined || selectedNode.attempt !== undefined) && (
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  {selectedNode.elapsed_ms !== undefined && (
+                    <div>
+                      <span className="text-xs font-medium text-gray-500 uppercase">Elapsed Time</span>
+                      <p className="text-gray-700 dark:text-gray-300 mt-1">
+                        {selectedNode.elapsed_ms >= 1000
+                          ? `${(selectedNode.elapsed_ms / 1000).toFixed(1)}s`
+                          : `${selectedNode.elapsed_ms}ms`}
+                      </p>
+                    </div>
+                  )}
+                  {selectedNode.attempt !== undefined && selectedNode.attempt > 1 && (
+                    <div>
+                      <span className="text-xs font-medium text-gray-500 uppercase">Retries</span>
+                      <p className="text-amber-600 dark:text-amber-400 mt-1">{selectedNode.attempt - 1} {selectedNode.attempt === 2 ? 'retry' : 'retries'}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+              {selectedNode.code && (
                 <div>
-                  <span className="text-xs font-medium text-gray-500 uppercase">Elapsed Time</span>
-                  <p className="text-gray-700 dark:text-gray-300 mt-1">{selectedNode.elapsed_ms}ms</p>
+                  <button
+                    onClick={() => setCodeExpanded(prev => !prev)}
+                    className="flex items-center gap-1 text-xs font-medium text-gray-500 uppercase hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
+                  >
+                    <ChevronDownIcon className={`w-3 h-3 transition-transform ${codeExpanded ? '' : '-rotate-90'}`} />
+                    Code
+                  </button>
+                  {codeExpanded && (
+                    <div className="mt-1">
+                      <CodeViewer code={selectedNode.code} language="python" />
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1274,7 +1582,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
             onClick={(e) => e.stopPropagation()}
           >
             <div className="sticky top-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between">
-              <h3 className="font-semibold text-gray-900 dark:text-gray-100">Proof Summary</h3>
+              <h3 className="font-semibold text-gray-900 dark:text-gray-100">Reason-Chain Summary</h3>
               <button
                 onClick={() => setShowSummary(false)}
                 className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
@@ -1283,12 +1591,88 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
               </button>
             </div>
             <div className="p-4">
-              <p className="text-xs text-gray-500 mb-3 italic">LLM-generated summary of the proof derivation</p>
+              <p className="text-xs text-gray-500 mb-3 italic">LLM-generated summary of the reasoning derivation</p>
               <div className="prose prose-sm dark:prose-invert max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    pre({ children }) {
+                      return <pre className="has-[.mermaid-container]:!bg-transparent has-[.mermaid-container]:!border-none has-[.mermaid-container]:!p-0 has-[.mermaid-container]:!shadow-none">{children}</pre>
+                    },
+                    code({ className, children }) {
+                      if (className === 'language-mermaid') {
+                        return <MermaidBlock chart={String(children)} />
+                      }
+                      return <code className={className}>{children}</code>
+                    },
+                  }}
+                >
                   {summary}
                 </ReactMarkdown>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Objectives Panel */}
+      {showObjectives && (
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/20 pointer-events-auto" onClick={() => setShowObjectives(false)}>
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-auto pointer-events-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between">
+              <h3 className="font-semibold text-gray-900 dark:text-gray-100">Objectives</h3>
+              <button
+                onClick={() => setShowObjectives(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              {objectives.length === 0 && (
+                <p className="text-sm text-gray-500 italic">No objectives recorded.</p>
+              )}
+
+              {/* Question */}
+              {objectives.filter(o => o.type === 'question').map((o, i) => (
+                <div key={`q-${i}`}>
+                  <h4 className="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400 mb-1">Question</h4>
+                  <p className="text-sm text-gray-900 dark:text-gray-100" style={{ whiteSpace: 'pre-line' }}>{o.text}</p>
+                </div>
+              ))}
+
+              {/* Clarifications */}
+              {objectives.filter(o => o.type === 'clarification').length > 0 && (
+                <div>
+                  <h4 className="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400 mb-1">Clarifications</h4>
+                  <dl className="space-y-2">
+                    {objectives.filter(o => o.type === 'clarification').map((o, i) => (
+                      <div key={`c-${i}`} className="text-sm">
+                        <dt className="font-medium text-gray-700 dark:text-gray-300">Q: {o.question}</dt>
+                        <dd className="ml-4 text-gray-600 dark:text-gray-400">A: {o.answer}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              )}
+
+              {/* Redo History */}
+              {objectives.filter(o => o.type === 'redo').length > 0 && (
+                <div>
+                  <h4 className="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400 mb-1">Redo History</h4>
+                  <div className="space-y-2">
+                    {objectives.filter(o => o.type === 'redo').map((o, i) => (
+                      <div key={`r-${i}`} className="text-sm flex items-start gap-2">
+                        <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">{o.mode}</span>
+                        <span className="text-gray-700 dark:text-gray-300">{o.guidance}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1309,7 +1693,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   )
 }
 
-// Hook to manage proof facts from WebSocket events
+// Hook to manage proof facts from subscription events
 export function useProofFacts() {
   const [facts, setFacts] = useState<Map<string, FactNode>>(new Map())
   const [isProving, setIsProving] = useState(false)

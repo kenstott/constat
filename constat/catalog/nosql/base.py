@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 78fc81d7-2d51-4cc4-ad4c-12c0d3db0f55
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -23,6 +24,7 @@ class NoSQLType(Enum):
     GRAPH = "graph"  # Neo4j, Amazon Neptune
     SEARCH = "search"  # Elasticsearch, OpenSearch
     TIME_SERIES = "time_series"  # InfluxDB, TimescaleDB
+    OBSERVABILITY = "observability"  # Jaeger, Zipkin
 
 
 @dataclass
@@ -162,6 +164,7 @@ class NoSQLConnector(ABC):
         """
         pass
 
+    # noinspection DuplicatedCode
     def get_overview(self) -> str:
         """Generate token-optimized overview for system prompt."""
         collections = self.get_collections()
@@ -198,7 +201,8 @@ class NoSQLConnector(ABC):
         """
         return self.query(collection, {}, limit=limit)
 
-    def infer_field_type(self, values: list[Any]) -> str:
+    @staticmethod
+    def infer_field_type(values: list[Any]) -> str:
         """Infer field type from sample values."""
         types_seen = set()
         for val in values:

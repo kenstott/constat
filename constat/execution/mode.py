@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: e4ab4f41-9352-47fe-b69a-ec323839be23
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -10,7 +11,7 @@
 """Execution phase and plan approval handling.
 
 All queries run in exploratory mode by default (fast, conversational, best-effort).
-Use the /prove command to verify claims from the conversation with auditable proofs.
+Use the /reason command to verify claims from the conversation with auditable reasoning chains.
 """
 
 from dataclasses import dataclass, field
@@ -22,7 +23,7 @@ class Mode(Enum):
     """Execution mode - kept for backwards compatibility.
 
     Note: Mode selection is no longer used. All queries run exploratory by default.
-    Use /prove to generate auditable proofs when needed.
+    Use /reason to generate auditable reasoning chains when needed.
     """
 
     PROOF = "proof"
@@ -110,6 +111,9 @@ class SubIntent(Enum):
     EXIT = "exit"
     """End session (/exit, /quit)."""
 
+    MODE_SWITCH = "mode_switch"
+    """Switch between modes (e.g. auditable/conversational)."""
+
     # Control sub-intents (execution management)
     CANCEL = "cancel"
     """Stop execution entirely."""
@@ -118,7 +122,7 @@ class SubIntent(Enum):
     """Stop and revise the plan."""
 
     PROVE = "prove"
-    """Generate proof for conversation claims (/prove)."""
+    """Generate proof for conversation claims (/reason)."""
 
 
 @dataclass

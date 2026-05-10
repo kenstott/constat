@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: e6168a72-0017-41dc-8b52-9c8115e4dd85
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Query Input component
 
 import { useState, useRef, useEffect, KeyboardEvent } from 'react'

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "constat-jupyter"
+version = "0.1.0"
+description = "Jupyter notebook client for Constat"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.24",
+    "polars>=0.20",
+    "ipython>=7.0",
+    "jsonpatch>=1.32",
+]
+
+[project.optional-dependencies]
+widgets = ["ipywidgets>=8", "itables>=2.0"]
+pandas = ["pandas>=2"]
+all = ["constat-jupyter[widgets,pandas]"]

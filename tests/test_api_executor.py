@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: e7187ff6-f44c-40bc-98b3-bdea43f2845d
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,6 +10,7 @@
 
 """Tests for API executor - actually executing queries against external APIs."""
 
+from __future__ import annotations
 import pytest
 
 from constat.core.config import Config, APIConfig

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 5e927f61-7859-43b4-bc3b-32354f6e3684
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -37,8 +38,12 @@ class AnthropicProvider(BaseLLMProvider):
         self,
         api_key: Optional[str] = None,
         model: str = "claude-sonnet-4-20250514",
+        timeout: Optional[float] = None,
     ):
-        self.client = anthropic.Anthropic(api_key=api_key)
+        kwargs = {"max_retries": 0}
+        if timeout:
+            kwargs["timeout"] = timeout
+        self.client = anthropic.Anthropic(api_key=api_key, **kwargs)
         self.model = model
 
     @property
@@ -49,6 +54,48 @@ class AnthropicProvider(BaseLLMProvider):
                 return limit
         return 16384  # Default for newer models
 
+    def generate_vision(
+        self,
+        system: str,
+        image_bytes: bytes,
+        mime_type: str,
+        text_prompt: str,
+        max_tokens: int = 1024,
+        model: str | None = None,
+    ) -> str:
+        import base64
+        use_model = model or self.model
+        image_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+
+        response = self.client.messages.create(
+            model=use_model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type,
+                            "data": image_b64,
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": text_prompt,
+                    },
+                ],
+            }],
+        )
+
+        text_parts = []
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+        return "\n".join(text_parts)
+
     def generate(
         self,
         system: str,
@@ -57,6 +104,7 @@ class AnthropicProvider(BaseLLMProvider):
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 4096,
         model: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         Generate a response, automatically handling tool calls.
@@ -86,6 +134,8 @@ class AnthropicProvider(BaseLLMProvider):
             }
             if tools:
                 kwargs["tools"] = tools
+            if timeout is not None:
+                kwargs["timeout"] = timeout
 
             response = self.client.messages.create(**kwargs)
 

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 6de256ff-7049-4b24-8267-7ec42942beef
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -27,8 +28,8 @@ from constat.embedding_loader import EmbeddingModelLoader
 logger = logging.getLogger(__name__)
 
 # Similarity threshold for skill matching
-# Skills can have more specific descriptions, so threshold is slightly higher
-SKILL_MATCH_THRESHOLD = 0.50
+# Must be high enough to avoid polluting the planner with irrelevant skills
+SKILL_MATCH_THRESHOLD = 0.75
 
 
 @dataclass
@@ -108,6 +109,7 @@ class SkillMatcher:
                 logger.warning(f"Skill '{skill.name}' has no description, skipping")
                 continue
 
+            # noinspection PyUnresolvedReferences
             embedding = self._model.encode(
                 text_to_embed,
                 normalize_embeddings=True,
@@ -149,6 +151,7 @@ class SkillMatcher:
         max_skills = max_skills if max_skills is not None else self._max_skills
 
         # Encode the query
+        # noinspection PyUnresolvedReferences
         query_embedding = self._model.encode(
             query,
             normalize_embeddings=True,

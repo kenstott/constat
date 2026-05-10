@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: e1b52c78-9796-4a03-afde-51e8a3fb3b7e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // API Types - mirrors server models
 
 export type SessionStatus =
@@ -29,6 +39,7 @@ export type ArtifactType =
   | 'error'
   | 'table'
   | 'json'
+  | 'csv'
   | 'html'
   | 'markdown'
   | 'text'
@@ -68,9 +79,11 @@ export interface Session {
   last_activity: string
   current_query?: string
   summary?: string // LLM-generated session summary
-  active_projects?: string[] // Active project filenames
+  active_domains?: string[] // Active domain filenames
   tables_count: number
   artifacts_count: number
+  shared_with?: string[]
+  is_public?: boolean
 }
 
 export interface SessionListResponse {
@@ -105,6 +118,7 @@ export interface Step {
   expected_outputs: string[]
   depends_on: number[]
   role_id?: string | null
+  domain?: string | null
   skill_ids?: string[] | null
   code?: string
   result?: StepResult
@@ -138,6 +152,7 @@ export interface TableInfo {
   step_number: number
   columns: string[]
   is_starred?: boolean
+  is_view?: boolean
   role_id?: string | null  // Role provenance - which role created this table
   version?: number
   version_count?: number
@@ -212,6 +227,7 @@ export interface Fact {
   confidence?: number
   is_persisted: boolean
   role_id?: string | null  // Role provenance - which role created this fact
+  domain?: string | null  // Owning domain filename (null/empty = user-level)
 }
 
 // Entity Reference
@@ -233,6 +249,64 @@ export interface Entity {
   created_at?: string
   mention_count: number
   original_name?: string  // Original name before normalization (if different)
+}
+
+// Glossary
+export type GlossaryStatus = 'defined' | 'self_describing'
+export type GlossaryEditorialStatus = 'draft' | 'reviewed' | 'approved'
+export type GlossaryProvenance = 'llm' | 'human' | 'hybrid'
+
+export interface GlossaryTerm {
+  name: string
+  display_name: string
+  definition?: string | null
+  domain?: string | null
+  domain_path?: string | null
+  parent_id?: string | null
+  parent_verb?: 'HAS_ONE' | 'HAS_KIND' | 'HAS_MANY'
+  parent?: { name: string; display_name: string } | null
+  aliases: string[]
+  semantic_type?: string | null
+  cardinality: string
+  status?: GlossaryEditorialStatus | null
+  provenance?: GlossaryProvenance | null
+  glossary_status: GlossaryStatus
+  entity_id?: string | null
+  glossary_id?: string | null
+  ner_type?: string | null
+  tags?: Record<string, unknown>
+  ignored?: boolean
+  canonical_source?: string | null
+  connected_resources: Array<{
+    entity_name: string
+    entity_type: string
+    sources: Array<{ document_name: string; source: string; section?: string; url?: string }>
+  }>
+  children?: Array<{ name: string; display_name: string; parent_verb?: 'HAS_ONE' | 'HAS_KIND' | 'HAS_MANY' }>
+  relationships?: Array<{
+    id: string
+    subject: string
+    verb: string
+    object: string
+    confidence: number
+    user_edited?: boolean
+  }>
+  cluster_siblings?: string[]
+  spanning_domains?: string[]
+}
+
+export interface GlossaryListResponse {
+  terms: GlossaryTerm[]
+  total_defined: number
+  total_self_describing: number
+}
+
+export interface GlossaryFilter {
+  scope?: 'all' | 'defined' | 'self_describing'
+  status?: GlossaryEditorialStatus
+  type?: string
+  search?: string
+  domain?: string
 }
 
 // Proof Tree
@@ -277,6 +351,7 @@ export interface SessionDatabase {
   type: string
   dialect?: string
   description?: string
+  uri?: string
   connected: boolean
   table_count?: number
   added_at: string
@@ -294,6 +369,7 @@ export interface Learning {
   context?: Record<string, unknown>
   applied_count: number
   created_at: string
+  scope?: { level?: string; data_sources?: Array<{ name?: string; type?: string }>; domain?: string }
 }
 
 // Rules (compacted learnings)
@@ -304,9 +380,40 @@ export interface Rule {
   confidence: number
   source_count: number
   tags: string[]
+  domain: string
+  source: string
+  scope?: { level?: string; data_sources?: Array<{ name?: string; type?: string }>; domain?: string }
+}
+
+// Fine-Tuning
+export type FineTuneStatus = 'training' | 'ready' | 'failed' | 'archived'
+
+export interface FineTuneJob {
+  id: string
+  name: string
+  provider: string
+  base_model: string
+  fine_tuned_model_id?: string
+  task_types: string[]
+  domain?: string
+  status: FineTuneStatus
+  created: string
+  exemplar_count: number
+  metrics?: Record<string, unknown>
+  training_data_path?: string
+}
+
+export interface FineTuneProvider {
+  name: string
+  models: string[]
 }
 
 // Config
+export interface ModelRouteInfo {
+  provider: string
+  model: string
+}
+
 export interface Config {
   databases: string[]
   apis: string[]
@@ -314,6 +421,7 @@ export interface Config {
   llm_provider: string
   llm_model: string
   execution_timeout: number
+  task_routing?: Record<string, ModelRouteInfo[]>
 }
 
 // API Source Info
@@ -336,6 +444,11 @@ export interface DocumentSourceInfo {
   indexed: boolean
   from_config?: boolean  // true if from config file (cannot be removed)
   source?: string  // 'config', project filename, or 'session'
+  follow_links?: boolean
+  max_depth?: number
+  max_documents?: number
+  same_domain_only?: boolean
+  exclude_patterns?: string[]
 }
 
 // Autocomplete
@@ -346,15 +459,31 @@ export interface CompletionItem {
   category?: string
 }
 
-// WebSocket Events
+// Widget Types
+export type WidgetType = 'choice' | 'curation' | 'mapping' | 'ranking' | 'annotation' | 'tree' | 'table'
+
+export interface WidgetSpec {
+  type: WidgetType
+  config: Record<string, unknown>
+}
+
+export interface WidgetResponse<T = unknown> {
+  freeform: string
+  structured: T
+}
+
+// Subscription Events
 export type EventType =
+  | 'heartbeat_ack'
   | 'welcome'
   | 'session_created'
+  | 'session_ready'
   | 'session_closed'
   | 'planning_start'
   | 'proof_start'
   | 'replanning'
   | 'plan_ready'
+  | 'plan_updated'
   | 'plan_approved'
   | 'plan_rejected'
   | 'dynamic_context'
@@ -364,6 +493,7 @@ export type EventType =
   | 'step_complete'
   | 'step_error'
   | 'step_failed'
+  | 'model_escalation'
   | 'validation_retry'
   | 'validation_warnings'
   | 'facts_extracted'
@@ -374,6 +504,7 @@ export type EventType =
   | 'fact_failed'
   | 'fact_blocked'
   | 'dag_execution_start'
+  | 'inference_code'
   | 'proof_complete'
   | 'proof_summary_ready'
   | 'progress'
@@ -382,15 +513,28 @@ export type EventType =
   | 'query_cancelled'
   | 'table_created'
   | 'artifact_created'
+  | 'steps_truncated'
   | 'clarification_needed'
   | 'clarification_received'
   | 'autocomplete_response'
   | 'synthesizing'
   | 'generating_insights'
+  | 'replan_start'
   | 'entity_rebuild_start'
   | 'entity_rebuild_complete'
+  | 'glossary_rebuild_start'
+  | 'glossary_rebuild_complete'
+  | 'glossary_terms_added'
+  | 'glossary_generation_progress'
+  | 'relationships_extracted'
+  | 'source_ingest_start'
+  | 'source_ingest_complete'
+  | 'source_ingest_error'
+  | 'source_ingest_progress'
+  | 'entity_state'
+  | 'entity_patch'
 
-export interface WSEvent {
+export interface SubscriptionEvent {
   event_type: EventType
   session_id: string
   step_number: number
@@ -401,4 +545,175 @@ export interface WSEvent {
 export interface WSMessage {
   type: 'event' | 'ack' | 'error'
   payload: Record<string, unknown>
+}
+
+// Feedback
+export interface FlagRequest {
+  query_text: string
+  answer_summary: string
+  message: string
+  glossary_term?: string
+  suggested_definition?: string
+}
+
+export interface FlagResponse {
+  learning_id: string
+  glossary_suggestion_id?: string
+}
+
+export interface GlossarySuggestion {
+  learning_id: string
+  term: string
+  suggested_definition: string
+  message: string
+  created: string
+  user_id: string
+}
+
+// Regression Testing
+export interface TestLayerResult {
+  layer: string
+  passed: number
+  total: number
+  failures: string[]
+}
+
+export interface TestEndToEndResult {
+  passed: boolean
+  answer: string | null
+  judge_reasoning: string | null
+  failures: string[]
+  duration_s: number
+}
+
+export interface TestQuestionResult {
+  question: string
+  tags: string[]
+  passed: boolean
+  layers: TestLayerResult[]
+  end_to_end: TestEndToEndResult | null
+}
+
+export interface TestDomainResult {
+  domain: string
+  domain_name: string
+  passed_count: number
+  failed_count: number
+  questions: TestQuestionResult[]
+}
+
+export interface TestRunResponse {
+  domains: TestDomainResult[]
+  total_passed: number
+  total_failed: number
+}
+
+export interface TestableDomainInfo {
+  filename: string
+  name: string
+  question_count: number
+  tags: string[]
+}
+
+export interface ExpectedOutput {
+  name: string
+  type: string  // table, image, document, markdown, json, xml, pdf, ...
+  columns: string[]  // only for type=table
+}
+
+export interface GoldenQuestionExpectations {
+  terms: Array<Record<string, unknown>>
+  grounding: Array<Record<string, unknown>>
+  relationships: Array<Record<string, unknown>>
+  expected_outputs?: ExpectedOutput[]
+  end_to_end?: Record<string, unknown> | null
+  suggested_question?: string | null
+  objectives?: string[]
+  step_hints?: Array<Record<string, unknown>>
+  system_prompt?: string | null
+}
+
+export interface GoldenQuestionRequest {
+  question: string
+  tags: string[]
+  expect: GoldenQuestionExpectations
+  objectives?: string[]
+  system_prompt?: string | null
+}
+
+export interface GoldenQuestionResponse {
+  index: number
+  question: string
+  tags: string[]
+  expect: GoldenQuestionExpectations
+  objectives?: string[]
+  warnings?: string[]
+  system_prompt?: string | null
+}
+
+// Domain types (migrated from api/sessions.ts)
+
+export interface DomainTreeNode {
+  filename: string
+  name: string
+  path: string
+  description: string
+  tier: string
+  active: boolean
+  owner: string
+  steward: string
+  databases: string[]
+  apis: string[]
+  documents: string[]
+  skills: string[]
+  agents: string[]
+  rules: string[]
+  facts: string[]
+  system_prompt: string
+  domains: string[]
+  children: DomainTreeNode[]
+}
+
+export interface DatabaseTablePreview {
+  database: string
+  table_name: string
+  columns: string[]
+  data: Record<string, unknown>[]
+  page: number
+  page_size: number
+  total_rows: number
+  has_more: boolean
+}
+
+export interface DatabaseTableInfo {
+  name: string
+  row_count: number | null
+  column_count: number
+}
+
+export interface ApiEndpointField {
+  name: string
+  type: string
+  description?: string
+  is_required: boolean
+}
+
+export interface ApiEndpointInfo {
+  name: string
+  kind?: string
+  return_type?: string
+  description?: string
+  http_method?: string
+  http_path?: string
+  fields: ApiEndpointField[]
+}
+
+export interface ObjectivesEntry {
+  type: 'question' | 'clarification' | 'redo'
+  text?: string
+  question?: string
+  answer?: string
+  mode?: string
+  guidance?: string
+  ts: string
 }

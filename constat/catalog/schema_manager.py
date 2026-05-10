@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 9ea910b9-649a-49d1-9b7f-eb8668e2929e
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -12,17 +13,26 @@
 import hashlib
 import json
 import logging
+import threading as _sm_threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Callable, Optional, Union, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
+
+# Process-level schema metadata cache — avoids redundant JSON disk reads when
+# multiple sessions share the same base config. Keyed by config hash.
+# Each session gets a shallow copy of the dict (its own dict, shared TableMetadata objects).
+_process_schema_cache: dict[str, dict] = {}
+_process_schema_lock = _sm_threading.Lock()
 
 if TYPE_CHECKING:
     from constat.discovery.doc_tools import DocumentDiscoveryTools
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 
 from constat.core.config import Config, DatabaseConfig
 from constat.embedding_loader import EmbeddingModelLoader
@@ -165,16 +175,19 @@ class SchemaManager:
     EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
 
     def __init__(self, config: Config):
+        import threading
         self.config = config
         self.connections: dict[str, Union[Engine, TranspilingConnection]] = {}  # SQL connections
         self.nosql_connections: dict[str, NoSQLConnector] = {}  # NoSQL connections
         self.file_connections: dict[str, FileConnector] = {}  # File data sources
         self.metadata_cache: dict[str, TableMetadata] = {}  # key: "db.table"
         self._read_only_databases: set[str] = set()  # Databases with read_only=True
+        self._metadata_lock = threading.Lock()  # Guards metadata_cache for parallel add_database_dynamic
 
         # Vector store for embeddings (shared DuckDB)
         from constat.discovery.vector_store import DuckDBVectorStore
         self._vector_store: Optional[DuckDBVectorStore] = None
+        # noinspection PyUnresolvedReferences
         self._model: Optional[SentenceTransformer] = None
 
         # Cached overview string
@@ -187,7 +200,8 @@ class SchemaManager:
         from chonk import RelationshipIndex
         self._relationship_index: RelationshipIndex = RelationshipIndex()
 
-    def _get_raw_engine(self, conn: Union[Engine, TranspilingConnection]) -> Engine:
+    @staticmethod
+    def _get_raw_engine(conn: Union[Engine, TranspilingConnection]) -> Engine:
         """Get the raw SQLAlchemy Engine from a connection.
 
         Handles both raw Engine and TranspilingConnection wrappers.
@@ -237,14 +251,21 @@ class SchemaManager:
         self._generate_overview()
         self._progress_callback = None
 
-    def build_chunks(self) -> None:
+    def build_chunks(self, domain_id: str | None = None, vector_store=None) -> None:
         """Build chunks for search (called at server startup).
 
         Creates chunks in the embeddings table for semantic search.
         Does NOT create catalog entities - those are built per-session via initialize().
+
+        Args:
+            domain_id: Domain ID for these chunks (e.g. "hr-reporting")
+            vector_store: Optional shared vector store instance
         """
+        self._domain_id = domain_id
         # Initialize vector store
-        if self._vector_store is None:
+        if vector_store is not None:
+            self._vector_store = vector_store
+        elif self._vector_store is None:
             from constat.discovery.vector_store import DuckDBVectorStore
             self._vector_store = DuckDBVectorStore()
 
@@ -266,29 +287,31 @@ class SchemaManager:
         # Build chunks
         self._extract_entities_from_descriptions()
 
-    def add_database_dynamic(self, db_name: str, db_config: DatabaseConfig) -> bool:
+    def add_database_dynamic(self, db_name: str, db_config: DatabaseConfig, domain_id: str | None = None) -> bool:
         """Dynamically add and introspect a database after initialization.
 
-        This allows adding project databases at runtime without reinitializing
-        the entire schema manager.
+        Thread-safe: metadata_cache mutations are protected by _metadata_lock
+        to allow parallel calls from domain loading.
 
         Args:
             db_name: Name for the database
             db_config: Database configuration
+            domain_id: Domain ID for chunk tagging (e.g. "hr-reporting")
 
         Returns:
             True if successfully added
         """
         try:
-            # Connect based on type
+            # Connect and introspect (I/O-heavy, runs without lock)
             source_type = db_config.type or "sql"
             logger.info(f"add_database_dynamic: {db_name}, type={source_type}, uri={db_config.uri}")
             logger.info(f"  is_file_source={db_config.is_file_source()}, is_nosql={db_config.is_nosql()}")
 
+            new_metas: dict[str, TableMetadata] = {}
+
             if db_config.is_file_source():
                 logger.info(f"  Connecting as file source")
                 self._connect_file(db_name, db_config)
-                # Introspect file source
                 connector = self.file_connections.get(db_name)
                 if connector:
                     table_meta = TableMetadata(
@@ -297,7 +320,6 @@ class SchemaManager:
                         comment=db_config.description,
                         database_type=source_type,
                     )
-                    # Get columns from file metadata
                     try:
                         file_metadata = connector.get_metadata()
                         table_meta.columns = [
@@ -310,32 +332,22 @@ class SchemaManager:
                         logger.warning(f"  Failed to get columns: {e}")
                         import traceback
                         logger.warning(f"  Traceback: {traceback.format_exc()}")
-                    self.metadata_cache[f"{db_name}.{db_name}"] = table_meta
+                    new_metas[f"{db_name}.{db_name}"] = table_meta
                     logger.info(f"  Added to metadata_cache: {db_name}.{db_name}")
             elif db_config.is_nosql():
                 logger.info(f"  Connecting as NoSQL")
                 self._connect_nosql(db_name, db_config)
-                # Introspect NoSQL
                 connector = self.nosql_connections.get(db_name)
                 if connector:
-                    collections = connector.list_collections()
+                    # noinspection PyUnresolvedReferences
+                    collections = connector.get_collections()
                     logger.info(f"  NoSQL has {len(collections)} collections")
                     for coll_name in collections:
-                        schema = connector.infer_schema(coll_name)
-                        table_meta = TableMetadata(
-                            database=db_name,
-                            name=coll_name,
-                            comment=db_config.description,
-                            database_type=source_type,
-                        )
-                        if schema:
-                            table_meta.columns = [
-                                ColumnMetadata(name=f["name"], type=f.get("type", "unknown"))
-                                for f in schema.get("fields", [])
-                            ]
-                        self.metadata_cache[f"{db_name}.{coll_name}"] = table_meta
+                        # noinspection PyUnresolvedReferences
+                        collection_meta = connector.get_collection_schema(coll_name)
+                        table_meta = self._convert_nosql_metadata(db_name, connector, collection_meta)
+                        new_metas[table_meta.full_name] = table_meta
             else:
-                # SQL database
                 logger.info(f"  Connecting as SQL database")
                 self._connect_sql(db_name, db_config)
                 conn = self.connections.get(db_name)
@@ -346,33 +358,26 @@ class SchemaManager:
                     logger.info(f"  SQL database has {len(table_names)} tables: {table_names}")
                     for table_name in table_names:
                         table_meta = self._introspect_table(db_name, engine, inspector, table_name)
-                        self.metadata_cache[table_meta.full_name] = table_meta
+                        new_metas[table_meta.full_name] = table_meta
                         logger.info(f"  Introspected table: {db_name}.{table_name}")
                 else:
                     logger.warning(f"  No engine created for {db_name}")
 
-            logger.info(f"  metadata_cache now has {len(self.metadata_cache)} entries")
+            # Merge metadata + build chunks under lock
+            # (DB introspection above runs without lock for parallelism)
+            with self._metadata_lock:
+                self.metadata_cache.update(new_metas)
 
-            # Build chunks for semantic search
-            # Initialize model and vector_store if not already done
-            logger.info(f"  Initializing vector_store and model for chunks...")
-            logger.info(f"  _vector_store is None: {self._vector_store is None}")
-            logger.info(f"  _model is None: {self._model is None}")
+                if self._vector_store is None:
+                    from constat.discovery.vector_store import DuckDBVectorStore
+                    self._vector_store = DuckDBVectorStore()
+                if self._model is None:
+                    self._model = EmbeddingModelLoader.get_instance().get_model()
 
-            if self._vector_store is None:
-                from constat.discovery.vector_store import DuckDBVectorStore
-                self._vector_store = DuckDBVectorStore()
-                logger.info(f"  Created DuckDBVectorStore")
-            if self._model is None:
-                self._model = EmbeddingModelLoader.get_instance().get_model()
-                logger.info(f"  Loaded embedding model: {self._model is not None}")
-
-            if self._model is not None and self._vector_store is not None:
-                logger.info(f"  Calling _add_chunks_for_database({db_name})...")
-                self._add_chunks_for_database(db_name)
-                logger.info(f"  Built chunks for database: {db_name}")
-            else:
-                logger.warning(f"  SKIPPING chunks: model={self._model is not None}, vector_store={self._vector_store is not None}")
+                if self._model is not None and self._vector_store is not None:
+                    self._domain_id = domain_id
+                    self._add_chunks_for_database(db_name)
+                    logger.info(f"  Built chunks for database: {db_name}")
 
             logger.info(f"Dynamically added database: {db_name} ({source_type})")
             return True
@@ -391,7 +396,8 @@ class SchemaManager:
 
         # Clear schema entities from vector store
         if self._vector_store:
-            self._vector_store.clear_catalog_entities('schema')
+            # noinspection PyUnresolvedReferences
+            self._vector_store.clear_chunks('schema')
 
         # Delete disk caches to force fresh introspection
         schema_cache = self._get_schema_cache_path()
@@ -404,7 +410,7 @@ class SchemaManager:
         self._resolve_reverse_references()
         config_hash = self._compute_config_hash()
         self._save_schema_cache(config_hash)
-        self._build_vector_index()
+        self._extract_entities_from_descriptions()
         self._generate_overview()
         self._progress_callback = None
 
@@ -424,6 +430,8 @@ class SchemaManager:
                 self._connect_file(db_name, db_config)
             elif db_config.is_nosql():
                 self._connect_nosql(db_name, db_config)
+            elif db_config.is_jdbc():
+                self._connect_jdbc(db_name, db_config)
             else:
                 self._connect_sql(db_name, db_config)
 
@@ -463,6 +471,211 @@ class SchemaManager:
         if db_config.read_only:
             self._read_only_databases.add(db_name)
 
+    def _connect_jdbc(self, db_name: str, db_config: DatabaseConfig) -> None:
+        """Connect to a database via JDBC using JayDeBeApi + JPype.
+
+        Requires: pip install 'constat[jdbc]'
+        Config fields: jdbc_driver, jdbc_url, jar_path, username, password
+
+        Example config.yaml:
+            databases:
+              sap_hana:
+                type: jdbc
+                jdbc_driver: com.sap.db.jdbc.Driver
+                jdbc_url: jdbc:sap://host:30015/?databaseName=mydb
+                jar_path: /opt/drivers/ngdbc.jar
+                username: ${SAP_USER}
+                password: ${SAP_PASS}
+        """
+        try:
+            import jaydebeapi
+        except ImportError as e:
+            raise ImportError(
+                f"JDBC support requires JayDeBeApi and JPype1. "
+                f"Install with: pip install 'constat[jdbc]'"
+            ) from e
+
+        if not db_config.jdbc_driver:
+            raise ValueError(f"[{db_name}] jdbc_driver is required for type=jdbc")
+        if not db_config.jdbc_url:
+            raise ValueError(f"[{db_name}] jdbc_url is required for type=jdbc")
+
+        jar_path = db_config.jar_path
+        if isinstance(jar_path, str):
+            jar_path = [jar_path]
+
+        credentials = []
+        if db_config.username:
+            credentials = [db_config.username, db_config.password or ""]
+
+        def _creator():
+            return jaydebeapi.connect(
+                db_config.jdbc_driver,
+                db_config.jdbc_url,
+                credentials or None,
+                jar_path,
+            )
+
+        # Build a SQLAlchemy Engine without going through create_engine() URL
+        # parsing.  create_engine("sqlite://", creator=...) triggers SQLite's
+        # post-connect hook (conn.create_function) which JayDeBeApi connections
+        # don't have.  We use a minimal custom dialect that:
+        #   - Sets the correct name for SQL transpilation dialect detection
+        #   - Points loaded_dbapi at jaydebeapi so error handling works
+        #   - Swallows rollback/begin errors (JDBC drivers that run in
+        #     auto-commit mode, e.g. Xerial SQLite JDBC, can't rollback)
+        from sqlalchemy.engine.base import Engine as _Engine
+        from sqlalchemy.pool import NullPool
+        from sqlalchemy.engine import default as _sa_default
+
+        jdbc_lower = (db_config.jdbc_url or "").lower()
+        _JDBC_DIALECT_MAP = [
+            ("jdbc:postgresql", "postgresql"),
+            ("jdbc:mysql",      "mysql"),
+            ("jdbc:mariadb",    "mysql"),
+            ("jdbc:mssql",      "mssql"),
+            ("jdbc:sqlserver",  "mssql"),
+            ("jdbc:oracle",     "oracle"),
+            ("jdbc:db2",        "db2"),
+            ("jdbc:sqlite",     "sqlite"),
+            ("jdbc:h2",         "sqlite"),
+            ("jdbc:hsqldb",     "sqlite"),
+            ("jdbc:sap",        "hana"),
+        ]
+        dialect_name = "sqlite"  # generic fallback
+        for prefix, name in _JDBC_DIALECT_MAP:
+            if jdbc_lower.startswith(prefix):
+                dialect_name = name
+                break
+
+        _jaydebeapi = jaydebeapi  # capture for class definition below
+
+        class _JDBCDialect(_sa_default.DefaultDialect):
+            """Minimal SQLAlchemy dialect wrapper for JayDeBeApi connections."""
+            driver = "jaydebeapi"
+            supports_statement_cache = True
+
+            @classmethod
+            def dbapi(cls):
+                return _jaydebeapi
+
+            def do_begin(self, dbapi_connection):
+                try:
+                    super().do_begin(dbapi_connection)
+                except Exception:
+                    pass  # auto-commit mode: begin is implicit
+
+            def do_rollback(self, dbapi_connection):
+                try:
+                    super().do_rollback(dbapi_connection)
+                except Exception:
+                    pass  # auto-commit mode: rollback is a no-op
+
+            @staticmethod
+            def _raw_jconn(connection):
+                """Extract the raw JayDeBeApi JDBC connection from a SA connection."""
+                # SA connection → DBAPI connection → JayDeBeApi Connection
+                dbapi_conn = connection.connection
+                # JayDeBeApi stores the underlying JPype JDBC conn as .jconn
+                if hasattr(dbapi_conn, "jconn"):
+                    return dbapi_conn.jconn
+                # Some SA versions wrap it one level deeper
+                raw = getattr(dbapi_conn, "driver_connection", dbapi_conn)
+                return raw.jconn
+
+            def get_table_names(self, connection, schema=None, **kw):
+                jconn = self._raw_jconn(connection)
+                meta = jconn.getMetaData()
+                rs = meta.getTables(None, schema, "%", ["TABLE", "VIEW"])
+                tables = []
+                while rs.next():
+                    tables.append(rs.getString("TABLE_NAME"))
+                rs.close()
+                return tables
+
+            def get_view_names(self, connection, schema=None, **kw):
+                return []
+
+            def get_columns(self, connection, table_name, schema=None, **kw):
+                from sqlalchemy import types as sa_types
+                jconn = self._raw_jconn(connection)
+                meta = jconn.getMetaData()
+                rs = meta.getColumns(None, schema, table_name, "%")
+                columns = []
+                while rs.next():
+                    col_name = rs.getString("COLUMN_NAME")
+                    jdbc_type = rs.getInt("DATA_TYPE")  # java.sql.Types int
+                    nullable = rs.getInt("NULLABLE") != 0  # 0 = columnNoNulls
+                    # Map common java.sql.Types to SA types (best-effort)
+                    _JDBC_TYPE_MAP = {
+                        -7: sa_types.Boolean,   # BIT
+                        -6: sa_types.SmallInteger,
+                        -5: sa_types.BigInteger,
+                        -4: sa_types.LargeBinary,
+                        -3: sa_types.LargeBinary,
+                        -2: sa_types.LargeBinary,
+                        -1: sa_types.Text,
+                        1:  sa_types.String,
+                        2:  sa_types.Numeric,
+                        3:  sa_types.Numeric,
+                        4:  sa_types.Integer,
+                        5:  sa_types.SmallInteger,
+                        6:  sa_types.Float,
+                        7:  sa_types.Float,
+                        8:  sa_types.Float,
+                        12: sa_types.String,
+                        16: sa_types.Boolean,
+                        91: sa_types.Date,
+                        92: sa_types.Time,
+                        93: sa_types.DateTime,
+                    }
+                    sa_type = _JDBC_TYPE_MAP.get(jdbc_type, sa_types.String)()
+                    columns.append({
+                        "name": col_name,
+                        "type": sa_type,
+                        "nullable": nullable,
+                        "default": None,
+                    })
+                rs.close()
+                return columns
+
+            def get_pk_constraint(self, connection, table_name, schema=None, **kw):
+                return {"constrained_columns": [], "name": None}
+
+            def get_foreign_keys(self, connection, table_name, schema=None, **kw):
+                return []
+
+            def get_indexes(self, connection, table_name, schema=None, **kw):
+                return []
+
+            def get_check_constraints(self, connection, table_name, schema=None, **kw):
+                return []
+
+            def get_unique_constraints(self, connection, table_name, schema=None, **kw):
+                return []
+
+        dialect = _JDBCDialect()
+        dialect.name = dialect_name
+        pool = NullPool(_creator)
+        pool._dialect = dialect  # Engine.__init__ does NOT set this; do it explicitly
+        engine = _Engine(pool, dialect, None)
+
+        # Test connectivity via JayDeBeApi directly (bypasses SA transaction mgmt)
+        test_conn = _creator()
+        try:
+            cur = test_conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+        finally:
+            test_conn.close()
+
+        wrapped = TranspilingConnection(engine)
+        self.connections[db_name] = wrapped
+        logger.debug(f"Connected to {db_name} via JDBC driver {db_config.jdbc_driver}")
+
+        if db_config.read_only:
+            self._read_only_databases.add(db_name)
+
     def _connect_nosql(self, db_name: str, db_config: DatabaseConfig) -> None:
         """Connect to a NoSQL database using the appropriate connector."""
         connector = self._create_nosql_connector(db_name, db_config)
@@ -470,7 +683,8 @@ class SchemaManager:
             connector.connect()
             self.nosql_connections[db_name] = connector
 
-    def _create_nosql_connector(self, db_name: str, db_config: DatabaseConfig) -> Optional[NoSQLConnector]:
+    @staticmethod
+    def _create_nosql_connector(db_name: str, db_config: DatabaseConfig) -> Optional[NoSQLConnector]:
         """Create the appropriate NoSQL connector based on database type."""
         db_type = db_config.type
 
@@ -502,13 +716,15 @@ class SchemaManager:
 
         elif db_type == "elasticsearch":
             from constat.catalog.nosql.elasticsearch import ElasticsearchConnector
+            basic_auth = None
+            if db_config.username and db_config.password:
+                basic_auth = (db_config.username, db_config.password)
             return ElasticsearchConnector(
                 hosts=db_config.hosts or ["http://localhost:9200"],
                 name=db_name,
                 description=db_config.description,
                 api_key=db_config.api_key,
-                username=db_config.username,
-                password=db_config.password,
+                basic_auth=basic_auth,
                 sample_size=db_config.sample_size,
             )
 
@@ -532,7 +748,6 @@ class SchemaManager:
                 endpoint=db_config.endpoint or "",
                 key=db_config.key or "",
                 database=db_config.database or db_name,
-                container=db_config.container or "",
                 name=db_name,
                 description=db_config.description,
                 sample_size=db_config.sample_size,
@@ -542,11 +757,39 @@ class SchemaManager:
             from constat.catalog.nosql.firestore import FirestoreConnector
             return FirestoreConnector(
                 project=db_config.project or "",
-                collection=db_config.collection or "",
                 name=db_name,
                 description=db_config.description,
                 credentials_path=db_config.credentials_path,
                 sample_size=db_config.sample_size,
+            )
+
+        elif db_type == "neo4j":
+            from constat.catalog.nosql.neo4j import Neo4jConnector
+            auth_args: dict = {}
+            if db_config.username and db_config.password:
+                auth_args["username"] = db_config.username
+                auth_args["password"] = db_config.password
+            return Neo4jConnector(
+                uri=db_config.uri or "bolt://localhost:7687",
+                database=db_config.database or "neo4j",
+                name=db_name,
+                description=db_config.description,
+                sample_size=db_config.sample_size,
+                **auth_args,
+            )
+
+        elif db_type == "jaeger":
+            from constat.catalog.nosql.jaeger import JaegerConnector
+            auth_args = {}
+            if db_config.username and db_config.password:
+                auth_args["username"] = db_config.username
+                auth_args["password"] = db_config.password
+            return JaegerConnector(
+                uri=db_config.uri or "http://localhost:16686",
+                name=db_name,
+                description=db_config.description,
+                sample_size=db_config.sample_size,
+                **auth_args,
             )
 
         return None
@@ -594,7 +837,7 @@ class SchemaManager:
             table_meta = self._convert_file_metadata(db_name, connector, file_meta)
             self.metadata_cache[table_meta.full_name] = table_meta
 
-    def _convert_nosql_metadata(self, db_name: str, connector: NoSQLConnector, collection_meta) -> TableMetadata:
+    def _convert_nosql_metadata(self, db_name: str, _connector: NoSQLConnector, collection_meta) -> TableMetadata:
         """Convert NoSQL CollectionMetadata to TableMetadata for unified handling."""
         # collection_meta is already the schema from get_collection_schema()
 
@@ -629,7 +872,8 @@ class SchemaManager:
             database_type=db_type,
         )
 
-    def _convert_file_metadata(self, db_name: str, connector: FileConnector, file_meta) -> TableMetadata:
+    @staticmethod
+    def _convert_file_metadata(db_name: str, _connector: FileConnector, file_meta) -> TableMetadata:
         """Convert FileMetadata to TableMetadata for unified handling."""
         # Convert columns
         columns = []
@@ -715,7 +959,7 @@ class SchemaManager:
             with engine.connect() as conn:
                 result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
                 row_count = result.scalar() or 0
-        except Exception:
+        except SQLAlchemyError:
             pass  # Skip if count fails
 
         # Get the database type from config
@@ -734,7 +978,8 @@ class SchemaManager:
             database_type=db_type,
         )
 
-    def _simplify_type(self, type_str: str) -> str:
+    @staticmethod
+    def _simplify_type(type_str: str) -> str:
         """Simplify verbose SQL types for token efficiency."""
         type_lower = type_str.lower()
 
@@ -802,7 +1047,7 @@ class SchemaManager:
         return self._relationship_index
 
     def _compute_config_hash(self) -> str:
-        """Compute a deterministic hash of the databases config.
+        """Compute a deterministic hash of the 'databases' config.
 
         The hash changes when databases are added, removed, or their
         connection parameters change. This triggers re-introspection
@@ -820,6 +1065,8 @@ class SchemaManager:
                 "port": db_config.port or 0,
                 "path": db_config.path or "",
                 "keyspace": db_config.keyspace or "",
+                "jdbc_url": db_config.jdbc_url or "",
+                "jdbc_driver": db_config.jdbc_driver or "",
             }
 
         # Create deterministic JSON and hash it
@@ -849,6 +1096,12 @@ class SchemaManager:
         Returns:
             True if cache was loaded successfully, False otherwise
         """
+        # Check process-level in-memory cache first (avoids disk I/O)
+        with _process_schema_lock:
+            if expected_hash in _process_schema_cache:
+                self.metadata_cache = dict(_process_schema_cache[expected_hash])
+                return True
+
         cache_path = self._get_schema_cache_path()
         if not cache_path.exists():
             return False
@@ -900,8 +1153,10 @@ class SchemaManager:
                     database_type=table_dict.get("database_type", ""),
                 )
 
+            with _process_schema_lock:
+                _process_schema_cache[expected_hash] = dict(self.metadata_cache)
             return True
-        except Exception:
+        except (json.JSONDecodeError, KeyError, OSError):
             return False
 
     def _save_schema_cache(self, config_hash: str) -> None:
@@ -922,7 +1177,7 @@ class SchemaManager:
                             "nullable": c.nullable,
                             "primary_key": c.primary_key,
                             "comment": c.comment,
-                            "sample_values": c.sample_values,
+                            "sample_values": [str(v) for v in c.sample_values] if c.sample_values else None,
                         }
                         for c in meta.columns
                     ],
@@ -948,46 +1203,102 @@ class SchemaManager:
 
             with open(cache_path, "w") as f:
                 json.dump(cache_data, f, indent=2)
-        except Exception:
+
+            with _process_schema_lock:
+                _process_schema_cache[config_hash] = dict(self.metadata_cache)
+        except OSError:
             # Silently ignore cache save failures
             pass
 
+    @staticmethod
+    def _build_table_column_chunks(
+        tables: Iterable[tuple[str, "TableMetadata"]],
+    ) -> list:
+        """Build DocumentChunks for table and column metadata.
+
+        Args:
+            tables: Iterable of (full_name, table_meta) pairs to process.
+
+        Returns:
+            List of DocumentChunk for tables and their columns.
+        """
+        from constat.discovery.models import DocumentChunk, ChunkType
+
+        chunks: list[DocumentChunk] = []
+        for full_name, table_meta in tables:
+            db_name = table_meta.database
+            table_name = table_meta.name
+            col_names = [c.name for c in table_meta.columns]
+
+            # Table chunk - enriched with row count, FKs, referenced_by
+            if table_meta.comment:
+                table_content = f"{table_name} table: {table_meta.comment}"
+            else:
+                row_info = f" ({table_meta.row_count} rows)" if table_meta.row_count else ""
+                table_content = f"{table_name} table in {db_name} database{row_info}"
+                table_content += f"\nColumns: {', '.join(col_names)}"
+                if table_meta.foreign_keys:
+                    fk_strs = [f"{fk.from_column} → {fk.to_table}" for fk in table_meta.foreign_keys]
+                    table_content += f"\nForeign keys: {', '.join(fk_strs)}"
+                if table_meta.referenced_by:
+                    table_content += f"\nReferenced by: {', '.join(table_meta.referenced_by)}"
+
+            chunks.append(DocumentChunk(
+                document_name=f"schema:{full_name}",
+                content=table_content,
+                section="table_description",
+                chunk_index=0,
+                source="schema",
+                chunk_type=ChunkType.DB_TABLE,
+            ))
+
+            # Build FK lookup for columns
+            col_fk_map: dict[str, ForeignKey] = {
+                fk.from_column: fk for fk in table_meta.foreign_keys
+            }
+
+            # Column chunks - enriched with db name, table context, FK, constraints, samples
+            for i, col in enumerate(table_meta.columns):
+                if col.comment:
+                    col_content = f"{col.name} column in {table_name}: {col.comment}"
+                else:
+                    col_type = col.type if col.type else "unknown type"
+                    col_content = f"{col.name} column ({col_type}) in {table_name} table ({db_name})"
+
+                lines: list[str] = [col_content]
+                if table_meta.comment:
+                    lines.append(f"Table context: {table_meta.comment[:80]}")
+                if col.name in col_fk_map:
+                    fk = col_fk_map[col.name]
+                    lines.append(f"FK: {col.name} → {fk.to_table}.{fk.to_column}")
+                if col.primary_key:
+                    lines.append("Primary key: yes")
+                if not col.nullable:
+                    lines.append("Nullable: no")
+                if col.sample_values:
+                    lines.append(f"Sample values: {', '.join(str(v) for v in col.sample_values[:5])}")
+
+                chunks.append(DocumentChunk(
+                    document_name=f"schema:{full_name}.{col.name}",
+                    content="\n".join(lines),
+                    section="column_description",
+                    chunk_index=i,
+                    source="schema",
+                    chunk_type=ChunkType.DB_COLUMN,
+                ))
+
+        return chunks
+
     def _extract_entities_from_descriptions(self) -> None:
-        """Create chunks for table and column metadata using chonk DocumentLoader."""
-        from chonk.loader import DocumentLoader
-        from chonk.schema import TableMeta as ChonkTableMeta, ColumnMeta as ChonkColumnMeta
+        """Create chunks for table and column metadata.
 
-        chonk_tables = [
-            ChonkTableMeta(
-                name=table_meta.name,
-                source_db=table_meta.database,
-                description=table_meta.comment,
-                columns=[
-                    ChonkColumnMeta(name=c.name, data_type=c.type or "unknown", description=c.comment)
-                    for c in table_meta.columns
-                ],
-            )
-            for table_meta in self.metadata_cache.values()
-        ]
+        Creates chunks for ALL tables and columns (not just those with descriptions)
+        so that session-time entity extraction can find and link table/column names.
 
-        chunks = DocumentLoader().load_schema(chonk_tables)
-
-        # Augment with stored procedures, views, and triggers from SQL databases
-        try:
-            from chonk.transports import DatabaseSchemaCrawler
-            config_dir = self.config.config_dir if self.config else None
-            for db_name, db_config in self.config.databases.items():
-                if db_config.is_file_source() or db_config.is_nosql():
-                    continue
-                try:
-                    url = db_config.get_connection_uri(config_dir)
-                    crawler = DatabaseSchemaCrawler(url)
-                    loader = DocumentLoader(extra_transports=[crawler])
-                    chunks += loader.load_crawl(url, crawler=crawler)
-                except Exception as exc:
-                    logger.debug(f"DatabaseSchemaCrawler skipped for {db_name}: {exc}")
-        except ImportError:
-            pass
+        Entity extraction is done at session-time by extract_entities_for_session(),
+        not here. This keeps init-time fast and avoids duplicate extraction.
+        """
+        chunks = self._build_table_column_chunks(self.metadata_cache.items())
 
         if not chunks:
             logger.debug("No schema metadata to create chunks from")
@@ -997,7 +1308,7 @@ class SchemaManager:
             try:
                 texts = [c.content for c in chunks]
                 embeddings = self._model.encode(texts, convert_to_numpy=True)
-                self._vector_store.add_chunks(chunks, embeddings, source="schema")
+                self._vector_store.add_chunks(chunks, embeddings, source="schema", domain_id=getattr(self, '_domain_id', None))
                 logger.debug(f"Stored {len(chunks)} schema description chunks")
             except Exception as e:
                 logger.warning(f"Failed to store schema description chunks: {e}")
@@ -1010,38 +1321,12 @@ class SchemaManager:
         Args:
             db_name: Name of the database to add chunks for
         """
-        from chonk.loader import DocumentLoader
-        from chonk.schema import TableMeta as ChonkTableMeta, ColumnMeta as ChonkColumnMeta
-
-        chonk_tables = [
-            ChonkTableMeta(
-                name=table_meta.name,
-                source_db=table_meta.database,
-                description=table_meta.comment,
-                columns=[
-                    ChonkColumnMeta(name=c.name, data_type=c.type or "unknown", description=c.comment)
-                    for c in table_meta.columns
-                ],
-            )
-            for table_meta in self.metadata_cache.values()
+        filtered_tables = (
+            (full_name, table_meta)
+            for full_name, table_meta in self.metadata_cache.items()
             if table_meta.database == db_name
-        ]
-
-        chunks = DocumentLoader().load_schema(chonk_tables)
-
-        # Augment with stored procedures, views, and triggers for this database
-        if db_name in self.config.databases:
-            db_config = self.config.databases[db_name]
-            if not db_config.is_file_source() and not db_config.is_nosql():
-                try:
-                    from chonk.transports import DatabaseSchemaCrawler
-                    config_dir = self.config.config_dir if self.config else None
-                    url = db_config.get_connection_uri(config_dir)
-                    crawler = DatabaseSchemaCrawler(url)
-                    loader = DocumentLoader(extra_transports=[crawler])
-                    chunks += loader.load_crawl(url, crawler=crawler)
-                except Exception as exc:
-                    logger.debug(f"DatabaseSchemaCrawler skipped for {db_name}: {exc}")
+        )
+        chunks = self._build_table_column_chunks(filtered_tables)
 
         if not chunks:
             logger.debug(f"No tables found for database {db_name}")
@@ -1051,7 +1336,7 @@ class SchemaManager:
             try:
                 texts = [c.content for c in chunks]
                 embeddings = self._model.encode(texts, convert_to_numpy=True)
-                self._vector_store.add_chunks(chunks, embeddings, source="schema")
+                self._vector_store.add_chunks(chunks, embeddings, source="schema", domain_id=getattr(self, '_domain_id', None))
                 logger.debug(f"Stored {len(chunks)} schema chunks for database {db_name}")
             except Exception as e:
                 logger.warning(f"Failed to store schema chunks for {db_name}: {e}")
@@ -1104,31 +1389,13 @@ class SchemaManager:
 
         # Also delete by pattern matching on document_name (fallback for edge cases)
         # This catches chunks where metadata_cache doesn't have entries
-        if hasattr(self._vector_store, '_conn'):
+        if hasattr(self._vector_store, 'delete_chunks_by_pattern'):
             try:
                 pattern = f"schema:{db_name}.%"
-                # First get chunk_ids for deleting chunk_entities
-                chunk_ids = self._vector_store._conn.execute(
-                    "SELECT chunk_id FROM embeddings WHERE document_name LIKE ?",
-                    [pattern]
-                ).fetchall()
-                chunk_ids = [row[0] for row in chunk_ids]
-
-                if chunk_ids:
-                    # Delete chunk_entities links
-                    placeholders = ",".join(["?" for _ in chunk_ids])
-                    self._vector_store._conn.execute(
-                        f"DELETE FROM chunk_entities WHERE chunk_id IN ({placeholders})",
-                        chunk_ids
-                    )
-
-                    # Delete embeddings
-                    self._vector_store._conn.execute(
-                        f"DELETE FROM embeddings WHERE chunk_id IN ({placeholders})",
-                        chunk_ids
-                    )
-                    total_deleted += len(chunk_ids)
-                    logger.info(f"_remove_chunks_for_database({db_name}): deleted {len(chunk_ids)} additional chunks by pattern")
+                deleted = self._vector_store.delete_chunks_by_pattern(pattern)
+                total_deleted += deleted
+                if deleted:
+                    logger.info(f"_remove_chunks_for_database({db_name}): deleted {deleted} additional chunks by pattern")
             except Exception as e:
                 logger.warning(f"_remove_chunks_for_database({db_name}): pattern delete failed: {e}")
 
@@ -1172,6 +1439,14 @@ class SchemaManager:
             logger.exception(f"Failed to remove database {db_name}: {e}")
             return False
 
+    def _get_db_descriptions(self) -> dict[str, str]:
+        """Build a lookup of database name to description from config."""
+        return {
+            db_name: db_config.description
+            for db_name, db_config in self.config.databases.items()
+            if db_config.description
+        }
+
     def _generate_overview(self) -> None:
         """Generate token-optimized overview for system prompt.
 
@@ -1187,11 +1462,7 @@ class SchemaManager:
         lines.append("Available databases and tables:")
 
         # Build a lookup for database descriptions
-        db_descriptions = {
-            db_name: db_config.description
-            for db_name, db_config in self.config.databases.items()
-            if db_config.description
-        }
+        db_descriptions = self._get_db_descriptions()
 
         # Group tables by database
         by_db: dict[str, list[TableMetadata]] = {}
@@ -1199,7 +1470,7 @@ class SchemaManager:
             by_db.setdefault(table_meta.database, []).append(table_meta)
 
         for db_name, tables in sorted(by_db.items()):
-            total_rows = sum(t.row_count for t in tables)
+            _total_rows = sum(t.row_count for t in tables)
 
             # Include database description and connection variable
             desc = f" — {db_descriptions[db_name]}" if db_name in db_descriptions else ""
@@ -1254,11 +1525,7 @@ class SchemaManager:
         lines = ["Available databases:"]
 
         # Build a lookup for database descriptions
-        db_descriptions = {
-            db_name: db_config.description
-            for db_name, db_config in self.config.databases.items()
-            if db_config.description
-        }
+        db_descriptions = self._get_db_descriptions()
 
         # Group tables by database
         by_db: dict[str, list[TableMetadata]] = {}
@@ -1342,7 +1609,8 @@ class SchemaManager:
         query_embedding = self._model.encode([query], convert_to_numpy=True)
 
         # Search embeddings — fetch extra to filter for schema table chunks
-        search_results = self._vector_store.search(query_embedding, limit=top_k * 10)
+        from constat.discovery.models import ChunkType
+        search_results = self._vector_store.search(query_embedding, limit=top_k * 10, query_text=query)
 
         # Filter to schema table chunks and deduplicate by table
         seen_tables: set[str] = set()
@@ -1384,13 +1652,14 @@ class SchemaManager:
                 "summary": summary,
                 # Database type - tells LLM what query semantics to use
                 "database_type": table_meta.database_type,  # e.g., "postgresql", "mongodb"
-                "is_nosql": table_meta.database_type in ("mongodb", "elasticsearch", "dynamodb", "cosmosdb", "firestore", "cassandra"),
+                "is_nosql": table_meta.database_type in ("mongodb", "elasticsearch", "dynamodb", "cosmosdb", "firestore", "cassandra", "neo4j"),
             }
 
             # Enrich with document context if doc_tools provided
             if doc_tools:
                 doc_context = doc_tools.explore_entity(table_meta.name, limit=doc_limit)
                 if doc_context:
+                    # noinspection PyTypeChecker
                     result["documentation"] = [
                         {
                             "document": d["document"],
@@ -1446,6 +1715,7 @@ class SchemaManager:
         self,
         include_columns: bool = False,
         include_columns_for_dbs: list[str] | None = None,
+        only_databases: set[str] | None = None,
     ) -> list[str]:
         """Return table names (and optionally column names) for entity extraction.
 
@@ -1460,6 +1730,8 @@ class SchemaManager:
             include_columns_for_dbs: List of database names for which to include
                 column names (even if include_columns is False). Useful for
                 session-added databases where column names are meaningful.
+            only_databases: If set, only include entities from these databases.
+                Used to scope extraction to active domain databases.
 
         Returns:
             List of unique entity names (raw, not normalized)
@@ -1468,9 +1740,18 @@ class SchemaManager:
         include_columns_set = set(include_columns_for_dbs or [])
 
         for table_meta in self.metadata_cache.values():
+            # Skip databases not in the filter
+            if only_databases is not None and table_meta.database not in only_databases:
+                continue
+
             # Add table name (without database prefix for matching)
             # Keep raw name so EntityExtractor can generate all pattern variants
-            entities.add(table_meta.name)
+            # Strip "rel:" prefix from graph relationship names for clean NER
+            entity_name = table_meta.name
+            if entity_name.startswith("rel:"):
+                entity_name = entity_name[4:]
+            entities.add(entity_name)
+            entities.add(table_meta.database)
 
             # Include column names if:
             # 1. include_columns is True (for all databases), OR
@@ -1480,6 +1761,243 @@ class SchemaManager:
                     entities.add(col.name)
 
         return list(entities)
+
+    def extract_entity_values(
+        self,
+        entity_configs: list,
+        api_configs: dict | None = None,
+    ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        """Query data sources for entity resolution values.
+
+        Args:
+            entity_configs: List of EntityResolutionConfig objects
+            api_configs: {name: APIConfig} for API sources
+
+        Returns:
+            Tuple of (names, details):
+            - names: {entity_type: [name1, name2, ...]} for NER patterns
+            - details: {entity_type: [structured_text, ...]} for embedding
+        """
+        names: dict[str, list[str]] = {}
+        details: dict[str, list[str]] = {}
+
+        for cfg in entity_configs:
+            entity_type = cfg.entity_type.upper()
+            values: list[str] = []
+            descriptions: list[str] = []
+
+            try:
+                if cfg.values:
+                    # Static list — no extra details
+                    values = list(cfg.values[:cfg.max_values])
+
+                elif cfg.endpoint:
+                    # API source
+                    values, descriptions = self._extract_entity_values_api(cfg, api_configs)
+
+                elif cfg.query and cfg.source:
+                    # Custom query — route to API handler if source is an API
+                    if api_configs and cfg.source in api_configs:
+                        values, descriptions = self._extract_entity_values_api(cfg, api_configs)
+                    else:
+                        values, descriptions = self._extract_entity_values_query(cfg)
+
+                elif cfg.table and cfg.name_column and cfg.source:
+                    # SQL shorthand
+                    values, descriptions = self._extract_entity_values_sql(cfg)
+
+            except Exception as e:
+                logger.warning(f"Entity resolution failed for {entity_type} from {cfg.source}: {e}")
+                continue
+
+            if values:
+                names.setdefault(entity_type, []).extend(values)
+                details.setdefault(entity_type, []).extend(
+                    descriptions if descriptions else values
+                )
+
+        return names, details
+
+    @staticmethod
+    def _rows_to_structured(rows: list, columns: list[str], entity_type: str) -> tuple[list[str], list[str]]:
+        """Convert result rows to (names, structured_text) lists.
+
+        The first column is always the entity name (used for NER).
+        Remaining columns become structured text for embedding.
+        """
+        name_col = columns[0] if columns else "name"
+        names = []
+        details = []
+        for row in rows:
+            row_dict = dict(zip(columns, row)) if not isinstance(row, dict) else row
+            name = row_dict.get(name_col)
+            if name is None:
+                continue
+            name = str(name)
+            names.append(name)
+            other_fields = {k: v for k, v in row_dict.items() if k != name_col and v is not None}
+            if other_fields:
+                fields_str = ", ".join(f"{k}: {v}" for k, v in other_fields.items())
+                details.append(f"{entity_type} {name} — {fields_str}")
+            else:
+                details.append(f"{entity_type} {name}")
+        return names, details
+
+    def _extract_entity_values_sql(self, cfg) -> tuple[list[str], list[str]]:
+        """Extract values via SQL shorthand (table + name_column)."""
+        source = cfg.source
+        entity_type = cfg.entity_type.upper()
+        if source in self.connections:
+            engine = self.connections[source]
+            conn_obj = engine.connect() if hasattr(engine, 'connect') else engine
+            try:
+                result = conn_obj.execute(
+                    text(f'SELECT * FROM "{cfg.table}" LIMIT {cfg.max_values}')
+                )
+                columns = list(result.keys())
+                rows = result.fetchall()
+                return self._rows_to_structured(rows, columns, entity_type)
+            finally:
+                if hasattr(conn_obj, 'close'):
+                    conn_obj.close()
+        elif source in self.file_connections:
+            fc = self.file_connections[source]
+            if hasattr(fc, 'duckdb_conn'):
+                result = fc.duckdb_conn.execute(
+                    f'SELECT * FROM "{cfg.table}" LIMIT {cfg.max_values}'
+                )
+                columns = [desc[0] for desc in result.description]
+                rows = result.fetchall()
+                return self._rows_to_structured(rows, columns, entity_type)
+        return [], []
+
+    def _extract_entity_values_query(self, cfg) -> tuple[list[str], list[str]]:
+        """Extract values via custom query."""
+        source = cfg.source
+        entity_type = cfg.entity_type.upper()
+        def _nosql_rows_to_structured(rows: list[dict]) -> tuple[list[str], list[str]]:
+            """First key in each row dict is the entity name."""
+            names, details = [], []
+            for r in rows[:cfg.max_values]:
+                if not r:
+                    continue
+                first_key = next(iter(r))
+                name = str(r[first_key])
+                names.append(name)
+                other = {k: v for k, v in r.items() if k != first_key and v is not None}
+                if other:
+                    fields_str = ", ".join(f"{k}: {v}" for k, v in other.items())
+                    details.append(f"{entity_type} {name} — {fields_str}")
+                else:
+                    details.append(f"{entity_type} {name}")
+            return names, details
+
+        if source in self.nosql_connections:
+            connector = self.nosql_connections[source]
+            connector_type = type(connector).__name__.lower()
+            if 'neo4j' in connector_type:
+                rows = connector.cypher(cfg.query)
+                return _nosql_rows_to_structured(rows)
+            elif 'cassandra' in connector_type:
+                rows = connector.execute_cql(cfg.query)
+                return _nosql_rows_to_structured(rows)
+            elif 'cosmos' in connector_type:
+                rows = connector.query_sql("", cfg.query)
+                return _nosql_rows_to_structured(rows)
+            else:
+                rows = connector.query("", {}, limit=cfg.max_values)
+                return _nosql_rows_to_structured(rows)
+        elif source in self.connections:
+            engine = self.connections[source]
+            conn_obj = engine.connect() if hasattr(engine, 'connect') else engine
+            try:
+                result = conn_obj.execute(text(cfg.query))
+                columns = list(result.keys())
+                rows = result.fetchmany(cfg.max_values)
+                return self._rows_to_structured(rows, columns, entity_type)
+            finally:
+                if hasattr(conn_obj, 'close'):
+                    conn_obj.close()
+        return [], []
+
+    def _extract_entity_values_api(self, cfg, api_configs: dict | None) -> tuple[list[str], list[str]]:
+        """Extract values from a REST or GraphQL API."""
+        import requests
+
+        if not api_configs or cfg.source not in api_configs:
+            logger.warning(f"API source '{cfg.source}' not found in config")
+            return [], []
+
+        api_cfg = api_configs[cfg.source]
+        entity_type = cfg.entity_type.upper()
+
+        headers = {}
+        if hasattr(api_cfg, 'headers') and api_cfg.headers:
+            headers.update(api_cfg.headers)
+
+        # Fetch data from API
+        if getattr(api_cfg, 'type', '') == 'graphql' and cfg.query:
+            url = api_cfg.url
+            resp = requests.post(
+                url,
+                json={"query": cfg.query},
+                headers={**headers, "Content-Type": "application/json"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+
+            if cfg.items_path:
+                for key in cfg.items_path.split('.'):
+                    data = data[key]
+            else:
+                if isinstance(data, dict):
+                    data = next(iter(data.values()), [])
+        elif cfg.endpoint:
+            url = f"{api_cfg.url.rstrip('/')}{cfg.endpoint}"
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if cfg.items_path:
+                for key in cfg.items_path.split('.'):
+                    data = data[key]
+        else:
+            return [], []
+
+        if not isinstance(data, list):
+            return [], []
+
+        # For APIs, use name_field since JSON key order is not guaranteed
+        name_key = cfg.name_field or "name"
+        names = []
+        details = []
+        for item in data[:cfg.max_values]:
+            if isinstance(item, dict):
+                name = item.get(name_key)
+                if name is None:
+                    continue
+                name = str(name)
+                names.append(name)
+                other = {k: v for k, v in item.items() if k != name_key and v is not None}
+                if other:
+                    # Flatten nested dicts/lists for readable structured text
+                    parts = []
+                    for k, v in other.items():
+                        if isinstance(v, list):
+                            v = ", ".join(str(x) for x in v)
+                        elif isinstance(v, dict):
+                            v = ", ".join(f"{sk}: {sv}" for sk, sv in v.items())
+                        parts.append(f"{k}: {v}")
+                    details.append(f"{entity_type} {name} — {', '.join(parts)}")
+                else:
+                    details.append(f"{entity_type} {name}")
+            else:
+                if item is not None:
+                    names.append(str(item))
+                    details.append(f"{entity_type} {item}")
+
+        return names, details
 
     def get_table_metadata(self, database: str, table_name: str) -> Optional[TableMetadata]:
         """Get metadata for a specific table.

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: c83897a2-1eba-4c2b-b369-5f9d72df13a4
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -62,41 +63,28 @@ PROMPT_SECTIONS: dict[str, PromptSection] = {
         ],
         content="""## Dashboard Generation Rules
 
-When the user requests a "dashboard":
+When the user requests a "dashboard", choose the layout based on the request:
 
-### Default Layout (2x2)
-Generate 4 complementary visualizations arranged in a 2x2 grid using `make_subplots(rows=2, cols=2)`:
-- Top-left: Primary metric over time (line/bar)
-- Top-right: Breakdown/composition (pie/bar)
-- Bottom-left: Comparison or ranking (bar/table)
-- Bottom-right: Trend or KPI summary
+### Layout Selection
+Count the distinct analytical perspectives implied by the request, then pick the smallest grid that fits:
+- **1 panel** — single question ("what are top products?") → `px.bar(...)`, no subplots
+- **1x2** — two perspectives ("how does revenue compare to cost?", "trend and breakdown")
+- **1x3** — three perspectives ("by region, by product, and over time")
+- **2x2** — four perspectives, or an explicit "dashboard" / "overview" request with rich data
 
-### Layout Variations
-Adjust based on data characteristics:
-
-| Data Available | Layout | Panels |
-|----------------|--------|--------|
-| Single metric, time series | 1x2 | Trend + Summary stats |
-| Multiple categories | 2x2 | Overview, breakdown, comparison, detail |
-| Hierarchical data | 1x3 | High-level -> Mid -> Detail |
-| KPI-focused | 3x2 | Top row: KPI cards, Bottom: supporting charts |
-
-### Panel Selection Priority
-1. **Critical/requested metrics** - Always include
-2. **Time-based trends** - If temporal data exists
-3. **Comparisons** - If categorical groupings exist
-4. **Distributions** - If numerical spread is relevant
+The user won't say "give me 3 panels." Infer the count from the number of distinct dimensions, metrics, or comparisons implied. When in doubt, use fewer panels — a focused chart is better than a sparse grid.
 
 ### Code Pattern
+**CRITICAL: Every subplot position MUST have at least one `fig.add_trace()` call. Never create empty panels.**
 ```python
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 
-fig = make_subplots(rows=2, cols=2, subplot_titles=('Metric 1', 'Metric 2', 'Metric 3', 'Metric 4'))
-fig.add_trace(go.Bar(...), row=1, col=1)
-fig.add_trace(go.Pie(...), row=1, col=2)
-fig.update_layout(height=600, showlegend=True)
-viz.save_chart('dashboard', fig, title='Dashboard Title')
+fig = make_subplots(rows=1, cols=2, subplot_titles=('Revenue by Region', 'Top Products'))
+fig.add_trace(go.Bar(x=df['region'], y=df['revenue'], name='Revenue'), row=1, col=1)
+fig.add_trace(go.Bar(x=top['product'], y=top['units'], name='Units'), row=1, col=2)
+fig.update_layout(height=400, showlegend=True)
+viz.save_chart('dashboard', fig, title='Sales Dashboard')
 ```
 """,
     ),
@@ -354,19 +342,19 @@ viz.save_binary('report', buffer.getvalue(), ext='xlsx', title='Excel Report')
 
 Each step runs in complete isolation. The ONLY way to share data between steps is through `store`.
 
-### DataFrames
+### DataFrames & Views
 ```python
-# Save a DataFrame for later steps
-store.save_dataframe('customers', df, step_number=1, description='Customer data')
+# 1. create_view — DEFAULT for all SQL-derivable results (named, lazy, queryable by later steps)
+store.create_view('customers_filtered', 'SELECT * FROM hr.customers WHERE active = true', step_number=1)
 
-# Load a DataFrame from a previous step
+# 2. save_dataframe — ONLY when result requires Python computation (LLM calls, pandas transforms)
+store.save_dataframe('enriched', df_with_llm_scores, step_number=1, description='LLM-enriched data')
+
+# 3. query — READ-ONLY, returns ephemeral DataFrame. Use only when you need data in Python for non-SQL ops
+df = store.query('SELECT * FROM customers_filtered')  # read into Python for llm_score, etc.
+
+# 4. load_dataframe — read a previously saved table/view into a DataFrame
 customers = store.load_dataframe('customers')
-
-# Query saved data with SQL (DuckDB syntax)
-result = store.query('SELECT * FROM customers WHERE revenue > 1000')
-
-# List available tables
-tables = store.list_tables()
 ```
 
 ### Simple Values (numbers, strings, lists, dicts)

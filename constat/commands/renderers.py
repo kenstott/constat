@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: dad3683b-fdf4-4f99-828c-f82c362baf9a
 #
 # Renderers for command results - convert to Rich or Markdown.
 
@@ -14,6 +15,7 @@ from constat.commands.base import (
     ListResult,
     TextResult,
     KeyValueResult,
+    JsonResult,
     ErrorResult,
     HelpResult,
 )
@@ -42,6 +44,9 @@ def render_markdown(result: CommandResult) -> str:
 
     if isinstance(result, KeyValueResult):
         return _render_keyvalue_markdown(result)
+
+    if isinstance(result, JsonResult):
+        return _render_json_markdown(result)
 
     if isinstance(result, HelpResult):
         return _render_help_markdown(result)
@@ -128,6 +133,22 @@ def _render_keyvalue_markdown(result: KeyValueResult) -> str:
     return "\n".join(lines)
 
 
+def _render_json_markdown(result: JsonResult) -> str:
+    """Render JsonResult as Markdown code block."""
+    import json
+    lines = []
+    if result.title:
+        lines.append(f"**{result.title}**")
+        lines.append("")
+    lines.append("```json")
+    lines.append(json.dumps(result.data, indent=2, default=str))
+    lines.append("```")
+    if result.footer:
+        lines.append("")
+        lines.append(f"*{result.footer}*")
+    return "\n".join(lines)
+
+
 def _render_help_markdown(result: HelpResult) -> str:
     """Render HelpResult as Markdown."""
     # Group commands by category
@@ -137,6 +158,7 @@ def _render_help_markdown(result: HelpResult) -> str:
             categories[cat] = []
         categories[cat].append((cmd, desc))
 
+    # noinspection DuplicatedCode
     lines = ["**Available Commands:**", ""]
 
     for category, commands in categories.items():
@@ -187,6 +209,9 @@ def render_rich(result: CommandResult) -> Any:
 
     if isinstance(result, KeyValueResult):
         return _render_keyvalue_rich(result)
+
+    if isinstance(result, JsonResult):
+        return _render_json_rich(result)
 
     if isinstance(result, HelpResult):
         return _render_help_rich(result)
@@ -256,6 +281,23 @@ def _render_keyvalue_rich(result: KeyValueResult) -> Any:
     return table
 
 
+def _render_json_rich(result: JsonResult) -> Any:
+    """Render JsonResult as Rich Syntax."""
+    import json
+    from rich.syntax import Syntax
+    from rich.text import Text
+    from rich.console import Group
+
+    parts = []
+    if result.title:
+        parts.append(Text(result.title, style="bold"))
+    json_str = json.dumps(result.data, indent=2, default=str)
+    parts.append(Syntax(json_str, "json", theme="monokai", word_wrap=True))
+    if result.footer:
+        parts.append(Text(result.footer, style="dim"))
+    return Group(*parts)
+
+
 def _render_help_rich(result: HelpResult) -> Any:
     """Render HelpResult as Rich Tables."""
     from rich.table import Table
@@ -274,6 +316,7 @@ def _render_help_rich(result: HelpResult) -> Any:
     # Shortcuts table if present
     if result.shortcuts:
         from rich.text import Text
+        # noinspection PyTypeChecker
         tables.append(Text(""))
 
         shortcut_table = Table(title="Keyboard Shortcuts", show_header=True, box=None)

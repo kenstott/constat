@@ -1,0 +1,40 @@
+name: HR Reporting
+description: Employee and performance data for HR analysis
+databases:
+  hr:
+    uri: sqlite:///data/hr.db
+    description: 'HR data with departments, employees, and performance reviews.
+
+      Ratings: 1-5 scale (5=exceptional, 1=unsatisfactory).
+
+      '
+entity_resolution:
+- entity_type: DEPARTMENT
+  source: hr
+  query: SELECT d.name, GROUP_CONCAT(DISTINCT e.job_title) AS job_titles FROM departments
+    d LEFT JOIN employees e ON d.department_id = e.department_id GROUP BY d.name
+- entity_type: JOB_TITLE
+  source: hr
+  query: SELECT DISTINCT e.job_title AS name, d.name AS department FROM employees
+    e LEFT JOIN departments d ON e.department_id = d.department_id
+- entity_type: EMPLOYEE
+  source: hr
+  query: SELECT first_name || ' ' || last_name AS name, job_title, d.name AS department
+    FROM employees e LEFT JOIN departments d ON e.department_id = d.department_id
+documents:
+  compensation_policy:
+    path: docs/compensation_policy.pdf
+    description: Salary bands, merit increases, and bonus structure
+  hr_management:
+    url: https://en.wikipedia.org/wiki/Human_resource_management
+    follow_links: true
+    max_depth: 1
+    same_domain_only: true
+    exclude_patterns:
+    - '/wiki/(Special|Wikipedia|Talk|User|Help|File|Template|Category|Portal):'
+    - /w/
+    - /api/
+    - auth\.wikimedia\.org
+    - \.(png|jpg|jpeg|gif|svg|ico|css|js)(\?|$)
+    description: Human resource management concepts and practices
+golden_questions: []

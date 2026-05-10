@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 558ba152-5c82-453c-91da-8e0f04ec9ccf
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -13,7 +14,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 
 from constat.server.models import (
     ApiAddRequest,
@@ -37,6 +39,15 @@ def get_session_manager(request: Request) -> SessionManager:
     return request.app.state.session_manager
 
 
+def _get_tier(managed: "SessionManager", resource_type: str, name: str) -> str | None:
+    """Look up the config tier for a resource from resolved_config attribution."""
+    rc = getattr(managed, "resolved_config", None)
+    if not rc or not rc._attribution:
+        return None
+    source = rc._attribution.get(f"{resource_type}.{name}")
+    return source.value if source else None
+
+
 
 @router.post("/{session_id}/databases", response_model=SessionDatabaseInfo)
 async def add_database(
@@ -52,6 +63,7 @@ async def add_database(
     Args:
         session_id: Session ID
         body: Database add request
+        session_manager: Injected session manager
 
     Returns:
         Database connection information
@@ -60,7 +72,9 @@ async def add_database(
         404: Session not found
         400: Invalid database configuration
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Determine the URI
     uri = body.uri
@@ -186,6 +200,9 @@ async def add_database(
     }
     dynamic_dbs.append(db_info)
 
+    # Re-resolve tiered config with new database
+    session_manager.resolve_config(session_id)
+
     # Refresh entities in background (non-blocking)
     if connected:
         session_manager.refresh_entities_async(session_id)
@@ -213,10 +230,11 @@ async def list_databases(
 ) -> SessionDatabaseListResponse:
     """List all databases available to the session.
 
-    Includes config-defined, project-defined, and dynamically added databases.
+    Includes config-defined, domain-defined, and dynamically added databases.
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         List of databases
@@ -224,7 +242,9 @@ async def list_databases(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     databases = []
     seen_names = set()
 
@@ -238,7 +258,7 @@ async def list_databases(
                 tables = managed.session.schema_manager.get_tables_for_db(name)
                 table_count = len(tables)
                 connected = True
-        except Exception:
+        except (KeyError, ValueError):
             pass
 
         databases.append(SessionDatabaseInfo(
@@ -252,25 +272,26 @@ async def list_databases(
             is_dynamic=False,
             file_id=None,
             source="config",
+            tier=_get_tier(managed, "databases", name),
         ))
         seen_names.add(name)
 
-    # Add project databases (from all active projects)
-    for project_filename in managed.active_projects:
-        project = managed.session.config.load_project(project_filename)
-        if project:
-            for name, db_config in project.databases.items():
+    # Add domain databases (from all active domains)
+    for domain_filename in managed.active_domains:
+        domain = managed.session.config.load_domain(domain_filename)
+        if domain:
+            for name, db_config in domain.databases.items():
                 if name in seen_names:
-                    continue  # Skip duplicates (conflicts checked at project selection)
+                    continue  # Skip duplicates (conflicts checked at domain selection)
 
                 # Check if this database was loaded into the session
-                connected = name in getattr(managed, "_project_databases", set())
+                connected = name in getattr(managed, "_domain_databases", set())
                 table_count = 0
                 if connected and managed.session.schema_manager:
                     try:
                         tables = managed.session.schema_manager.get_tables_for_db(name)
                         table_count = len(tables)
-                    except Exception:
+                    except (KeyError, ValueError):
                         pass
 
                 databases.append(SessionDatabaseInfo(
@@ -283,7 +304,8 @@ async def list_databases(
                     added_at=managed.created_at,
                     is_dynamic=False,
                     file_id=None,
-                    source=project_filename,
+                    source=domain_filename,
+                    tier=_get_tier(managed, "databases", name),
                 ))
                 seen_names.add(name)
 
@@ -304,6 +326,7 @@ async def list_databases(
             is_dynamic=True,
             file_id=db.get("file_id"),
             source="session",
+            tier=_get_tier(managed, "databases", db["name"]),
         ))
 
     return SessionDatabaseListResponse(databases=databases)
@@ -316,11 +339,12 @@ async def list_data_sources(
 ) -> SessionDataSourcesResponse:
     """List all data sources available to the session.
 
-    Returns databases, APIs, and documents from config, active projects,
+    Returns databases, APIs, and documents from config, active domains,
     and session-added sources.
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         Combined list of all data sources
@@ -328,7 +352,9 @@ async def list_data_sources(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     config = managed.session.config
 
     # Get databases (reuse existing logic)
@@ -349,14 +375,15 @@ async def list_data_sources(
             connected=True,  # Assume connected if in config
             from_config=True,
             source="config",
+            tier=_get_tier(managed, "apis", name),
         ))
         seen_apis.add(name)
 
-    # Project APIs
-    for project_filename in managed.active_projects:
-        project = config.load_project(project_filename)
-        if project:
-            for name, api_config in project.apis.items():
+    # Domain APIs
+    for domain_filename in managed.active_domains:
+        domain = config.load_domain(domain_filename)
+        if domain:
+            for name, api_config in domain.apis.items():
                 if name in seen_apis:
                     continue  # Skip duplicates (conflicts checked at selection)
                 apis.append(SessionApiInfo(
@@ -366,7 +393,8 @@ async def list_data_sources(
                     base_url=api_config.url,
                     connected=True,
                     from_config=False,
-                    source=project_filename,
+                    source=domain_filename,
+                    tier=_get_tier(managed, "apis", name),
                 ))
                 seen_apis.add(name)
 
@@ -384,6 +412,7 @@ async def list_data_sources(
             from_config=False,
             source="session",
             is_dynamic=True,
+            tier=_get_tier(managed, "apis", api["name"]),
         ))
 
     # Collect Documents
@@ -400,14 +429,15 @@ async def list_data_sources(
             indexed=True,  # Assume indexed if in config
             from_config=True,
             source="config",
+            tier=_get_tier(managed, "documents", name),
         ))
         seen_docs.add(name)
 
-    # Project documents
-    for project_filename in managed.active_projects:
-        project = config.load_project(project_filename)
-        if project:
-            for name, doc_config in project.documents.items():
+    # Domain documents
+    for domain_filename in managed.active_domains:
+        domain = config.load_domain(domain_filename)
+        if domain:
+            for name, doc_config in domain.documents.items():
                 if name in seen_docs:
                     continue  # Skip duplicates
                 documents.append(SessionDocumentInfo(
@@ -417,7 +447,8 @@ async def list_data_sources(
                     path=doc_config.path,
                     indexed=True,
                     from_config=False,
-                    source=project_filename,
+                    source=domain_filename,
+                    tier=_get_tier(managed, "documents", name),
                 ))
                 seen_docs.add(name)
 
@@ -433,6 +464,7 @@ async def list_data_sources(
             indexed=True,
             source="session",
             from_config=False,
+            tier=_get_tier(managed, "documents", ref["name"]),
         ))
 
     return SessionDataSourcesResponse(
@@ -455,6 +487,7 @@ async def remove_database(
     Args:
         session_id: Session ID
         db_name: Database name
+        session_manager: Injected session manager
 
     Returns:
         Deletion confirmation
@@ -463,7 +496,9 @@ async def remove_database(
         404: Session or database not found
         400: Cannot remove config database
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Check if it's a config database
     if db_name in managed.session.config.databases:
@@ -472,13 +507,13 @@ async def remove_database(
             detail="Cannot remove config-defined database"
         )
 
-    # Check if it's a project database
-    for project_filename in managed.active_projects:
-        project = managed.session.config.load_project(project_filename)
-        if project and db_name in project.databases:
+    # Check if it's a domain database
+    for domain_filename in managed.active_domains:
+        domain = managed.session.config.load_domain(domain_filename)
+        if domain and db_name in domain.databases:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot remove project-defined database (from {project_filename})"
+                detail=f"Cannot remove domain-defined database (from {domain_filename})"
             )
 
     # Find the database to get its file path before removing
@@ -524,6 +559,13 @@ async def remove_database(
             except Exception as e:
                 logger.warning(f"Failed to delete file {file_path}: {e}")
 
+    # Remove from user-level config
+    from constat.server.session_manager import ManagedSession
+    ManagedSession._remove_db_from_user_config(managed.user_id, db_name)
+
+    # Re-resolve tiered config after removal
+    session_manager.resolve_config(session_id)
+
     # Refresh entities in background (non-blocking)
     session_manager.refresh_entities_async(session_id)
 
@@ -556,7 +598,9 @@ async def test_database_connection(
     Raises:
         404: Session or database not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.has_database(db_name):
         raise HTTPException(status_code=404, detail=f"Database not found: {db_name}")
@@ -599,6 +643,7 @@ async def preview_database_table(
         table_name: Table name
         page: Page number (1-indexed)
         page_size: Number of rows per page
+        session_manager: Injected session manager
 
     Returns:
         Table data with columns, rows, and pagination info
@@ -609,7 +654,9 @@ async def preview_database_table(
     """
     import pandas as pd
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.has_database(db_name):
         raise HTTPException(status_code=404, detail=f"Database not found: {db_name}")
@@ -646,9 +693,12 @@ async def preview_database_table(
             conn.close()
         else:
             query = f'SELECT * FROM "{table_name}" LIMIT {page_size} OFFSET {offset}'
-            df = pd.read_sql(query, db_connection)
             count_query = f'SELECT COUNT(*) as cnt FROM "{table_name}"'
-            count_df = pd.read_sql(count_query, db_connection)
+            from constat.catalog.sql_transpiler import TranspilingConnection
+            sql_con = db_connection.engine if isinstance(db_connection, TranspilingConnection) else db_connection
+            df = pd.read_sql(query, sql_con)
+            count_df = pd.read_sql(count_query, sql_con)
+            # noinspection PyTypeChecker
             total_rows = int(count_df.iloc[0]["cnt"])
 
         # Convert to response format
@@ -671,6 +721,62 @@ async def preview_database_table(
         raise HTTPException(status_code=500, detail=f"Error querying table: {e}")
 
 
+@router.get("/{session_id}/databases/{db_name}/tables/{table_name}/download")
+async def download_database_table(
+    session_id: str,
+    db_name: str,
+    table_name: str,
+    format: "DownloadFormat" = Query(default="csv"),
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> Response:
+    """Download a source database table in the specified format."""
+    import pandas as pd
+    from constat.server.routes.data.tables import DownloadFormat, _df_to_download_response
+
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if not managed.has_database(db_name):
+        raise HTTPException(status_code=404, detail=f"Database not found: {db_name}")
+
+    db_connection = managed.get_database_connection(db_name)
+    if not db_connection:
+        raise HTTPException(status_code=404, detail=f"Database '{db_name}' is not connected.")
+
+    try:
+        from constat.catalog.file.connector import FileConnector
+        if isinstance(db_connection, FileConnector):
+            import duckdb
+            conn = duckdb.connect(":memory:")
+            file_path = db_connection.path
+            ft = db_connection.file_type.value
+            read_fn = {
+                'csv': f"read_csv_auto('{file_path}')",
+                'tsv': f"read_csv_auto('{file_path}', delim='\\t')",
+                'json': f"read_json_auto('{file_path}')",
+                'jsonl': f"read_json_auto('{file_path}', format='newline_delimited')",
+                'parquet': f"read_parquet('{file_path}')",
+                'arrow': f"read_parquet('{file_path}')",
+                'feather': f"read_parquet('{file_path}')",
+            }.get(ft, f"read_csv_auto('{file_path}')")
+            df = conn.execute(f"SELECT * FROM {read_fn}").df()
+            conn.close()
+        else:
+            from constat.catalog.sql_transpiler import TranspilingConnection
+            sql_con = db_connection.engine if isinstance(db_connection, TranspilingConnection) else db_connection
+            query = f'SELECT * FROM "{table_name}"'
+            df = pd.read_sql(query, sql_con)
+
+        return _df_to_download_response(df, f"{db_name}_{table_name}", format)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading table {db_name}.{table_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =============================================================================
 # API Routes
 # =============================================================================
@@ -687,6 +793,7 @@ async def add_api(
     Args:
         session_id: Session ID
         body: API add request
+        session_manager: Injected session manager
 
     Returns:
         Information about the added API
@@ -695,7 +802,9 @@ async def add_api(
         400: API already exists
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Check for duplicate name
     dynamic_apis = managed._dynamic_apis
@@ -736,7 +845,6 @@ async def add_api(
     )
 
     # Introspect API and build chunks/embeddings for semantic search
-    endpoint_count = 0
     if managed.session.api_schema_manager:
         from constat.core.config import APIConfig
         api_config = APIConfig(
@@ -747,7 +855,9 @@ async def add_api(
         if body.auth_type and body.auth_header:
             api_config.headers = {body.auth_header: ""}  # Placeholder, actual token set at request time
         managed.session.api_schema_manager.add_api_dynamic(body.name, api_config)
-        endpoint_count = sum(1 for k, m in managed.session.api_schema_manager.metadata_cache.items() if m.api_name == body.name)
+
+    # Re-resolve tiered config with new API
+    session_manager.resolve_config(session_id)
 
     # Refresh entities in background (non-blocking)
     session_manager.refresh_entities_async(session_id)
@@ -780,6 +890,7 @@ async def remove_api(
     Args:
         session_id: Session ID
         api_name: API name to remove
+        session_manager: Injected session manager
 
     Returns:
         Status message
@@ -788,7 +899,9 @@ async def remove_api(
         400: Cannot remove config-defined API
         404: Session or API not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Check if it's a config API
     if api_name in managed.session.config.apis:
@@ -810,6 +923,9 @@ async def remove_api(
 
     # Remove from session resources
     managed.session.resources.remove_api(api_name)
+
+    # Re-resolve tiered config after removal
+    session_manager.resolve_config(session_id)
 
     # Refresh entities in background (non-blocking)
     session_manager.refresh_entities_async(session_id)

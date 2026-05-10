@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 0ab516e4-2818-4b29-8856-c8f988e78297
 #
 # Command registry - maps command names to handlers.
 
@@ -36,12 +37,12 @@ from constat.commands.session_cmds import (
     rule_edit_command,
     rule_delete_command,
     correct_command,
-    role_command,
-    roles_command,
-    role_create_command,
-    role_edit_command,
-    role_delete_command,
-    role_draft_command,
+    agent_command,
+    agents_command,
+    agent_create_command,
+    agent_edit_command,
+    agent_delete_command,
+    agent_draft_command,
     skill_command,
     skills_command,
     skill_create_command,
@@ -49,7 +50,17 @@ from constat.commands.session_cmds import (
     skill_delete_command,
     skill_deactivate_command,
     skill_draft_command,
+    skill_download_command,
     prove_command,
+    replay_reason_command,
+    replay_command,
+    redo_command,
+    step_redo_command,
+    step_delete_command,
+    step_edit_command,
+    objective_edit_command,
+    objective_delete_command,
+    objectives_command,
 )
 from constat.commands.sources import (
     databases_command,
@@ -57,6 +68,17 @@ from constat.commands.sources import (
     documents_command,
     files_command,
     discover_command,
+)
+from constat.commands.diagnostic import (
+    schema_command,
+    search_tables_command,
+    search_apis_command,
+    search_docs_command,
+    search_chunks_command,
+    lookup_command,
+    entity_command,
+    known_facts_command,
+    sources_command,
 )
 
 
@@ -94,13 +116,13 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     (("/rule-edit",), rule_edit_command, _cmd_desc["rule-edit"]),
     (("/rule-delete",), rule_delete_command, _cmd_desc["rule-delete"]),
     (("/correct",), correct_command, _cmd_desc["correct"]),
-    # Roles
-    (("/role",), role_command, _cmd_desc["role"]),
-    (("/roles",), roles_command, _cmd_desc["roles"]),
-    (("/role-create",), role_create_command, _cmd_desc["role-create"]),
-    (("/role-edit",), role_edit_command, _cmd_desc["role-edit"]),
-    (("/role-delete",), role_delete_command, _cmd_desc["role-delete"]),
-    (("/role-draft",), role_draft_command, _cmd_desc["role-draft"]),
+    # Agents
+    (("/agent",), agent_command, _cmd_desc["agent"]),
+    (("/agents",), agents_command, _cmd_desc["agents"]),
+    (("/agent-create",), agent_create_command, _cmd_desc["agent-create"]),
+    (("/agent-edit",), agent_edit_command, _cmd_desc["agent-edit"]),
+    (("/agent-delete",), agent_delete_command, _cmd_desc["agent-delete"]),
+    (("/agent-draft",), agent_draft_command, _cmd_desc["agent-draft"]),
     # Skills
     (("/skill",), skill_command, _cmd_desc["skill"]),
     (("/skills",), skills_command, _cmd_desc["skills"]),
@@ -109,15 +131,38 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     (("/skill-delete",), skill_delete_command, _cmd_desc["skill-delete"]),
     (("/skill-deactivate",), skill_deactivate_command, _cmd_desc["skill-deactivate"]),
     (("/skill-draft",), skill_draft_command, _cmd_desc["skill-draft"]),
-    # Proof/verification
-    (("/prove",), prove_command, _cmd_desc["prove"]),
+    (("/skill-download",), skill_download_command, _cmd_desc["skill-download"]),
+    # Objectives
+    (("/objectives",), objectives_command, _cmd_desc["objectives"]),
+    (("/objective-edit",), objective_edit_command, _cmd_desc["objective-edit"]),
+    (("/objective-delete",), objective_delete_command, _cmd_desc["objective-delete"]),
+    # Redo / Replay
+    (("/redo",), redo_command, _cmd_desc["redo"]),
+    (("/replay",), replay_command, _cmd_desc["replay"]),
+    # Step editing
+    (("/step-redo",), step_redo_command, _cmd_desc["step-redo"]),
+    (("/step-delete",), step_delete_command, _cmd_desc["step-delete"]),
+    (("/step-edit",), step_edit_command, _cmd_desc["step-edit"]),
+    # Reasoning chain verification
+    (("/reason",), prove_command, _cmd_desc["reason"]),
+    (("/replay-reason",), replay_reason_command, _cmd_desc["replay-reason"]),
+    # Diagnostics (LLM tool inspection)
+    (("/schema",), schema_command, _cmd_desc["schema"]),
+    (("/search-tables",), search_tables_command, _cmd_desc["search-tables"]),
+    (("/search-apis",), search_apis_command, _cmd_desc["search-apis"]),
+    (("/search-docs",), search_docs_command, _cmd_desc["search-docs"]),
+    (("/lookup",), lookup_command, _cmd_desc["lookup"]),
+    (("/entity",), entity_command, _cmd_desc["entity"]),
+    (("/known-facts",), known_facts_command, _cmd_desc["known-facts"]),
+    (("/sources",), sources_command, _cmd_desc["sources"]),
+    (("/search-chunks", "/chunks"), search_chunks_command, _cmd_desc["search-chunks"]),
 ]
 
 # Build lookup dict for fast access
 _COMMAND_MAP: dict[str, Callable[[CommandContext], CommandResult]] = {}
-for aliases, handler, _ in COMMANDS:
+for aliases, cmd_handler, _ in COMMANDS:
     for alias in aliases:
-        _COMMAND_MAP[alias] = handler
+        _COMMAND_MAP[alias] = cmd_handler
 
 
 def get_command(name: str) -> Optional[Callable[[CommandContext], CommandResult]]:
@@ -187,10 +232,10 @@ def parse_command(text: str) -> tuple[str, str]:
     """
     text = text.strip()
     if not text.startswith("/"):
-        return ("", text)
+        return "", text
 
     parts = text.split(maxsplit=1)
     command = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
 
-    return (command, args)
+    return command, args

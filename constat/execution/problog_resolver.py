@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 61f71491-26bd-4f80-83f7-7b1d1d421122
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -25,7 +26,7 @@ Usage:
     resolver.register_sql_executor(lambda db, sql: pd.read_sql(sql, engines[db]))
 
     # Resolve a fact
-    result = resolver.resolve_fact("monthly_revenue_by_tier", params={})
+    result = resolver.resolve_fact("monthly_metric_by_group", params={})
     print(result.proof.to_trace())  # Shows symbolic proof tree
 """
 
@@ -64,8 +65,10 @@ class ProofNode:
     def to_trace(self, indent: int = 0) -> str:
         """Render as human-readable proof trace."""
         prefix = "  " * indent
-        lines = [f"{prefix}∴ {self.predicate} = {self._format_value()}"]
-        lines.append(f"{prefix}  [source: {self.source.value}, prob: {self.probability:.2f}]")
+        lines = [
+            f"{prefix}∴ {self.predicate} = {self._format_value()}",
+            f"{prefix}  [source: {self.source.value}, prob: {self.probability:.2f}]",
+        ]
         if self.evidence:
             ev = self.evidence[:100] + "..." if len(self.evidence) > 100 else self.evidence
             lines.append(f"{prefix}  [evidence: {ev}]")
@@ -185,7 +188,7 @@ class ProbLogResolver:
         4. Proof tree is built from resolution log
 
         Args:
-            fact_name: The fact to resolve (e.g., "monthly_revenue_by_tier")
+            fact_name: The fact to resolve (e.g., "monthly_metric_by_group")
             params: Parameters for the fact
             generate_rules: If True, ask LLM to generate resolution rules
             user_facts: User-provided facts (from clarifications) to include
@@ -193,7 +196,7 @@ class ProbLogResolver:
         Returns:
             ResolvedFact with value, probability, and proof
         """
-        global _resolution_log, _sql_executor, _nosql_executor, _doc_searcher
+        global _resolution_log, _sql_executor, _nosql_executor, _doc_searcher, _fact_resolver, _config, _llm
 
         params = params or {}
         user_facts = user_facts or {}
@@ -349,7 +352,7 @@ Generate the rules (just the Prolog code, no markdown):"""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            # Clean up response - remove markdown code blocks if present
+            # Clean up response - remove Markdown code blocks if present
             rules = response.strip()
             if rules.startswith("```"):
                 lines = rules.split("\n")

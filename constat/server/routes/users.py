@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 81f4d55b-15d2-49d3-9533-91829adf1499
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -12,7 +13,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from constat.server.auth import CurrentUserId, CurrentUserEmail
+from constat.server.config import Persona
 from constat.server.permissions import get_user_permissions, list_all_permissions as list_perms
+from constat.server.user_preferences import load_user_preferences, save_user_preferences
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +27,14 @@ class PermissionsResponse(BaseModel):
     user_id: str
     email: str | None
     admin: bool
-    projects: list[str]
+    persona: str
+    domains: list[str]
     databases: list[str]
     documents: list[str]
     apis: list[str]
+    visibility: dict[str, bool]
+    writes: dict[str, bool]
+    feedback: dict[str, bool]
 
 
 @router.get("/me/permissions", response_model=PermissionsResponse)
@@ -39,19 +46,36 @@ async def get_my_permissions(
     """Get permissions for the current authenticated user.
 
     Returns:
-        User's permissions including admin status and accessible resources
+        User's permissions including admin status, persona, and resolved visibility/writes/feedback
     """
     server_config = request.app.state.server_config
-    perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
+    perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
+
+    # Resolve persona-based visibility/writes/feedback
+    from constat.server.persona_config import PersonasConfig
+    personas_config: PersonasConfig | None = getattr(request.app.state, "personas_config", None)
+    if personas_config:
+        persona_def = personas_config.get_persona(perms.persona)
+        visibility = persona_def.visibility
+        writes = persona_def.writes
+        feedback = persona_def.feedback
+    else:
+        visibility = {}
+        writes = {}
+        feedback = {}
 
     return PermissionsResponse(
         user_id=perms.user_id,
         email=perms.email,
-        admin=perms.admin,
-        projects=perms.projects,
+        admin=perms.is_admin,
+        persona=perms.persona,
+        domains=perms.domains,
         databases=perms.databases,
         documents=perms.documents,
         apis=perms.apis,
+        visibility=visibility,
+        writes=writes,
+        feedback=feedback,
     )
 
 
@@ -71,8 +95,28 @@ async def list_all_user_permissions(
     server_config = request.app.state.server_config
 
     # Check if current user is admin
-    current_perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
-    if not current_perms.admin:
+    current_perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
+    if current_perms.persona != Persona.PLATFORM_ADMIN:
         raise HTTPException(status_code=403, detail="Admin access required")
 
     return list_perms(server_config)
+
+
+@router.get("/me/preferences")
+async def get_preferences(
+    user_id: CurrentUserId,
+) -> dict[str, Any]:
+    """Get user preferences."""
+    return load_user_preferences(user_id)
+
+
+@router.patch("/me/preferences")
+async def update_preferences(
+    user_id: CurrentUserId,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """Partially update user preferences."""
+    prefs = load_user_preferences(user_id)
+    prefs.update(body)
+    save_user_preferences(user_id, prefs)
+    return prefs

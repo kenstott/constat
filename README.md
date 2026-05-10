@@ -42,9 +42,34 @@ Or use the terminal REPL instead:
 constat repl -c demo/config.yaml
 ```
 
-## Execution and Provenance
+## Core Concepts
 
-Constat operates in exploratory mode for data exploration, visualization, and iterative analysis. The LLM generates multi-step plans and executes code to answer questions.
+### Agentic Domains
+
+Domains are the primary organizational unit. Everything — data sources, glossary terms, skills, agents, rules — is scoped to a domain. Domains form a strict DAG and are organized in three tiers:
+
+| Tier | Location | Editable | Purpose |
+|------|----------|----------|---------|
+| **system** | `config.yaml` domains | No | Curated by admin, read-only |
+| **shared** | `.constat/shared/domains/` | Owner only | Promoted from user, visible to all |
+| **user** | `.constat/{user_id}/domains/` | Yes | Personal sandbox, persists across sessions |
+
+Content flows upward: user → shared → system (read-only). User domains are persistent staging areas — experiments, draft skills, and what-if rules survive across sessions until promoted or deleted.
+
+**Domain resources:** databases, APIs, documents, glossary terms, skills, agents, rules, permissions, golden questions, system prompts, NER stop lists.
+
+**Move resources** between domains via drag-and-drop in the domain panel or the `/domains/move-*` endpoints. **Promote** user domains to shared via the UI or `POST /domains/{filename}/promote`.
+
+### Recursive Structures
+
+A session is a conversation with memory. Each user question triggers:
+
+1. **Intent classification** — determines execution mode
+2. **Planning** — generates a multi-step DAG with user approval
+3. **Execution** — each step produces code, output, and narrative
+4. **Synthesis** — combines step results into a coherent answer
+
+Follow-up questions extend the session, building on previous results. Steps are organized as a DAG and parallelized where dependencies allow. Clarification questions with interactive widgets (choice, curation, ranking, table, mapping, tree, annotation) fire before planning when queries are ambiguous.
 
 ```python
 from constat import Session
@@ -53,22 +78,23 @@ session = Session(config)
 result = session.solve("What are the top 10 customers by revenue this quarter?")
 ```
 
-- Generates multi-step execution plans with user approval
-- Each step produces code, output, and narrative
-- Results include charts, tables, and insights
-- Clarification questions asked before planning when queries are ambiguous
+### Execution Modes
 
-### On-Demand Proof Generation
+| Mode | Trigger | Behavior |
+|------|---------|----------|
+| **Exploratory** | Default | Multi-step plans, code generation, charts, tables |
+| **Auditable** | `/reason` | Formal reasoning chain with full derivation traces |
+| **Knowledge** | `/reason` on knowledge queries | Retrieves from documents via semantic search |
 
-At any point, use `/prove` to generate a formal proof of your results with full derivation traces. This is useful for compliance, financial reporting, and any scenario requiring provable conclusions.
+### Facts and Provenance
 
-The system automatically:
-1. Analyzes the question to identify required facts
-2. Determines how to derive each fact from your data sources
-3. Executes queries and combines results
-4. Returns the answer with full provenance
+Every piece of information is a `Fact` with:
+- **Value**: The actual data
+- **Source**: Where it came from (DATABASE, CONFIG, DERIVED, LLM_INFERENCE, LEARNED)
+- **Confidence**: How certain we are (1.0 for database queries, lower for inferences)
+- **Because**: The facts this was derived from
 
-The derivation trace shows exactly how the conclusion was reached:
+**Derivation traces** show exactly how conclusions were reached:
 
 ```
 is_vip(customer_id=C001) = True
@@ -89,7 +115,139 @@ Every fact in the derivation chain is traceable to either:
 - A configuration value
 - A derived calculation (with the facts it depends on)
 
-## Data Store Integration
+**Lazy resolution** ensures efficient execution — facts are resolved only when needed:
+1. Check cache
+2. Check config
+3. Apply rules
+4. Query database
+5. Fall back to LLM knowledge
+6. Create sub-plan if complex
+
+### LLM Primitives
+
+Generated code has access to LLM wrapper functions for in-step operations:
+
+```python
+# Map values to an allowed set
+mapped = llm_map(df['category'], ['Electronics', 'Clothing', 'Food'])
+
+# Classify text into categories
+labels = llm_classify(df['comment'], ['positive', 'negative', 'neutral'])
+
+# Score text on a numeric scale
+scores = llm_score(df['review'], min_val=0, max_val=1, instruction="sentiment score")
+
+# Extract structured fields from text
+facts = llm_extract(text, fields=["company", "revenue", "date"])
+
+# Summarize text
+summary = llm_summarize(df['description'].tolist())
+```
+
+These auto-detect the provider from environment variables and handle deduplication for efficiency.
+
+## Features
+
+### Reasoning Chain
+
+At any point, use `/reason` to generate a formal reasoning chain for your results with full derivation traces. This is useful for compliance, financial reporting, and any scenario requiring provable conclusions.
+
+The system automatically:
+1. Analyzes the question to identify required facts
+2. Determines how to derive each fact from your data sources
+3. Executes queries and combines results
+4. Returns the answer with full provenance
+
+### Agents and Skills
+
+**Agents** are specialist personas that customize the LLM's behavior for specific analysis contexts. Each agent provides a custom system prompt that shapes how the LLM approaches queries. The planner can delegate steps to agents for isolated, expertise-specific execution. Agents are stored per-user at `.constat/{user_id}/agents.yaml`.
+
+**Skills** are domain-specific knowledge modules (SKILL.md files) that provide specialized context and guidance. They follow the standard skill/prompt pattern used by Anthropic (Claude Code), OpenAI, and other AI providers. Skills are portable programs — they can run under other LLMs, not just the one that created them. A completed reasoning chain can be converted to a skill via "Save as Skill" in the DAG panel.
+
+Skills are discovered from: project `.constat/skills/`, global `~/.constat/skills/`, and config-specified paths. They support link following for lazy-loaded references, and YAML frontmatter for metadata and allowed tools.
+
+### Glossary Generator
+
+The glossary is a unified view of auto-generated entities (from NER extraction) married with curated business definitions. Every extracted entity is a self-describing glossary term. Features include:
+
+- **Definitions** — business meaning for terms, with AI-assisted generation and refinement
+- **Taxonomy** — parent/child hierarchy (e.g., "retail customer" is a kind of "customer")
+- **Aliases** — alternate names for the same concept, with AI suggestions
+- **Tags** — key-value metadata for categorization, with AI generators
+- **Relationships** — SVO triples between terms (e.g., customer PLACES order) with UPPER_SNAKE_CASE verb normalization
+- **Status workflow** — draft → reviewed → approved
+- **Domain scoping** — terms are owned by domains
+
+### Regression Testing
+
+Golden questions let you define expected outcomes for a domain and verify them automatically. Questions are defined in domain YAML alongside the resources they test.
+
+**Five assertion layers:**
+
+| Layer | What | Cost |
+|-------|------|------|
+| Entity extraction | Expected entities appear in NER output | Free |
+| Grounding | Entities resolve to expected sources | Free |
+| Glossary | Terms have definitions, correct domain, parent hierarchy | Free |
+| Relationships | Expected SVO triples exist | Free |
+| End-to-end | LLM generates plan, executes, answer matches reference | LLM call |
+
+The first four layers are pure database lookups. End-to-end is opt-in (`--e2e`).
+
+```bash
+constat test -c config.yaml                    # All domains
+constat test -c config.yaml -d sales-analytics # Specific domain
+constat test -c config.yaml --tags smoke       # Filter by tag
+constat test -c config.yaml --e2e              # Include end-to-end (LLM)
+```
+
+The UI provides a Regression panel for golden question CRUD and test execution with SSE streaming for real-time progress.
+
+### Learning System
+
+Constat learns from corrections and errors to improve over time. Learnings are stored per-user and persist across sessions.
+
+- **Explicit corrections:** `/correct "revenue" means gross sales minus returns`
+- **Automatic learning:** When code generation fails and retries succeed, the error-to-fix pattern is captured automatically
+- **Natural language detection:** Corrections in conversation are detected automatically (e.g., "That's wrong, active users means 30-day logins")
+- **Compaction:** Similar learnings are automatically promoted to rules when patterns emerge
+
+### Session Replay
+
+Any exploratory session can be replayed — stored scratchpad code is re-executed without LLM codegen. This is useful for demos, testing with updated data, or resuming work after a break. Each query's steps are tracked by `objective_index`, so individual objectives can be replayed independently.
+
+In Jupyter notebooks, session replay is automatic. When you restart the kernel and Run All, each `%%constat` cell replays only its own query's stored code rather than re-generating via LLM.
+
+### Interactive Visualizations
+
+Constat generates interactive visualizations saved as HTML files:
+
+| Type | Library | Example |
+|------|---------|---------|
+| Interactive maps | Folium | Geographic data, markers, choropleth maps |
+| Interactive charts | Plotly | Bar, line, scatter, pie, treemap, etc. |
+| Statistical charts | Altair | Declarative statistical visualizations |
+| Static plots | Matplotlib/Seaborn | Traditional Python plotting |
+
+Request a "dashboard" to generate multi-panel visualizations with adaptive layouts (time series 1x2, categories 2x2, KPI-focused 3x2).
+
+### Discovery Tools
+
+All supported LLM providers use tool-based discovery:
+- Minimal system prompt (~500 tokens)
+- LLM uses tools to discover relevant schema, APIs, and documents on-demand
+- On-demand loading reduces token usage by 80-95%
+
+| Category | Tools |
+|----------|-------|
+| **Schema** | `list_databases`, `list_tables`, `get_table_schema`, `search_tables`, `get_table_relationships`, `get_sample_values` |
+| **API** | `list_apis`, `list_api_operations`, `get_operation_details`, `search_operations` |
+| **Documents** | `list_documents`, `get_document`, `search_documents`, `get_document_section` |
+| **Facts** | `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts` |
+
+Documents are indexed into a persistent vector store using DuckDB VSS (lazy, on first access). The index persists at `~/.constat/vectors.duckdb` by default, eliminating re-indexing on restart.
+
+## Data Integration
 
 ### SQL Databases (via SQLAlchemy)
 
@@ -249,6 +407,11 @@ df = pd.read_parquet(file_transactions)
            |                          |
            +------------+-------------+
                         |
+              +---------v---------+
+              | Session (mixin-   |
+              |  based modules)   |
+              +---------+---------+
+                        |
                 +-------v-------+
                 | Intent        |
                 | Classifier    |
@@ -257,276 +420,37 @@ df = pd.read_parquet(file_transactions)
        +----------------+----------------+
        |                                 |
 +------v------+                   +------v------+
-| Exploratory |                   |  Auditable  |
-|    Mode     |                   |    Mode     |
+| Exploratory |                   |  Reasoning  |
+|    Mode     |                   |    Chain    |
 +------+------+                   +------+------+
        |                                 |
 +------v------+                   +------v------+
 | Multi-Step  |                   |    Fact     |
-|   Planner   |                   |  Resolver   |
+| DAG Planner |                   |  Resolver   |
 +------+------+                   +------+------+
        |                                 |
        +----------------+----------------+
                         |
           +-------------v-------------+
           |     Discovery Tools       |
-          |  (tool-based or prompt)   |
-          +-------------+-------------+
-                        |
-+-------+-------+-------+-------+-------+-------+
-|       |       |       |       |       |       |
-SQL   MongoDB Cassandra DynamoDB  Files  CosmosDB
-                                (CSV/JSON/
+          |  (tool-based, on-demand)  |
+          +------+------+------+-----+
+                 |             |
+    +------------v--+    +----v-----------+
+    | DuckDB Session|    | DuckDB Vector  |
+    | Store (tables,|    | Store (embeds, |
+    | views, meta)  |    |  FTS, BM25)   |
+    +------+--------+    +----+-----------+
+           |                   |
++-------+--+----+-------+-----+--+-------+
+|       |       |       |        |       |
+SQL   MongoDB Cassandra DynamoDB Files  APIs
+                                (CSV/   (GraphQL/
+                                 JSON/   OpenAPI)
                                  Parquet)
 ```
 
-### Discovery Mode
-
-All supported LLM providers use tool-based discovery:
-- Minimal system prompt (~500 tokens)
-- LLM uses tools to discover relevant schema, APIs, and documents on-demand
-- On-demand loading reduces token usage by 80-95%
-
-Discovery tools include:
-- **Schema**: `list_tables`, `get_table_schema`, `search_tables`, `get_sample_values`
-- **APIs**: `list_api_operations`, `get_operation_details`, `search_operations`
-- **Documents**: `list_documents`, `search_documents`, `get_document`, `get_document_section`
-
-Document discovery supports:
-- **Unstructured docs**: Markdown, text, PDF, DOCX, PPTX files with semantic search (sentence-transformers)
-- **Structured files**: CSV, JSON, JSONL, Parquet with automatic schema inference
-- **Section extraction**: Retrieve specific sections from large documents
-
-Documents are indexed into a persistent vector store using DuckDB VSS (lazy, on first access).
-The index persists at `~/.constat/vectors.duckdb` by default, eliminating re-indexing on restart.
-During fact resolution and knowledge synthesis, relevant document excerpts are automatically
-retrieved via semantic search - no explicit discovery step required.
-
-## CLI Usage
-
-```bash
-# Solve a single problem
-constat solve "What are the top 5 customers by revenue?" -c config.yaml
-
-# Start interactive REPL
-constat repl -c config.yaml
-
-# Start API server (for web UI)
-constat serve -c config.yaml
-
-# View session history
-constat history
-
-# Resume a previous session
-constat resume abc123 -c config.yaml
-
-# Validate config file
-constat validate -c config.yaml
-
-# Show database schema
-constat schema -c config.yaml
-
-# Generate sample config
-constat init
-```
-
-### CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `solve <problem>` | Solve a single problem with multi-step planning |
-| `repl` | Start interactive REPL session (Textual TUI) |
-| `serve` | Start the REST API server for web UI access |
-| `history` | List recent sessions |
-| `resume <id>` | Resume a previous session |
-| `validate` | Validate a config file |
-| `schema` | Show database schema overview |
-| `init` | Generate a sample config.yaml |
-
-**`serve` options:**
-```bash
-constat serve -c config.yaml                  # Start on localhost:8000
-constat serve -c config.yaml --port 8080      # Custom port
-constat serve -c config.yaml --host 0.0.0.0   # Bind to all interfaces
-constat serve -c config.yaml --reload         # Auto-reload for development
-constat serve -c config.yaml --debug          # Enable debug logging
-```
-
-### REPL Commands
-
-Once in the interactive REPL, these commands are available:
-
-**Session & Navigation:**
-
-| Command | Description |
-|---------|-------------|
-| `/help`, `/h` | Show all commands |
-| `/quit`, `/q` | Exit |
-| `/reset` | Clear session state and start fresh |
-| `/redo [instruction]` | Retry last query (optionally with modifications) |
-| `/user [name]` | Show or set current user |
-
-**Data Inspection:**
-
-| Command | Description |
-|---------|-------------|
-| `/tables` | List tables in session datastore |
-| `/show <table>` | Show table contents |
-| `/query <sql>` | Run SQL query on datastore |
-| `/export <table> [file]` | Export table to CSV or XLSX |
-| `/code [step]` | Show generated code (all or specific step) |
-| `/state` | Show session state |
-| `/artifacts [all]` | Show artifacts (use 'all' to include intermediate) |
-
-**Data Sources:**
-
-| Command | Description |
-|---------|-------------|
-| `/databases`, `/db` | List configured databases |
-| `/apis`, `/api` | List configured APIs |
-| `/documents`, `/docs` | List configured documents |
-| `/files` | List all data files |
-| `/doc <path> [name]` | Add a document to this session |
-| `/discover [scope] <query>` | Search data sources (scope: database\|api\|document) |
-| `/update`, `/refresh` | Refresh metadata and rebuild cache |
-
-**Facts & Memory:**
-
-| Command | Description |
-|---------|-------------|
-| `/facts` | Show cached facts from this session |
-| `/remember <fact>` | Persist a session fact across sessions |
-| `/forget <name>` | Forget a remembered fact |
-| `/correct <text>` | Record a correction for future reference |
-| `/learnings` | Show learnings and rules |
-| `/compact-learnings` | Promote similar learnings into rules |
-
-**Plans & History:**
-
-| Command | Description |
-|---------|-------------|
-| `/save <name>` | Save current plan for replay |
-| `/share <name>` | Save plan as shared (all users) |
-| `/plans` | List saved plans |
-| `/replay <name>` | Replay a saved plan |
-| `/history`, `/sessions` | List recent sessions |
-| `/resume <id>` | Resume a previous session |
-| `/summarize <target>` | Summarize plan\|session\|facts\|<table> |
-
-**Verification:**
-
-| Command | Description |
-|---------|-------------|
-| `/prove`, `/audit` | Verify conversation claims with auditable proof |
-
-**Settings:**
-
-| Command | Description |
-|---------|-------------|
-| `/verbose [on\|off]` | Toggle verbose mode |
-| `/raw [on\|off]` | Toggle raw output display |
-| `/insights [on\|off]` | Toggle insight synthesis |
-| `/preferences` | Show current preferences |
-| `/context` | Show context size and token usage |
-| `/compact` | Compact context to reduce token usage |
-
-**Saved Plans & Replay:**
-- `/save` stores the executed code (not just the plan) for deterministic replay
-- `/replay` executes the stored code without regenerating it via LLM
-- Relative terms ("today", "last month", "within policy") are evaluated dynamically on each replay
-- Explicit values ("January 2006", "above 100 units") are hardcoded as specified
-
-**Brief mode:** Use keywords like "briefly", "tl;dr", "just show" in your query to skip the synthesis step and get raw results faster.
-
-### Interactive Visualizations
-
-Constat can generate interactive visualizations that are saved as HTML files you can open in your browser:
-
-```
-> Show me an interactive map of countries using the Euro
-
-Interactive map: /Users/you/.constat/outputs/euro_countries.html
-```
-
-**Supported visualization types:**
-
-| Type | Library | Example |
-|------|---------|---------|
-| Interactive maps | Folium | Geographic data, markers, choropleth maps |
-| Interactive charts | Plotly | Bar, line, scatter, pie, treemap, etc. |
-| Statistical charts | Altair | Declarative statistical visualizations |
-| Static plots | Matplotlib/Seaborn | Traditional Python plotting |
-
-Generated visualizations are:
-- Saved to `~/.constat/outputs/` as self-contained HTML files
-- Stored as artifacts in the session datastore (for UI display)
-- Fully interactive in your browser (zoom, hover, pan)
-
-**Example queries:**
-- "Create an interactive map showing customer locations"
-- "Show me a bar chart of revenue by region"
-- "Visualize the correlation between price and quantity"
-
-### Dashboards
-
-Request a "dashboard" to generate multi-panel visualizations automatically:
-
-```
-> Create a dashboard of sales performance
-
-[Generates 2x2 grid with: revenue trend, breakdown by category, top products, KPI summary]
-```
-
-Dashboard layouts adapt to data:
-- **Time series**: Trend + summary stats (1x2)
-- **Categories**: Overview, breakdown, comparison, detail (2x2)
-- **KPI-focused**: KPI cards on top, supporting charts below (3x2)
-
-### Learning System
-
-Constat learns from corrections and errors to improve over time. Learnings are stored per-user and persist across sessions.
-
-**Explicit corrections:**
-```
-/correct "revenue" means gross sales minus returns
-```
-
-**Automatic learning:** When code generation fails and retries succeed, the error-to-fix pattern is captured automatically. These learnings are injected into future code generation prompts.
-
-**Natural language detection:** Corrections in conversation are detected automatically:
-- "That's wrong, active users means 30-day logins"
-- "Actually, in our context, churn means 60 days inactive"
-
-**Compaction:** Similar learnings are automatically promoted to rules when patterns emerge:
-```
-/learnings          # Show rules and pending learnings
-/compact-learnings  # Manually trigger compaction
-```
-
-## Web UI
-
-Constat includes a React web application for browser-based access. Start the API server and UI together:
-
-```bash
-# Start the API server
-constat serve -c config.yaml
-
-# In another terminal, start the UI dev server
-cd constat-ui
-npm install
-npm run dev
-```
-
-**Features:**
-- Real-time streaming via WebSocket
-- Plan approval dialog before execution
-- Clarification dialog for ambiguous queries
-- Artifact panel with tables, charts, and code
-- Proof DAG visualization (D3-based directed acyclic graph)
-- Firebase authentication for multi-user deployments
-- Responsive layout with collapsible panels
-
-**Tech stack:** React 18, TypeScript, Vite, Tailwind CSS, Zustand, React Query, D3, Plotly.js
+For detailed architecture, see [docs/architecture.md](docs/architecture.md).
 
 ## REST API
 
@@ -554,12 +478,24 @@ constat serve -c config.yaml --port 8000
 
 | Prefix | Description |
 |--------|-------------|
-| `/api/sessions/{id}/...` | Data exploration, files, databases |
+| `/api/sessions/{id}/tables` | Table CRUD, versions, starring |
+| `/api/sessions/{id}/artifacts` | Artifact listing, versions, deletion |
+| `/api/sessions/{id}/facts` | Fact CRUD, persistence |
+| `/api/sessions/{id}/steps` | Step code listing (exploratory mode) |
+| `/api/sessions/{id}/scratchpad` | Execution narrative (goal + narrative per step) |
+| `/api/sessions/{id}/inference-codes` | Inference code (auditable mode) |
+| `/api/sessions/{id}/glossary/...` | Glossary terms, relationships, taxonomy |
+| `/api/sessions/{id}/sources` | Unified data sources (databases, APIs, documents) |
+| `/api/sessions/{id}/proof-tree` | Proof DAG for auditable mode |
+| `/api/sessions/{id}/proof-facts` | Proof fact persistence for session restore |
 | `/api/schema` | Schema introspection |
-| `/api/users` | User management |
-| `/api/sessions/roles` | Role management |
-| `/api/skills` | Skill management |
-| `/api/learnings` | Learning management |
+| `/api/users` | User management, permissions |
+| `/api/sessions/agents` | Agent management |
+| `/api/skills` | Skill CRUD, activation |
+| `/api/learnings` | Learnings, rules, exemplar generation |
+| `/api/fine-tune/...` | Fine-tuning job lifecycle |
+| `/api/testing/...` | Golden question CRUD and regression test execution |
+| `/api/domains/...` | Domain CRUD, tree, move, promote |
 
 Full OpenAPI documentation is available at `/docs` when the server is running.
 
@@ -660,138 +596,6 @@ llm:
 | Ollama (local) | `ollama` | Yes (llama3.2+) |
 | Together AI | `together` | Yes |
 | Groq | `groq` | Yes |
-
-## Roles
-
-Roles are user-defined personas that customize the LLM's behavior for specific analysis contexts. Each role provides a custom system prompt that shapes how the LLM approaches queries.
-
-Roles are stored per-user at `.constat/{user_id}/roles.yaml` and can be managed via the API or UI.
-
-## Skills
-
-Skills are domain-specific knowledge modules that provide specialized context and guidance for analysis tasks. They are loaded dynamically based on the query context.
-
-This follows the standard skill/prompt pattern used by Anthropic (Claude Code), OpenAI, and other AI providers for extending chatbot capabilities with domain-specific knowledge.
-
-### Skill Structure
-
-Skills are stored in directories following the pattern `skills/<skill-name>/SKILL.md`:
-
-```
-.constat/skills/
-└── financial-analysis/
-    └── SKILL.md
-```
-
-### SKILL.md Format
-
-Each skill is defined as a Markdown file with YAML frontmatter:
-
-```markdown
----
-name: financial-analysis
-description: Specialized instructions for financial data analysis
-allowed-tools:
-  - Read
-  - Grep
-  - list_tables
-  - get_table_schema
----
-
-# Financial Analysis Skill
-
-## Key Concepts
-- Revenue recognition principles
-- Common financial metrics (Gross Margin, EBITDA, etc.)
-- Time period handling (MTD, QTD, YTD)
-
-## Analysis Guidelines
-1. Start with data quality checks
-2. Use appropriate aggregations
-3. Present results clearly
-```
-
-### Skill Discovery Paths
-
-Skills are discovered from multiple locations (in order of precedence):
-
-1. **Project skills**: `.constat/skills/` in the project directory
-2. **Global skills**: `~/.constat/skills/` in the user's home directory
-3. **Config-specified paths**: Additional paths defined in `config.yaml`
-
-### Configuring Additional Skill Paths
-
-Add custom skill directories in your config file:
-
-```yaml
-# config.yaml
-skills:
-  paths:
-    - /shared/team-skills/           # Team shared skills
-    - /opt/constat/standard-skills/  # Standard library
-    - ~/my-custom-skills/            # Personal skills (~ expanded)
-```
-
-Skills in config paths are searched after the default paths, so project and global skills take precedence.
-
-### Link Following
-
-Skills can reference additional files via markdown links. Links are parsed when the skill loads but content is fetched lazily (on-demand):
-
-```markdown
-# My Skill
-
-See the [indicator definitions](references/indicators.md) for details.
-For API docs, check [the official guide](https://example.com/docs.md).
-```
-
-**Supported link types:**
-- **Relative paths**: `[text](references/file.md)` - resolved relative to the skill folder
-- **URLs**: `[text](https://example.com/doc.md)` - fetched via HTTP
-
-**How it works:**
-1. When a skill loads, links are discovered and returned in the response
-2. Content is NOT fetched until explicitly requested via `resolve_skill_link`
-3. Fetched content is cached for subsequent calls
-
-### Creating a Skill
-
-1. Create a directory: `.constat/skills/my-skill/`
-2. Add a `SKILL.md` file with YAML frontmatter
-3. Define the skill's context, guidelines, and examples
-4. Optionally add referenced files in subdirectories (e.g., `references/`)
-
-Skills are automatically discovered and can be loaded when relevant to a query.
-
-## Key Concepts
-
-### Facts and Provenance
-
-Every piece of information is a `Fact` with:
-- **Value**: The actual data
-- **Source**: Where it came from (DATABASE, CONFIG, DERIVED, LLM_INFERENCE, LEARNED)
-- **Confidence**: How certain we are (1.0 for database queries, lower for inferences)
-- **Because**: The facts this was derived from
-
-### Derivation Traces
-
-When using `/prove`, every conclusion includes a full derivation trace showing:
-- The logical chain of reasoning
-- All data sources consulted
-- The exact queries executed
-- Confidence at each step
-
-### Lazy Resolution
-
-Facts are resolved only when needed:
-1. Check cache
-2. Check config
-3. Apply rules
-4. Query database
-5. Fall back to LLM knowledge
-6. Create sub-plan if complex
-
-This ensures efficient execution while maintaining full traceability.
 
 ## Configuration
 
@@ -1115,6 +919,15 @@ documents:
       - MRR: Monthly Recurring Revenue
     description: "Business glossary"
 
+  # Audio/video transcription (requires pip install 'constat[audio]')
+  meeting_recording:
+    path: data/audio/quarterly_review.mp3
+    whisper_model: large-v3            # tiny/base/small/medium/large-v3
+    diarize: true                      # Speaker diarization via WhisperX
+    hf_token: ${HF_TOKEN}             # Required for diarization
+    language: en                       # null = auto-detect
+    description: "Quarterly review meeting recording"
+
 #==============================================================================
 # DOMAIN CONTEXT (SYSTEM PROMPT)
 #==============================================================================
@@ -1314,6 +1127,9 @@ server:
   auth_disabled: false                    # Set true for development
   firebase_project_id: your-project-id
 
+  # Admin token for auth bypass (CLI, scripts, CI)
+  admin_token: ${CONSTAT_ADMIN_TOKEN}     # Bearer token that grants admin access
+
   # User permissions (or use $ref to separate file)
   permissions:
     $ref: ./permissions.yaml
@@ -1321,123 +1137,77 @@ server:
 
 ### User Permissions
 
-Control access to resources per-user. Permissions determine what metadata the LLM sees during analysis—resources without permission are hidden from discovery.
+Access control uses **personas** (UI visibility + write/feedback permissions) and **resource-level RBAC** (data source access per UID).
+
+#### Personas
+
+Each user is assigned a persona that controls which UI sections they see and what they can modify. Personas are defined in `constat/server/personas.yaml`:
+
+| Persona | Visibility | Writes | Feedback |
+|---------|------------|--------|----------|
+| `platform_admin` | All sections | All resources | flag_answers |
+| `domain_builder` | All sections | All resources | flag_answers |
+| `sme` | Results, learnings, facts, glossary, entities, query history | Glossary, facts, learnings, entities | flag_answers, auto_approve, suggest_entities |
+| `domain_user` | Results, query history | None | flag_answers, suggest_glossary |
+| `viewer` | Results only | None | None |
+
+#### Resource-Level RBAC
+
+Per-user resource access lists are configured by UID in `config.yaml`:
 
 ```yaml
-# permissions.yaml
-users:
-  admin@company.com:
-    admin: true          # Full access to ALL resources + can manage projects
-    projects: []         # (ignored for admins)
-    databases: []        # (ignored for admins)
-    documents: []        # (ignored for admins)
-    apis: []             # (ignored for admins)
+permissions:
+  users:
+    8TgdzQHw7EbTHSJY9osIuCElbGF2:
+      persona: platform_admin
+      domains: []          # Empty = admin sees all
+      databases: []
+      documents: []
+      apis: []
 
-  analyst@company.com:
-    admin: false
-    projects:
-      - sales-analytics        # Can activate these projects (use project key, not filename)
-    databases:
-      - inventory              # Can query these databases (from core config)
-      - web_metrics
-    documents:
-      - business_rules         # Can access these documents (from core config)
-    apis:
-      - countries              # Can call these APIs (from core config)
+    xK9mPqR2wYnZaB4cD7eF1gH3iJ5:
+      persona: domain_user
+      domains:
+        - sales-analytics.yaml
+      databases:
+        - sales
+        - inventory
+      documents: []
+      apis: []
 
-# Default permissions for unlisted users
-default:
-  admin: false
-  projects: []
-  databases: []
-  documents: []
-  apis: []
+  default:
+    persona: viewer
+    domains: []
+    databases: []
+    documents: []
+    apis: []
 ```
 
 #### Permission Rules
 
-**Admin Users (`admin: true`):**
-- Full access to ALL resources across all projects and core config
-- Can manage projects from the UI (create, edit, delete)
-- Permission arrays are ignored—admins see everything
-
-**Non-Admin Users:**
-- Only see resources explicitly listed in their permission arrays
-- Project access grants access to ALL resources within that project
-- Core config resources require explicit permission in the user's arrays
-
-**Unlisted Users:**
-- Get the `default` permissions (typically empty = no access)
-
-#### No Permissions = Full Access
-
-If no `permissions` section is configured in `server` settings, ALL resources are available to everyone. This is intentional for development/single-user scenarios.
-
-```yaml
-# config.yaml without permissions = everything available
-server:
-  auth_disabled: true
-  # No permissions configured → no filtering
-```
-
-#### Project Permissions and Resource Access
-
-When a user has access to a project, they automatically get access to all resources defined within that project:
-
-```yaml
-# Example: analyst has access to sales-analytics project
-# This grants them access to all databases, APIs, and documents in that project
-projects:
-  sales-analytics:
-    $ref: ./projects/sales-analytics.yaml
-```
-
-```yaml
-# projects/sales-analytics.yaml
-name: Sales Analytics
-databases:
-  sales:           # analyst can query this
-    uri: sqlite:///demo/data/sales.db
-apis:
-  salesforce:      # analyst can call this
-    type: rest
-    url: https://api.salesforce.com/...
-documents:
-  sales_glossary:  # analyst can search this
-    type: file
-    path: ./docs/sales-terms.md
-```
-
-The user's effective permissions are the **union** of:
-1. Explicit permissions in their user entry
-2. All resources from their accessible active projects
+- **Admins** (`platform_admin` persona): Full access to all resources, permission arrays ignored
+- **Non-admin users**: Only see resources explicitly listed in their permission arrays
+- **Domain access**: Grants access to all resources within that domain, intersected with domain-scoped `permissions.yaml` if present (least-privilege)
+- **Unlisted users**: Get `default` permissions
+- **No permissions configured**: Everything available (development mode)
+- **Auth disabled** (`auth_disabled: true`): All permissions granted
 
 #### How Permission Filtering Works
 
-Permissions are enforced at the **metadata level**, not runtime:
-
-1. **Discovery Tools**: `list_tables`, `list_apis`, `list_documents` only return allowed resources
-2. **Schema Manager**: Database summaries exclude databases the user cannot access
-3. **System Prompts**: API/document/database descriptions only include allowed resources
-4. **Semantic Search**: Only indexes and searches allowed documents
-
-The LLM never sees metadata for resources the user cannot access. Since the LLM doesn't know about restricted resources, it cannot generate code to query them.
-
-```
-User Query → Permission Check → Filtered Metadata → LLM → Generated Code
-                                     ↓
-                            Only sees allowed
-                            databases, APIs, docs
-```
-
-#### Permission Filtering by Resource Type
+Permissions are enforced at the **metadata level** — the LLM never sees metadata for resources the user cannot access:
 
 | Resource | Filtered In | Effect |
 |----------|-------------|--------|
 | Databases | `list_tables`, `search_tables`, schema summary | LLM doesn't see table schemas |
 | APIs | `list_apis`, `list_api_operations`, system prompt | LLM doesn't see API endpoints |
 | Documents | `list_documents`, `search_documents` | LLM can't search restricted docs |
-| Projects | Project activation | User can't load restricted projects |
+| Domains | Domain activation | User can't load restricted domains |
+| Skills | Skill selection | LLM can't use restricted skills |
+| Agents | Agent assignment | Planner can't delegate to restricted agents |
+
+#### Advanced Authorization
+
+For more complex requirements (e.g., resolving data source rights from external identity providers), create an integration with Constat to map UIDs to data source access using your chosen third-party policy engine.
 
 ### Database Credentials
 
@@ -1505,34 +1275,15 @@ The configs are deep-merged by database name:
 - Users can add entirely new databases
 - User values override engine values where both exist
 
-## Discovery Tools
+## Interfaces
 
-The discovery module provides on-demand access to schema, API, and document information.
+Constat provides three interfaces, each suited to different workflows:
 
-### Available Tools
-
-| Category | Tools |
-|----------|-------|
-| **Schema** | `list_databases`, `list_tables`, `get_table_schema`, `search_tables`, `get_table_relationships`, `get_sample_values` |
-| **API** | `list_apis`, `list_api_operations`, `get_operation_details`, `search_operations` |
-| **Documents** | `list_documents`, `get_document`, `search_documents`, `get_document_section` |
-| **Facts** | `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts` |
-
-### Artifact Store Configuration
-
-The artifact store holds session state, execution history, and generated artifacts:
-
-```yaml
-storage:
-  # SQLite (default, zero-config)
-  artifact_store_uri: sqlite:///~/.constat/artifacts.db
-
-  # PostgreSQL (production, multi-user)
-  artifact_store_uri: postgresql://${DB_USER}:${DB_PASS}@localhost/constat
-
-  # DuckDB (requires duckdb-engine package)
-  artifact_store_uri: duckdb:///~/.constat/artifacts.duckdb
-```
+| Interface | Best For | Guide |
+|-----------|----------|-------|
+| **Terminal REPL** | Keyboard-driven iteration, full command set, scriptable | [docs/repl.md](docs/repl.md) |
+| **Web UI** | Visual exploration, DAG visualization, domain management, team collaboration | [docs/web.md](docs/web.md) |
+| **Jupyter Notebook** | Reproducible analysis, per-cell replay, DataFrame ecosystem, zero-code magics | [docs/jupyter.md](docs/jupyter.md) |
 
 ## Installation
 
@@ -1547,6 +1298,7 @@ pip install constat[cosmosdb]     # Azure Cosmos DB
 pip install constat[firestore]    # Google Firestore
 pip install constat[openai]       # OpenAI provider
 pip install constat[extras]       # Polars, Excel, PDF generation
+pip install constat[audio]       # Audio/video transcription (faster-whisper, WhisperX)
 pip install constat[all]          # Everything
 ```
 

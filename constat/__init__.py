@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 1ab69935-e4b1-4dd9-99bc-710b1c301da6
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,7 +10,7 @@
 
 """Constat - Conversational Statistics with LLM-powered data analysis.
 
-This package provides multi-step planning and execution for data analysis
+This package provides multistep planning and execution for data analysis
 across multiple databases using natural language queries.
 
 Submodules:
@@ -26,6 +27,8 @@ Main classes:
 - Plan/Step: Multi-step execution plan
 """
 
+# LLM primitives
+import constat.llm
 from constat.catalog.api_catalog import APICatalog, OperationType
 # Catalog
 from constat.catalog.schema_manager import SchemaManager, TableMetadata
@@ -59,8 +62,6 @@ from constat.execution.executor import ExecutionResult, PythonExecutor
 # Execution
 from constat.execution.planner import Planner
 from constat.execution.scratchpad import Scratchpad
-# LLM primitives
-import constat.llm
 # Providers
 from constat.providers import (
     BaseLLMProvider,
@@ -78,6 +79,7 @@ from constat.providers import (
 from constat.session import Session
 # Storage
 from constat.storage.datastore import DataStore
+from constat.storage.duckdb_session_store import DuckDBSessionStore
 from constat.storage.history import SessionHistory
 
 __version__ = "0.1.0"

@@ -3,20 +3,27 @@
 
 # Server configuration (for API server mode)
 server:
+  admin_token: "my-dev-token"
   auth_disabled: ${AUTH_DISABLED}
   firebase_project_id: ${FIREBASE_PROJECT_ID}
+  # firebase_api_key: set FIREBASE_API_KEY env var for server-side Firebase login
   # runtime_dir: .  # Base directory for .constat/ data (default: current directory)
+
+  # Local users for server-local auth (no Firebase required)
+  # Generate password hashes with: constat hash-password
+  local_users:
+    demo:
+      password_hash: "scrypt:e5371a58d7f5c57b5e68204c56f7b4de:9e90506de74a35fffe9b0389c4f651dcc558ef0518ef10f75f6712b967a329b9"
+      email: demo@localhost
 
   # User permissions - include from separate file for easier management
   permissions:
     $ref: ./permissions.yaml
 
-# Projects keyed by identifier (used for permissions)
-projects:
-  sales-analytics:
-    $ref: ./projects/sales-analytics.yaml
-  hr-reporting:
-    $ref: ./projects/hr-reporting.yaml
+# Domain composition (filesystem is authority, list defines DAG)
+domains:
+  - sales-analytics
+  - hr-reporting
 
 llm:
 #  provider: ollama
@@ -24,6 +31,54 @@ llm:
    provider: anthropic
    model: claude-sonnet-4-20250514
    api_key: ${ANTHROPIC_API_KEY}
+
+   task_routing:
+     # Document analysis — Opus for nuanced extraction
+     glossary_generation:
+       models:
+         - provider: anthropic
+           model: claude-opus-4-20250514
+           timeout_seconds: 180
+     relationship_extraction:
+       models:
+         - provider: anthropic
+           model: claude-opus-4-20250514
+           timeout_seconds: 180
+     # Planning — Opus for multi-step reasoning, Sonnet for simple lookups
+     planning:
+       models:
+         - provider: anthropic
+           model: claude-opus-4-20250514
+           timeout_seconds: 180
+       low_complexity_models:
+         - provider: anthropic
+           model: claude-sonnet-4-20250514
+           timeout_seconds: 60
+     # Code gen — Llama fast path, Sonnet fallback
+     sql_generation:
+       models:
+         - provider: together
+           model: meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
+           timeout_seconds: 15
+         - provider: anthropic
+           model: claude-sonnet-4-20250514
+           timeout_seconds: 120
+     python_analysis:
+       models:
+         - provider: together
+           model: meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
+           timeout_seconds: 15
+         - provider: anthropic
+           model: claude-sonnet-4-20250514
+           timeout_seconds: 120
+
+# Vector store and clustering
+storage:
+  vector_store:
+    # store_chunk_text: true    # store original text in embeddings (disable for large datasets)
+    # cluster_min_terms: 2     # minimum terms to trigger clustering
+    # cluster_divisor: 5       # k = max(2, n_terms // divisor)
+    # cluster_max_k: null      # optional cap on k
 
 # Email configuration for send_email() in generated code
 email:
@@ -60,6 +115,25 @@ databases:
       Clickstream events (500 records). Fields: event_id, timestamp, event_type
       (page_view/click/form_submit/purchase/signup/error), source, user_id, properties
 
+  # Generic JDBC example using Xerial SQLite JDBC driver.
+  # SQLite has a native Python driver and wouldn't normally use JDBC — this
+  # entry exists purely to demonstrate the JDBC config path without needing
+  # a proprietary database.  Requires: pip install 'constat[jdbc]'
+  #
+  chinook_jdbc:
+    type: jdbc
+    jdbc_driver: org.sqlite.JDBC
+    jdbc_url: "jdbc:sqlite:data/chinook.db"
+    jar_path:
+      - demo/drivers/sqlite-jdbc-3.45.3.0.jar
+      - demo/drivers/slf4j-api-2.0.9.jar
+      - demo/drivers/slf4j-nop-2.0.9.jar
+    description: >
+      Chinook sample music-store database (albums, artists, tracks, invoices,
+      customers, employees) accessed via Generic JDBC using the Xerial SQLite driver.
+      Demonstrates JDBC connectivity with no credentials required.
+    read_only: true
+
 databases_description: |
   Three interconnected business databases and two file-based data sources:
   - sales: CRM and order management (customers.tier determines discount)
@@ -68,20 +142,47 @@ databases_description: |
   - web_metrics: Daily web analytics CSV (use file_web_metrics path)
   - events: Clickstream events JSON (use file_events path)
 
+documents:
+  images:
+    path: data/images/
+    description: Sample images for testing the image ingestion pipeline
+
+#   Audio/video transcription example (requires pip install 'constat[audio]')
+  meeting_recording:
+    path: data/audio
+    whisper_model: large-v3        # faster-whisper model (tiny/base/small/medium/large-v3)
+    diarize: true                  # Enable speaker diarization via WhisperX
+    hf_token: ${HF_TOKEN}          # HuggingFace token (required for diarization)
+    language: en                   # Language code (null = auto-detect)
+
+entity_resolution:
+  - entity_type: COUNTRY
+    source: countries
+    query: "{ countries { name code capital continent { name } languages { name } currency } }"
+    items_path: countries
+    name_field: name
+
+relationships:
+  preferred_verbs:
+    hierarchy: [MANAGES, REPORTS_TO]
+    action: [CREATES, PROCESSES, APPROVES, PLACES]
+    flow: [SENDS, RECEIVES, TRANSFERS]
+    causation: [DRIVES, REQUIRES, ENABLES]
+    temporal: [PRECEDES, FOLLOWS, TRIGGERS]
+    association: [REFERENCES, WORKS_IN, PARTICIPATES_IN, USES]
+
 system_prompt: |
   You are a business analyst assistant analyzing company data.
 
-  DOMAIN KNOWLEDGE:
-  - Customer tiers: platinum (15% discount), gold (10%), silver (5%), bronze (0%)
-  - Revenue recognition: Only count orders with status='delivered'
-  - Inventory alerts: quantity < reorder_level triggers restock
-  - Performance ratings: 5=exceptional, 4=exceeds, 3=meets, 2=needs improvement, 1=unsatisfactory
-
-  DATA RELATIONSHIPS:
-  - inventory.sku links to products by name pattern (e.g., SKU-001 = Widget thT Pro)
-  - employees.manager_id is self-referential for org hierarchy
-  - orders.customer_id -> customers.customer_id
-  - order_items.product_id -> products.product_id
+ner_stop_list:
+  - api
+  - length
+  - string
+  - int
+  - integer
+  - graphql
+  - JSON
+  - code
 
 # External APIs (examples - these are public demo APIs)
 apis:

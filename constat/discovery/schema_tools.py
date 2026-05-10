@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: c694f6e5-3807-452d-9f37-42260905ed34
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -13,7 +14,7 @@ These tools allow the LLM to discover database schemas on-demand
 rather than loading everything into the system prompt upfront.
 """
 
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from constat.catalog.schema_manager import SchemaManager
 
@@ -31,6 +32,9 @@ class SchemaDiscoveryTools:
         doc_tools: Optional["DocumentDiscoveryTools"] = None,
         api_tools: Optional["APIDiscoveryTools"] = None,
         allowed_databases: Optional[set[str]] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        api_schema_manager: Optional[Any] = None,
     ):
         """Initialize schema discovery tools.
 
@@ -40,11 +44,17 @@ class SchemaDiscoveryTools:
             api_tools: Optional API discovery tools
             allowed_databases: Set of allowed database names. If None, all databases
                 are visible. If empty set, no databases are visible.
+            session_id: Session ID for glossary enrichment
+            user_id: User ID for user-scoped glossary
+            api_schema_manager: Optional APISchemaManager (fallback when api_tools is None)
         """
         self.schema_manager = schema_manager
         self.doc_tools = doc_tools
         self.api_tools = api_tools
         self.allowed_databases = allowed_databases
+        self.session_id = session_id
+        self.user_id = user_id
+        self.api_schema_manager = api_schema_manager
 
     def _is_database_allowed(self, db_name: str) -> bool:
         """Check if a database is allowed based on permissions."""
@@ -305,6 +315,7 @@ class SchemaDiscoveryTools:
                 col_key = f"{table_meta.name}.{col.name}"
                 if name_lower in col.name.lower() and col_key not in seen_columns:
                     seen_columns.add(col_key)
+                    # noinspection PyUnresolvedReferences
                     results["schema"].append({
                         "type": "column",
                         "name": col.name,
@@ -312,7 +323,7 @@ class SchemaDiscoveryTools:
                         "database": table_meta.database,
                         "data_type": col.type,
                         "nullable": col.nullable,
-                        "is_primary_key": col.is_primary_key,
+                        "is_primary_key": col.primary_key,
                     })
 
         # 3. Find document mentions via explore_entity
@@ -333,6 +344,7 @@ class SchemaDiscoveryTools:
                 pass  # Don't fail if doc search fails
 
         # Add summary counts
+        # noinspection PyTypeChecker
         results["summary"] = {
             "tables_found": sum(1 for s in results["schema"] if s["type"] == "table"),
             "columns_found": sum(1 for s in results["schema"] if s["type"] == "column"),
@@ -365,7 +377,21 @@ class SchemaDiscoveryTools:
             "tables": [],
             "apis": [],
             "documents": [],
+            "glossary": [],
+            "relationships": [],
         }
+
+        # Build source→domain map for domain resolution
+        source_to_domain: dict[str, str] = {}
+        config = getattr(self.schema_manager, 'config', None)
+        if config and hasattr(config, 'domains'):
+            for fname, dcfg in config.domains.items():
+                for db_name in getattr(dcfg, 'databases', {}):
+                    source_to_domain[db_name] = fname
+                for api_name in getattr(dcfg, 'apis', {}):
+                    source_to_domain[api_name] = fname
+                for doc_name in getattr(dcfg, 'documents', {}):
+                    source_to_domain[doc_name] = fname
 
         # Calculate per-source limits (distribute evenly, favor tables)
         per_source_limit = max(3, limit // 3)
@@ -389,7 +415,7 @@ class SchemaDiscoveryTools:
         except Exception:
             pass  # Continue even if table search fails
 
-        # 2. Search APIs via API tools if available
+        # 2. Search APIs via api_tools or api_schema_manager
         if self.api_tools:
             try:
                 api_results = self.api_tools.search_operations(query, limit=per_source_limit)
@@ -404,32 +430,264 @@ class SchemaDiscoveryTools:
                         "summary": r.get("summary", ""),
                     })
             except Exception:
-                pass  # Continue even if API search fails
+                pass
+        elif self.api_schema_manager:
+            try:
+                api_results = self.api_schema_manager.find_relevant_apis(query, limit=per_source_limit)
+                for r in api_results:
+                    results["apis"].append({
+                        "type": "api",
+                        "name": r.get("endpoint", ""),
+                        "api": r.get("api_name", ""),
+                        "operation_type": r.get("type", ""),
+                        "relevance": round(r.get("similarity", 0), 3),
+                        "summary": r.get("description", ""),
+                    })
+            except Exception:
+                pass
 
         # 3. Search documents via doc tools if available
+        # Filter out api:/glossary:/relationship: chunks — they have dedicated sections
         if self.doc_tools:
             try:
-                doc_results = self.doc_tools.search_documents(query, limit=per_source_limit)
+                doc_results = self.doc_tools.search_documents(query, limit=per_source_limit + 10)
                 for r in doc_results:
+                    doc_name = r.get("document", "")
+                    if doc_name.startswith("glossary:") or doc_name.startswith("relationship:") or doc_name.startswith("api:"):
+                        continue
+                    excerpt = r.get("excerpt", "")
                     results["documents"].append({
                         "type": "document",
-                        "name": r.get("document"),
+                        "name": doc_name,
                         "section": r.get("section"),
-                        "excerpt": r.get("excerpt", "")[:300] + "..." if len(r.get("excerpt", "")) > 300 else r.get("excerpt", ""),
+                        "excerpt": excerpt[:300] + "..." if len(excerpt) > 300 else excerpt,
                         "relevance": round(r.get("relevance", 0), 3),
                     })
+                    if len(results["documents"]) >= per_source_limit:
+                        break
             except Exception:
                 pass  # Continue even if doc search fails
 
+        # 4. Search glossary + relationship chunks via vector store
+        if self.doc_tools and hasattr(self.doc_tools, '_vector_store') and self.doc_tools._vector_store:
+            try:
+                from constat.discovery.models import ChunkType
+                import threading
+
+                vs = self.doc_tools._vector_store
+                model = self.doc_tools._model
+                model_lock = self.doc_tools._model_lock if hasattr(self.doc_tools, '_model_lock') else threading.Lock()
+
+                # Encode query to embedding
+                with model_lock:
+                    query_embedding = model.encode([query], normalize_embeddings=True)
+
+                # Search glossary term chunks
+                glossary_hits = vs.search(
+                    query_embedding, limit=per_source_limit,
+                    chunk_types=[ChunkType.GLOSSARY_TERM],
+                )
+
+                # Batch-fetch full glossary terms by ID
+                hit_ids = [
+                    chunk.document_name.replace("glossary:", "")
+                    for _, _, chunk in glossary_hits
+                ]
+                terms_by_id: dict[str, Any] = {}
+                for tid in hit_ids:
+                    t = vs.get_glossary_term_by_id(tid)
+                    if t:
+                        terms_by_id[tid] = t
+
+                for chunk_id, similarity, chunk in glossary_hits:
+                    term_id = chunk.document_name.replace("glossary:", "")
+                    term = terms_by_id.get(term_id)
+
+                    entry: dict[str, Any] = {
+                        "type": "glossary_term",
+                        "name": term.display_name if term else term_id,
+                        "relevance": round(similarity, 3),
+                    }
+
+                    if term:
+                        entry["definition"] = term.definition
+                        if term.aliases:
+                            entry["aliases"] = term.aliases
+                        entry["status"] = term.status
+
+                        # Parent name
+                        if term.parent_id:
+                            parent = vs.get_glossary_term_by_id(term.parent_id)
+                            if parent:
+                                entry["parent"] = parent.display_name
+
+                        # Entity lookup — skip session_id filter since glossary
+                        # terms are already session-scoped by the vector search.
+                        # Entities may have been created in a different session
+                        # (e.g. during initial API indexing) so the current
+                        # session_id won't match.
+                        entity = vs.find_entity_by_name(term.name)
+                        entity_sid = entity.session_id if entity else None
+
+                        # Connected resources — use entity's session_id
+                        from constat.discovery.glossary_generator import resolve_physical_resources
+
+                        active_domains = getattr(self.doc_tools, '_active_domain_ids', None)
+                        lookup_sid = entity_sid or self.session_id or ""
+                        resources = resolve_physical_resources(
+                            term.name, lookup_sid, vs,
+                            domain_ids=active_domains,
+                            user_id=self.user_id,
+                        )
+                        if resources:
+                            entry["sources"] = [
+                                {
+                                    "entity": r["entity_name"],
+                                    "type": r["entity_type"],
+                                    "locations": [
+                                        s["document_name"] for s in r.get("sources", [])
+                                    ],
+                                }
+                                for r in resources
+                            ]
+
+                        # Domain resolution:
+                        # 1. Explicit term.domain or entity.domain_id
+                        # 2. Trace entity→chunks→source→domain (can be multiple)
+                        # 3. "User" fallback for defined terms
+                        effective_domain = term.domain or (entity.domain_id if entity else None)
+                        if not effective_domain and entity and source_to_domain:
+                            domains_found: list[str] = []
+                            try:
+                                doc_names = vs.get_entity_document_names(entity.id, limit=10)
+                                for doc_name in doc_names:
+                                    if ":" in doc_name:
+                                        src = doc_name.split(":")[1].split(".")[0]
+                                        if src in source_to_domain:
+                                            d = source_to_domain[src]
+                                            if d not in domains_found:
+                                                domains_found.append(d)
+                            except Exception:
+                                pass
+                            if len(domains_found) == 1:
+                                effective_domain = domains_found[0]
+                            elif len(domains_found) > 1:
+                                effective_domain = domains_found
+                        entry["domain"] = effective_domain or "User"
+
+                        # SVO relationships — use entity's session_id
+                        rels = vs.get_relationships_for_entity(term.name, lookup_sid)
+                        if not rels and entity:
+                            rels = vs.get_relationships_for_entity(entity.display_name, lookup_sid)
+                        if rels:
+                            entry["relationships"] = [
+                                {
+                                    "subject": r["subject_name"],
+                                    "verb": r["verb"],
+                                    "object": r["object_name"],
+                                }
+                                for r in rels
+                            ]
+
+                    else:
+                        entry["definition"] = chunk.content[:300]
+
+                    results["glossary"].append(entry)
+
+                # Search relationship chunks
+                rel_hits = vs.search(
+                    query_embedding, limit=per_source_limit,
+                    chunk_types=[ChunkType.RELATIONSHIP],
+                )
+                for chunk_id, similarity, chunk in rel_hits:
+                    results["relationships"].append({
+                        "type": "relationship",
+                        "name": chunk.document_name,
+                        "definition": chunk.content[:300],
+                        "relevance": round(similarity, 3),
+                    })
+            except Exception as e:
+                import logging as _log
+                _log.getLogger(__name__).warning(f"Glossary/relationship search failed: {e}", exc_info=True)
+
         # Add summary
+        # noinspection PyTypeChecker
         results["summary"] = {
             "tables_found": len(results["tables"]),
             "apis_found": len(results["apis"]),
             "documents_found": len(results["documents"]),
-            "total": len(results["tables"]) + len(results["apis"]) + len(results["documents"]),
+            "glossary_found": len(results["glossary"]),
+            "relationships_found": len(results["relationships"]),
+            "total": (len(results["tables"]) + len(results["apis"]) +
+                      len(results["documents"]) + len(results["glossary"]) +
+                      len(results["relationships"])),
         }
 
         return results
+
+    def lookup_glossary_term(self, name: str) -> dict:
+        """Look up a glossary term by name or alias with full details.
+
+        Args:
+            name: Term name or alias
+
+        Returns:
+            Full term details including hierarchy, relationships, physical resources
+        """
+        if not self.doc_tools or not hasattr(self.doc_tools, '_vector_store') or not self.doc_tools._vector_store:
+            return {"error": "Glossary not available"}
+        if not self.session_id:
+            return {"error": "No session context"}
+
+        vs = self.doc_tools._vector_store
+        term = vs.get_glossary_term_by_name_or_alias(name, self.session_id, user_id=self.user_id)
+        if not term:
+            return {"error": f"Term '{name}' not found"}
+
+        result: dict = {
+            "name": term.name,
+            "display_name": term.display_name,
+            "definition": term.definition,
+            "aliases": term.aliases or [],
+            "semantic_type": term.semantic_type,
+            "status": term.status,
+            "cardinality": term.cardinality,
+        }
+
+        # Parent
+        if term.parent_id:
+            parent = vs.get_glossary_term_by_id(term.parent_id)
+            result["parent"] = parent.display_name if parent else None
+
+        # Children
+        children = vs.get_child_terms(term.id)
+        if children:
+            result["children"] = [
+                {"name": c.name, "display_name": c.display_name}
+                for c in children
+            ]
+
+        # SVO relationships
+        entity = vs.find_entity_by_name(term.name, session_id=self.session_id)
+        if entity:
+            rels = vs.get_relationships_for_entity(entity.id, self.session_id)
+            result["relationships"] = [
+                {
+                    "subject": r["subject_name"],
+                    "verb": r["verb"],
+                    "object": r["object_name"],
+                    "confidence": r["confidence"],
+                }
+                for r in rels
+            ]
+
+        # Physical resources
+        from constat.discovery.glossary_generator import resolve_physical_resources
+        resources = resolve_physical_resources(term.name, self.session_id, vs, user_id=self.user_id)
+        if resources:
+            result["physical_resources"] = resources
+
+        return result
 
 
 # Tool schemas for LLM
@@ -560,7 +818,7 @@ SCHEMA_TOOL_SCHEMAS = [
     },
     {
         "name": "search_all",
-        "description": "Universal semantic search across ALL data sources: tables, APIs, and documents. Uses vector embeddings to find relevant resources. This is the PRIMARY discovery tool - use it FIRST to find what's relevant to your question before exploring specific resources.",
+        "description": "Universal semantic search across ALL data sources: tables, APIs, documents, and the business glossary. Uses vector embeddings to find relevant resources. Glossary results include curated business definitions with connected physical resources. This is the PRIMARY discovery tool - use it FIRST to find what's relevant to your question before exploring specific resources.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -575,6 +833,20 @@ SCHEMA_TOOL_SCHEMAS = [
                 },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "lookup_glossary_term",
+        "description": "Look up a glossary term by name or alias. Returns full definition, aliases, parent/child hierarchy, SVO relationships, and physical resource connections. Use after search_all finds a relevant glossary term.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Term name or alias (e.g., 'compensation', 'MRR')",
+                },
+            },
+            "required": ["name"],
         },
     },
 ]

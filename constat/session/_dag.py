@@ -1,0 +1,1612 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: 9a52c3b7-46fd-488b-9a0e-81f2460f30d1
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+"""DAG mixin: _execute_dag_node and related helpers."""
+from __future__ import annotations
+
+import json
+import logging
+import re
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+import constat.llm
+import constat.llm.wrappers
+from constat.core.models import TaskType
+from constat.execution.fact_resolver import format_source_attribution
+from constat.prompts import load_prompt
+from constat.session._types import StepEvent
+from constat.storage.duckdb_session_store import DuckDBSessionStore
+
+logger = logging.getLogger(__name__)
+
+
+# noinspection PyUnresolvedReferences
+class DagMixin:
+
+    def _resolve_llm_knowledge(self, question: str) -> int | float | str:
+        """Resolve a fact from LLM general knowledge.
+
+        Args:
+            question: The question or fact description to resolve
+
+        Returns:
+            The value (number, string, or ISO date string)
+
+        Raises:
+            Exception: If the LLM response cannot be parsed
+        """
+        import json
+        from datetime import datetime
+
+        json_key = question.replace(" ", "_").lower()[:30]
+
+        knowledge_prompt = load_prompt("knowledge_prompt.md").format(
+            question=question, json_key=json_key,
+        )
+
+        result = self.router.execute(
+            task_type=TaskType.SYNTHESIS,
+            system="You output ONLY valid JSON with a single value (number, string, or ISO date). No explanations.",
+            user_message=knowledge_prompt,
+            max_tokens=self.router.max_output_tokens,
+        )
+
+        response = result.content.strip()
+        logger.debug(f"[LLM_KNOWLEDGE] Response for {question}: {response[:200]}")
+
+        # Parse JSON response
+        json_str = response
+        if "```" in json_str:
+            json_str = re.sub(r'```\w*\n?', '', json_str).strip()
+
+        if not json_str.startswith("{"):
+            raise Exception(f"Could not parse LLM response: {response[:100]}")
+
+        data = json.loads(json_str)
+        if not data:
+            raise Exception(f"Empty JSON response: {response[:100]}")
+
+        raw_value = list(data.values())[0]
+
+        # Return typed value
+        if isinstance(raw_value, (int, float)):
+            return raw_value
+        elif isinstance(raw_value, str):
+            # Check if it's an ISO date (validate but return as string)
+            if re.match(r'^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?', raw_value):
+                try:
+                    datetime.fromisoformat(raw_value.replace('Z', '+00:00'))
+                except ValueError:
+                    pass  # Not a valid date, return as regular string
+            return raw_value
+        else:
+            return raw_value  # Other types (bool, etc.)
+
+    def _execute_dag_node(
+        self,
+        node: "FactNode",
+        dag: "ExecutionDAG",
+        problem: str,
+        detailed_schema: str,
+        premises: list[dict],
+        inferences: list[dict],
+        resolved_premises: dict,
+        resolved_inferences: dict,
+        inference_names: dict,
+    ) -> tuple[Any, float, str] | tuple[Any, float, str, list, list]:
+        """Execute a single DAG node (premise or inference).
+
+        Called by DAGExecutor for each node. Handles both:
+        - Leaf nodes (premises): resolve from database/document/cache
+        - Internal nodes (inferences): execute Python code using dependency values
+
+        Args:
+            node: The FactNode to execute
+            dag: The full DAG (for accessing dependency values)
+            problem: The original problem being solved
+            detailed_schema: Schema info for SQL generation
+            premises: Original premise list for reference
+            inferences: Original inference list for reference
+            resolved_premises: Dict to store resolved premise facts
+            resolved_inferences: Dict to store resolved inference results
+            inference_names: Dict mapping inference ID to table name
+
+        Returns:
+            Tuple of (value, confidence, source)
+        """
+        import re
+        import pandas as pd
+        from constat.execution.fact_resolver import Fact, FactSource
+
+        if node.is_leaf:
+            # === PREMISE RESOLUTION ===
+            fact_id = node.fact_id
+            fact_name = node.name
+            fact_desc = node.description
+            source = f"{node.source}:{node.source_db}" if node.source_db else node.source or "database"
+
+            # Check for pre-resolved node (embedded values handled by DAG parser)
+            if node.value is not None:
+                fact = Fact(
+                    name=fact_name,
+                    value=node.value,
+                    confidence=node.confidence,
+                    source=FactSource.LLM_KNOWLEDGE,
+                    reasoning="Embedded value from plan",
+                )
+                resolved_premises[fact_id] = fact
+                self.fact_resolver.add_user_fact(
+                    fact_name=fact_name,
+                    value=node.value,
+                    reasoning="Embedded value",
+                    source=FactSource.LLM_KNOWLEDGE,
+                )
+                if self.history:
+                    self.history.save_inference_premise(
+                        self.session_id, fact_id, fact_name,
+                        node.value, "embedded", fact_desc or ""
+                    )
+                return node.value, node.confidence, "user"
+
+            # Check fact resolver cache — premises may have been resolved in a
+            # prior execution within the same session. The datastore is NOT checked
+            # here — it holds inference intermediates, not raw source data.
+            cached_fact = self.fact_resolver.get_fact(fact_name)
+            if cached_fact and cached_fact.value is not None:
+                resolved_premises[fact_id] = cached_fact
+                return cached_fact.value, cached_fact.confidence, source
+
+            fact = None
+            sql = None
+
+            # Route based on source type (source is required, validated by DAG parser)
+            logger.debug(f"[DAG] Premise {fact_id} '{fact_name}' routing with source='{source}'")
+
+            if source.startswith(FactSource.DATABASE.value):
+                # Database resolution
+                db_name = source.split(":", 1)[1].strip() if ":" in source else None
+                if not db_name:
+                    available_dbs = list(self.schema_manager.connections.keys())
+                    if available_dbs:
+                        db_name = available_dbs[0]
+                    else:
+                        raise Exception("No SQL databases configured")
+
+                # Check if fact_name matches a table name - return table reference instead of loading
+                fact_name_lower = fact_name.lower().strip()
+                cache_keys = list(self.schema_manager.metadata_cache.keys())
+                logger.debug(f"[DAG] Checking table match for '{fact_name_lower}' in {len(cache_keys)} tables: {cache_keys[:5]}")
+                for full_name, table_meta in self.schema_manager.metadata_cache.items():
+                    if table_meta.name.lower() == fact_name_lower:
+                        # Table match - return reference without loading data
+                        columns = [c.name for c in table_meta.columns]
+                        row_info = f"{table_meta.row_count:,} rows" if table_meta.row_count else "table"
+                        # Use parentheses instead of brackets (Rich interprets [] as markup)
+                        value_str = f"({table_meta.database}.{table_meta.name}) {row_info}"
+                        fact = Fact(
+                            name=fact_name,
+                            value=value_str,
+                            source=FactSource.DATABASE,
+                            source_name=table_meta.database,
+                            reasoning=f"Table '{table_meta.name}' from database '{table_meta.database}'. Columns: {columns}",
+                            confidence=0.95,
+                            table_name=table_meta.name,
+                            row_count=table_meta.row_count,
+                        )
+                        resolved_premises[fact_id] = fact
+                        self.fact_resolver.add_user_fact(
+                            fact_name=fact_name,
+                            value=value_str,
+                            reasoning=f"Table reference: {table_meta.database}.{table_meta.name}",
+                            source=FactSource.DATABASE,
+                        )
+                        return value_str, 0.95, f"database:{db_name}"
+
+                engine = self.schema_manager.get_sql_connection(db_name)
+                max_retries = 7
+                last_error = None
+
+                for attempt in range(max_retries):
+                    # Emit SQL generation event
+                    self._emit_event(StepEvent(
+                        event_type="sql_generating",
+                        step_number=0,
+                        data={
+                            "fact_name": fact_name,
+                            "database": db_name,
+                            "attempt": attempt + 1,
+                            "max_attempts": max_retries,
+                            "is_retry": attempt > 0,
+                            "retry_reason": last_error[:50] if last_error else None,
+                        }
+                    ))
+
+                    error_context = ""
+                    if last_error:
+                        error_context = f"\nPREVIOUS ERROR: {last_error}\nFix the query."
+                        # On column errors, inject actual column names from schema
+                        if "no such column" in last_error and self.schema_manager:
+                            # Extract table name from the error context
+                            for tbl in self.schema_manager.get_tables_for_db(db_name):
+                                cols = ", ".join(c.name for c in tbl.columns)
+                                error_context += f"\n  {tbl.name} columns: {cols}"
+                    sql_learnings = self._get_codegen_learnings(fact_desc, TaskType.SQL_GENERATION)
+
+                    # Build step hints, but drop them on table validation retries
+                    step_hints_section = ""
+                    table_validation_failed = last_error and "Tables not found" in last_error
+                    if not table_validation_failed:
+                        step_hints = getattr(self, '_proof_step_hints', [])
+                        if step_hints:
+                            blocks = []
+                            for step in step_hints:
+                                code_text = step.get("code", "")
+                                goal = step.get("goal", f"Step {step.get('step_number', '?')}")
+                                if code_text and db_name in code_text:
+                                    blocks.append(f"# Step: {goal}\n{code_text}")
+                            if blocks:
+                                step_hints_section = (
+                                    "\nREFERENCE CODE from exploratory session (use table/column names from here):\n"
+                                    + "\n---\n".join(blocks) + "\n"
+                                )
+
+                    # Build available tables constraint
+                    known_tables = set()
+                    available_tables_rule = ""
+                    if self.schema_manager:
+                        known_tables = {m.name.lower() for m in self.schema_manager.get_tables_for_db(db_name)}
+                        if known_tables:
+                            available_tables_rule = f"\n- ONLY use these tables (no others exist): {', '.join(sorted(known_tables))}"
+
+                    sql_prompt = f"""Generate a SQL query to retrieve: {fact_desc}
+
+Schema:
+{detailed_schema}
+{sql_learnings}
+{step_hints_section}
+{error_context}
+RULES:
+- Always SELECT primary key columns for joins
+- Always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts{available_tables_rule}"""
+
+                    sql_result = self.router.execute(
+                        task_type=TaskType.SQL_GENERATION,
+                        system="Output raw SQL only. No markdown.",
+                        user_message=sql_prompt,
+                        max_tokens=self.router.max_output_tokens,
+                    )
+
+                    sql = sql_result.content.strip()
+                    code_block = re.search(r'```(?:sql)?\s*\n?(.*?)\n?```', sql, re.DOTALL | re.IGNORECASE)
+                    if code_block:
+                        sql = code_block.group(1).strip()
+
+                    if "sqlite" in str(engine.url):
+                        sql = re.sub(rf'\b{db_name}\.(\w+)', r'\1', sql)
+
+                    # Log generated SQL for debugging
+                    logger.debug(f"[SQL] Generated SQL for '{fact_name}' (attempt {attempt + 1}/{max_retries}):\n{sql}")
+
+                    # Validate table names against schema
+                    if known_tables:
+                        referenced = set()
+                        for m in re.finditer(r'(?:FROM|JOIN)\s+(?:"?(\w+)"?\.)?"?(\w+)"?', sql, re.IGNORECASE):
+                            referenced.add(m.group(2).lower())
+                        unknown = referenced - known_tables
+                        if unknown:
+                            last_error = f"Tables not found in {db_name} database: {', '.join(sorted(unknown))}. Available tables: {', '.join(sorted(known_tables))}"
+                            logger.warning(f"[SQL] Pre-validation failed for '{fact_name}': {last_error}")
+                            continue
+
+                    # Emit SQL executing event
+                    self._emit_event(StepEvent(
+                        event_type="sql_executing",
+                        step_number=0,
+                        data={
+                            "fact_name": fact_name,
+                            "database": db_name,
+                            "attempt": attempt + 1,
+                            "max_attempts": max_retries,
+                        }
+                    ))
+
+                    try:
+                        result_df = pd.read_sql(sql, engine)
+                        row_count = len(result_df)
+                        node.sql_query = sql
+
+                        if row_count == 1 and len(result_df.columns) == 1:
+                            scalar_value = result_df.iloc[0, 0]
+                            if hasattr(scalar_value, 'item'):
+                                scalar_value = scalar_value.item()
+                            fact_value = scalar_value
+                        else:
+                            fact_value = f"{row_count} rows"
+
+                        table_name = fact_name.lower().replace(' ', '_').replace('-', '_')
+                        if row_count > 0 and self.datastore:
+                            self.datastore.save_dataframe(table_name, result_df)
+                            node.row_count = row_count
+
+                        fact = Fact(
+                            name=fact_name,
+                            value=fact_value,
+                            confidence=0.9,
+                            source=FactSource.DATABASE,
+                            source_name=db_name,
+                            query=sql,
+                            table_name=table_name if row_count > 1 else None,
+                            row_count=row_count if row_count > 1 else None,
+                        )
+                        break
+                    except Exception as sql_err:
+                        last_error = str(sql_err)
+                        will_retry = attempt < max_retries - 1
+                        # Log full error for debugging
+                        logger.warning(f"[SQL] Error for '{fact_name}' (attempt {attempt + 1}/{max_retries}): {sql_err}")
+                        logger.debug(f"[SQL] Failed query:\n{sql}")
+                        if will_retry:
+                            logger.debug(f"[SQL] Will retry ({max_retries - attempt - 1} attempts remaining)")
+                        # Emit SQL error event
+                        self._emit_event(StepEvent(
+                            event_type="sql_error",
+                            step_number=0,
+                            data={
+                                "fact_name": fact_name,
+                                "database": db_name,
+                                "error": str(sql_err),  # Full error, not truncated
+                                "sql": sql[:500],  # Include SQL (truncated to 500 for events)
+                                "attempt": attempt + 1,
+                                "max_attempts": max_retries,
+                                "will_retry": will_retry,
+                            }
+                        ))
+                        if attempt == max_retries - 1:
+                            raise Exception(f"SQL error after {max_retries} attempts: {sql_err}")
+
+            elif source.startswith(FactSource.LLM_KNOWLEDGE.value):
+                value = self._resolve_llm_knowledge(fact_desc)
+                fact = Fact(
+                    name=fact_name,
+                    value=value,
+                    confidence=0.7,
+                    source=FactSource.LLM_KNOWLEDGE,
+                    reasoning=f"LLM estimate: {fact_desc}",
+                )
+
+            elif source.startswith(FactSource.API.value):
+                # API resolution via fact resolver
+                api_name = source.split(":", 1)[1].strip() if ":" in source else None
+                logger.debug(f"[DAG] Resolving API premise {fact_id} '{fact_name}' from API: {api_name}")
+                fact, _ = self.fact_resolver.resolve_tiered(fact_name, fact_description=fact_desc)
+                if fact and fact.source != FactSource.API:
+                    # Fact resolver may have used a different source - update if API was requested
+                    logger.debug(f"[DAG] API resolution fell back to {fact.source.value}")
+
+            else:
+                # Generic resolution (document, user, or other sources)
+                logger.debug(f"[DAG] Using tiered resolution for {fact_id} '{fact_name}' (source={source})")
+                # Pass source document hint so document resolver can filter
+                extra_params = {}
+                if node.source == "document" and node.source_db:
+                    extra_params["source_document"] = node.source_db
+                fact, _ = self.fact_resolver.resolve_tiered(fact_name, fact_description=fact_desc, **extra_params)
+
+            if fact and fact.value is not None:
+                resolved_premises[fact_id] = fact
+                if self.history:
+                    self.history.save_inference_premise(
+                        self.session_id, fact_id, fact_name,
+                        fact.value,
+                        fact.source.value if hasattr(fact.source, 'value') else str(fact.source),
+                        fact_desc or ""
+                    )
+                self.fact_resolver.add_user_fact(
+                    fact_name=fact_name,
+                    value=fact.value,
+                    query=sql,
+                    reasoning=fact.reasoning,
+                    source=fact.source,
+                    table_name=getattr(fact, 'table_name', None),
+                    row_count=getattr(fact, 'row_count', None),
+                    context=f"SQL: {sql}" if sql else None,
+                )
+                source_str = format_source_attribution(
+                    fact.source, fact.source_name, fact.api_endpoint
+                )
+                return fact.value, fact.confidence, source_str
+            else:
+                raise ValueError(f"Failed to resolve premise: {fact_name}")
+
+        else:
+            # === INFERENCE EXECUTION ===
+            import time as _time
+            _inf_start = _time.time()
+
+            inf_id = node.fact_id
+            operation = node.operation
+            explanation = node.description
+            inf_name = node.name
+            table_name = inf_name.lower().replace(' ', '_').replace('-', '_')
+            inference_names[inf_id] = table_name
+
+            # Handle verify_exists operation
+            if operation and operation.startswith("verify_exists("):
+                ref_match = re.match(r'verify_exists\((\w+)\)', operation)
+                if ref_match:
+                    ref_id = ref_match.group(1)
+                    ref_table = inference_names.get(ref_id, ref_id.lower())
+                    if ref_id.startswith("P"):
+                        p_idx = int(ref_id[1:]) - 1
+                        if p_idx < len(premises):
+                            ref_table = premises[p_idx]['name'].lower().replace(' ', '_')
+
+                    if self.datastore:
+                        try:
+                            profile = self._profile_table(ref_table)
+                            row_count = profile["row_count"]
+
+                            # Build profile summary
+                            profile_lines = [f"**{ref_table}**: {row_count} rows, {profile['column_count']} columns"]
+                            issues = []
+                            for col in profile["columns"]:
+                                col_line = f"  - `{col['name']}` ({col['type']}): {col['distinct']} distinct"
+                                if col["null_pct"] > 0:
+                                    col_line += f", {col['null_pct']:.0f}% null"
+                                if col["all_null"]:
+                                    col_line += " **ALL NULL**"
+                                    issues.append(col["name"])
+                                profile_lines.append(col_line)
+
+                            if profile["duplicate_rows"] > 0:
+                                profile_lines.append(f"\n  Duplicate rows: {profile['duplicate_rows']}")
+                                issues.append(f"{profile['duplicate_rows']} duplicate rows")
+
+                            profile_text = "\n".join(profile_lines)
+                            logger.info(f"[VERIFY] {inf_id} profile for '{ref_table}':\n{profile_text}")
+
+                            if issues:
+                                logger.warning(f"[VERIFY] {inf_id} data quality issues in '{ref_table}': {issues}")
+
+                            # Save profile as artifact (internal, not shown in UI)
+                            if self.datastore:
+                                inf_step = 1000 + int(inf_id[1:])
+                                self.datastore.add_artifact(
+                                    inf_step, 0, "markdown", profile_text,
+                                    name=f"profile_{ref_table}",
+                                    title=f"Data Profile: {ref_table}",
+                                    content_type="text/markdown",
+                                    metadata={"internal": True},
+                                )
+
+                            resolved_inferences[inf_id] = f"Verified: {row_count} records"
+                            self.fact_resolver.add_user_fact(
+                                fact_name=inf_name,
+                                value=f"{row_count} records verified" + (f" (issues: {', '.join(issues)})" if issues else ""),
+                                reasoning=profile_text,
+                                source=FactSource.DERIVED,
+                            )
+                            confidence = 0.7 if issues else 0.95
+                            return f"Verified: {row_count} records", confidence, "derived"
+                        except Exception as ve:
+                            raise ValueError(f"Verification failed: {ve}")
+
+            # Build context from dependencies including column names
+            scalars = []
+            tables = []
+            referenced_tables = []  # Tables that need to be queried from original database
+            api_sources = []  # Data that needs to be fetched from APIs
+            for dep_name in node.dependencies:
+                dep_node = dag.get_node(dep_name)
+                if not dep_node:
+                    raise ValueError(f"Dependency '{dep_name}' not found in DAG")
+                if dep_node.value is None:
+                    raise ValueError(
+                        f"Dependency '{dep_name}' ({dep_node.fact_id}) has no value. "
+                        f"Status: {dep_node.status}, Error: {dep_node.error}"
+                    )
+                val_str = str(dep_node.value)
+                val_lower = val_str.lower()
+                # Check if this is a loaded table (value contains row count)
+                is_loaded_table = "rows" in val_lower or (dep_node.row_count and dep_node.row_count > 1)
+                # Check if this is a referenced database table (format: (db.table) X rows)
+                is_db_referenced = val_str.startswith("(") and ")" in val_str and "." in val_str.split(")")[0]
+                # Check if this is an API-sourced reference (format: (api_name) endpoint_display)
+                is_api_referenced = (
+                    val_str.startswith("(") and ")" in val_str
+                    and "." not in val_str.split(")")[0]
+                ) or (dep_node.source and dep_node.source.startswith("api"))
+
+                if is_loaded_table or is_db_referenced or is_api_referenced:
+                    dep_table = dep_name.lower().replace(' ', '_').replace('-', '_')
+                    columns_info = ""
+
+                    if is_api_referenced and not is_loaded_table:
+                        # API-sourced reference: extract api name
+                        api_match = re.match(r'\((\w+)\)\s*(.*)', val_str)
+                        api_name = None
+                        if api_match:
+                            api_name = api_match.group(1)
+                        elif dep_node.source and ":" in dep_node.source:
+                            api_name = dep_node.source.split(":", 1)[1].strip()
+                        api_sources.append(
+                            f"- {dep_node.fact_id}: fetch from API 'api_{api_name or 'unknown'}' into '{dep_table}'"
+                        )
+                    elif is_db_referenced:
+                        # Referenced table: get metadata from original database
+                        # Extract table name from the value format (db.table)
+                        ref_db = None
+                        match = re.match(r'\(([^.]+)\.([^)]+)\)', val_str)
+                        if match:
+                            ref_db, ref_table = match.groups()
+                            dep_table = ref_table  # Use actual table name
+
+                        # Qualified name for queries (db.table)
+                        qualified = f"{ref_db}.{dep_table}" if ref_db else dep_table
+
+                        # Try to get column info from the original database table
+                        if self.schema_manager:
+                            try:
+                                # Find matching table in schema
+                                for db_name in self.schema_manager.connections.keys():
+                                    table_meta = self.schema_manager.get_table_metadata(db_name, dep_table)
+                                    if table_meta:
+                                        cols = [c.name for c in table_meta.columns]
+                                        columns_info = f" columns: {cols}"
+                                        referenced_tables.append(
+                                            f"- {dep_node.fact_id} → store.query('SELECT * FROM {qualified}'){columns_info}"
+                                        )
+                                        break
+                            except Exception as e:
+                                logger.debug(f"Failed to get table metadata for {dep_table}: {e}")
+
+                        if not columns_info:
+                            # Fallback: still mark as referenced
+                            referenced_tables.append(
+                                f"- {dep_node.fact_id} → store.query('SELECT * FROM {qualified}')"
+                            )
+                    else:
+                        # Regular table in datastore
+                        sample_info = ""
+                        if self.datastore:
+                            try:
+                                schema_df = self.datastore.query(f"DESCRIBE {dep_table}")
+                                if len(schema_df) > 0:
+                                    cols = list(schema_df['column_name']) if 'column_name' in schema_df.columns else list(schema_df.iloc[:, 0])
+                                    columns_info = f" columns: {cols}"
+                            except Exception as e:
+                                logger.debug(f"DESCRIBE failed for {dep_table}, trying SELECT: {e}")
+                                try:
+                                    sample = self.datastore.query(f"SELECT * FROM {dep_table} LIMIT 1")
+                                    columns_info = f" columns: {list(sample.columns)}"
+                                except Exception as e2:
+                                    logger.debug(f"Failed to get columns for {dep_table}: {e2}")
+                            # Fetch sample row to show actual data shape
+                            try:
+                                sample_df = self.datastore.query(f"SELECT * FROM {dep_table} LIMIT 1")
+                                if len(sample_df) > 0:
+                                    row_dict = {}
+                                    for col in sample_df.columns:
+                                        val = sample_df.iloc[0][col]
+                                        val_str = str(val)
+                                        if len(val_str) > 120:
+                                            val_str = val_str[:120] + "..."
+                                        row_dict[col] = val_str
+                                    sample_info = f"\n    sample row: {row_dict}"
+                                    row_count = self.datastore.query(f"SELECT COUNT(*) AS cnt FROM {dep_table}").iloc[0, 0]
+                                    sample_info += f"\n    total rows: {row_count}"
+                            except Exception as e:
+                                logger.debug(f"Failed to get sample for {dep_table}: {e}")
+                        tables.append(f"- {dep_node.fact_id} → store.query('SELECT * FROM {dep_table}'){columns_info}{sample_info}")
+                else:
+                    if dep_node.source == "document":
+                        # Document premises: tell LLM to use doc_read() instead of variable reference
+                        # Use source_db (from "document:<name>") if available, else fall back to premise name
+                        doc_name = dep_node.source_db or dep_name.lower().replace(' ', '_').replace('-', '_')
+                        # Validate the doc name against configured documents
+                        if self.doc_tools:
+                            configured_docs = list(self.doc_tools._loaded_documents.keys()) + list(getattr(self.doc_tools, '_document_configs', {}).keys())
+                            if doc_name not in configured_docs and configured_docs:
+                                # Try to find a matching configured document
+                                for cfg_name in configured_docs:
+                                    if cfg_name in dep_name.lower() or dep_name.lower() in cfg_name:
+                                        doc_name = cfg_name
+                                        break
+                        scalars.append(
+                            f"- {dep_node.fact_id} ({dep_name}): [DOCUMENT] "
+                            f"Load at runtime with `doc_read('{doc_name}')` — do NOT reference {dep_node.fact_id} as a variable"
+                        )
+                    else:
+                        scalars.append(f"- {dep_node.fact_id} ({dep_name}): {dep_node.value}")
+
+            # Build referenced tables section for prompt
+            referenced_section = ""
+            if referenced_tables:
+                referenced_section = f"""
+REFERENCED DATABASE TABLES (use the exact query shown — fact IDs like P1, P2 are NOT table names):
+{chr(10).join(referenced_tables)}
+"""
+
+            # Build available tables constraint for inference prompt (same pattern as SQL gen)
+            all_known_tables: set[str] = set()
+            if self.schema_manager:
+                for db_name in self.schema_manager.connections.keys():
+                    all_known_tables.update(
+                        m.name.lower() for m in self.schema_manager.get_tables_for_db(db_name)
+                    )
+            if all_known_tables:
+                referenced_section += f"\nAVAILABLE DATABASE TABLES (no others exist): {', '.join(sorted(all_known_tables))}\n"
+
+            # Build API sources section for prompt (with schema info)
+            api_sources_section = ""
+            api_schema_cache: dict[str, dict] = {}
+            if api_sources:
+                # Fetch schema for referenced APIs to include in prompt
+                schema_lines = list(api_sources)
+                all_apis = self.get_all_apis()
+                if all_apis:
+                    from constat.catalog.api_executor import APIExecutor
+                    api_executor = APIExecutor(self.config, domain_apis=self._domain_apis)
+                    for api_name, api_config in all_apis.items():
+                        # Only fetch schema for APIs referenced in this inference
+                        if not any(f"api_{api_name}" in s for s in api_sources):
+                            continue
+                        try:
+                            if api_config.type == "graphql":
+                                overview = api_executor.get_schema_overview(api_name)
+                                api_schema_cache[api_name] = overview
+                                schema_lines.append(f"\nSchema for api_{api_name} (GraphQL):")
+                                for q in overview.get("queries", []):
+                                    args_str = ", ".join(q.get("args", []))
+                                    schema_lines.append(f"  query {q['name']}({args_str}) -> {q.get('returns', '?')}")
+                                    # Get detailed return fields for this query
+                                    try:
+                                        detail = api_executor.get_query_schema(api_name, q["name"])
+                                        if detail.get("return_fields"):
+                                            GRAPHQL_SCALARS = {"String", "Int", "Float", "Boolean", "ID"}
+                                            field_strs = []
+                                            for f in detail["return_fields"]:
+                                                ftype = f['type']
+                                                # Extract base type name (strip [], !)
+                                                base = ftype.replace("[", "").replace("]", "").replace("!", "").strip()
+                                                if base in GRAPHQL_SCALARS:
+                                                    field_strs.append(f"{f['name']}: {ftype} (scalar, NO subfields)")
+                                                else:
+                                                    field_strs.append(f"{f['name']}: {ftype}")
+                                            schema_lines.append(f"    fields: {', '.join(field_strs)}")
+                                    except (KeyError, ValueError, TypeError):
+                                        pass
+                            else:
+                                # REST API: include endpoint info if available
+                                if self.schema_manager and hasattr(self.schema_manager, 'api_schema_manager'):
+                                    endpoints = self.schema_manager.api_schema_manager.get_api_schema(api_name)
+                                    if endpoints:
+                                        schema_lines.append(f"\nEndpoints for api_{api_name} (REST):")
+                                        for ep in endpoints[:10]:
+                                            schema_lines.append(f"  {ep.method} {ep.path} - {ep.description or ep.endpoint_name}")
+                                schema_lines.append(f"\nIMPORTANT: api_{api_name} is REST. Response is often paginated:")
+                                schema_lines.append(f"  response = api_{api_name}('GET /endpoint', {{params}})")
+                                schema_lines.append(f"  # Extract array from wrapper: check 'data', 'results', 'items' keys")
+                        except Exception as e:
+                            logger.debug(f"Failed to get API schema for {api_name}: {e}")
+
+                api_sources_section = f"""
+API SOURCES (fetch with api_<name>() functions):
+{chr(10).join(schema_lines)}
+
+IMPORTANT: api_<name>(query) returns the 'data' dict from the GraphQL response.
+Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ name }} currency }} }}')
+         result == {{"country": {{"name": "United Kingdom", "languages": [{{"name": "English"}}], "currency": "GBP"}}}}
+"""
+
+            # Build dynamic data source descriptions
+            data_source_apis = [
+                "- store.create_view('name', 'SELECT ... FROM db_name.table', step_number=N) — named lazy view (DEFAULT)",
+                "- store.query('SELECT ... FROM db_name.table') -> ephemeral DataFrame (only for Python/LLM ops)",
+                "- store.save_dataframe(name, df) — only for Python-computed results",
+            ]
+
+            # SQL databases
+            from constat.catalog.sql_transpiler import TranspilingConnection
+            if self.schema_manager:
+                for db_name in self.schema_manager.connections.keys():
+                    conn = self.schema_manager.get_connection(db_name)
+                    if isinstance(conn, TranspilingConnection):
+                        data_source_apis.append(f"- Tables in '{db_name}' queryable as {db_name}.table_name")
+                    else:
+                        data_source_apis.append(f"- Tables in '{db_name}' queryable as {db_name}.table_name")
+                # NoSQL
+                for db_name in self.schema_manager.nosql_connections.keys():
+                    data_source_apis.append(f"- db_{db_name}: NoSQL connector")
+                # File sources
+                for db_name in self.schema_manager.file_connections.keys():
+                    conn = self.schema_manager.file_connections[db_name]
+                    if hasattr(conn, 'path'):
+                        ext = str(conn.path).rsplit('.', 1)[-1].lower() if '.' in str(conn.path) else 'csv'
+                        reader = {'csv': 'read_csv', 'json': 'read_json', 'parquet': 'read_parquet'}.get(ext, 'read_csv')
+                        data_source_apis.append(f"- pd.{reader}(file_{db_name}) -> DataFrame")
+
+            # APIs
+            all_apis_for_desc = self.get_all_apis()
+            if all_apis_for_desc:
+                for api_name, api_config in all_apis_for_desc.items():
+                    if api_config.type == "graphql":
+                        data_source_apis.append(f"- api_{api_name}(query_string) -> dict (GraphQL 'data' portion)")
+                    else:
+                        data_source_apis.append(f"- api_{api_name}('GET /endpoint', {{params}}) -> data (REST)")
+
+            # Build step code hints section (from exploratory session)
+            step_hints_section = ""
+            step_hints = getattr(self, '_proof_step_hints', [])
+            if step_hints:
+                blocks = []
+                for step in step_hints:
+                    code_text = step.get("code", "")
+                    goal = step.get("goal", f"Step {step.get('step_number', '?')}")
+                    if code_text:
+                        blocks.append(f"# Step: {goal}\n{code_text}")
+                if blocks:
+                    step_hints_section = (
+                        "\n\nREFERENCE CODE from exploratory session — use the EXACT table and view names from this code:\n"
+                        + "\n---\n".join(blocks) + "\n"
+                    )
+
+            # Build codegen learnings for inference
+            inference_learnings = ""
+            try:
+                inference_learnings = self._get_codegen_learnings(
+                    f"inference {inf_id}: {operation}", TaskType.SQL_GENERATION
+                )
+            except Exception as e:
+                logger.debug(f"Failed to get codegen learnings for inference: {e}")
+
+            # Generate inference code
+            inference_prompt = load_prompt("inference_prompt.md").format(
+                inf_id=inf_id,
+                inf_name=inf_name,
+                operation=operation,
+                explanation=explanation,
+                scalars="\n".join(scalars) if scalars else "(none)",
+                tables="\n".join(tables) if tables else "(none)",
+                referenced_section=referenced_section,
+                api_sources_section=api_sources_section,
+                data_source_apis="\n".join(data_source_apis),
+                table_name=table_name,
+                user_request=problem,
+            ) + step_hints_section
+            # Append available skill functions so LLM can call them
+            skill_fns_section = self._get_skill_functions_section()
+            if skill_fns_section:
+                inference_prompt += skill_fns_section
+            if inference_learnings:
+                inference_prompt += f"\n\nLEARNINGS FROM PREVIOUS ERRORS:\n{inference_learnings}"
+
+            import io
+
+            max_retries = 7
+            last_error = None
+            code = None
+            first_error = None  # Track for learning capture
+            first_code = None
+            _val_passed = []  # True assertions (structural + user-specified)
+            _val_profile = []  # Data profile stats for human review
+            attempt = 0
+            exec_globals: dict = {}
+            captured = io.StringIO()
+            skip_models = 0  # Model escalation index
+            escalation_threshold = 2  # Escalate after N consecutive failures
+            runtime_failures = 0
+
+            for attempt in range(max_retries):
+                prompt = inference_prompt
+                if last_error:
+                    error_hint = ""
+                    # Detect merge dtype mismatch and add targeted fix instructions
+                    merge_match = re.search(
+                        r"trying to merge on (\w+) and (\w+) columns for key '(\w+)'",
+                        last_error,
+                    )
+                    if merge_match:
+                        dtype_a, dtype_b, key = merge_match.groups()
+                        # Pick the numeric type if one side is numeric
+                        if "int" in dtype_a or "float" in dtype_a:
+                            error_hint = (
+                                f"\nFIX: Before merging, cast the join key to match: "
+                                f"df['{key}'] = pd.to_numeric(df['{key}'], errors='coerce'). "
+                                f"Apply this to BOTH DataFrames being merged."
+                            )
+                        elif "int" in dtype_b or "float" in dtype_b:
+                            error_hint = (
+                                f"\nFIX: Before merging, cast the join key to match: "
+                                f"df['{key}'] = pd.to_numeric(df['{key}'], errors='coerce'). "
+                                f"Apply this to BOTH DataFrames being merged."
+                            )
+                        else:
+                            error_hint = (
+                                f"\nFIX: Before merging, cast the join key '{key}' to the same type "
+                                f"on both DataFrames using .astype(str) or pd.to_numeric()."
+                            )
+                    prompt = f"PREVIOUS ERROR: {last_error}{error_hint}\n\n{inference_prompt}"
+
+                code_result = self.router.execute(
+                    task_type=TaskType.SQL_GENERATION,
+                    system="Generate Python code. Return only executable code.",
+                    user_message=prompt,
+                    max_tokens=self.router.max_output_tokens,
+                    skip_models=skip_models,
+                )
+                # Track model index for escalation
+                if code_result.model_index > skip_models:
+                    skip_models = code_result.model_index
+
+                code = code_result.content.strip()
+                if code.startswith("```"):
+                    code = re.sub(r'^```\w*\n?', '', code)
+                    code = re.sub(r'\n?```$', '', code)
+
+                codegen_model = code_result.model_used
+                logger.info(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1}: code length={len(code)} chars, model={codegen_model}")
+                logger.debug(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1} code:\n{code}")
+
+                # Auto-fix DataFrame boolean errors
+                code = re.sub(r'\bif\s+(df|result|data)\s*:', r'if not \1.empty:', code)
+                code = re.sub(r'\bif\s+not\s+(df|result|data)\s*:', r'if \1.empty:', code)
+
+                node.code = code
+
+                # Emit code preview before execution
+                self._emit_event(StepEvent(
+                    event_type="inference_code",
+                    step_number=0,
+                    data={
+                        "inference_id": inf_id,
+                        "fact_name": f"{inf_id}: {inf_name}",
+                        "name": inf_name,
+                        "operation": operation or "",
+                        "code": code,
+                        "attempt": attempt + 1,
+                        "model": codegen_model,
+                    }
+                ))
+
+                import sys
+                import numpy as np
+
+                # Build full execution globals (databases, APIs, file sources)
+                exec_globals = self._get_execution_globals()
+                # Wrap store to inject inference step_number (negative) for result grouping
+                inf_num = int(inf_id.lstrip("I") or "0") if inf_id.startswith("I") else 0
+                inf_step = -inf_num if inf_num > 0 else 0
+
+                class _InferenceStore:
+                    """Thin wrapper that forces inference step_number and emits table_created events."""
+                    def __init__(self, ds, step, emit_fn):
+                        self._ds = ds
+                        self._step = step
+                        self._emit = emit_fn
+                    def save_dataframe(self, name, df, step_number=None, **kw):
+                        result = self._ds.save_dataframe(name, df, step_number=self._step, **kw)
+                        self._emit(StepEvent(event_type="table_created", step_number=self._step, data={"name": name, "row_count": len(df)}))
+                        return result
+                    def create_view(self, name, sql, step_number=None, **kw):
+                        result = self._ds.create_view(name, sql, step_number=self._step, **kw)
+                        self._emit(StepEvent(event_type="table_created", step_number=self._step, data={"name": name}))
+                        return result
+                    def __getattr__(self, name):
+                        return getattr(self._ds, name)
+                exec_globals["store"] = _InferenceStore(self.datastore, inf_step, self._emit_event)
+                # Proxy pd.merge to auto-coerce mismatched join key types
+                class _PdProxy:
+                    """Wraps pd module; intercepts pd.merge() to coerce key types."""
+                    def __init__(self, pd_mod):
+                        self._pd = pd_mod
+                    def merge(self, left, right, *args, **kwargs):
+                        try:
+                            return self._pd.merge(left, right, *args, **kwargs)
+                        except ValueError as e:
+                            m = re.search(r"trying to merge on (\w+) and (\w+) columns for key '(\w+)'", str(e))
+                            if m:
+                                key = m.group(3)
+                                if key in left.columns:
+                                    left[key] = left[key].astype(str)
+                                if key in right.columns:
+                                    right[key] = right[key].astype(str)
+                                return self._pd.merge(left, right, *args, **kwargs)
+                            raise
+                    def __getattr__(self, name):
+                        return getattr(self._pd, name)
+                exec_globals["pd"] = _PdProxy(pd)
+                exec_globals["np"] = np
+                exec_globals["llm_map"] = constat.llm.wrappers.llm_map
+                exec_globals["llm_classify"] = constat.llm.wrappers.llm_classify
+                exec_globals["llm_extract"] = constat.llm.llm_extract
+                exec_globals["llm_summarize"] = constat.llm.llm_summarize
+                exec_globals["llm_score"] = constat.llm.wrappers.llm_score
+                exec_globals["llm_extract_table"] = self._create_extract_table_helper()
+                exec_globals["llm_extract_facts"] = self._create_extract_facts_helper()
+                exec_globals["doc_read"] = self._create_doc_read_helper()
+                self._inference_used_llm_map = False  # Reset per inference
+
+                # Add resolved values to context
+                for pid, fact in resolved_premises.items():
+                    if fact and fact.value is not None:
+                        val = fact.value
+                        if isinstance(val, str) and "rows" in val:
+                            try:
+                                val = int(val.split()[0])
+                            except (ValueError, IndexError):
+                                pass
+                        exec_globals[pid] = val
+
+                for iid, ival in resolved_inferences.items():
+                    if ival is not None:
+                        val = ival
+                        if isinstance(val, str) and "rows" in val:
+                            try:
+                                val = int(val.split()[0])
+                            except (ValueError, IndexError):
+                                pass
+                        exec_globals[iid] = val
+
+                # Block filesystem writes — LLM code must use store.save_dataframe(), not open()
+                _builtin_open = open
+                def _restricted_open(path, mode='r', *args, **kwargs):
+                    if any(m in str(mode) for m in ('w', 'a', 'x')):
+                        raise PermissionError(
+                            f"File writing is not allowed. Use store.save_dataframe(name, df) to persist data."
+                        )
+                    return _builtin_open(path, mode, *args, **kwargs)
+                exec_globals["open"] = _restricted_open
+
+                captured = io.StringIO()
+                old_stdout = sys.stdout
+                try:
+                    sys.stdout = captured
+                    exec(code, exec_globals)
+
+                    # --- Post-execution validation ---
+                    _val_computed = exec_globals.get('_result')
+                    _val_tables = [t['name'] for t in self.datastore.list_tables()] if self.datastore else []
+                    _val_output = captured.getvalue().strip()
+                    _val_error = None
+                    _val_passed = []  # True assertions (structural + user-specified)
+                    _val_profile = []  # Data profile stats for human review
+
+                    # 1. Result exists (unless table saved or stdout produced)
+                    if _val_computed is None and table_name not in _val_tables and not _val_output:
+                        _val_error = f"No result produced. Set _result, save table '{table_name}', or print output."
+                    else:
+                        _val_passed.append("Result produced")
+
+                    # 2. DataFrame not empty
+                    if not _val_error and _val_computed is not None and hasattr(_val_computed, 'empty') and _val_computed.empty:
+                        _val_error = f"Result DataFrame is empty (0 rows). Expected data in '{table_name}'."
+                    elif not _val_error and _val_computed is not None and hasattr(_val_computed, 'empty'):
+                        _val_passed.append(f"DataFrame has {len(_val_computed)} rows")
+
+                    # 3. Saved table has rows
+                    if not _val_error and table_name in _val_tables:
+                        _row_ct = int(self.datastore.query(f'SELECT COUNT(*) FROM "{table_name}"').iloc[0, 0])
+                        if _row_ct == 0:
+                            _val_error = f"Table '{table_name}' saved but has 0 rows."
+                        else:
+                            _val_passed.append(f"Table '{table_name}' has {_row_ct} rows")
+
+                    # 4. No all-null columns
+                    if not _val_error and table_name in _val_tables:
+                        try:
+                            _null_df = self.datastore.query(
+                                f'SELECT column_name FROM (SELECT * FROM "{table_name}" LIMIT 1000) '
+                                f'UNPIVOT (value FOR column_name IN (*)) '
+                                f'GROUP BY column_name HAVING COUNT(CASE WHEN value IS NOT NULL AND value != \'\' THEN 1 END) = 0'
+                            )
+                            if len(_null_df) > 0:
+                                _val_error = f"Table '{table_name}' has all-NULL columns: {list(_null_df['column_name'])}. Data enrichment likely failed."
+                            else:
+                                _val_passed.append("No all-NULL columns")
+                        except Exception:
+                            pass
+
+                    # 5. Column-level profiling → _val_profile (stats for human review)
+                    if not _val_error and table_name in _val_tables:
+                        try:
+                            _cols_df = self.datastore.query(f'SELECT * FROM "{table_name}" LIMIT 0')
+                            for _c in _cols_df.columns:
+                                try:
+                                    _stats = self.datastore.query(
+                                        f'SELECT MIN("{_c}") as mn, MAX("{_c}") as mx, '
+                                        f'COUNT("{_c}") as cnt, COUNT(*) as total '
+                                        f'FROM "{table_name}"'
+                                    )
+                                    # noinspection PyTypeChecker
+                                    _mn, _mx = _stats.iloc[0]['mn'], _stats.iloc[0]['mx']
+                                    # noinspection PyTypeChecker
+                                    _cnt = int(_stats.iloc[0]['cnt'])
+                                    # noinspection PyTypeChecker
+                                    _tot = int(_stats.iloc[0]['total'])
+                                    if isinstance(_mn, (int, float)) and isinstance(_mx, (int, float)):
+                                        if _mn == _mx:
+                                            _val_profile.append(f"{_c}: all values = {_mn}")
+                                        else:
+                                            _val_profile.append(f"{_c}: {_mn} to {_mx}")
+                                    if _cnt < _tot:
+                                        _val_profile.append(f"{_c}: {_cnt}/{_tot} non-null")
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                    # 6. Input-output row ratio vs dependencies
+                    if not _val_error and table_name in _val_tables and node.dependencies:
+                        try:
+                            _out_ct = int(self.datastore.query(f'SELECT COUNT(*) FROM "{table_name}"').iloc[0, 0])
+                            for _dep_name in node.dependencies:
+                                _dep_node = dag.get_node(_dep_name)
+                                if _dep_node and _dep_node.row_count and _dep_node.row_count > 1:
+                                    if abs(_out_ct - _dep_node.row_count) <= max(1, _dep_node.row_count * 0.2):
+                                        _val_profile.append(f"Row count matches {_dep_node.fact_id} ({_out_ct} vs {_dep_node.row_count})")
+                                    elif _out_ct > _dep_node.row_count:
+                                        _val_profile.append(f"Expanded from {_dep_node.fact_id}: {_dep_node.row_count} → {_out_ct} rows")
+                                    else:
+                                        _val_profile.append(f"Filtered from {_dep_node.fact_id}: {_dep_node.row_count} → {_out_ct} rows")
+                        except Exception:
+                            pass
+
+                    # 7. User-specified validations (from query constraints)
+                    _user_validations = getattr(self, '_proof_user_validations', [])
+                    if not _val_error and _user_validations and table_name in _val_tables:
+                        for _uv in _user_validations:
+                            # Only apply validation if it targets this inference (or has no target)
+                            _uv_target = _uv.get('target')
+                            if _uv_target and _uv_target != inf_id:
+                                continue
+                            try:
+                                _uv_result = self.datastore.query(_uv['sql'].format(table=table_name))
+                                _uv_ok = bool(_uv_result.iloc[0, 0]) if len(_uv_result) > 0 else False
+                                if _uv_ok:
+                                    _val_passed.append(f"{_uv['label']}")
+                                else:
+                                    _val_error = f"User validation failed: {_uv['label']}"
+                            except Exception as _uv_e:
+                                logger.debug(f"User validation '{_uv.get('label', '?')}' skipped for {table_name}: {_uv_e}")
+
+                    if _val_error:
+                        last_error = _val_error
+                        runtime_failures += 1
+                        logger.warning(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1} validation: {_val_error}")
+                        if first_error is None:
+                            first_error = last_error
+                            first_code = code
+                        if runtime_failures >= escalation_threshold:
+                            skip_models += 1
+                            runtime_failures = 0
+                            logger.info(f"[INFERENCE_CODE] {inf_id} escalating after {escalation_threshold} validation failures, skip_models={skip_models}")
+                        continue
+                    # --- End validation ---
+
+                    last_error = None
+                    # Capture learning if this was a successful retry
+                    if attempt > 0 and first_error and self.learning_store:
+                        try:
+                            self._capture_error_learning(
+                                context={
+                                    "error_message": first_error,
+                                    "original_code": first_code[:500] if first_code else "",
+                                    "step_goal": f"inference {inf_id}: {operation}",
+                                },
+                                fixed_code=code,
+                            )
+                        except Exception as le:
+                            logger.debug(f"Learning capture failed: {le}")
+                    break
+                except Exception as e:
+                    last_error = str(e)
+                    runtime_failures += 1
+                    logger.warning(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1}/{max_retries} failed: {last_error}")
+                    logger.debug(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1} code:\n{code}")
+                    if first_error is None:
+                        first_error = last_error
+                        first_code = code
+                    # Escalate to next model after consecutive failures
+                    if runtime_failures >= escalation_threshold:
+                        skip_models += 1
+                        runtime_failures = 0
+                        logger.info(f"[INFERENCE_CODE] {inf_id} escalating after {escalation_threshold} failures, skip_models={skip_models}")
+                finally:
+                    sys.stdout = old_stdout
+
+            if last_error:
+                logger.error(f"[INFERENCE_CODE] {inf_id} all attempts failed: {last_error}")
+                logger.debug(f"[INFERENCE_CODE] Failed code for {inf_id}:\n{code}")
+                raise Exception(last_error)
+
+            computed = exec_globals.get('_result')
+            # Log execution results for debugging
+            tables_after = [t['name'] for t in self.datastore.list_tables()] if self.datastore else []
+            logger.debug(f"[INFERENCE_CODE] {inf_id} exec complete: _result={computed is not None}, tables={tables_after}, expected={table_name}")
+
+            # Check if result was saved as table
+            if self.datastore and table_name in [t['name'] for t in self.datastore.list_tables()]:
+                count_df = self.datastore.query(f"SELECT COUNT(*) FROM {table_name}")
+                row_count = int(count_df.iloc[0, 0])
+                node.row_count = row_count
+                resolved_inferences[inf_id] = f"{row_count} rows"
+                result_value = f"{row_count} rows"
+
+                # Warn if row count is suspiciously low compared to inputs
+                if row_count <= 1 and node.dependencies:
+                    # Check if any dependency had more rows
+                    for dep_name in node.dependencies:
+                        dep_node = dag.get_node(dep_name)
+                        if dep_node and dep_node.row_count and dep_node.row_count > 5:
+                            logger.warning(
+                                f"[INFERENCE_CODE] {inf_id} produced only {row_count} row(s) but "
+                                f"dependency '{dep_name}' had {dep_node.row_count} rows. "
+                                f"This may indicate incorrect aggregation."
+                            )
+            elif computed is not None:
+                # If computed is a DataFrame, save it to datastore and use row count
+                if hasattr(computed, 'empty') and hasattr(computed, 'columns'):
+                    if self.datastore:
+                        self.datastore.save_dataframe(table_name, computed, step_number=inf_step)
+                        row_count = len(computed)
+                        node.row_count = row_count
+                        resolved_inferences[inf_id] = f"{row_count} rows"
+                        result_value = f"{row_count} rows"
+                    else:
+                        resolved_inferences[inf_id] = computed
+                        result_value = computed
+                else:
+                    # Ensure result is JSON-serializable for events
+                    if hasattr(computed, 'tolist'):
+                        computed = computed.tolist()
+                    resolved_inferences[inf_id] = computed
+                    result_value = computed
+            else:
+                output = captured.getvalue().strip()
+                if output:
+                    resolved_inferences[inf_id] = output
+                    result_value = output
+                else:
+                    # No table created, no _result, no output - this is likely a failure
+                    # Check if operation suggests a table should have been created
+                    if any(kw in operation.lower() for kw in ['join', 'filter', 'merge', 'apply', 'calculate', 'select']):
+                        logger.error(f"[INFERENCE_CODE] {inf_id} ({inf_name}) produced no output. Code:\n{code[:500]}...")
+                        raise ValueError(f"Inference {inf_id} ({inf_name}) did not produce expected table '{table_name}'")
+                    resolved_inferences[inf_id] = "completed"
+                    result_value = "completed"
+
+            # Persist inference code to disk (separate from step plan code)
+            if self.history and code:
+                output = captured.getvalue().strip()
+                self.history.save_inference_code(
+                    session_id=self.session_id,
+                    inference_id=inf_id,
+                    name=inf_name,
+                    operation=operation,
+                    code=code,
+                    attempt=attempt + 1,
+                    output=output or None,
+                    prompt=inference_prompt,
+                    model=codegen_model,
+                )
+
+            # Reduce confidence if inference used LLM fuzzy mapping
+            used_llm = getattr(self, '_inference_used_llm_map', False)
+
+            # Safety net: detect hardcoded mapping dicts in generated code
+            # LLM sometimes embeds its knowledge as a literal dict instead of calling llm_map()
+            if not used_llm and code and '.map(' in code:
+                # Check for dict literals with 3+ string key-value pairs followed by .map()
+                import ast
+                try:
+                    tree = ast.parse(code)
+                    for node_ast in ast.walk(tree):
+                        if isinstance(node_ast, ast.Dict) and len(node_ast.keys) >= 3:
+                            # Check if most keys are string constants
+                            str_keys = sum(1 for k in node_ast.keys if isinstance(k, ast.Constant) and isinstance(k.value, str))
+                            if str_keys >= 3:
+                                used_llm = True
+                                logger.info(f"[INFERENCE_CODE] {inf_id}: detected hardcoded mapping dict ({str_keys} string keys) — flagging as LLM knowledge")
+                                break
+                except SyntaxError:
+                    pass
+
+            confidence = 0.65 if used_llm else 0.9
+            source = FactSource.LLM_KNOWLEDGE if used_llm else FactSource.DERIVED
+
+            # noinspection PyTypeChecker
+            self.fact_resolver.add_user_fact(
+                fact_name=inf_name,
+                value=result_value,
+                reasoning=f"Computed: {operation}" + (" (includes LLM fuzzy mapping)" if used_llm else ""),
+                source=source,
+                context=f"Code:\n{code}" if code else None,
+            )
+
+            elapsed_ms = int((_time.time() - _inf_start) * 1000)
+            return result_value, confidence, "llm_knowledge" if used_llm else "derived", _val_passed, _val_profile, elapsed_ms, attempt + 1
+
+    def _get_skill_functions_section(self) -> str:
+        """Build prompt section listing available skill functions for inference code generation."""
+        active_skills = self.skill_manager.active_skill_objects
+        if not active_skills:
+            return ""
+        lines = []
+        for skill in active_skills:
+            pkg_name = skill.name.replace("-", "_").replace(" ", "_")
+            exports = skill.exports
+            if not exports:
+                skill_dir = self.skill_manager.get_skill_dir(skill.name)
+                if skill_dir and (skill_dir / "scripts" / "proof.py").exists():
+                    exports = [{"script": "proof.py", "functions": ["run_proof"]}]
+            if not exports:
+                continue
+            for entry in exports:
+                for fn_name in entry.get("functions", []):
+                    namespaced = f"{pkg_name}_{fn_name}"
+                    desc = skill.description or skill.name
+                    lines.append(f"  - `{namespaced}()` — from skill '{skill.name}': {desc}")
+        if not lines:
+            return ""
+        return (
+            "\n\nAVAILABLE SKILL FUNCTIONS (pre-injected, call directly — prefer these over regenerating logic):\n"
+            + "\n".join(lines)
+            + "\nIf a skill function can compute what this inference needs, CALL IT instead of writing the logic from scratch."
+        )
+
+    @staticmethod
+    def _find_skill_script(scripts_dir: Path) -> Path | None:
+        """Find the first executable Python script in a skill's scripts directory."""
+        if not scripts_dir.exists():
+            return None
+        for ext in ("*.py",):
+            scripts = sorted(scripts_dir.glob(ext))
+            if scripts:
+                return scripts[0]
+        return None
+
+    def _ensure_session_datastore(self, _problem: str) -> None:
+        """Create history session_id and datastore if not yet initialized."""
+        # session_id may be a server UUID (not a valid history directory) — check filesystem
+        needs_history = not self.session_id
+        if self.session_id:
+            history_dir = self.history._session_dir(self.session_id)
+            if not (history_dir / "session.json").exists():
+                needs_history = True
+        if needs_history:
+            self.session_id = self.history.create_session(
+                config_dict=self.config.model_dump(),
+                databases=self.resources.database_names,
+                apis=self.resources.api_names,
+                documents=self.resources.document_names,
+                server_session_id=self.server_session_id,
+            )
+        if not self.datastore:
+            session_dir = self.history._session_dir(self.session_id)
+            db_path = session_dir / "session.duckdb"
+            self.datastore = DuckDBSessionStore(
+                db_path=db_path,
+                registry=self.registry,
+                user_id=self.user_id,
+                session_id=self.session_id,
+            )
+            self.fact_resolver._datastore = self.datastore
+
+    def _execute_skill_script(self, script_path: Path, _problem: str) -> dict | None:
+        """Execute a skill script directly, bypassing planning.
+
+        Loads the skill script via importlib.util (no sys.path/sys.modules)
+        and calls its entry point (run_proof, run, or main). Returns
+        solve()-compatible result dict on success, None on failure.
+        """
+        import importlib.util
+        import time
+        start_time = time.time()
+        skill_name = script_path.parent.parent.name
+
+        self._emit_event(StepEvent(
+            event_type="step_start",
+            step_number=1,
+            data={"goal": f"Executing skill: {skill_name}"}
+        ))
+
+        try:
+            # Load the script directly — no sys.path or sys.modules needed
+            pkg_name = skill_name.replace("-", "_").replace(" ", "_")
+            module_name = f"_constat_skill_{pkg_name}_{script_path.stem}"
+            spec = importlib.util.spec_from_file_location(module_name, script_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            # Resolve dependencies: inject dependency functions into module namespace
+            skill = self.skill_manager.get_skill(skill_name)
+            if skill and skill.dependencies:
+                for dep_name in skill.dependencies:
+                    dep_skill = self.skill_manager.get_skill(dep_name)
+                    if not dep_skill or not dep_skill.exports:
+                        continue
+                    dep_dir = self.skill_manager.get_skill_dir(dep_name)
+                    if not dep_dir:
+                        continue
+                    dep_scripts_dir = dep_dir / "scripts"
+                    dep_pkg = dep_name.replace("-", "_").replace(" ", "_")
+                    for export_entry in dep_skill.exports:
+                        dep_script = dep_scripts_dir / export_entry.get("script", "")
+                        if not dep_script.exists():
+                            continue
+                        dep_mod_name = f"_constat_skill_{dep_pkg}_{dep_script.stem}"
+                        dep_spec = importlib.util.spec_from_file_location(dep_mod_name, dep_script)
+                        dep_module = importlib.util.module_from_spec(dep_spec)
+                        dep_spec.loader.exec_module(dep_module)
+                        for fn_name in export_entry.get("functions", []):
+                            fn = getattr(dep_module, fn_name, None)
+                            if fn and callable(fn):
+                                setattr(module, f"{dep_pkg}_{fn_name}", fn)
+
+            # Find entry point: try common names
+            entry_fn = None
+            for fn_name in ('run_proof', 'run', 'main'):
+                fn = getattr(module, fn_name, None)
+                if callable(fn):
+                    entry_fn = fn
+                    break
+
+            if entry_fn is None:
+                logger.warning(f"[SKILL_EXEC] No entry point (run_proof/run/main) found in {pkg_name}")
+                return None
+
+            # Run the entry point
+            results = entry_fn()
+
+            if not isinstance(results, dict):
+                logger.warning(f"[SKILL_EXEC] Entry point returned {type(results)}, expected dict")
+                return None
+
+            # Save result artifacts to datastore
+            # run_proof() returns {name: DataFrame | str | dict | bytes | ("__view__", sql)}
+            import pandas as pd
+            import base64
+            saved_tables = []
+            saved_artifacts = []
+            for name, val in results.items():
+                if name == '_result':
+                    continue
+                if isinstance(val, tuple) and len(val) == 2 and val[0] == "__view__":
+                    # Lazy view — recreate in session DuckDB
+                    view_sql = val[1]
+                    # Strip CREATE VIEW prefix if present (duckdb_views() returns full DDL)
+                    m = re.match(r"CREATE\s+VIEW\s+\S+\s+AS\s+", view_sql, re.IGNORECASE)
+                    if m:
+                        view_sql = view_sql[m.end():]
+                    self.datastore.create_view(name, view_sql, step_number=1)
+                    saved_tables.append(name)
+                elif isinstance(val, pd.DataFrame):
+                    self.datastore.save_dataframe(name, val, step_number=1)
+                    saved_tables.append(name)
+                elif isinstance(val, str) and val.endswith('.parquet'):
+                    df = pd.read_parquet(val)
+                    self.datastore.save_dataframe(name, df, step_number=1)
+                    saved_tables.append(name)
+                elif isinstance(val, bytes):
+                    self.datastore.add_artifact(
+                        step_number=1, attempt=1, artifact_type="png",
+                        content=base64.b64encode(val).decode(), name=name,
+                    )
+                    saved_artifacts.append(name)
+                elif isinstance(val, dict):
+                    self.datastore.add_artifact(
+                        step_number=1, attempt=1, artifact_type="json",
+                        content=json.dumps(val), name=name,
+                    )
+                    saved_artifacts.append(name)
+                elif isinstance(val, str):
+                    self.datastore.add_artifact(
+                        step_number=1, attempt=1, artifact_type="markdown",
+                        content=val, name=name,
+                    )
+                    saved_artifacts.append(name)
+
+            # Save _result as the primary output
+            primary_result = results.get('_result')
+            if isinstance(primary_result, pd.DataFrame):
+                self.datastore.save_dataframe('_result', primary_result, step_number=1)
+            elif isinstance(primary_result, str) and primary_result.endswith('.parquet'):
+                df = pd.read_parquet(primary_result)
+                self.datastore.save_dataframe('_result', df, step_number=1)
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            total_saved = len(saved_tables) + len(saved_artifacts)
+            self._emit_event(StepEvent(
+                event_type="step_complete",
+                step_number=1,
+                data={
+                    "goal": f"Skill execution complete ({total_saved} artifacts)",
+                    "duration_ms": duration_ms,
+                }
+            ))
+
+            logger.info(f"[SKILL_EXEC] Success: {len(saved_tables)} tables, {len(saved_artifacts)} artifacts in {duration_ms}ms")
+
+            return {
+                "steps": [{"step_number": 1, "goal": f"Skill: {skill_name}", "status": "success"}],
+                "tables": saved_tables,
+                "artifacts": saved_artifacts,
+                "mode": "skill",
+                "duration_ms": duration_ms,
+            }
+
+        except Exception as e:
+            logger.warning(f"[SKILL_EXEC] Execution failed: {e}")
+            self._emit_event(StepEvent(
+                event_type="step_error",
+                step_number=1,
+                data={"error": str(e)}
+            ))
+            return None
+
+    def _extract_user_validations(self, problem: str, inferences: list[dict]) -> list[dict]:
+        """Extract user-specified validation constraints from the problem text.
+
+        Looks for explicit constraints like "ensure no raise exceeds 15%",
+        "verify total budget under $100k", etc. and converts them to SQL checks.
+
+        Returns list of dicts with 'label' and 'sql' keys.
+        The 'sql' value uses {table} placeholder for the target table name.
+        """
+        # Build inference context for the LLM
+        inf_desc = "\n".join(
+            f"- {inf.get('inference_id', '?')}: {inf.get('name', '')} = {inf.get('operation', '')}"
+            for inf in inferences
+        )
+
+        prompt = f"""Analyze this user request for explicit validation constraints (ensure, verify, validate, must, should not exceed, at least, between, limit, cap, maximum, minimum, etc.):
+
+USER REQUEST: {problem}
+
+INFERENCES (output tables):
+{inf_desc}
+
+Extract ONLY explicitly stated constraints. Do NOT invent constraints that aren't in the request.
+
+For each constraint, provide:
+- label: Human-readable description of the check
+- sql: A DuckDB SQL expression that returns TRUE if the constraint passes, using {{table}} as placeholder for the table name
+- target: The inference ID (e.g., "I1", "I3") whose output table this constraint should check. Pick the inference whose output is most relevant to the constraint.
+
+Respond with ONLY valid JSON array. Empty array [] if no explicit constraints found.
+
+Example:
+[
+  {{"label": "No discount exceeds 15%", "sql": "SELECT COUNT(*) = 0 FROM \\"{{table}}\\" WHERE discount_rate > 0.15", "target": "I3"}},
+  {{"label": "Total cost under $100k", "sql": "SELECT SUM(line_total) < 100000 FROM \\"{{table}}\\"", "target": "I3"}}
+]
+
+YOUR JSON RESPONSE:"""
+
+        try:
+            result = self.router.execute(
+                task_type=TaskType.SQL_GENERATION,
+                system="Extract validation constraints from user requests. Output ONLY valid JSON.",
+                user_message=prompt,
+            )
+            content = result.content if hasattr(result, 'content') else str(result)
+            # Strip markdown fences
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+            import json
+            validations = json.loads(content)
+            if isinstance(validations, list):
+                valid = [v for v in validations if isinstance(v, dict) and 'label' in v and 'sql' in v]
+                if valid:
+                    logger.info(f"[USER_VALIDATIONS] Extracted {len(valid)} constraints: {[v['label'] for v in valid]}")
+                return valid
+        except Exception as e:
+            logger.debug(f"[USER_VALIDATIONS] Extraction failed: {e}")
+
+        return []
+
+    def add_user_validation(self, label: str, sql: str) -> None:
+        """Add a user-specified validation constraint for proof inference checks.
+
+        Args:
+            label: Human-readable description (e.g., "No raise exceeds 15%")
+            sql: DuckDB SQL that returns TRUE if valid. Use {table} placeholder.
+        """
+        self._proof_user_validations.append({"label": label, "sql": sql})
+        logger.info(f"[USER_VALIDATIONS] Added: {label}")
+
+    def _profile_table(self, table_name: str) -> dict:
+        """Profile a datastore table for data quality assessment.
+
+        Returns dict with row_count, column_count, duplicate_rows, and per-column stats.
+        """
+        row_count_df = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {table_name}")
+        row_count = int(row_count_df.iloc[0, 0])
+
+        schema_df = self.datastore.query(f"DESCRIBE {table_name}")
+        columns = []
+        for _, row in schema_df.iterrows():
+            col_name = row.iloc[0]
+            col_type = str(row.iloc[1]).lower() if len(row) > 1 else "unknown"
+            is_text = any(t in col_type for t in ("varchar", "text", "char", "string"))
+            null_expr = (
+                f"\"{col_name}\" IS NULL OR \"{col_name}\" = ''"
+                if is_text
+                else f"\"{col_name}\" IS NULL"
+            )
+            try:
+                stats = self.datastore.query(
+                    f"SELECT "
+                    f"COUNT(DISTINCT \"{col_name}\") as distinct_count, "
+                    f"SUM(CASE WHEN {null_expr} THEN 1 ELSE 0 END) as null_count "
+                    f"FROM {table_name}"
+                )
+                # noinspection PyTypeChecker
+                distinct = int(stats.iloc[0]['distinct_count'])
+                # noinspection PyTypeChecker
+                null_count = int(stats.iloc[0]['null_count'])
+            except Exception:
+                distinct = 0
+                null_count = row_count
+
+            null_pct = (null_count / row_count * 100) if row_count > 0 else 0
+            columns.append({
+                "name": col_name,
+                "type": col_type,
+                "distinct": distinct,
+                "null_count": null_count,
+                "null_pct": null_pct,
+                "all_null": null_count == row_count,
+            })
+
+        # Check for duplicate rows
+        try:
+            dup_df = self.datastore.query(
+                f"SELECT COUNT(*) - COUNT(DISTINCT *) as dups FROM (SELECT * FROM {table_name})"
+            )
+            duplicate_rows = int(dup_df.iloc[0, 0])
+        except Exception:
+            duplicate_rows = 0
+
+        return {
+            "row_count": row_count,
+            "column_count": len(columns),
+            "columns": columns,
+            "duplicate_rows": duplicate_rows,
+        }
+
+    def _make_json_serializable(self, obj: Any) -> Any:
+        """Convert an object to be JSON-serializable.
+
+        Handles pandas NA values (NAType), numpy types, and nested structures.
+        """
+        import numpy as np
+        import pandas as pd
+
+        if obj is None:
+            return None
+        # Handle pandas NA
+        if pd.isna(obj):
+            return None
+        # Handle numpy types
+        if isinstance(obj, (np.integer, np.floating)):
+            return obj.item()
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        # Handle nested structures
+        if isinstance(obj, dict):
+            return {k: self._make_json_serializable(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [self._make_json_serializable(v) for v in obj]
+        return obj

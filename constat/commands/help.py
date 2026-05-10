@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: ecb44fe2-8946-4d94-a4a4-a4bad999f3e5
 #
 # Help command - centralized command documentation.
 
@@ -10,12 +11,14 @@ from constat.prompts import load_yaml
 # Help content loaded from YAML for i18n support
 _help = load_yaml("help_strings.yaml")
 
+# noinspection PyTypeChecker
 HELP_COMMANDS: list[tuple[str, str, str]] = [tuple(cmd) for cmd in _help["help_commands"]]
+# noinspection PyTypeChecker
 KEYBOARD_SHORTCUTS: list[tuple[str, str]] = [tuple(s) for s in _help["keyboard_shortcuts"]]
 HELP_TIPS: list[str] = _help["help_tips"]
 
 
-def help_command(ctx: CommandContext) -> HelpResult:
+def help_command(_ctx: CommandContext) -> HelpResult:
     """Return help information."""
     return HelpResult(
         success=True,
@@ -33,6 +36,7 @@ def get_help_markdown() -> str:
             categories[cat] = []
         categories[cat].append((cmd, desc))
 
+    # noinspection DuplicatedCode
     lines = ["**Available Commands:**", ""]
     for category, commands in categories.items():
         lines.append(f"**{category}:**")

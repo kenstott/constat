@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 # Copyright (c) 2025 Kenneth Stott
+# Canary: f0e226dd-3488-41ae-80c7-40d2fbe56fa8
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -7,95 +10,35 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""Tests for LLM provider implementations.
+"""Shared/base provider tests: BaseLLMProvider, TaskRouter, multi-provider routing.
 
 Provider test strategy:
-- Anthropic: Tested with real API (ANTHROPIC_API_KEY required)
-- Ollama: Tested with local server (requires Ollama running)
-- OpenAI: Skipped by default (requires OPENAI_API_KEY)
-- Gemini: Skipped by default (requires GOOGLE_API_KEY)
-- Grok: Skipped by default (requires XAI_API_KEY)
-t- Mistral: Skipped by default (requires MISTRAL_API_KEY)
-- Together: Skipped by default (requires TOGETHER_API_KEY)
-- Groq: Skipped by default (requires GROQ_API_KEY)
+- Anthropic: tests/test_providers_anthropic.py
+- Ollama:    tests/test_providers_ollama.py
+- OpenAI:    tests/test_providers_openai.py
+- Gemini:    tests/test_providers_google.py
+- Grok/Together/Groq: tests/test_providers_other.py
+- Mistral:   tests/test_providers_mistral.py
 """
 
 import os
 
 import pytest
+from dotenv import load_dotenv
 
-from constat.providers import (
-    AnthropicProvider,
-    OpenAIProvider,
-    GeminiProvider,
-    GrokProvider,
-    MistralProvider,
-    CodestralProvider,
-    OllamaProvider,
-    TogetherProvider,
-    GroqProvider,
-)
+load_dotenv()
 
-
-# Skip markers for providers requiring API keys
-requires_anthropic_key = pytest.mark.skipif(
-    not os.environ.get("ANTHROPIC_API_KEY"),
-    reason="ANTHROPIC_API_KEY not set"
-)
-
-requires_openai_key = pytest.mark.skipif(
-    not os.environ.get("OPENAI_API_KEY"),
-    reason="OPENAI_API_KEY not set - set to run OpenAI tests"
-)
-
-requires_google_key = pytest.mark.skipif(
-    not os.environ.get("GOOGLE_API_KEY"),
-    reason="GOOGLE_API_KEY not set - set to run Gemini tests"
-)
-
-requires_xai_key = pytest.mark.skipif(
-    not os.environ.get("XAI_API_KEY"),
-    reason="XAI_API_KEY not set - set to run Grok tests"
-)
-
-requires_together_key = pytest.mark.skipif(
-    not os.environ.get("TOGETHER_API_KEY"),
-    reason="TOGETHER_API_KEY not set - set to run Together tests"
-)
-
-requires_groq_key = pytest.mark.skipif(
-    not os.environ.get("GROQ_API_KEY"),
-    reason="GROQ_API_KEY not set - set to run Groq tests"
-)
-
-requires_mistral_key = pytest.mark.skipif(
-    not os.environ.get("MISTRAL_API_KEY"),
-    reason="MISTRAL_API_KEY not set - set to run Mistral tests"
-)
-
-
-def ollama_available() -> bool:
-    """Check if Ollama server is running locally."""
-    try:
-        import httpx
-        response = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
-        return response.status_code == 200
-    except Exception:
-        return False
+from tests.test_providers_shared import SAMPLE_TOOLS, TOOL_HANDLERS
 
 
 def get_ollama_model() -> str | None:
-    """Get an available Ollama model for testing.
-
-    Returns the first available llama model, or None if none available.
-    """
+    """Get an available Ollama model for testing."""
     try:
         import httpx
         response = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
         if response.status_code == 200:
             data = response.json()
             models = [m["name"] for m in data.get("models", [])]
-            # Prefer llama3.2:3b, then any llama model, then any model
             for preferred in ["llama3.2:3b", "llama3.1:8b", "llama3:8b"]:
                 if preferred in models:
                     return preferred
@@ -105,74 +48,23 @@ def get_ollama_model() -> str | None:
             if models:
                 return models[0]
     except Exception:
-        pass
+        pass  # Probe: Ollama not reachable; return None as sentinel
     return None
 
 
 OLLAMA_TEST_MODEL = get_ollama_model()
 
-requires_ollama = pytest.mark.skipif(
-    not ollama_available(),
-    reason="Ollama server not running at localhost:11434"
-)
 
-requires_ollama_model = pytest.mark.skipif(
-    not OLLAMA_TEST_MODEL,
-    reason="No suitable Ollama model available for testing"
-)
+@pytest.fixture
+def require_anthropic_key():
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.fail("ANTHROPIC_API_KEY not set — required for this test")
 
 
-# Sample tools for testing tool calling
-SAMPLE_TOOLS = [
-    {
-        "name": "get_weather",
-        "description": "Get the current weather for a location",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "location": {
-                    "type": "string",
-                    "description": "City name"
-                }
-            },
-            "required": ["location"]
-        }
-    },
-    {
-        "name": "calculate",
-        "description": "Perform a mathematical calculation",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "expression": {
-                    "type": "string",
-                    "description": "Mathematical expression to evaluate"
-                }
-            },
-            "required": ["expression"]
-        }
-    }
-]
-
-
-def get_weather(location: str) -> str:
-    """Mock weather tool handler."""
-    return f"Weather in {location}: 72F, sunny"
-
-
-def calculate(expression: str) -> str:
-    """Mock calculator tool handler."""
-    try:
-        result = eval(expression)  # Safe for tests with controlled input
-        return str(result)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-TOOL_HANDLERS = {
-    "get_weather": get_weather,
-    "calculate": calculate,
-}
+@pytest.fixture
+def require_ollama_model():
+    if not OLLAMA_TEST_MODEL:
+        pytest.fail("No suitable Ollama model available for testing — required for this test")
 
 
 # =============================================================================
@@ -1410,7 +1302,7 @@ class TestTaskRouter:
             system="Test",
             user_message="Test",
         )
-        
+
         assert not result.success
         assert "Unknown provider" in result.content
 
@@ -1425,9 +1317,7 @@ class TestMultiProviderIntegration:
     These tests verify that different providers can be used for different task types.
     """
 
-    @requires_anthropic_key
-    @requires_ollama_model
-    def test_anthropic_planning_ollama_sql(self):
+    def test_anthropic_planning_ollama_sql(self, require_anthropic_key, require_ollama_model):
         """Use Anthropic for planning, Ollama for SQL generation."""
         from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
         from constat.providers import TaskRouter
@@ -1456,8 +1346,7 @@ class TestMultiProviderIntegration:
         assert sql_models[0].provider == "ollama"
         assert sql_models[0].model == OLLAMA_TEST_MODEL
 
-    @requires_anthropic_key
-    def test_all_tasks_same_provider_different_models(self):
+    def test_all_tasks_same_provider_different_models(self, require_anthropic_key):
         """All task types use same provider but different models."""
         from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
         from constat.providers import TaskRouter
@@ -1491,7 +1380,6 @@ class TestMultiProviderIntegration:
 # =============================================================================
 # Task Routing Integration Tests
 # =============================================================================
-
 
 class TestTaskRoutingIntegration:
     """
@@ -1551,7 +1439,7 @@ class TestTaskRoutingIntegration:
 
         # Create a mock router that tracks calls
         mock_router = MagicMock(spec=TaskRouter)
-        
+
         def track_execute(task_type=None, **kwargs):
             execute_calls.append({
                 "task_type": task_type.value if hasattr(task_type, 'value') else str(task_type),

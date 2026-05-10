@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: f827447d-af15-49e6-8f6f-958d0d4f27c0
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -15,6 +16,7 @@ This tests the scenario where:
 3. Cached facts should be found without re-resolution
 """
 
+from __future__ import annotations
 import json
 import pytest
 from unittest.mock import MagicMock, patch

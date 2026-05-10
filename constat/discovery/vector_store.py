@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 32853c73-b233-4b4e-ab94-c467043d2b28
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -24,7 +25,7 @@ from typing import Optional
 
 import numpy as np
 
-from constat.discovery.models import DocumentChunk, Entity, ChunkEntity, EnrichedChunk, SemanticType
+from constat.discovery.models import DocumentChunk, Entity, ChunkEntity, EnrichedChunk, SemanticType, GlossaryTerm
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ def _run_entity_extraction(
                     semantic_type=semantic_type,
                     ner_type=ner_type_val,
                     session_id=session_id,
-                    project_id=project_id,
+                    domain_id=project_id,
                 )
 
             entity = entity_cache[key]
@@ -114,6 +115,133 @@ def _run_entity_extraction(
     return len(entities)
 
 
+class VectorStoreBackend:
+    """Abstract base class for vector store backends."""
+
+    def add_chunks(
+        self,
+        chunks: list[DocumentChunk],
+        embeddings: np.ndarray,
+        source: str = "document",
+        session_id: str | None = None,
+        domain_id: str | None = None,
+    ) -> None:
+        raise NotImplementedError
+
+    def search(
+        self, query_embedding: np.ndarray, limit: int = 5, query_text: str | None = None,
+    ) -> list[tuple[str, float, DocumentChunk]]:
+        raise NotImplementedError
+
+    def clear(self) -> None:
+        raise NotImplementedError
+
+    def count(self) -> int:
+        raise NotImplementedError
+
+    def get_chunks(self) -> list[DocumentChunk]:
+        return []
+
+
+class NumpyVectorStore(VectorStoreBackend):
+    """In-memory vector store using numpy arrays.
+
+    Uses brute-force cosine similarity search (O(n) complexity).
+
+    Best for:
+    - Small document collections (< 1000 chunks)
+    - Development and testing
+    - Ephemeral/stateless deployments
+    """
+
+    def __init__(self):
+        self._chunks: list[DocumentChunk] = []
+        self._embeddings: Optional[np.ndarray] = None
+        self._chunk_ids: list[str] = []
+
+    @staticmethod
+    def _generate_chunk_id(chunk: DocumentChunk) -> str:
+        """Generate a unique ID for a chunk."""
+        content_hash = hashlib.sha256(
+            f"{chunk.document_name}:{chunk.section}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
+        ).hexdigest()[:16]
+        return f"{chunk.document_name}_{chunk.chunk_index}_{content_hash}"
+
+    def add_chunks(
+        self,
+        chunks: list[DocumentChunk],
+        embeddings: np.ndarray,
+        source: str = "document",
+        session_id: str | None = None,
+        domain_id: str | None = None,
+    ) -> None:
+        """Add chunks with embeddings to in-memory storage."""
+        if len(chunks) == 0:
+            return
+
+        # Set source on chunks
+        for chunk in chunks:
+            chunk.source = source
+
+        # Generate IDs and store chunks
+        new_ids = [self._generate_chunk_id(c) for c in chunks]
+        self._chunks.extend(chunks)
+        self._chunk_ids.extend(new_ids)
+
+        # Stack embeddings
+        if self._embeddings is None:
+            self._embeddings = embeddings.copy()
+        else:
+            self._embeddings = np.vstack([self._embeddings, embeddings])
+
+    def search(
+        self,
+        query_embedding: np.ndarray,
+        limit: int = 5,
+        domain_ids: list[str] | None = None,
+        session_id: str | None = None,
+        query_text: str | None = None,
+    ) -> list[tuple[str, float, DocumentChunk]]:
+        """Search using cosine similarity."""
+        if self._embeddings is None or len(self._chunks) == 0:
+            return []
+
+        # Ensure query is 1D
+        query = query_embedding.flatten()
+
+        # Compute cosine similarity
+        # Normalize vectors
+        query_norm = query / (np.linalg.norm(query) + 1e-10)
+        emb_norms = self._embeddings / (
+            np.linalg.norm(self._embeddings, axis=1, keepdims=True) + 1e-10
+        )
+        similarities = emb_norms @ query_norm
+
+        # Get top-k results
+        top_k = min(limit, len(self._chunks))
+        top_indices = np.argsort(similarities)[::-1][:top_k]
+
+        return [
+            (self._chunk_ids[i], float(similarities[i]), self._chunks[i])
+            for i in top_indices
+        ]
+
+    def clear(self) -> None:
+        self._chunks = []
+        self._embeddings = None
+        self._chunk_ids = []
+
+    def count(self) -> int:
+        return len(self._chunks)
+
+    def get_chunks(self) -> list[DocumentChunk]:
+        return list(self._chunks)
+
+    def get_all_chunk_ids(self, session_id: str | None = None, global_only: bool = False) -> list[str]:
+        """Get all chunk IDs, optionally filtered by session."""
+        return list(self._chunk_ids)
+
+
 class DuckDBVectorStore:
     """Adapter: wraps chonk.storage.Store for core vector operations.
 
@@ -123,7 +251,15 @@ class DuckDBVectorStore:
 
     EMBEDDING_DIM = 1024
 
-    def __init__(self, db_path: str | None = None):
+    def __init__(
+        self,
+        db_path: Optional[str] = None,
+        reranker_model: str | None = None,
+        cluster_min_terms: int = 2,
+        cluster_divisor: int = 5,
+        cluster_max_k: int = 500,
+        store_chunk_text: bool = True,
+    ):
         import os
         from chonk.storage import Store
 
@@ -132,35 +268,248 @@ class DuckDBVectorStore:
         elif os.environ.get("CONSTAT_VECTOR_STORE_PATH"):
             self._db_path = Path(os.environ["CONSTAT_VECTOR_STORE_PATH"])
         else:
-            self._db_path = Path.home() / ".constat" / "vectors.duckdb"
+            from constat.core.paths import migrate_db_name
+            constat_dir = Path.cwd() / ".constat"
+            constat_dir.mkdir(parents=True, exist_ok=True)
+            self._db_path = migrate_db_name(constat_dir, "vectors.duckdb", "system.duckdb")
 
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # chonk Store — owns the DuckDB connection and core embeddings table
-        self._store = Store(str(self._db_path), embedding_dim=self.EMBEDDING_DIM)
+        # Use thread-local connection pool for thread safety
+        from constat.storage.thread_local_duckdb import ThreadLocalDuckDB
+        self._db = ThreadLocalDuckDB(
+            str(self._db_path),
+            init_sql=["INSTALL vss", "LOAD vss", "INSTALL fts", "LOAD fts"],
+        )
+        self._reranker_model = reranker_model
+        self._store_chunk_text = store_chunk_text
+        if reranker_model:
+            from constat.reranker_loader import RerankerModelLoader
+            RerankerModelLoader.get_instance().start_loading(reranker_model)
+        self._init_schema()
 
-        # Extend the shared connection with constat-specific columns and tables
-        self._init_constat_schema()
+        # Build composed store
+        from constat.storage.duckdb_backend import DuckDBVectorBackend
+        from constat.storage.relational import RelationalStore
+        from constat.storage.store import Store
+
+        self._vector = DuckDBVectorBackend(
+            self._db,
+            reranker_model=reranker_model,
+            store_chunk_text=store_chunk_text,
+        )
+        self._relational = RelationalStore(
+            self._db,
+            cluster_min_terms=cluster_min_terms,
+            cluster_divisor=cluster_divisor,
+            cluster_max_k=cluster_max_k,
+        )
+        self._store = Store(
+            relational=self._relational,
+            vector=self._vector,
+        )
+
+    @classmethod
+    def from_split(
+        cls,
+        split_store,
+        domain_tier_fn=None,
+        reranker_model: str | None = None,
+        cluster_min_terms: int = 2,
+        cluster_divisor: int = 5,
+        cluster_max_k: int = 500,
+        store_chunk_text: bool = True,
+    ) -> "DuckDBVectorStore":
+        """Create a DuckDBVectorStore backed by a SplitVectorStore.
+
+        The SplitVectorStore provides the ThreadLocalDuckDB (user DB with
+        system DB ATTACHed as 'sys'). Schema is initialised on the user DB,
+        then UNION views are created so reads span both databases.
+        """
+        from constat.storage.duckdb_backend import DuckDBVectorBackend
+        from constat.storage.relational import RelationalStore
+        from constat.storage.store import Store
+
+        inst = cls.__new__(cls)
+        inst._db = split_store.db
+        inst._db_path = split_store._user_db_path
+        inst._system_db_path = getattr(split_store, '_system_db_path', None)
+        inst._reranker_model = reranker_model
+        inst._store_chunk_text = store_chunk_text
+
+        if reranker_model:
+            from constat.reranker_loader import RerankerModelLoader
+            RerankerModelLoader.get_instance().start_loading(reranker_model)
+
+        # Initialise schema on user DB (main)
+        inst._init_schema()
+
+        # Ensure system DB has all tables (clone empty schema from main)
+        if not split_store.warmup:
+            inst._ensure_sys_tables()
+            split_store._create_union_views()
+
+        split_mode = not split_store.warmup
+
+        inst._vector = DuckDBVectorBackend(
+            inst._db,
+            reranker_model=reranker_model,
+            store_chunk_text=store_chunk_text,
+            split_mode=split_mode,
+            domain_tier_fn=domain_tier_fn,
+        )
+        inst._relational = RelationalStore(
+            inst._db,
+            cluster_min_terms=cluster_min_terms,
+            cluster_divisor=cluster_divisor,
+            cluster_max_k=cluster_max_k,
+            split_mode=split_mode,
+            domain_tier_fn=domain_tier_fn,
+        )
+        inst._store = Store(
+            relational=inst._relational,
+            vector=inst._vector,
+        )
+        return inst
+
+    def _reattach_sys_if_missing(self, conn) -> bool:
+        """Attempt to re-attach the system DB as 'sys' if it's not attached.
+
+        Returns True if sys is attached (or was successfully re-attached).
+        """
+        import os
+        system_db_path = getattr(self, '_system_db_path', None)
+        if not system_db_path or not os.path.exists(str(system_db_path)):
+            return False
+        # Try attaching read-write, fall back to read-only
+        for mode in ("", " (READ_ONLY)"):
+            try:
+                conn.execute(f"ATTACH '{system_db_path}' AS sys{mode}")
+                logger.info(f"_reattach_sys_if_missing: attached sys{mode} from {system_db_path}")
+                return True
+            except Exception as e:
+                err = str(e).lower()
+                if "already attached" in err:
+                    return True
+                if mode == "" and ("conflict" in err or "lock" in err or "read" in err):
+                    continue  # try read-only
+                logger.warning(f"_reattach_sys_if_missing: attach{mode} failed: {e}")
+                return False
+        return False
+
+    def _ensure_sys_tables(self) -> None:
+        """Ensure all SPLIT_TABLES exist in the sys (attached system) schema.
+
+        Clones empty table structure from main for any missing tables.
+        Skips creation for read-only sys databases (tables must already exist
+        from warmup).
+        """
+        from constat.storage.split_store import SPLIT_TABLES
+        conn = self._conn
+
+        for table in SPLIT_TABLES:
+            try:
+                conn.execute(f"SELECT 1 FROM sys.{table} LIMIT 0")
+            except Exception as sel_err:
+                if "sys" in str(sel_err).lower() and "does not exist" in str(sel_err).lower():
+                    # sys schema missing — try re-attaching before giving up
+                    if self._reattach_sys_if_missing(conn):
+                        try:
+                            conn.execute(f"SELECT 1 FROM sys.{table} LIMIT 0")
+                            continue  # table exists in sys
+                        except Exception:
+                            pass  # fall through to CREATE TABLE
+                try:
+                    conn.execute(
+                        f"CREATE TABLE sys.{table} AS SELECT * FROM main.{table} WHERE false"
+                    )
+                except Exception as e:
+                    if "read only" in str(e).lower() or "read-only" in str(e).lower():
+                        logger.warning(f"Cannot create sys.{table}: system DB is read-only")
+                    else:
+                        raise
 
     @property
     def _conn(self):
         """Direct DuckDB connection access for raw SQL."""
         return self._store.vector._conn
 
-    def _init_constat_schema(self) -> None:
-        """Add constat-specific columns and tables to the shared DuckDB."""
-        conn = self._conn
+    @property
+    def _fts_dirty(self):
+        return self._vector._fts_dirty
 
-        # Add constat-specific columns to chonk's embeddings table (nullable only)
-        # Note: chonk's DDL already creates the `namespace` column
-        for col in ("source", "session_id"):
-            try:
-                conn.execute(f"ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS {col} VARCHAR")
-            except Exception as e:
-                logger.debug(f"Column {col} add skipped: {e}")
+    @_fts_dirty.setter
+    def _fts_dirty(self, value):
+        self._vector._fts_dirty = value
 
-        # source_hashes — config hashes per source (one row per source_id)
-        conn.execute("""
+    @property
+    def _clusters_dirty(self):
+        return self._relational._clusters_dirty
+
+    @_clusters_dirty.setter
+    def _clusters_dirty(self, value):
+        self._relational._clusters_dirty = value
+
+    # ------------------------------------------------------------------
+    # Schema init (stays in DuckDBVectorStore for Phase 1)
+    # ------------------------------------------------------------------
+
+    def _init_schema(self) -> None:
+        """Initialize database schema if not exists."""
+        try:
+            self._conn.execute("CHECKPOINT")
+        except Exception:
+            pass
+
+        self._conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS embeddings (
+                chunk_id VARCHAR PRIMARY KEY,
+                document_name VARCHAR NOT NULL,
+                source VARCHAR NOT NULL DEFAULT 'document',
+                chunk_type VARCHAR NOT NULL DEFAULT 'document',
+                section VARCHAR,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                embedding FLOAT[{self.EMBEDDING_DIM}] NOT NULL,
+                session_id VARCHAR,
+                domain_id VARCHAR,
+                entity_class VARCHAR DEFAULT 'mixed',
+                source_offset INTEGER,
+                source_length INTEGER
+            )
+        """)
+
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS entities (
+                id VARCHAR PRIMARY KEY,
+                name VARCHAR NOT NULL,
+                display_name VARCHAR NOT NULL,
+                semantic_type VARCHAR NOT NULL,
+                ner_type VARCHAR,
+                session_id VARCHAR NOT NULL,
+                domain_id VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                entity_class VARCHAR DEFAULT 'metadata'
+            )
+        """)
+
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS chunk_entities (
+                chunk_id VARCHAR NOT NULL,
+                entity_id VARCHAR NOT NULL,
+                confidence FLOAT DEFAULT 1.0,
+                PRIMARY KEY (chunk_id, entity_id)
+            )
+        """)
+
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS document_urls (
+                document_name VARCHAR PRIMARY KEY,
+                source_url VARCHAR NOT NULL
+            )
+        """)
+
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS source_hashes (
                 source_id VARCHAR PRIMARY KEY,
                 db_hash VARCHAR,
@@ -170,8 +519,7 @@ class DuckDBVectorStore:
             )
         """)
 
-        # resource_hashes — fine-grained cache invalidation
-        conn.execute("""
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS resource_hashes (
                 resource_id VARCHAR PRIMARY KEY,
                 resource_type VARCHAR NOT NULL,
@@ -182,657 +530,590 @@ class DuckDBVectorStore:
             )
         """)
 
-        # Constat-specific entity tables (extend chonk's entities table concept
-        # with session_id / project_id scoping)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS session_entities (
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS glossary_terms (
                 id VARCHAR PRIMARY KEY,
                 name VARCHAR NOT NULL,
                 display_name VARCHAR NOT NULL,
-                semantic_type VARCHAR NOT NULL,
-                ner_type VARCHAR,
+                definition TEXT NOT NULL,
+                domain VARCHAR,
+                parent_id VARCHAR,
+                parent_verb VARCHAR DEFAULT 'HAS_KIND',
+                aliases TEXT,
+                semantic_type VARCHAR,
+                cardinality VARCHAR DEFAULT 'many',
+                plural VARCHAR,
+                tags TEXT,
+                owner VARCHAR,
+                status VARCHAR DEFAULT 'draft',
+                provenance VARCHAR DEFAULT 'llm',
                 session_id VARCHAR NOT NULL,
-                project_id VARCHAR,
+                user_id VARCHAR NOT NULL DEFAULT 'default',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ignored BOOLEAN DEFAULT FALSE,
+                canonical_source VARCHAR
+            )
+        """)
+
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS entity_resolution_names (
+                source_id VARCHAR NOT NULL,
+                entity_type VARCHAR NOT NULL,
+                names TEXT NOT NULL,
+                PRIMARY KEY (source_id, entity_type)
+            )
+        """)
+
+        # Schema evolution — add columns missing from older databases
+        _alter_stmts = [
+            "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT 'default'",
+            "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS ignored BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS canonical_source VARCHAR",
+            "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS parent_verb VARCHAR DEFAULT 'HAS_KIND'",
+            "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'mixed'",
+            "ALTER TABLE entities ADD COLUMN IF NOT EXISTS entity_class VARCHAR DEFAULT 'metadata'",
+            "ALTER TABLE source_hashes ADD COLUMN IF NOT EXISTS er_hash VARCHAR",
+            "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS data_source_id VARCHAR",
+            "ALTER TABLE entity_relationships ADD COLUMN IF NOT EXISTS user_edited BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE entity_relationships ADD COLUMN IF NOT EXISTS domain VARCHAR",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_name_domain_user ON glossary_terms(name, domain, user_id)",
+        ]
+        schema_changed = False
+        for stmt in _alter_stmts:
+            try:
+                self._conn.execute(stmt)
+                schema_changed = True
+            except Exception:
+                pass
+
+        # Drop legacy columns
+        for col in ("list_of",):
+            try:
+                self._conn.execute(f"ALTER TABLE glossary_terms DROP COLUMN IF EXISTS {col}")
+                schema_changed = True
+            except Exception:
+                pass
+
+        # Invalidate column cache so RelationalStore re-probes
+        if schema_changed:
+            from constat.storage.relational import RelationalStore
+            RelationalStore._glossary_columns_cache = None
+            RelationalStore._glossary_columns_list_cache = None
+
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS data_sources (
+                id VARCHAR PRIMARY KEY,
+                name VARCHAR NOT NULL,
+                type VARCHAR NOT NULL,
+                domain_id VARCHAR NOT NULL,
+                session_id VARCHAR,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS session_chunk_entities (
-                chunk_id VARCHAR NOT NULL,
-                entity_id VARCHAR NOT NULL,
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS entity_relationships (
+                id VARCHAR PRIMARY KEY,
+                subject_name VARCHAR NOT NULL,
+                verb VARCHAR NOT NULL,
+                object_name VARCHAR NOT NULL,
+                sentence TEXT,
                 confidence FLOAT DEFAULT 1.0,
-                PRIMARY KEY (chunk_id, entity_id)
+                verb_category VARCHAR DEFAULT 'other',
+                session_id VARCHAR,
+                user_edited BOOLEAN DEFAULT FALSE,
+                domain VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(subject_name, verb, object_name, session_id)
             )
         """)
 
-        # Indexes
-        for ddl in [
-            "CREATE INDEX IF NOT EXISTS idx_embeddings_session ON embeddings(session_id)",
-            "CREATE INDEX IF NOT EXISTS idx_embeddings_namespace ON embeddings(namespace)",
-            "CREATE INDEX IF NOT EXISTS idx_sess_entities_session ON session_entities(session_id)",
-            "CREATE INDEX IF NOT EXISTS idx_sess_chunk_ent ON session_chunk_entities(entity_id)",
-        ]:
-            try:
-                conn.execute(ddl)
-            except Exception as e:
-                logger.debug(f"Index creation skipped: {e}")
-
-    # =========================================================================
-    # Core vector operations
-    # =========================================================================
-
-    def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
-        content_hash = hashlib.sha256(
-            f"{chunk.document_name}:{(" > ".join(chunk.section) if chunk.section else "")}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
-        ).hexdigest()[:16]
-        return f"{chunk.document_name}_{chunk.chunk_index}_{content_hash}"
-
-    def add_chunks(self, chunks, embeddings, source="document",
-                   session_id=None, namespace=None, project_id=None) -> None:
-        if project_id is not None and namespace is None:
-            namespace = project_id
-        if source not in ("schema", "api", "document"):
-            raise ValueError(f"source must be 'schema', 'api', or 'document', got: {source}")
-        if len(chunks) == 0:
-            return
-
-        # Skip documents already indexed
-        doc_names = set(c.document_name for c in chunks)
-        existing_docs: set[str] = set()
-        for doc_name in doc_names:
-            count = self._conn.execute(
-                "SELECT COUNT(*) FROM embeddings WHERE document_name = ?",
-                [doc_name],
-            ).fetchone()[0]
-            if count > 0:
-                existing_docs.add(doc_name)
-
-        new_chunks = [c for c in chunks if c.document_name not in existing_docs]
-        if not new_chunks:
-            return
-
-        records = []
-        for chunk in new_chunks:
-            chunk_id = self._generate_chunk_id(chunk)
-            original_idx = chunks.index(chunk)
-            embedding = embeddings[original_idx].tolist()
-            chunk_type_str = (
-                chunk.chunk_type.value
-                if hasattr(chunk.chunk_type, 'value')
-                else str(chunk.chunk_type)
-            )
-            records.append((
-                chunk_id,
-                chunk.document_name,
-                " > ".join(chunk.section) if chunk.section else None,
-                chunk.chunk_index,
-                chunk.content,
-                chunk_type_str,
-                source,
-                session_id,
-                namespace,
-                embedding,
-            ))
-
-        self._conn.executemany(
-            """
-            INSERT INTO embeddings
-                (chunk_id, document_name, section, chunk_index, content,
-                 chunk_type, source, session_id, namespace, embedding)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT DO NOTHING
-            """,
-            records,
-        )
-
-    def search(self, query_embedding, limit=5, namespaces=None, session_id=None,
-               query_text=None) -> list:
-        from chonk import EnhancedSearch
-
-        # Build effective namespace list: always include __base__; None means all
-        if namespaces:
-            effective_ns = list({*namespaces, "__base__"})
-        else:
-            effective_ns = None
-
-        # Proxy that injects namespace filtering into every Store.search() call
-        # made internally by EnhancedSearch (structural/entity/cluster expansions)
-        store = self._store
-        effective_ns_capture = effective_ns
-
-        class _NSProxy(store.__class__):  # type: ignore[misc]
-            def __init__(self):
-                pass  # skip Store.__init__; all state lives in outer `store`
-            def search(self, query_embedding, limit=5, query_text=None, **kw):
-                return store.search(query_embedding, limit=limit, query_text=query_text,  # type: ignore[call-arg]
-                                    namespaces=effective_ns_capture, **kw)
-            def __getattr__(self, name):
-                return getattr(store, name)
-
-        enhanced = EnhancedSearch(_NSProxy())
-        scored = enhanced.search(query_embedding.flatten(), k=limit, query_text=query_text)
-        return [(sc.chunk_id, sc.score, sc.chunk) for sc in scored]
-
-    def search_enriched(self, query_embedding, limit=5, namespaces=None,
-                        session_id=None, project_ids=None) -> list:
-        effective_namespaces = namespaces or project_ids
-        results = self.search(query_embedding, limit=limit, namespaces=effective_namespaces,
-                              session_id=session_id)
-        return [EnrichedChunk(chunk=chunk, score=score) for _, score, chunk in results]
-
-    def delete_by_document(self, document_name: str) -> int:
-        count_before = self._conn.execute(
-            "SELECT COUNT(*) FROM embeddings WHERE document_name = ?",
-            [document_name],
-        ).fetchone()[0]
-        self._conn.execute(
-            "DELETE FROM embeddings WHERE document_name = ?",
-            [document_name],
-        )
-        return count_before
-
-    def count(self) -> int:
-        result = self._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
-        return result[0] if result else 0
-
-    def clear(self) -> None:
-        self._conn.execute("DELETE FROM embeddings")
-
-    def get_chunks(self) -> list[DocumentChunk]:
-        result = self._conn.execute(
-            "SELECT document_name, content, section, chunk_index FROM embeddings"
-        ).fetchall()
-        return [
-            DocumentChunk(
-                document_name=row[0],
-                content=row[1],
-                section=row[2],
-                chunk_index=row[3],
-            )
-            for row in result
-        ]
-
-    def clear_chunks(self, source: str) -> None:
-        if source not in ("schema", "api", "document"):
-            raise ValueError(f"source must be 'schema', 'api', or 'document', got: {source}")
-        self._conn.execute("DELETE FROM embeddings WHERE source = ?", [source])
-
-    def delete_document(self, document_name: str, session_id: str | None = None) -> int:
-        if session_id:
-            chunk_ids = self._conn.execute(
-                "SELECT chunk_id FROM embeddings WHERE document_name = ? AND session_id = ?",
-                [document_name, session_id]
-            ).fetchall()
-        else:
-            chunk_ids = self._conn.execute(
-                "SELECT chunk_id FROM embeddings WHERE document_name = ?",
-                [document_name]
-            ).fetchall()
-        chunk_ids = [row[0] for row in chunk_ids]
-        if not chunk_ids:
-            return 0
-        placeholders = ",".join(["?" for _ in chunk_ids])
-        self._conn.execute(
-            f"DELETE FROM session_chunk_entities WHERE chunk_id IN ({placeholders})",
-            chunk_ids
-        )
-        if session_id:
-            self._conn.execute(
-                "DELETE FROM embeddings WHERE document_name = ? AND session_id = ?",
-                [document_name, session_id]
-            )
-        else:
-            self._conn.execute(
-                "DELETE FROM embeddings WHERE document_name = ?",
-                [document_name]
-            )
-        return len(chunk_ids)
-
-    # =========================================================================
-    # Entity methods (session-scoped NER entities)
-    # =========================================================================
-
-    def add_entities(self, entities, session_id=None) -> None:
-        if not entities:
-            return
-        seen_ids: set = set()
-        records = []
-        for entity in entities:
-            if entity.id not in seen_ids:
-                seen_ids.add(entity.id)
-                records.append((
-                    entity.id,
-                    entity.name,
-                    entity.display_name,
-                    entity.semantic_type,
-                    entity.ner_type,
-                    session_id or entity.session_id,
-                    entity.project_id,
-                    entity.created_at,
-                ))
-        conn = self._conn
-        for record in records:
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO session_entities
-                        (id, name, display_name, semantic_type, ner_type,
-                         session_id, project_id, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    record,
-                )
-            except Exception:
-                pass
-
-    def link_chunk_entities(self, links) -> None:
-        if not links:
-            return
-        seen: set = set()
-        unique_records = []
-        for link in links:
-            key = (link.chunk_id, link.entity_id)
-            if key not in seen:
-                seen.add(key)
-                unique_records.append((link.chunk_id, link.entity_id, link.confidence))
-        conn = self._conn
-        for record in unique_records:
-            try:
-                conn.execute(
-                    "INSERT INTO session_chunk_entities (chunk_id, entity_id, confidence) VALUES (?, ?, ?)",
-                    record,
-                )
-            except Exception:
-                pass
-
-    def get_entities_for_chunk(self, chunk_id, session_id=None):
-        result = self._conn.execute(
-            """
-            SELECT e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
-                   e.session_id, e.project_id, e.created_at
-            FROM session_entities e
-            JOIN session_chunk_entities ce ON e.id = ce.entity_id
-            WHERE ce.chunk_id = ?
-            """ + (" AND e.session_id = ?" if session_id else ""),
-            [chunk_id] + ([session_id] if session_id else []),
-        ).fetchall()
-        entities = []
-        for row in result:
-            entity_id, name, display_name, semantic_type, ner_type, sess_id, proj_id, created_at = row
-            entities.append(Entity(
-                id=entity_id,
-                name=name,
-                display_name=display_name,
-                semantic_type=semantic_type,
-                ner_type=ner_type,
-                session_id=sess_id,
-                project_id=proj_id,
-                created_at=created_at,
-            ))
-        return entities
-
-    def get_chunks_for_entity(self, entity_id, limit=10, project_ids=None,
-                               session_id=None):
-        return []
-
-    def find_entity_by_name(self, name, project_ids=None, session_id=None):
-        conditions = ["LOWER(e.name) = LOWER(?)"]
-        params: list = [name]
-
-        if session_id:
-            conditions.append("e.session_id = ?")
-            params.append(session_id)
-
-        if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            conditions.append(f"e.project_id IN ({placeholders})")
-            params.extend(project_ids)
-
-        where_clause = " AND ".join(conditions)
-        result = self._conn.execute(
-            f"""
-            SELECT e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
-                   e.session_id, e.project_id, e.created_at
-            FROM session_entities e
-            WHERE {where_clause}
-            LIMIT 1
-            """,
-            params,
-        ).fetchone()
-
-        if not result:
-            return None
-
-        entity_id, ename, display_name, semantic_type, ner_type, sess_id, proj_id, created_at = result
-        return Entity(
-            id=entity_id,
-            name=ename,
-            display_name=display_name,
-            semantic_type=semantic_type,
-            ner_type=ner_type,
-            session_id=sess_id,
-            project_id=proj_id,
-            created_at=created_at,
-        )
-
-    def clear_entities(self, source=None) -> None:
-        self._conn.execute("DELETE FROM session_chunk_entities")
-        self._conn.execute("DELETE FROM session_entities")
-
-    def clear_chunk_entity_links(self, session_id=None) -> None:
-        if session_id:
-            self._conn.execute(
-                "DELETE FROM session_chunk_entities WHERE entity_id IN "
-                "(SELECT id FROM session_entities WHERE session_id = ?)",
-                [session_id],
-            )
-        else:
-            self._conn.execute("DELETE FROM session_chunk_entities")
-
-    def clear_session_data(self, session_id) -> None:
-        self._conn.execute(
-            "DELETE FROM session_chunk_entities WHERE entity_id IN "
-            "(SELECT id FROM session_entities WHERE session_id = ?)",
-            [session_id],
-        )
-        self._conn.execute("DELETE FROM session_entities WHERE session_id = ?", [session_id])
-        self._conn.execute("DELETE FROM embeddings WHERE session_id = ?", [session_id])
-
-    def clear_session_entities(self, session_id) -> tuple:
-        link_count = self._conn.execute(
-            "SELECT COUNT(*) FROM session_chunk_entities WHERE entity_id IN "
-            "(SELECT id FROM session_entities WHERE session_id = ?)",
-            [session_id],
-        ).fetchone()[0]
-        entity_count = self._conn.execute(
-            "SELECT COUNT(*) FROM session_entities WHERE session_id = ?",
-            [session_id],
-        ).fetchone()[0]
-        self._conn.execute(
-            "DELETE FROM session_chunk_entities WHERE entity_id IN "
-            "(SELECT id FROM session_entities WHERE session_id = ?)",
-            [session_id],
-        )
-        self._conn.execute("DELETE FROM session_entities WHERE session_id = ?", [session_id])
-        return link_count, entity_count
-
-    # =========================================================================
-    # Source and resource hashing
-    # =========================================================================
-
-    def get_source_hash(self, source_id: str, hash_type: str) -> str | None:
-        if hash_type not in ('db', 'api', 'doc'):
-            raise ValueError(f"Invalid hash_type: {hash_type}")
-        column = f"{hash_type}_hash"
-        result = self._conn.execute(
-            f"SELECT {column} FROM source_hashes WHERE source_id = ?",
-            [source_id],
-        ).fetchone()
-        return result[0] if result else None
-
-    def set_source_hash(self, source_id: str, hash_type: str, config_hash: str) -> None:
-        if hash_type not in ('db', 'api', 'doc'):
-            raise ValueError(f"Invalid hash_type: {hash_type}")
-        column = f"{hash_type}_hash"
-        self._conn.execute(
-            "INSERT INTO source_hashes (source_id) VALUES (?) ON CONFLICT (source_id) DO NOTHING",
-            [source_id],
-        )
-        self._conn.execute(
-            f"UPDATE source_hashes SET {column} = ?, updated_at = CURRENT_TIMESTAMP WHERE source_id = ?",
-            [config_hash, source_id],
-        )
-
-    def get_project_config_hash(self, project_id: str) -> str | None:
-        return self.get_source_hash(project_id, 'doc')
-
-    def set_project_config_hash(self, project_id: str, config_hash: str) -> None:
-        self.set_source_hash(project_id, 'doc', config_hash)
-
-    def _make_resource_id(self, source_id: str, resource_type: str, resource_name: str) -> str:
-        return f"{source_id}:{resource_type}:{resource_name}"
-
-    def get_resource_hash(self, source_id: str, resource_type: str,
-                          resource_name: str) -> str | None:
-        resource_id = self._make_resource_id(source_id, resource_type, resource_name)
-        result = self._conn.execute(
-            "SELECT content_hash FROM resource_hashes WHERE resource_id = ?",
-            [resource_id],
-        ).fetchone()
-        return result[0] if result else None
-
-    def set_resource_hash(self, source_id: str, resource_type: str, resource_name: str,
-                          content_hash: str) -> None:
-        resource_id = self._make_resource_id(source_id, resource_type, resource_name)
         self._conn.execute("""
-            INSERT INTO resource_hashes (resource_id, resource_type, resource_name, source_id, content_hash)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (resource_id) DO UPDATE SET content_hash = excluded.content_hash
-        """, [resource_id, resource_type, resource_name, source_id, content_hash])
-        self._conn.execute(
-            "UPDATE resource_hashes SET updated_at = CURRENT_TIMESTAMP WHERE resource_id = ?",
-            [resource_id],
-        )
+            CREATE VIEW IF NOT EXISTS unified_glossary AS
+            SELECT
+                e.id AS entity_id,
+                e.name,
+                COALESCE(g.display_name, e.display_name) AS display_name,
+                e.semantic_type,
+                e.ner_type,
+                e.session_id,
+                g.id AS glossary_id,
+                g.domain,
+                g.definition,
+                g.parent_id,
+                g.parent_verb,
+                g.aliases,
+                g.cardinality,
+                g.plural,
+                g.status,
+                g.provenance,
+                CASE
+                    WHEN g.id IS NOT NULL THEN 'defined'
+                    ELSE 'self_describing'
+                END AS glossary_status
+            FROM entities e
+            LEFT JOIN glossary_terms g
+                ON e.name = g.name
+                AND e.session_id = g.session_id
+        """)
 
-    def delete_resource_hash(self, source_id: str, resource_type: str,
-                             resource_name: str) -> bool:
-        resource_id = self._make_resource_id(source_id, resource_type, resource_name)
+        self._conn.execute("""
+            CREATE VIEW IF NOT EXISTS deprecated_glossary AS
+            SELECT g.*
+            FROM glossary_terms g
+            LEFT JOIN entities e
+                ON g.name = e.name
+                AND g.session_id = e.session_id
+            WHERE e.id IS NULL
+        """)
+
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chunk_entities_entity ON chunk_entities(entity_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_session ON embeddings(session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entities_session ON entities(session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_glossary_name ON glossary_terms(name)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_glossary_domain ON glossary_terms(domain)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_glossary_parent ON glossary_terms(parent_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_glossary_session ON glossary_terms(session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_glossary_status ON glossary_terms(status)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rel_subject ON entity_relationships(subject_name)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rel_object ON entity_relationships(object_name)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rel_verb ON entity_relationships(verb)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rel_session ON entity_relationships(session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_data_source ON embeddings(data_source_id)"
+            )
+        except Exception as e:
+            logger.debug(f"Index creation skipped: {e}")
+
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS glossary_clusters (
+                term_name VARCHAR NOT NULL,
+                cluster_id INTEGER NOT NULL,
+                session_id VARCHAR NOT NULL,
+                PRIMARY KEY (term_name, session_id)
+            )
+        """)
+
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS proven_grounding (
+                entity_name TEXT NOT NULL,
+                source_pattern TEXT NOT NULL,
+                PRIMARY KEY (entity_name, source_pattern)
+            )
+        """)
+
+    # ------------------------------------------------------------------
+    # Data source normalization
+    # ------------------------------------------------------------------
+
+    def ensure_data_source(
+        self, name: str, source_type: str, domain_id: str, session_id: str = ""
+    ) -> str:
+        """Ensure a data source row exists, return its ID."""
+        source_id = f"ds_{hashlib.sha256(f'{name}:{source_type}'.encode()).hexdigest()[:12]}"
+        self._conn.execute(
+            "INSERT OR IGNORE INTO data_sources (id, name, type, domain_id, session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [source_id, name, source_type, domain_id, session_id],
+        )
+        return source_id
+
+    def get_domain_for_chunk(self, chunk_id: str) -> str | None:
+        """Get domain for a chunk via data_sources join."""
         result = self._conn.execute(
-            "DELETE FROM resource_hashes WHERE resource_id = ? RETURNING resource_id",
-            [resource_id],
+            "SELECT ds.domain_id FROM embeddings e "
+            "JOIN data_sources ds ON e.data_source_id = ds.id "
+            "WHERE e.chunk_id = ?",
+            [chunk_id],
         ).fetchone()
-        return result is not None
+        return result[0] if result else None
 
-    def get_resource_hashes_for_source(self, source_id: str,
-                                        resource_type: str | None = None) -> dict:
-        if resource_type:
-            result = self._conn.execute(
-                "SELECT resource_name, content_hash FROM resource_hashes "
-                "WHERE source_id = ? AND resource_type = ?",
-                [source_id, resource_type],
-            ).fetchall()
-        else:
-            result = self._conn.execute(
-                "SELECT resource_name, content_hash FROM resource_hashes WHERE source_id = ?",
-                [source_id],
-            ).fetchall()
-        return {row[0]: row[1] for row in result}
+    # ------------------------------------------------------------------
+    # Vector operations — delegate to DuckDBVectorBackend
+    # ------------------------------------------------------------------
 
-    def clear_resource_hashes_for_source(self, source_id: str) -> int:
-        result = self._conn.execute(
-            "DELETE FROM resource_hashes WHERE source_id = ? RETURNING resource_id",
-            [source_id],
-        ).fetchall()
-        return len(result)
+    def add_chunks(self, *a, **kw):
+        return self._vector.add_chunks(*a, **kw)
 
-    def delete_resource_chunks(self, source_id: str, resource_type: str,
-                               resource_name: str) -> int:
-        source_map = {'database': 'schema', 'api': 'api', 'document': 'document'}
-        source_type = source_map.get(resource_type, resource_type)
+    def search(self, *a, **kw):
+        return self._vector.search(*a, **kw)
 
-        if source_id == '__base__':
-            chunk_ids = self._conn.execute(
-                """
-                SELECT chunk_id FROM embeddings
-                WHERE document_name = ? AND source = ?
-                AND (namespace IS NULL OR namespace = '__base__')
-                """,
-                [resource_name, source_type],
-            ).fetchall()
-        else:
-            chunk_ids = self._conn.execute(
-                """
-                SELECT chunk_id FROM embeddings
-                WHERE document_name = ? AND source = ? AND namespace = ?
-                """,
-                [resource_name, source_type, source_id],
-            ).fetchall()
+    def search_by_source(self, *a, **kw):
+        return self._vector.search_by_source(*a, **kw)
 
-        chunk_ids = [row[0] for row in chunk_ids]
-        if not chunk_ids:
-            return 0
+    def search_by_document(self, *a, **kw):
+        return self._vector.search_by_document(*a, **kw)
 
-        placeholders = ",".join(["?" for _ in chunk_ids])
-        self._conn.execute(
-            f"DELETE FROM session_chunk_entities WHERE chunk_id IN ({placeholders})",
-            chunk_ids,
-        )
+    def delete_by_document(self, *a, **kw):
+        return self._vector.delete_by_document(*a, **kw)
 
-        if source_id == '__base__':
-            self._conn.execute(
-                """
-                DELETE FROM embeddings
-                WHERE document_name = ? AND source = ?
-                AND (namespace IS NULL OR namespace = '__base__')
-                """,
-                [resource_name, source_type],
-            )
-        else:
-            self._conn.execute(
-                """
-                DELETE FROM embeddings
-                WHERE document_name = ? AND source = ? AND namespace = ?
-                """,
-                [resource_name, source_type, source_id],
-            )
+    def get_chunks(self, *a, **kw):
+        return self._vector.get_chunks(*a, **kw)
 
-        return len(chunk_ids)
+    def get_all_chunk_ids(self, *a, **kw):
+        return self._vector.get_all_chunk_ids(*a, **kw)
 
-    def clear_namespace_embeddings(self, namespace: str) -> int:
-        chunk_ids = self._conn.execute(
-            "SELECT chunk_id FROM embeddings WHERE namespace = ?",
-            [namespace]
-        ).fetchall()
-        chunk_ids = [row[0] for row in chunk_ids]
-        if chunk_ids:
-            placeholders = ",".join(["?" for _ in chunk_ids])
-            self._conn.execute(
-                f"DELETE FROM session_chunk_entities WHERE chunk_id IN ({placeholders})",
-                chunk_ids,
-            )
-        self._conn.execute("DELETE FROM embeddings WHERE namespace = ?", [namespace])
-        return len(chunk_ids)
+    def get_all_chunks(self, *a, **kw):
+        return self._vector.get_all_chunks(*a, **kw)
 
-    def get_all_chunks(self, namespaces: list[str] | None = None) -> list[DocumentChunk]:
-        conditions = ["namespace IS NULL"]
-        params: list = []
-        if namespaces:
-            placeholders = ",".join(["?" for _ in namespaces])
-            conditions.append(f"namespace IN ({placeholders})")
-            params.extend(namespaces)
-        where_clause = " OR ".join(conditions)
-        result = self._conn.execute(
-            f"""
-            SELECT document_name, content, section, chunk_index, source, chunk_type
-            FROM embeddings WHERE {where_clause}
-            ORDER BY document_name, chunk_index
-            """,
-            params,
-        ).fetchall()
-        chunks = []
-        for row in result:
-            doc_name, content, section, chunk_idx, source, chunk_type_str = row
-            chunks.append(DocumentChunk(
-                document_name=doc_name,
-                content=content,
-                section=section.split(" > ") if section else [],
-                chunk_index=chunk_idx,
-                source=source or "document",
-                chunk_type=chunk_type_str or "document",
-            ))
-        return chunks
+    def get_domain_chunks(self, *a, **kw):
+        return self._vector.get_domain_chunks(*a, **kw)
 
-    def get_project_chunks(self, namespace: str) -> list[DocumentChunk]:
-        result = self._conn.execute(
-            """
-            SELECT document_name, content, section, chunk_index, source, chunk_type
-            FROM embeddings WHERE namespace = ?
-            ORDER BY document_name, chunk_index
-            """,
-            [namespace],
-        ).fetchall()
-        chunks = []
-        for row in result:
-            doc_name, content, section, chunk_idx, source, chunk_type_str = row
-            chunks.append(DocumentChunk(
-                document_name=doc_name,
-                content=content,
-                section=section.split(" > ") if section else [],
-                chunk_index=chunk_idx,
-                source=source or "document",
-                chunk_type=chunk_type_str or "document",
-            ))
-        return chunks
+    def clear(self, *a, **kw):
+        return self._vector.clear(*a, **kw)
 
-    def extract_entities_for_session(self, session_id: str, namespaces=None,
-                                      schema_terms=None, api_terms=None,
-                                      business_terms=None) -> int:
-        self.clear_session_entities(session_id)
-        chunks = self.get_all_chunks(namespaces)
-        if not chunks:
-            return 0
-        return _run_entity_extraction(
-            chunks=chunks,
-            session_id=session_id,
-            project_id=None,
-            schema_terms=schema_terms,
-            api_terms=api_terms,
-            business_terms=business_terms,
-            add_entities_fn=lambda ents: self.add_entities(ents, session_id),
-            link_fn=self.link_chunk_entities,
-        )
+    def clear_chunks(self, *a, **kw):
+        return self._vector.clear_chunks(*a, **kw)
 
-    def extract_entities_for_project(self, session_id: str, project_id: str,
-                                      schema_terms=None, api_terms=None,
-                                      business_terms=None) -> int:
-        chunks = self.get_project_chunks(project_id)
-        if not chunks:
-            return 0
-        return _run_entity_extraction(
-            chunks=chunks,
-            session_id=session_id,
-            project_id=project_id,
-            schema_terms=schema_terms,
-            api_terms=api_terms,
-            business_terms=business_terms,
-            add_entities_fn=lambda ents: self.add_entities(ents, session_id),
-            link_fn=self.link_chunk_entities,
-        )
+    def clear_domain_embeddings(self, *a, **kw):
+        return self._vector.clear_domain_embeddings(*a, **kw)
 
-    def get_entity_names(self, session_id: str) -> list[str]:
-        result = self._conn.execute(
-            "SELECT DISTINCT name FROM session_entities WHERE session_id = ?",
-            [session_id],
-        ).fetchall()
-        return [row[0] for row in result]
+    def delete_by_source(self, *a, **kw):
+        return self._vector.delete_by_source(*a, **kw)
 
-    def count_entities(self) -> int:
-        result = self._conn.execute("SELECT COUNT(*) FROM session_entities").fetchone()
-        return result[0] if result else 0
+    def count(self, *a, **kw):
+        return self._vector.count(*a, **kw)
 
-    def clear_project_session_entities(self, session_id: str, project_id: str) -> int:
-        result = self._conn.execute(
-            "SELECT id FROM session_entities WHERE session_id = ? AND project_id = ?",
-            [session_id, project_id]
-        ).fetchall()
-        entity_ids = [row[0] for row in result]
-        if not entity_ids:
-            return 0
-        placeholders = ",".join(["?" for _ in entity_ids])
-        self._conn.execute(
-            f"DELETE FROM session_chunk_entities WHERE entity_id IN ({placeholders})",
-            entity_ids,
-        )
-        self._conn.execute(
-            "DELETE FROM session_entities WHERE session_id = ? AND project_id = ?",
-            [session_id, project_id],
-        )
-        return len(entity_ids)
+    def store_document_url(self, *a, **kw):
+        return self._vector.store_document_url(*a, **kw)
 
-    # =========================================================================
-    # Document hash wrappers (chonk documents table, namespace-scoped)
-    # =========================================================================
+    def get_document_url(self, *a, **kw):
+        return self._vector.get_document_url(*a, **kw)
+
+    @staticmethod
+    def chunk_visibility_filter(domain_ids=None, alias=""):
+        from constat.storage.duckdb_backend import DuckDBVectorBackend
+        return DuckDBVectorBackend.chunk_visibility_filter(domain_ids, alias)
+
+    @staticmethod
+    def embeddings_domain_join_filter(domain_ids=None, alias=""):
+        from constat.storage.duckdb_backend import DuckDBVectorBackend
+        return DuckDBVectorBackend.embeddings_domain_join_filter(domain_ids, alias)
+
+    @staticmethod
+    def _rows_to_chunks(rows):
+        from constat.storage.duckdb_backend import DuckDBVectorBackend
+        return DuckDBVectorBackend._rows_to_chunks(rows)
+
+    @staticmethod
+    def _generate_chunk_id(chunk):
+        from constat.storage.duckdb_backend import DuckDBVectorBackend
+        return DuckDBVectorBackend._generate_chunk_id(chunk)
+
+    def _rebuild_fts_index(self):
+        return self._vector._rebuild_fts_index()
+
+    def _bm25_search(self, *a, **kw):
+        return self._vector._bm25_search(*a, **kw)
+
+    @staticmethod
+    def _rrf_merge(*a, **kw):
+        from constat.storage.duckdb_backend import DuckDBVectorBackend
+        return DuckDBVectorBackend._rrf_merge(*a, **kw)
+
+    def _rerank(self, *a, **kw):
+        return self._vector._rerank(*a, **kw)
+
+    # ------------------------------------------------------------------
+    # Relational operations — delegate to RelationalStore
+    # ------------------------------------------------------------------
+
+    def add_entities(self, *a, **kw):
+        return self._relational.add_entities(*a, **kw)
+
+    def find_entity_by_name(self, *a, **kw):
+        return self._relational.find_entity_by_name(*a, **kw)
+
+    def get_entity_by_id(self, *a, **kw):
+        return self._relational.get_entity_by_id(*a, **kw)
+
+    def clear_entities(self, *a, **kw):
+        return self._relational.clear_entities(*a, **kw)
+
+    def count_entities(self, *a, **kw):
+        return self._relational.count_entities(*a, **kw)
+
+    def clear_session_entities(self, *a, **kw):
+        return self._relational.clear_session_entities(*a, **kw)
+
+    def clear_domain_session_entities(self, *a, **kw):
+        return self._relational.clear_domain_session_entities(*a, **kw)
+
+    def get_entity_ids_for_session(self, *a, **kw):
+        return self._relational.get_entity_ids_for_session(*a, **kw)
+
+    def remove_entities_by_ids(self, *a, **kw):
+        return self._relational.remove_entities_by_ids(*a, **kw)
+
+    def clear_chunk_entity_links_for_ids(self, *a, **kw):
+        return self._relational.clear_chunk_entity_links_for_ids(*a, **kw)
+
+    def get_entity_names(self, *a, **kw):
+        return self._relational.get_entity_names(*a, **kw)
+
+    def backfill_entity_domains(self, *a, **kw):
+        return self._relational.backfill_entity_domains(*a, **kw)
+
+    def link_chunk_entities(self, *a, **kw):
+        return self._relational.link_chunk_entities(*a, **kw)
+
+    def get_entities_for_chunk(self, *a, **kw):
+        return self._relational.get_entities_for_chunk(*a, **kw)
+
+    def get_chunks_for_entity(self, *a, **kw):
+        return self._relational.get_chunks_for_entity(*a, **kw)
+
+    def clear_chunk_entity_links(self, *a, **kw):
+        return self._relational.clear_chunk_entity_links(*a, **kw)
+
+    def add_glossary_term(self, *a, **kw):
+        return self._relational.upsert_glossary_term(*a, **kw)
+
+    def update_glossary_term(self, *a, **kw):
+        return self._relational.update_glossary_term(*a, **kw)
+
+    def delete_glossary_term(self, *a, **kw):
+        return self._relational.delete_glossary_term(*a, **kw)
+
+    def get_glossary_term(self, *a, **kw):
+        return self._relational.get_glossary_term(*a, **kw)
+
+    def get_glossary_term_by_id(self, *a, **kw):
+        return self._relational.get_glossary_term_by_id(*a, **kw)
+
+    def list_glossary_terms(self, *a, **kw):
+        return self._relational.list_glossary_terms(*a, **kw)
+
+    def get_unified_glossary(self, *a, **kw):
+        return self._relational.get_unified_glossary(*a, **kw)
+
+    def get_deprecated_glossary(self, *a, **kw):
+        return self._relational.get_deprecated_glossary(*a, **kw)
+
+    def delete_glossary_term_cascade(self, *a, **kw):
+        return self._relational.delete_glossary_term_cascade(*a, **kw)
+
+    def rename_glossary_term(self, *a, **kw):
+        return self._relational.rename_glossary_term(*a, **kw)
+
+    def clear_session_glossary(self, *a, **kw):
+        return self._relational.clear_session_glossary(*a, **kw)
+
+    def delete_glossary_by_status(self, *a, **kw):
+        return self._relational.delete_glossary_by_status(*a, **kw)
+
+    def get_glossary_terms_by_names(self, *a, **kw):
+        return self._relational.get_glossary_terms_by_names(*a, **kw)
+
+    def get_glossary_term_by_name_or_alias(self, *a, **kw):
+        return self._relational.get_glossary_term_by_name_or_alias(*a, **kw)
+
+    def get_child_terms(self, *a, **kw):
+        return self._relational.get_child_terms(*a, **kw)
+
+    def reconcile_glossary_domains(self, *a, **kw):
+        return self._relational.reconcile_glossary_domains(*a, **kw)
+
+    def add_entity_relationship(self, *a, **kw):
+        return self._relational.add_entity_relationship(*a, **kw)
+
+    def get_relationships_for_entity(self, *a, **kw):
+        return self._relational.get_relationships_for_entity(*a, **kw)
+
+    def clear_session_relationships(self, *a, **kw):
+        return self._relational.clear_session_relationships(*a, **kw)
+
+    def clear_non_user_relationships(self, *a, **kw):
+        return self._relational.clear_non_user_relationships(*a, **kw)
+
+    def delete_entity_relationship(self, *a, **kw):
+        return self._relational.delete_entity_relationship(*a, **kw)
+
+    def update_entity_relationship_verb(self, *a, **kw):
+        return self._relational.update_entity_relationship_verb(*a, **kw)
+
+    def store_entity_resolution_names(self, *a, **kw):
+        return self._relational.store_entity_resolution_names(*a, **kw)
+
+    def get_entity_resolution_names(self, *a, **kw):
+        return self._relational.get_entity_resolution_names(*a, **kw)
+
+    def get_source_hash(self, *a, **kw):
+        return self._relational.get_source_hash(*a, **kw)
+
+    def set_source_hash(self, *a, **kw):
+        return self._relational.set_source_hash(*a, **kw)
+
+    def get_domain_config_hash(self, *a, **kw):
+        return self._relational.get_domain_config_hash(*a, **kw)
+
+    def set_domain_config_hash(self, *a, **kw):
+        return self._relational.set_domain_config_hash(*a, **kw)
+
+    @staticmethod
+    def _make_resource_id(source_id, resource_type, resource_name):
+        from constat.storage.relational import RelationalStore
+        return RelationalStore._make_resource_id(source_id, resource_type, resource_name)
+
+    def get_resource_hash(self, *a, **kw):
+        return self._relational.get_resource_hash(*a, **kw)
+
+    def set_resource_hash(self, *a, **kw):
+        return self._relational.set_resource_hash(*a, **kw)
+
+    def delete_resource_hash(self, *a, **kw):
+        return self._relational.delete_resource_hash(*a, **kw)
+
+    def get_resource_hashes_for_source(self, *a, **kw):
+        return self._relational.get_resource_hashes_for_source(*a, **kw)
+
+    def delete_resource_chunks(self, *a, **kw):
+        return self._relational.delete_resource_chunks(*a, **kw)
+
+    def clear_resource_hashes_for_source(self, *a, **kw):
+        return self._relational.clear_resource_hashes_for_source(*a, **kw)
+
+    def _rebuild_clusters(self, *a, **kw):
+        return self._relational._rebuild_clusters(*a, **kw)
+
+    def get_cluster_siblings(self, *a, **kw):
+        return self._relational.get_cluster_siblings(*a, **kw)
+
+    def find_matching_clusters(self, *a, **kw):
+        return self._relational.find_matching_clusters(*a, **kw)
+
+    # Phase 2 relational delegations
+
+    def get_entity_document_names(self, *a, **kw):
+        return self._relational.get_entity_document_names(*a, **kw)
+
+    def get_cooccurring_entities(self, *a, **kw):
+        return self._relational.get_cooccurring_entities(*a, **kw)
+
+    def get_cooccurrence_pairs(self, *a, **kw):
+        return self._relational.get_cooccurrence_pairs(*a, **kw)
+
+    def get_cooccurrence_pairs_by_name(self, *a, **kw):
+        return self._relational.get_cooccurrence_pairs_by_name(*a, **kw)
+
+    def get_shared_chunk_ids(self, *a, **kw):
+        return self._relational.get_shared_chunk_ids(*a, **kw)
+
+    def get_entities_with_stats(self, *a, **kw):
+        return self._relational.get_entities_with_stats(*a, **kw)
+
+    def get_visible_entity_names(self, *a, **kw):
+        return self._relational.get_visible_entity_names(*a, **kw)
+
+    def update_entity_name(self, *a, **kw):
+        return self._relational.update_entity_name(*a, **kw)
+
+    def mark_relationship_user_edited(self, *a, **kw):
+        return self._relational.mark_relationship_user_edited(*a, **kw)
+
+    def list_session_relationships(self, *a, **kw):
+        return self._relational.list_session_relationships(*a, **kw)
+
+    def get_promotable_relationships(self, *a, **kw):
+        return self._relational.get_promotable_relationships(*a, **kw)
+
+    def get_glossary_parent_child_pairs(self, *a, **kw):
+        return self._relational.get_glossary_parent_child_pairs(*a, **kw)
+
+    def list_entities_with_refcount(self, *a, **kw):
+        return self._relational.list_entities_with_refcount(*a, **kw)
+
+    def get_entity_references(self, *a, **kw):
+        return self._relational.get_entity_references(*a, **kw)
+
+    def batch_get_entity_references(self, *a, **kw):
+        return self._relational.batch_get_entity_references(*a, **kw)
+
+    def batch_get_cooccurring_entities(self, *a, **kw):
+        return self._relational.batch_get_cooccurring_entities(*a, **kw)
+
+    def count_session_links(self, *a, **kw):
+        return self._relational.count_session_links(*a, **kw)
+
+    def entity_exists(self, *a, **kw):
+        return self._relational.entity_exists(*a, **kw)
+
+    def get_non_ignored_entities_for_chunk(self, *a, **kw):
+        return self._relational.get_non_ignored_entities_for_chunk(*a, **kw)
+
+    def save_proven_grounding(self, *a, **kw):
+        return self._relational.save_proven_grounding(*a, **kw)
+
+    def get_proven_grounding(self, *a, **kw):
+        return self._relational.get_proven_grounding(*a, **kw)
+
+    # Phase 2 vector delegations
+
+    def get_indexed_document_names(self, *a, **kw):
+        return self._vector.get_indexed_document_names(*a, **kw)
+
+    def clear_document_chunks(self, *a, **kw):
+        return self._vector.clear_document_chunks(*a, **kw)
+
+    def get_chunks_by_document(self, *a, **kw):
+        return self._vector.get_chunks_by_document(*a, **kw)
+
+    def get_chunk_content(self, *a, **kw):
+        return self._vector.get_chunk_content(*a, **kw)
+
+    def get_shared_chunk_content(self, *a, **kw):
+        return self._vector.get_shared_chunk_content(*a, **kw)
+
+    def get_visible_chunks_with_metadata(self, *a, **kw):
+        return self._vector.get_visible_chunks_with_metadata(*a, **kw)
+
+    def delete_chunks_by_pattern(self, *a, **kw):
+        return self._vector.delete_chunks_by_pattern(*a, **kw)
+
+    def count_by_domain(self, *a, **kw):
+        return self._vector.count_by_domain(*a, **kw)
+
+    @staticmethod
+    def entity_visibility_filter(*a, **kw):
+        from constat.storage.relational import RelationalStore
+        return RelationalStore.entity_visibility_filter(*a, **kw)
+
+    def _term_from_row(self, row):
+        return self._relational._term_from_row(row)
+
+    @property
+    def _GLOSSARY_COLUMNS(self):
+        return self._relational._GLOSSARY_COLUMNS
+
+    # ------------------------------------------------------------------
+    # Document hash wrappers (backwards compat aliases)
+    # ------------------------------------------------------------------
 
     def _scoped_doc_name(self, source_id: str, doc_name: str) -> str:
         return f"{source_id}::{doc_name}"
@@ -874,10 +1155,95 @@ class DuckDBVectorStore:
         ).fetchone()
         return result is not None
 
+    # ------------------------------------------------------------------
+    # Cross-layer operations — delegate to Store
+    # ------------------------------------------------------------------
+
+    def search_enriched(self, *a, **kw):
+        return self._store.search_enriched(*a, **kw)
+
+    def search_similar_entities(self, *a, **kw):
+        return self._store.search_similar_entities(*a, **kw)
+
+    def extract_entities_for_session(self, *a, **kw):
+        return self._store.extract_entities_for_session(*a, **kw)
+
+    def extract_entities_for_domain(self, *a, **kw):
+        return self._store.extract_entities_for_domain(*a, **kw)
+
+    # ------------------------------------------------------------------
+    # Session/document cleanup — cross-layer, delegate to relational with fts callback
+    # ------------------------------------------------------------------
+
+    def clear_session_data(self, session_id: str) -> None:
+        self._relational.clear_session_data(
+            session_id,
+            fts_dirty_callback=lambda: setattr(self._vector, '_fts_dirty', True),
+        )
+
+    def delete_document(self, document_name: str, session_id: str | None = None) -> int:
+        return self._relational.delete_document(
+            document_name, session_id,
+            fts_dirty_callback=lambda: setattr(self._vector, '_fts_dirty', True),
+        )
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     def close(self) -> None:
-        pass  # chonk Store manages its own connection lifecycle
+        """Close the database connection."""
+        if hasattr(self, "_db"):
+            try:
+                self._db.conn.close()
+            except Exception:
+                pass
 
     def __del__(self):
         self.close()
 
 
+# Import here to avoid circular imports in delegation
+from constat.storage.relational import RelationalStore  # noqa: E402
+
+
+def create_vector_store(
+    backend: str = "duckdb",
+    db_path: Optional[str] = None,
+    reranker_model: str | None = None,
+    cluster_min_terms: int = 2,
+    cluster_divisor: int = 5,
+    cluster_max_k: int = 500,
+    store_chunk_text: bool = True,
+) -> VectorStoreBackend:
+    """Factory function to create a vector store backend.
+
+    Args:
+        backend: Backend type - "duckdb" or "numpy"
+        db_path: Path to DuckDB database file (only for duckdb backend)
+        reranker_model: Cross-encoder model name for reranking (only for duckdb backend)
+        cluster_min_terms: Minimum glossary terms to trigger clustering.
+        cluster_divisor: k = max(2, n_terms // divisor).
+        cluster_max_k: Optional cap on k.
+        store_chunk_text: Store original chunk text alongside embeddings.
+
+    Returns:
+        VectorStoreBackend instance
+
+    Raises:
+        ImportError: If "duckdb" backend is requested but duckdb is not installed
+        ValueError: If unknown backend type is specified
+    """
+    if backend == "duckdb":
+        return DuckDBVectorStore(
+            db_path=db_path,
+            reranker_model=reranker_model,
+            cluster_min_terms=cluster_min_terms,
+            cluster_divisor=cluster_divisor,
+            cluster_max_k=cluster_max_k,
+            store_chunk_text=store_chunk_text,
+        )
+    elif backend == "numpy":
+        return NumpyVectorStore()
+    else:
+        raise ValueError(f"Unknown vector store backend: {backend}")

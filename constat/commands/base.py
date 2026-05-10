@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 707a67ef-e2e7-4046-9383-62c223538456
 #
 # Base types for command results.
 
@@ -76,6 +77,14 @@ class KeyValueResult(CommandResult):
     title: Optional[str] = None
     pairs: dict[str, Any] = field(default_factory=dict)
     sections: list[tuple[str, dict[str, Any]]] = field(default_factory=list)  # Grouped pairs
+
+
+@dataclass
+class JsonResult(CommandResult):
+    """Result containing structured JSON data."""
+    title: Optional[str] = None
+    data: Any = None
+    footer: Optional[str] = None
 
 
 @dataclass

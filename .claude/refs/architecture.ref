@@ -1,0 +1,41 @@
+# Architecture
+
+## Backend (Python — `constat/`)
+| Module | Purpose | Key files |
+|--------|---------|-----------|
+| `api/` | API factory, protocol, impl | `__init__.py` |
+| `catalog/` | Schema discovery, API catalog | `schema_manager.py` |
+| `commands/` | Shared REPL/UI command handlers | `data_commands.py` |
+| `core/` | Config, models, types | `config.py`, `models.py` |
+| `discovery/` | Schema/API/doc/fact discovery | `vector_store.py` |
+| `execution/` | Planning, code execution | `planner.py`, `query_engine.py` |
+| `learning/` | Rule compaction, fine-tune | `compactor.py` |
+| `llm/` | LLM primitives (enrich/score/summarize) | `__init__.py` |
+| `prompts/` | Prompt/template loading | `loader.py` |
+| `providers/` | LLM provider integrations | `base.py`, `anthropic_provider.py` |
+| `server/` | FastAPI server, routes, websocket | `app.py`, `routes/` |
+| `session/` | Session orchestration (12+ mixins) | `__init__.py`, `_solve.py`, `_dag.py` |
+| `storage/` | DuckDB session store, history | `duckdb_session_store.py` |
+| `testing/` | Test runner, golden questions | `runner.py` |
+
+## Frontend (TypeScript/React — `constat-ui/src/`)
+| Module | Purpose |
+|--------|---------|
+| `api/` | HTTP/WebSocket clients |
+| `components/` | React components (artifacts, auth, common, conversation, proof, layout) |
+| `store/` | Zustand stores (session, auth, artifact, glossary, ui, proof, test, toast) |
+| `types/` | TypeScript type definitions |
+| `hooks/` | Custom React hooks |
+
+## Storage
+- Session data: DuckDB file per session (`session.duckdb`)
+- Vector store: separate DuckDB (embeddings, FTS, BM25)
+- Relational store: SQLite (entities, glossary, relationships)
+- No Parquet files — all native DuckDB tables
+
+## Key Patterns
+- Session uses mixin composition (12+ mixins in `session/`)
+- `create_api()` factory in `constat/api/__init__.py` — entry point for all API operations
+- DuckDB `ATTACH` for source database federation
+- Arrow zero-copy for DataFrame ↔ DuckDB
+- DAG proof inferences use negative step numbers (I1→-1, I5→-5)

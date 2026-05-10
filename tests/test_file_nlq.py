@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 319f8507-6b80-4a6c-9356-8ce97224c0a3
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -18,6 +19,7 @@ Requires:
 - ANTHROPIC_API_KEY (for LLM queries)
 """
 
+from __future__ import annotations
 import csv
 import json
 import os
@@ -26,14 +28,13 @@ import tempfile
 import uuid
 from pathlib import Path
 
-# Skip all tests if API key not set
-pytestmark = [
-    pytest.mark.slow,
-    pytest.mark.skipif(
-        not os.environ.get("ANTHROPIC_API_KEY"),
-        reason="ANTHROPIC_API_KEY not set"
-    ),
-]
+pytestmark = [pytest.mark.slow]
+
+
+@pytest.fixture
+def require_anthropic_key():
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.fail("ANTHROPIC_API_KEY not set — required for this test")
 
 
 @pytest.fixture(scope="module")
@@ -117,7 +118,7 @@ Use pandas to load and analyze the files (file_<name> variables contain paths).
         session_config = SessionConfig(max_retries_per_step=3)
         session_id = str(uuid.uuid4())
 
-        session = Session(config, session_id=session_id, session_config=session_config, history=history)
+        session = Session(config, session_id=session_id, session_config=session_config, history=history, data_dir=Path(tmpdir))
         yield session
 
 
@@ -139,142 +140,239 @@ class TestFileDiscovery:
         assert len(sales_schema["columns"]) > 0  # Has inferred columns
 
 
-@pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
 class TestCSVNaturalLanguageQueries:
     """End-to-end tests for NLQ against CSV files."""
 
-    def test_simple_count_csv(self, file_session):
+    def test_simple_count_csv(self, require_anthropic_key, file_session):
         """Test counting rows in a CSV file."""
-        result = file_session.solve(
-            "How many sales transactions are in the sales data?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = file_session.solve(
+                    "How many sales transactions are in the sales data?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Should find 8 rows
-        assert "8" in result["output"], f"Expected '8' in output: {result['output']}"
-        print(f"\n--- CSV Count Query ---")
-        print(f"Output: {result['output']}")
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Should find 8 rows
+                assert "8" in result["output"], f"Expected '8' in output: {result['output']}"
+                print(f"\n--- CSV Count Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
-    def test_sum_csv(self, file_session):
+    def test_sum_csv(self, require_anthropic_key, file_session):
         """Test summing values in a CSV file."""
-        result = file_session.solve(
-            "What is the total quantity sold across all transactions in the sales data?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = file_session.solve(
+                    "What is the total quantity sold across all transactions in the sales data?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Total: 10+5+8+3+12+15+2+7 = 62
-        assert "62" in result["output"], f"Expected '62' in output: {result['output']}"
-        print(f"\n--- CSV Sum Query ---")
-        print(f"Output: {result['output']}")
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Total: 10+5+8+3+12+15+2+7 = 62
+                assert "62" in result["output"], f"Expected '62' in output: {result['output']}"
+                print(f"\n--- CSV Sum Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
-    def test_group_by_csv(self, file_session):
+    def test_group_by_csv(self, require_anthropic_key, file_session):
         """Test grouping and aggregation on CSV data."""
-        result = file_session.solve(
-            "What is the total quantity sold for each product in the sales data?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = file_session.solve(
+                    "What is the total quantity sold for each product in the sales data?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # Widget A: 10+8+15=33, Widget B: 5+12+7=24, Widget C: 3+2=5
-        output = result["output"].lower()
-        assert "widget" in output
-        print(f"\n--- CSV Group By Query ---")
-        print(f"Output: {result['output']}")
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # Widget A: 10+8+15=33, Widget B: 5+12+7=24, Widget C: 3+2=5
+                output = result["output"].lower()
+                assert "widget" in output
+                print(f"\n--- CSV Group By Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
-    def test_filter_csv(self, file_session):
+    def test_filter_csv(self, require_anthropic_key, file_session):
         """Test filtering CSV data."""
-        result = file_session.solve(
-            "How many sales transactions were in the North region?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = file_session.solve(
+                    "How many sales transactions were in the North region?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # 2 transactions in North
-        assert "2" in result["output"], f"Expected '2' in output: {result['output']}"
-        print(f"\n--- CSV Filter Query ---")
-        print(f"Output: {result['output']}")
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # 2 transactions in North
+                assert "2" in result["output"], f"Expected '2' in output: {result['output']}"
+                print(f"\n--- CSV Filter Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
 
-@pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
 class TestJSONNaturalLanguageQueries:
     """End-to-end tests for NLQ against JSON files."""
 
-    def test_count_json(self, file_session):
+    def test_count_json(self, require_anthropic_key, file_session):
         """Test counting records in JSON file."""
-        result = file_session.solve(
-            "How many events are in the events data?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = file_session.solve(
+                    "How many events are in the events data?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # 7 events
-        assert "7" in result["output"], f"Expected '7' in output: {result['output']}"
-        print(f"\n--- JSON Count Query ---")
-        print(f"Output: {result['output']}")
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # 7 events
+                assert "7" in result["output"], f"Expected '7' in output: {result['output']}"
+                print(f"\n--- JSON Count Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
-    def test_filter_json(self, file_session):
+    def test_filter_json(self, require_anthropic_key, file_session):
         """Test filtering JSON data."""
-        result = file_session.solve(
-            "How many purchase events are in the events data?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = file_session.solve(
+                    "How many purchase events are in the events data?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # 4 purchase events
-        assert "4" in result["output"], f"Expected '4' in output: {result['output']}"
-        print(f"\n--- JSON Filter Query ---")
-        print(f"Output: {result['output']}")
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # 4 purchase events
+                assert "4" in result["output"], f"Expected '4' in output: {result['output']}"
+                print(f"\n--- JSON Filter Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
-    def test_aggregate_json(self, file_session):
+    def test_aggregate_json(self, require_anthropic_key, file_session):
         """Test aggregation on JSON data."""
-        result = file_session.solve(
-            "What is the total amount from all purchase events in the events data?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = file_session.solve(
+                    "What is the total amount from all purchase events in the events data?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # 150 + 75.5 + 200 + 300 = 725.5
-        output = result["output"]
-        assert "725" in output or "725.5" in output or "725.50" in output
-        print(f"\n--- JSON Aggregate Query ---")
-        print(f"Output: {result['output']}")
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # 150 + 75.5 + 200 + 300 = 725.5
+                output = result["output"]
+                assert "725" in output or "725.5" in output or "725.50" in output
+                print(f"\n--- JSON Aggregate Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
-    def test_unique_values_json(self, file_session):
+    def test_unique_values_json(self, require_anthropic_key, file_session):
         """Test finding unique values in JSON."""
-        result = file_session.solve(
-            "How many unique users are in the events data?"
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = file_session.solve(
+                    "How many unique users are in the events data?"
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # 4 unique users
-        assert "4" in result["output"], f"Expected '4' in output: {result['output']}"
-        print(f"\n--- JSON Unique Query ---")
-        print(f"Output: {result['output']}")
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # 4 unique users
+                assert "4" in result["output"], f"Expected '4' in output: {result['output']}"
+                print(f"\n--- JSON Unique Query ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
 
-@pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
 class TestMixedDataSources:
     """Tests combining file data with other operations."""
 
-    def test_multi_step_file_analysis(self, file_session):
+    def test_multi_step_file_analysis(self, require_anthropic_key, file_session):
         """Test multi-step analysis on file data."""
-        result = file_session.solve(
-            "First calculate the average sale amount (quantity * price) per transaction "
-            "from the sales data. Then find all transactions above that average."
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = file_session.solve(
+                    "First calculate the average sale amount (quantity * price) per transaction "
+                    "from the sales data. Then find all transactions above that average."
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        # This should create a multi-step plan
-        if result.get("plan"):
-            assert len(result["plan"].steps) >= 2
-        print(f"\n--- Multi-Step File Analysis ---")
-        print(f"Output: {result['output']}")
+                assert result["success"], f"Query failed: {result.get('error')}"
+                # This should create a multi-step plan
+                if result.get("plan"):
+                    assert len(result["plan"].steps) >= 2
+                print(f"\n--- Multi-Step File Analysis ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc
 
-    def test_discover_and_analyze(self, file_session):
+    def test_discover_and_analyze(self, require_anthropic_key, file_session):
         """Test discovering data sources and then analyzing them."""
-        result = file_session.solve(
-            "What data files are available and what's in them? "
-            "Then tell me the most common event type in the events data."
-        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = file_session.solve(
+                    "What data files are available and what's in them? "
+                    "Then tell me the most common event type in the events data."
+                )
 
-        assert result["success"], f"Query failed: {result.get('error')}"
-        output = result["output"].lower()
-        # Should mention purchase (most common type with 4 occurrences)
-        assert "purchase" in output
-        print(f"\n--- Discover and Analyze ---")
-        print(f"Output: {result['output']}")
+                assert result["success"], f"Query failed: {result.get('error')}"
+                output = result["output"].lower()
+                # Should mention purchase (most common type with 4 occurrences)
+                assert "purchase" in output
+                print(f"\n--- Discover and Analyze ---")
+                print(f"Output: {result['output']}")
+                break
+            except AssertionError as e:
+                last_exc = e
+                if attempt == 2:
+                    raise
+        else:
+            raise last_exc

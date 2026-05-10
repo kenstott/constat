@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: bb4fb79f-aceb-4d0a-bab3-6cece06616ed
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -8,10 +9,18 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+import yaml
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+from constat.server.persona_config import require_write
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from constat.core.skills import SkillManager
+from constat.core.skill_packager import package_skill
 from constat.server.auth import CurrentUserId
 from constat.server.config import ServerConfig
 from constat.server.session_manager import SessionManager
@@ -33,6 +42,8 @@ class SkillInfo(BaseModel):
     description: str
     filename: str
     is_active: bool = False
+    domain: str = ""
+    source: str = ""
 
 
 class SkillsListResponse(BaseModel):
@@ -117,6 +128,8 @@ async def list_skills(
                 description=skill.description or "",
                 filename=skill.filename or "",
                 is_active=skill.name in manager.active_skills,
+                domain=skill.domain,
+                source=skill.source,
             ))
 
         logger.info(f"[SKILLS] Returning {len(skills)} skills")
@@ -130,7 +143,7 @@ async def list_skills(
         raise
 
 
-@router.post("/skills", response_model=SkillInfo)
+@router.post("/skills", response_model=SkillInfo, dependencies=[Depends(require_write("skills"))])
 async def create_skill(
     request: Request,
     skill_request: CreateSkillRequest,
@@ -204,7 +217,7 @@ async def draft_skill(
 ) -> DraftSkillResponse:
     """Use LLM to draft a skill based on user description."""
     session_manager = get_session_manager(request)
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -245,23 +258,34 @@ class CreateSkillFromProofResponse(BaseModel):
     has_script: bool
 
 
-@router.post("/skills/from-proof", response_model=CreateSkillFromProofResponse)
-async def create_skill_from_proof(
-    request: Request,
-    session_id: str,
-    skill_request: CreateSkillFromProofRequest,
-    user_id: CurrentUserId,
-) -> CreateSkillFromProofResponse:
-    """Create a skill from a completed proof."""
-    session_manager = get_session_manager(request)
-    managed = session_manager.get_session(session_id)
-    if not managed or managed.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Session not found")
+async def create_skill_from_proof_impl(
+    session_id: str, user_id: str, name: str, description: str,
+    info=None, request=None,
+) -> dict:
+    """Shared logic for creating a skill from a proof.
 
+    Called from both the REST handler and GraphQL mutation.
+    Returns dict with keys: name, content, description, has_script.
+    """
+    if info:
+        session_manager = info.context.session_manager
+        server_config = info.context.server_config
+    else:
+        session_manager = get_session_manager(request)
+        server_config = get_server_config(request)
+
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed or managed.user_id != user_id:
+        raise ValueError("Session not found")
+    return await _skill_from_proof_core(managed, name, description, server_config, user_id)
+
+
+async def _skill_from_proof_core(managed, name, description, server_config, user_id) -> dict:
+    """Core implementation of skill-from-proof."""
     session = managed.session
 
     if not session.last_proof_result:
-        raise HTTPException(status_code=404, detail="No proof result available. Run /prove first.")
+        raise ValueError("No proof result available. Run /reason first.")
 
     proof_result = session.last_proof_result
     proof_nodes = proof_result.get("proof_nodes", [])
@@ -269,9 +293,8 @@ async def create_skill_from_proof(
     original_problem = proof_result.get("problem", "")
 
     if not hasattr(session, "skill_manager"):
-        raise HTTPException(status_code=500, detail="Skill manager not available")
+        raise ValueError("Skill manager not available")
 
-    # Extract script parameters from premises (for SKILL.md documentation)
     import ast as _ast
     script_params = []
     if session.history and session.session_id:
@@ -286,54 +309,70 @@ async def create_skill_from_proof(
                     default = repr(value)
                 script_params.append({"name": pname, "default": default})
 
-    # Generate SKILL.md content via LLM
-    try:
-        content, description = session.skill_manager.skill_from_proof(
-            name=skill_request.name,
-            proof_nodes=proof_nodes,
-            proof_summary=proof_summary,
-            original_problem=original_problem,
-            llm=session.llm,
-            description=skill_request.description or None,
-            script_params=script_params or None,
-        )
-    except Exception as e:
-        logger.error(f"Failed to generate skill from proof: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate skill: {str(e)}")
+    from constat.server.routes.data import _gather_source_configs
+    _apis, _databases, _documents = _gather_source_configs(managed)
 
-    # Create the skill directory and SKILL.md
-    try:
-        skill = session.skill_manager.create_skill(
-            name=skill_request.name,
-            prompt="",
-            description=description,
-        )
-        session.skill_manager.update_skill_content(skill_request.name, content)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    result_schemas = {}
+    if session.datastore:
+        table_list = proof_result.get("datastore_tables") or session.datastore.list_tables()
+        for table_info in table_list:
+            if isinstance(table_info, dict) and table_info.get("is_view"):
+                continue
+            local_table_name = table_info if isinstance(table_info, str) else table_info.get("name", "")
+            if local_table_name:
+                schema = session.datastore.get_table_schema(local_table_name)
+                if schema:
+                    result_schemas[local_table_name] = schema
 
-    # Generate and write scripts/proof.py
+    _all_code = ""
+    _premise_sources: set[str] = set()
+    if session.history and session.session_id:
+        _inferences = session.history.list_inference_codes(session.session_id)
+        _all_code = '\n'.join(inf.get("code", "") for inf in _inferences)
+        _premises = session.history.list_inference_premises(session.session_id)
+        for p in _premises:
+            src = p.get("source", "")
+            if ":" in src:
+                _premise_sources.add(src.split(":", 1)[1])
+    for node in proof_nodes:
+        src = node.get("source", "")
+        if ":" in src:
+            _premise_sources.add(src.split(":", 1)[1])
+    _used_docs = [d for d in _documents if d['name'] in _all_code or d['name'] in _premise_sources] or None
+    _used_dbs = [d for d in _databases if f"{d['name']}." in _all_code or d['name'] in _premise_sources] or None
+    _used_apis = [a for a in _apis if f"api_{a['name']}" in _all_code or a['name'] in _premise_sources] or None
+
+    content, desc = session.skill_manager.skill_from_proof(
+        name=name,
+        proof_nodes=proof_nodes,
+        proof_summary=proof_summary,
+        original_problem=original_problem,
+        llm=session.llm,
+        description=description or None,
+        script_params=script_params or None,
+        result_schemas=result_schemas or None,
+        documents=_used_docs,
+        apis=_used_apis,
+        databases=_used_dbs,
+    )
+
+    _skill = session.skill_manager.create_skill(name=name, prompt="", description=desc)
+    session.skill_manager.update_skill_content(name, content)
+
     has_script = False
+    script_content = None
     if session.history and session.session_id:
         try:
-            from constat.server.routes.data import generate_inference_script, _gather_source_configs
-
+            from constat.server.routes.data import generate_inference_script
             inferences = session.history.list_inference_codes(session.session_id)
             if inferences:
-                apis, databases = _gather_source_configs(managed)
                 premises = session.history.list_inference_premises(session.session_id)
                 script_content = generate_inference_script(
-                    inferences=inferences,
-                    premises=premises,
-                    apis=apis,
-                    databases=databases,
-                    session_label=session.session_id[:8],
+                    inferences=inferences, premises=premises, apis=_apis,
+                    databases=_databases, session_label=session.session_id[:8],
+                    documents=_documents,
                 )
-
-                safe_name = "".join(
-                    c if c.isalnum() or c in "-_" else "-"
-                    for c in skill_request.name.lower()
-                )
+                safe_name = "".join(c if c.isalnum() or c in "-_" else "-" for c in name.lower())
                 scripts_dir = session.skill_manager.skills_dir / safe_name / "scripts"
                 scripts_dir.mkdir(parents=True, exist_ok=True)
                 (scripts_dir / "proof.py").write_text(script_content)
@@ -341,17 +380,101 @@ async def create_skill_from_proof(
         except Exception as e:
             logger.warning(f"Failed to write proof script: {e}")
 
-    # Invalidate cached skill manager so list_skills sees the new skill
-    server_config = get_server_config(request)
+    if has_script and script_content:
+        import re as _re
+        dependencies: list[str] = []
+        active_skills = session.skill_manager.active_skill_objects
+        for skill in active_skills:
+            if not skill.exports or skill.name == name:
+                continue
+            pkg = skill.name.replace("-", "_").replace(" ", "_")
+            for export_entry in skill.exports:
+                for fn_name in export_entry.get("functions", []):
+                    if f"{pkg}_{fn_name}" in script_content:
+                        dependencies.append(skill.name)
+                        break
+                if skill.name in dependencies:
+                    break
+        exported_fns = _re.findall(r'^def (\w+)\(', script_content, _re.MULTILINE)
+        exported_fns = [fn for fn in exported_fns if not fn.startswith('_') and not fn.startswith('api_') and not fn.startswith('db_')]
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                try:
+                    frontmatter = yaml.safe_load(parts[1])
+                    fm_meta = frontmatter.setdefault("metadata", {})
+                    if exported_fns:
+                        fm_meta["exports"] = [{"script": "proof.py", "functions": exported_fns}]
+                    if dependencies:
+                        fm_meta["dependencies"] = dependencies
+                    new_fm = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
+                    content = f"---\n{new_fm}---{parts[2]}"
+                    session.skill_manager.update_skill_content(name, content)
+                except (yaml.YAMLError, AttributeError):
+                    logger.warning("Failed to post-process SKILL.md frontmatter")
+
+    from constat.testing.grounding import build_source_patterns as _build_source_patterns
+    required_resources: list[str] = []
+    seen_res: set[str] = set()
+    for node in proof_nodes:
+        for pat in _build_source_patterns(node):
+            if pat not in seen_res:
+                seen_res.add(pat)
+                required_resources.append(pat)
+    if required_resources and content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            try:
+                frontmatter = yaml.safe_load(parts[1])
+                fm_meta = frontmatter.setdefault("metadata", {})
+                fm_meta["required-resources"] = required_resources
+                new_fm = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
+                content = f"---\n{new_fm}---{parts[2]}"
+                session.skill_manager.update_skill_content(name, content)
+            except (yaml.YAMLError, AttributeError):
+                logger.warning("Failed to add required-resources to SKILL.md frontmatter")
+
     cache_key = (user_id, str(server_config.data_dir))
     if cache_key in _skill_managers:
         _skill_managers[cache_key].reload()
 
-    return CreateSkillFromProofResponse(
-        name=skill_request.name,
-        content=content,
-        description=description,
-        has_script=has_script,
+    return {"name": name, "content": content, "description": desc, "has_script": has_script}
+
+
+@router.post("/skills/from-proof", response_model=CreateSkillFromProofResponse)
+async def create_skill_from_proof(
+    request: Request,
+    session_id: str,
+    skill_request: CreateSkillFromProofRequest,
+    user_id: CurrentUserId,
+) -> CreateSkillFromProofResponse:
+    """Create a skill from a completed proof."""
+    result = await create_skill_from_proof_impl(
+        session_id=session_id, user_id=user_id, name=skill_request.name,
+        description=skill_request.description, request=request,
+    )
+    return CreateSkillFromProofResponse(**result)
+
+
+@router.get("/skills/{skill_name}/download")
+async def download_skill(
+    request: Request,
+    skill_name: str,
+    user_id: CurrentUserId,
+) -> Response:
+    """Download a skill as a Claude Desktop compatible zip."""
+    server_config = get_server_config(request)
+    manager = get_skill_manager(user_id, server_config.data_dir)
+
+    try:
+        zip_bytes = package_skill(skill_name, manager)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{skill_name}.zip"'},
     )
 
 
@@ -378,7 +501,7 @@ async def get_skill_content(
     )
 
 
-@router.put("/skills/{skill_name}")
+@router.put("/skills/{skill_name}", dependencies=[Depends(require_write("skills"))])
 async def update_skill(
     request: Request,
     skill_name: str,
@@ -398,17 +521,18 @@ async def update_skill(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete("/skills/{skill_name}")
+@router.delete("/skills/{skill_name}", dependencies=[Depends(require_write("skills"))])
 async def delete_skill(
     request: Request,
     skill_name: str,
     user_id: CurrentUserId,
+    domain: Optional[str] = Query(None, description="Domain to scope deletion to"),
 ) -> dict:
     """Delete a skill."""
     server_config = get_server_config(request)
     manager = get_skill_manager(user_id, server_config.data_dir)
 
-    if not manager.delete_skill(skill_name):
+    if not manager.delete_skill(skill_name, domain=domain):
         raise HTTPException(status_code=404, detail=f"Skill not found: {skill_name}")
 
     return {"status": "deleted", "name": skill_name}

@@ -5,8 +5,10 @@ IMPORTANT: You do NOT have schema information loaded upfront. Use discovery tool
 ## Discovery Tools
 
 ### Universal Search (USE THIS FIRST)
-- search_all(query) - **PRIMARY TOOL**: Semantic search across ALL sources (tables, APIs, documents) at once
-- find_entity(name) - Find all occurrences of an entity across schema and documents
+- search_all(query) - **PRIMARY TOOL**: Semantic search across ALL sources (tables, APIs, documents, and data-level entity values) at once
+- find_entity(name) - Find all occurrences of an entity across schema, documents, and resolved data values
+
+Results may include **entity resolution matches** — specific data values (e.g., country names, customer names) pulled from configured sources. These appear with `source: "entity_resolution"` and `document_name` referencing the data source (e.g., `"sales.customers"`). Use this to locate where specific values live across your data estate.
 
 ### Schema Discovery (Databases)
 - list_databases() - See available databases
@@ -27,7 +29,7 @@ IMPORTANT: You do NOT have schema information loaded upfront. Use discovery tool
 - get_document(name) - Read a document
 - search_documents(query) - Search document content
 - get_document_section(name, section) - Get specific section
-- explore_entity(entity_name) - Find all chunks mentioning an entity (follow entity links)
+- explore_entity(entity_name) - Find all chunks mentioning an entity across documents, schema, and entity resolution sources
 
 ### Fact Resolution
 - resolve_fact(question) - Resolve facts from all sources
@@ -47,7 +49,7 @@ relevant skills to your context when they match the user's task.
 ## Planning Process
 
 1. UNDERSTAND the user's question
-2. USE search_all(query) FIRST to find relevant tables, APIs, and documents
+2. USE search_all(query) FIRST to find relevant tables, APIs, documents, and entity values
 3. EXPLORE specific resources found in search_all results
 4. CLARIFY unclear terms with resolve_fact()
 5. PLAN the analysis steps

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 2ba63836-5c27-4aa8-ade7-06fdb7b6aa3b
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -13,11 +14,11 @@ These tests use mocking to test MongoDB connector behavior without
 requiring a running MongoDB instance.
 """
 
+from __future__ import annotations
 import pytest
 from unittest.mock import Mock, MagicMock, patch, PropertyMock
 from dataclasses import dataclass
 
-# Check for optional dependencies
 try:
     import pymongo
     from pymongo.errors import (
@@ -25,16 +26,8 @@ try:
         OperationFailure,
         ConnectionFailure,
     )
-    HAS_PYMONGO = True
 except ImportError:
-    HAS_PYMONGO = False
-    # Create mock exceptions for tests that don't need pymongo
-    class ServerSelectionTimeoutError(Exception):
-        pass
-    class OperationFailure(Exception):
-        pass
-    class ConnectionFailure(Exception):
-        pass
+    pytest.fail("pymongo is required but not installed — run: pip install pymongo")
 
 from constat.catalog.nosql import (
     MongoDBConnector,
@@ -47,7 +40,6 @@ from constat.catalog.nosql import (
 class TestMongoDBConnectionErrors:
     """Tests for MongoDB connection error handling."""
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_connect_timeout_raises(self, mock_client_class):
         """Connection timeout should propagate as error."""
@@ -63,7 +55,6 @@ class TestMongoDBConnectionErrors:
         with pytest.raises(ServerSelectionTimeoutError):
             connector.connect()
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_connect_auth_failure_on_db_access(self, mock_client_class):
         """Authentication failure on database access should raise."""
@@ -120,7 +111,6 @@ class TestMongoDBQueryMethods:
 
         return connector, mock_client, mock_db
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_query_returns_empty_list_for_no_matches(self, mock_client_class):
         """Query with no matches returns empty list, not None."""
@@ -137,7 +127,6 @@ class TestMongoDBQueryMethods:
         assert result == []
         assert isinstance(result, list)
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_query_converts_objectid_to_string(self, mock_client_class):
         """ObjectId fields should be converted to strings."""
@@ -159,7 +148,6 @@ class TestMongoDBQueryMethods:
         assert result[0]["_id"] == str(doc_id)
         assert isinstance(result[0]["_id"], str)
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_query_limit_is_respected(self, mock_client_class):
         """Limit parameter should be passed to MongoDB."""
@@ -175,7 +163,6 @@ class TestMongoDBQueryMethods:
 
         mock_cursor.limit.assert_called_with(50)
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_query_default_limit_is_100(self, mock_client_class):
         """Default limit should be 100."""
@@ -191,7 +178,6 @@ class TestMongoDBQueryMethods:
 
         mock_cursor.limit.assert_called_with(100)
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_query_preserves_other_fields(self, mock_client_class):
         """Query should preserve all document fields."""
@@ -231,7 +217,6 @@ class TestMongoDBAggregate:
 
         return connector, mock_client, mock_db
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_aggregate_returns_list(self, mock_client_class):
         """Aggregation should return a list."""
@@ -247,7 +232,6 @@ class TestMongoDBAggregate:
         assert len(result) == 1
         assert result[0]["count"] == 5
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_aggregate_converts_objectid(self, mock_client_class):
         """Aggregation results should convert ObjectId to string."""
@@ -267,7 +251,6 @@ class TestMongoDBAggregate:
         assert isinstance(result[0]["_id"], str)
         assert result[0]["_id"] == str(group_id)
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_aggregate_empty_result(self, mock_client_class):
         """Empty aggregation result should return empty list."""
@@ -281,7 +264,6 @@ class TestMongoDBAggregate:
 
         assert result == []
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_aggregate_not_connected_raises(self, mock_client_class):
         """Aggregation when not connected should raise RuntimeError."""
@@ -312,7 +294,6 @@ class TestMongoDBInsertUpdateDelete:
 
         return connector, mock_client, mock_db
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_insert_single_document(self, mock_client_class):
         """Insert single document should use insert_one."""
@@ -332,7 +313,6 @@ class TestMongoDBInsertUpdateDelete:
         mock_coll.insert_one.assert_called_once_with({"name": "Alice"})
         assert result == [str(inserted_id)]
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_insert_multiple_documents(self, mock_client_class):
         """Insert multiple documents should use insert_many."""
@@ -353,7 +333,6 @@ class TestMongoDBInsertUpdateDelete:
         mock_coll.insert_many.assert_called_once_with(docs)
         assert result == [str(id) for id in inserted_ids]
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_update_returns_modified_count(self, mock_client_class):
         """Update should return count of modified documents."""
@@ -369,7 +348,6 @@ class TestMongoDBInsertUpdateDelete:
 
         assert result == 5
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_delete_returns_deleted_count(self, mock_client_class):
         """Delete should return count of deleted documents."""
@@ -385,7 +363,6 @@ class TestMongoDBInsertUpdateDelete:
 
         assert result == 3
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_insert_not_connected_raises(self, mock_client_class):
         """Insert when not connected should raise RuntimeError."""
@@ -397,7 +374,6 @@ class TestMongoDBInsertUpdateDelete:
         with pytest.raises(RuntimeError, match="Not connected"):
             connector.insert("users", [{"name": "Alice"}])
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_update_not_connected_raises(self, mock_client_class):
         """Update when not connected should raise RuntimeError."""
@@ -409,7 +385,6 @@ class TestMongoDBInsertUpdateDelete:
         with pytest.raises(RuntimeError, match="Not connected"):
             connector.update("users", {}, {"$set": {"x": 1}})
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_delete_not_connected_raises(self, mock_client_class):
         """Delete when not connected should raise RuntimeError."""
@@ -582,7 +557,6 @@ class TestMongoDBSchemaInference:
 class TestMongoDBSubscriptAccess:
     """Tests for db['collection'] style access."""
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_subscript_access_returns_collection(self, mock_client_class):
         """connector['collection'] should return pymongo collection."""
@@ -603,7 +577,6 @@ class TestMongoDBSubscriptAccess:
         mock_db.__getitem__.assert_called_with("users")
         assert result is mock_coll
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_subscript_access_different_collections(self, mock_client_class):
         """Multiple subscript accesses should work correctly."""
@@ -628,7 +601,6 @@ class TestMongoDBSubscriptAccess:
 class TestMongoDBCollectionSchema:
     """Tests for get_collection_schema method."""
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_get_collection_schema_caches_result(self, mock_client_class):
         """Schema should be cached after first call."""
@@ -659,7 +631,6 @@ class TestMongoDBCollectionSchema:
         # find() should only be called once due to caching
         assert mock_coll.find.call_count == 1
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_get_collection_schema_includes_document_count(self, mock_client_class):
         """Schema should include document count."""
@@ -683,7 +654,6 @@ class TestMongoDBCollectionSchema:
 
         assert schema.document_count == 1000
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_get_collection_schema_includes_indexes(self, mock_client_class):
         """Schema should include index information."""
@@ -711,7 +681,6 @@ class TestMongoDBCollectionSchema:
         # Should exclude _id_ index but include email_1
         assert "email_1" in schema.indexes
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_get_collection_schema_marks_indexed_fields(self, mock_client_class):
         """Fields with indexes should be marked as indexed."""
@@ -745,7 +714,6 @@ class TestMongoDBCollectionSchema:
 class TestMongoDBDisconnect:
     """Tests for MongoDB disconnect behavior."""
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_disconnect_clears_state(self, mock_client_class):
         """Disconnect should clear client and db references."""
@@ -767,7 +735,6 @@ class TestMongoDBDisconnect:
         assert connector._client is None
         assert connector._db is None
 
-    @pytest.mark.skipif(not HAS_PYMONGO, reason="pymongo not installed")
     @patch("pymongo.MongoClient")
     def test_disconnect_calls_close(self, mock_client_class):
         """Disconnect should call close on the client."""

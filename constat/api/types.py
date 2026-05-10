@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 9a143a78-6d27-49c6-9d5d-678fb7c869bb
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -192,7 +193,7 @@ class ArtifactInfo:
 
 @dataclass(frozen=True)
 class SolveResult:
-    """Result of a solve() operation."""
+    """Result of a 'solve()' operation."""
     success: bool
     answer: Optional[str] = None
     plan_goal: Optional[str] = None

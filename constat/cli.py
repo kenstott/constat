@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 99fd889a-0aa1-41a4-b410-c90f945dd237
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -15,6 +16,8 @@ import sys
 # Suppress macOS MallocStackLogging warnings from DuckDB/multiprocessing
 # These are written directly to stderr by native code, so we suppress at fd level
 # during imports, then restore stderr for normal operation
+_original_stderr_fd = -1
+_devnull = -1
 if sys.platform == "darwin":
     _original_stderr_fd = os.dup(2)
     _devnull = os.open(os.devnull, os.O_WRONLY)
@@ -97,11 +100,11 @@ def cli():
     help="Write output to file instead of stdout.",
 )
 def solve(problem: str, config: str, verbose: bool, output: Optional[str]):
-    """Solve a problem with multi-step planning.
+    """Solve a problem with multistep planning.
 
     \b
     Examples:
-        constat solve "What are the top selling products?" -c config.yaml
+        constat solve "What are the top-selling products?" -c config.yaml
         constat solve "Compare Q1 vs Q2 revenue" -c config.yaml -v
     """
     try:
@@ -323,6 +326,7 @@ def resume(session_id: str, config: str, verbose: bool):
 
     # Resume the session
     if not interactive.session:
+        # noinspection PyUnresolvedReferences
         interactive.session = interactive._create_session()
 
     if interactive.session.resume(session_id):
@@ -379,6 +383,7 @@ def validate(config: str):
 
     for db in cfg.databases:
         try:
+            # noinspection PyUnresolvedReferences
             schema_manager._connect_database(db)
             table_count = len(schema_manager.get_tables_for_db(db.name))
             console.print(f"  [green]OK[/green] {db.name}: {table_count} tables")
@@ -386,6 +391,71 @@ def validate(config: str):
             console.print(f"  [red]FAIL[/red] {db.name}: {e}")
 
     console.print()
+
+
+@cli.command()
+@click.option(
+    "--config", "-c",
+    type=click.Path(exists=True),
+    required=True,
+    help="Path to config YAML file.",
+)
+@click.option("--domain", "-d", multiple=True, help="Domain(s) to test.")
+@click.option("--tags", "-t", multiple=True, help="Filter by tag.")
+@click.option(
+    "--format", "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
+def test(config: str, domain: tuple[str, ...], tags: tuple[str, ...], output_format: str):
+    """Run golden question regression tests.
+
+    Checks entities, grounding, glossary, and relationships against the
+    existing vector store. No LLM calls — all checks are pure DB lookups.
+
+    \b
+    Examples:
+        constat test -c config.yaml
+        constat test -c config.yaml -d sales-analytics -t smoke
+        constat test -c config.yaml --format json
+    """
+    try:
+        cfg = Config.from_yaml(config)
+    except Exception as e:
+        console.print(f"[red]Config error:[/red] {e}")
+        sys.exit(1)
+
+    from constat.testing.runner import run_domain_test
+    from constat.testing.formatters import format_text, format_json
+
+    # Collect domains to test
+    if domain:
+        domain_filenames = list(domain)
+    else:
+        domain_filenames = [
+            name for name, dc in cfg.domains.items()
+            if dc.golden_questions
+        ]
+
+    if not domain_filenames:
+        console.print("[yellow]No domains with golden_questions found.[/yellow]")
+        sys.exit(0)
+
+    results = []
+    for df in domain_filenames:
+        tag_list = list(tags) if tags else None
+        result = run_domain_test(cfg, df, tags=tag_list)
+        results.append(result)
+
+    if output_format == "json":
+        console.print(format_json(results))
+    else:
+        console.print(format_text(results))
+
+    total_failed = sum(r.failed_count for r in results)
+    if total_failed:
+        sys.exit(1)
 
 
 @cli.command()
@@ -446,7 +516,7 @@ def schema(config: str):
 def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool):
     """Start the API server.
 
-    Launches the Constat API server for HTTP/WebSocket access.
+    Launches the Constat API server for HTTP/GraphQL access.
 
     \b
     Examples:
@@ -475,8 +545,21 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
         cfg = Config()
         print("=== DEFAULT CONFIG LOADED ===", file=sys.stderr, flush=True)
 
-    # Build server config
-    server_config = ServerConfig(host=host, port=port)
+    # Build server config from YAML server section (includes permissions, auth, etc.)
+    if config:
+        import yaml
+        from constat.core.config import _resolve_refs, _substitute_env_vars
+        with open(config) as f:
+            raw_content = f.read()
+        substituted = _substitute_env_vars(raw_content)
+        raw_data = yaml.safe_load(substituted)
+        raw_data = _resolve_refs(raw_data, Path(config).parent.resolve())
+        server_data = raw_data.get("server") or {}
+    else:
+        server_data = {}
+    server_data["host"] = host
+    server_data["port"] = port
+    server_config = ServerConfig.from_yaml_data(server_data)
 
     # Configure logging
     import logging
@@ -525,26 +608,35 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
     console.print()
 
     if reload:
-        # For reload mode, set config path in environment and use module path
+        # For reload mode, persist config path so it survives uvicorn worker restarts
         import os
         if config:
             os.environ["CONSTAT_CONFIG"] = config
+            # Also write to file — env var can be lost across uvicorn reload
+            config_marker = Path(".constat/server_config_path")
+            config_marker.parent.mkdir(parents=True, exist_ok=True)
+            config_marker.write_text(str(Path(config).resolve()))
 
-        # Watch config files for changes in addition to Python files
-        reload_includes = ["*.py"]
+        # Watch Python and .env files for changes
+        reload_includes = ["*.py", ".env", "demo/.env"]
+
+        # Watch source + config dirs, but NOT "." which includes .constat/
+        # where session step code .py files are written during query execution
+        reload_dirs = ["constat"]
         if config:
-            reload_includes.append(config)
-        # Watch .env files in common locations
-        reload_includes.extend([".env", "demo/.env", "*.yaml", "demo/*.yaml"])
+            config_dir = str(Path(config).parent or ".")
+            if config_dir not in reload_dirs:
+                reload_dirs.append(config_dir)
 
         uvicorn.run(
             "constat.server.app:app",
             host=host,
             port=port,
             reload=True,
-            reload_dirs=["constat", "."],
+            reload_dirs=reload_dirs,
             reload_includes=reload_includes,
             log_level=log_level,
+            timeout_graceful_shutdown=5,
         )
     else:
         # For production mode, create app directly
@@ -573,7 +665,7 @@ llm:
   # tiers:
   #   planning: claude-sonnet-4-20250514
   #   codegen: claude-sonnet-4-20250514
-  #   simple: claude-3-5-haiku-20241022
+  #   simple: claude-haiku-4-5-20251001
 
 # Database Connections
 databases:
@@ -616,6 +708,41 @@ execution:
     config_path.write_text(sample_config)
     console.print(f"[green]Created:[/green] {config_path}")
     console.print("\n[dim]Edit the file to configure your databases and API key.[/dim]")
+
+
+@cli.command()
+@click.argument("deploy_args", nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def deploy(ctx: click.Context, deploy_args: tuple[str, ...]):
+    """Deployment script generator: diff, generate, and apply config changes.
+
+    \b
+    Subcommands:
+        diff      Show diff between two config directories
+        generate  Generate a deployment script
+        apply     Apply a deployment script
+
+    \b
+    Examples:
+        constat deploy diff --source staging/ --target production/
+        constat deploy generate --source staging/ --target production/ -o deploy.yaml
+        constat deploy apply deploy.yaml --target production/ --no-dry-run
+    """
+    from constat.deploy.cli import main as deploy_main
+    deploy_main(list(deploy_args))
+
+
+@cli.command("hash-password")
+def hash_password_cmd():
+    """Hash a password for config.yaml local_users."""
+    import getpass
+    from constat.server.local_auth import hash_password
+    pw = getpass.getpass("Password: ")
+    confirm = getpass.getpass("Confirm: ")
+    if pw != confirm:
+        click.echo("Passwords do not match", err=True)
+        raise SystemExit(1)
+    click.echo(hash_password(pw))
 
 
 def main():

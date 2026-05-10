@@ -1,26 +1,155 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 1fd5c590-f4e1-40b9-a112-d68a1839b0bf
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Conversation Panel container
 
-import { useEffect, useRef, useState, useCallback } from 'react'
-import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import { useUIStore } from '@/store/uiStore'
-import { useProofStore } from '@/store/proofStore'
-import { MessageBubble } from './MessageBubble'
+import { useEffect, useRef, useState, useMemo } from 'react'
+import { useSessionContext } from '@/contexts/SessionContext'
+// proofStore actions accessed via SessionContext
+import { useTables } from '@/hooks/useTables'
+import { useArtifacts } from '@/hooks/useArtifacts'
+import { MessageBubble, StepDisplayMode } from './MessageBubble'
+import { BotMessageGroup } from './BotMessageGroup'
 import { AutocompleteInput } from './AutocompleteInput'
 import {
   ClipboardDocumentIcon,
   ClipboardDocumentCheckIcon,
   XMarkIcon,
   ClockIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
+  ShareIcon,
+  LinkIcon,
 } from '@heroicons/react/24/outline'
+import { expandSection, expandResultStep as expandResultStepFn, showArtifactPanel as showArtifactPanelFn, setResultsShowPublishedOnly } from '@/graphql/ui-state'
+import { useAuth } from '@/contexts/AuthContext'
+import { useMutation } from '@apollo/client'
+import { TOGGLE_PUBLIC_SHARING } from '@/graphql/operations/sessions'
+
+// Message type from session context
+type StoreMessage = ReturnType<typeof import('@/contexts/SessionContext').useSessionContext>['messages'][number]
+
+type MessageGroupTyped =
+  | { kind: 'user'; message: StoreMessage }
+  | { kind: 'bot'; messages: StoreMessage[] }
+  | { kind: 'single'; message: StoreMessage }
+
+function groupMessages(messages: StoreMessage[]): MessageGroupTyped[] {
+  const groups: MessageGroupTyped[] = []
+  let currentBotMessages: StoreMessage[] = []
+
+  const flushBot = () => {
+    if (currentBotMessages.length > 0) {
+      groups.push({ kind: 'bot', messages: [...currentBotMessages] })
+      currentBotMessages = []
+    }
+  }
+
+  for (const msg of messages) {
+    if (msg.type === 'user') {
+      flushBot()
+      groups.push({ kind: 'user', message: msg })
+    } else if (msg.type === 'error') {
+      flushBot()
+      groups.push({ kind: 'single', message: msg })
+    } else {
+      // thinking, plan, step, output, system — group together
+      currentBotMessages.push(msg)
+    }
+  }
+  flushBot()
+
+  return groups
+}
 
 export function ConversationPanel() {
-  const { session, messages, submitQuery, queuedMessages, removeQueuedMessage, lastQueryStartStep, isCreatingSession } = useSessionStore()
-  const { artifacts, tables } = useArtifactStore()
-  const { openFullscreenArtifact } = useUIStore()
-  const { openPanel: openProofPanel } = useProofStore()
+  const { session, messages, suggestions, welcomeTagline, submitQuery, queuedMessages, removeQueuedMessage, isCreatingSession, shareSession, replanFromStep, openProofPanel } = useSessionContext()
+  const { tables } = useTables()
+  const { artifacts } = useArtifacts()
+  const { user: authUser } = useAuth()
+  const expandArtifactSection = expandSection
+  const expandResultStep = expandResultStepFn
+  const showArtifactPanel = showArtifactPanelFn
+
+  const handleRoleClick = (role: string) => {
+    showArtifactPanel()
+    expandArtifactSection('agents')
+    setTimeout(() => {
+      const el = document.getElementById(`agent-${role}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('ring-2', 'ring-purple-400')
+        setTimeout(() => el.classList.remove('ring-2', 'ring-purple-400'), 2000)
+      }
+    }, 150)
+  }
+
+  const handleOutputClick = (stepNumber: number | undefined, output: { type: 'table' | 'artifact'; name: string; id: string }) => {
+    // Ensure the artifact panel is visible and results section is open
+    showArtifactPanel()
+    expandArtifactSection('results')
+    // Switch to "all" so unpublished items are visible
+    setResultsShowPublishedOnly(false)
+    // Ensure the step group is expanded
+    if (stepNumber) expandResultStep(stepNumber)
+    // Scroll to the item after DOM updates
+    setTimeout(() => {
+      const item = document.getElementById(output.id)
+      if (item) {
+        item.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        item.classList.add('ring-2', 'ring-primary-400')
+        setTimeout(() => item.classList.remove('ring-2', 'ring-primary-400'), 2000)
+      }
+    }, 150)
+  }
+
+  // Build step outputs map: stepNumber -> array of {type, name, id}
+  const stepOutputsMap = useMemo(() => {
+    const map = new Map<number, Array<{ type: 'table' | 'artifact'; name: string; id: string }>>()
+    for (const t of tables) {
+      if (t.step_number > 0) {
+        const arr = map.get(t.step_number) || []
+        arr.push({ type: 'table', name: t.name, id: `table-${t.name}` })
+        map.set(t.step_number, arr)
+      }
+    }
+    const internalTypes = new Set(['code', 'output', 'error', 'stdout', 'stderr', 'table'])
+    for (const a of artifacts) {
+      if (a.step_number > 0 && !internalTypes.has(a.artifact_type)) {
+        const arr = map.get(a.step_number) || []
+        arr.push({ type: 'artifact', name: a.title || a.name, id: `artifact-${a.id}` })
+        map.set(a.step_number, arr)
+      }
+    }
+    return map
+  }, [tables, artifacts])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [copiedAll, setCopiedAll] = useState(false)
+  const [stepOverride, setStepOverride] = useState<{ mode: StepDisplayMode; version: number } | undefined>()
+  const [insightOverride, setInsightOverride] = useState<{ collapsed: boolean; version: number } | undefined>()
+  const [groupOverride, setGroupOverride] = useState<{ expanded: boolean; version: number } | undefined>()
+  const [shareOpen, setShareOpen] = useState(false)
+  const [shareEmail, setShareEmail] = useState('')
+  const [shareResult, setShareResult] = useState<string | null>(null)
+  const [shareError, setShareError] = useState<string | null>(null)
+  const [isPublic, setIsPublic] = useState(session?.is_public ?? false)
+  const [publicUrl, setPublicUrl] = useState<string | null>(null)
+  const [publicCopied, setPublicCopied] = useState(false)
+  const [togglePublicMutation] = useMutation(TOGGLE_PUBLIC_SHARING)
+  const [editValue, setEditValue] = useState<string | null>(null)
+
+  const hasSteps = messages.some((m) => m.type === 'step')
+  const hasInsights = messages.some((m) => m.isFinalInsight)
+
+  // Compute grouped messages
+  const groups = useMemo(() => groupMessages(messages), [messages])
 
   // Auto-scroll to bottom on new messages or queued messages
   useEffect(() => {
@@ -34,85 +163,6 @@ export function ConversationPanel() {
     submitQuery(query, isFollowup)
   }
 
-  // Filter to only include items from the current query (step >= lastQueryStartStep)
-  const isFromCurrentQuery = useCallback((stepNumber?: number): boolean => {
-    if (lastQueryStartStep === 0) return true // No query started yet, include all
-    return (stepNumber ?? 0) >= lastQueryStartStep
-  }, [lastQueryStartStep])
-
-  // Check if there are any viewable results from the current query
-  const hasViewableResults = useCallback((): boolean => {
-    const currentQueryArtifacts = artifacts.filter((a) => isFromCurrentQuery(a.step_number))
-    const currentQueryTables = tables.filter((t) => isFromCurrentQuery(t.step_number))
-    return currentQueryArtifacts.length > 0 || currentQueryTables.length > 0
-  }, [artifacts, tables, isFromCurrentQuery])
-
-  // Find and open the best artifact fullscreen (prioritize current query's artifacts)
-  const handleViewResult = useCallback(() => {
-    // Priority keywords for finding the best result
-    const hasPriorityKeyword = (name?: string, title?: string): boolean => {
-      const text = `${name || ''} ${title || ''}`.toLowerCase()
-      return ['final', 'recommended', 'answer', 'result', 'conclusion'].some(kw => text.includes(kw))
-    }
-
-    // Helper to get the most recent item (highest step_number)
-    const getMostRecent = <T extends { step_number?: number }>(items: T[]): T | undefined => {
-      if (items.length === 0) return undefined
-      return items.reduce((best, curr) =>
-        (curr.step_number ?? 0) > (best.step_number ?? 0) ? curr : best
-      )
-    }
-
-    // Key artifacts from current query (published/starred)
-    const currentQueryArtifacts = artifacts.filter((a) => isFromCurrentQuery(a.step_number))
-    let keyArtifacts = currentQueryArtifacts.filter((a) => a.is_key_result)
-
-    // If no key artifacts in current query, fall back to ALL key artifacts
-    if (keyArtifacts.length === 0) {
-      keyArtifacts = artifacts.filter((a) => a.is_key_result)
-      console.log('[viewResult] No key artifacts in current query, using all key artifacts')
-    }
-
-    // Markdown documents (highest priority for final results)
-    const keyMarkdown = keyArtifacts.filter((a) =>
-      ['markdown', 'md'].includes(a.artifact_type?.toLowerCase())
-    )
-
-    // Other visualizations (charts, images, etc.)
-    const keyVisualizations = keyArtifacts.filter((a) =>
-      ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega'].includes(a.artifact_type?.toLowerCase())
-    )
-
-    // Tables in key artifacts
-    const keyTables = keyArtifacts.filter((a) => a.artifact_type === 'table')
-
-    // Find best item - prioritize markdown documents
-    console.log('[viewResult v2025-02-05] lastQueryStartStep:', lastQueryStartStep)
-    console.log('[viewResult v2025-02-05] keyArtifacts:', keyArtifacts.map(a => `${a.id}:${a.name}(${a.artifact_type})`))
-    console.log('[viewResult v2025-02-05] keyMarkdown:', keyMarkdown.map(a => `${a.id}:${a.name}`))
-    if (keyMarkdown.length > 0) {
-      const best = keyMarkdown.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyMarkdown)
-      console.log('[viewResult v2025-02-05] Selected markdown:', best?.id, best?.name)
-      if (best) openFullscreenArtifact({ type: 'artifact', id: best.id })
-    } else if (keyVisualizations.length > 0) {
-      const best = keyVisualizations.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyVisualizations)
-      if (best) openFullscreenArtifact({ type: 'artifact', id: best.id })
-    } else if (keyTables.length > 0) {
-      const best = keyTables.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyTables)
-      if (best) openFullscreenArtifact({ type: 'table', name: best.name })
-    } else if (tables.length > 0) {
-      // Fallback to tables from current query
-      const currentQueryTables = tables.filter(t => isFromCurrentQuery(t.step_number))
-      if (currentQueryTables.length > 0) {
-        const best = currentQueryTables.find(t => hasPriorityKeyword(t.name)) || getMostRecent(currentQueryTables)
-        if (best) openFullscreenArtifact({ type: 'table', name: best.name })
-      } else {
-        // Ultimate fallback - most recent table overall
-        const best = getMostRecent(tables)
-        if (best) openFullscreenArtifact({ type: 'table', name: best.name })
-      }
-    }
-  }, [artifacts, tables, isFromCurrentQuery, openFullscreenArtifact])
 
   // Copy entire conversation to clipboard
   const handleCopyAll = async () => {
@@ -127,6 +177,42 @@ export function ConversationPanel() {
     setTimeout(() => setCopiedAll(false), 2000)
   }
 
+  const handleShare = async () => {
+    if (!shareEmail.trim()) return
+    setShareError(null)
+    setShareResult(null)
+    try {
+      const result = await shareSession(shareEmail.trim())
+      setShareResult(result.share_url)
+      setShareEmail('')
+    } catch (err: unknown) {
+      setShareError(err instanceof Error ? err.message : 'Failed to share')
+    }
+  }
+
+  const handleTogglePublic = async () => {
+    if (!session) return
+    const newPublic = !isPublic
+    try {
+      const { data } = await togglePublicMutation({
+        variables: { sessionId: session.session_id, public: newPublic },
+      })
+      const result = data.togglePublicSharing
+      setIsPublic(result.public)
+      setPublicUrl(result.public ? result.shareUrl : null)
+    } catch (err: unknown) {
+      setShareError(err instanceof Error ? err.message : 'Failed to toggle public sharing')
+    }
+  }
+
+  const handleCopyPublicUrl = () => {
+    if (publicUrl) {
+      navigator.clipboard.writeText(publicUrl)
+      setPublicCopied(true)
+      setTimeout(() => setPublicCopied(false), 2000)
+    }
+  }
+
   if (!session) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -138,108 +224,300 @@ export function ConversationPanel() {
     )
   }
 
+  const greeting = (() => {
+    const user = authUser
+    const firstName = user?.displayName?.split(' ')[0]
+    return firstName ? `${firstName}, what can I help you with?` : 'What can I help you with?'
+  })()
+
+  // Intro screen: greeting + suggestions + input centered together
+  if (messages.length === 0) {
+    return (
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1" />
+        <div className="w-full max-w-2xl mx-auto px-6">
+          {welcomeTagline && (
+            <p className="text-base text-gray-600 dark:text-gray-300 mb-2 text-center"
+               dangerouslySetInnerHTML={{ __html: welcomeTagline.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/_(.+?)_/g, '<em>$1</em>') }} />
+          )}
+          <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100 mb-6 text-center">
+            {greeting}
+          </h1>
+          {suggestions.length > 0 && (
+            <div className="flex flex-wrap justify-center gap-2 mb-6">
+              {suggestions.map((s, i) => (
+                <button
+                  key={i}
+                  onClick={() => handleSubmit(s)}
+                  className="px-3 py-1.5 text-sm rounded-full border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-200 transition-colors"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+          <AutocompleteInput onSubmit={(q) => { setEditValue(null); handleSubmit(q) }} disabled={isCreatingSession} editValue={editValue} />
+        </div>
+        <div className="flex-1" />
+      </div>
+    )
+  }
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Copy All button - shown when there are messages */}
-      {messages.length > 0 && (
-        <div className="flex justify-end px-4 pt-2">
-          <button
-            onClick={handleCopyAll}
-            className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
-              copiedAll
-                ? 'text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
-            }`}
-            title="Copy entire conversation"
-          >
-            {copiedAll ? (
-              <>
-                <ClipboardDocumentCheckIcon className="w-4 h-4" />
-                Copied!
-              </>
-            ) : (
-              <>
-                <ClipboardDocumentIcon className="w-4 h-4" />
-                Copy All
-              </>
-            )}
-          </button>
-        </div>
-      )}
-
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 ? (
-          <div className="h-full flex items-center justify-center">
-            <div className="text-center text-gray-500 dark:text-gray-400 max-w-md">
-              <p className="text-lg font-medium mb-2">Ready to analyze your data</p>
-              <p className="text-sm">
-                Ask questions in natural language. For example:
-              </p>
-              <ul className="mt-3 text-sm text-left space-y-1">
-                <li>"What are the top 10 customers by revenue?"</li>
-                <li>"Show me monthly sales trends for 2024"</li>
-                <li>"Which products have declining sales?"</li>
-              </ul>
-            </div>
-          </div>
-        ) : (
+      {/* Toolbar */}
+      <div className="flex justify-end gap-1 pl-4 pr-12 pt-2 opacity-0 hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200">
+        {(hasSteps || hasInsights) && (
           <>
-            {messages.map((message) => (
-              <MessageBubble
-                key={message.id}
-                type={message.type}
-                content={message.content}
-                timestamp={message.timestamp}
-                stepNumber={message.stepNumber}
-                isLive={message.isLive}
-                isPending={message.isPending}
-                defaultExpanded={message.defaultExpanded}
-                isFinalInsight={message.isFinalInsight}
-                onViewResult={message.isFinalInsight ? (
-                  message.content?.toLowerCase().includes('proof') ? openProofPanel : (hasViewableResults() ? handleViewResult : undefined)
-                ) : undefined}
-                role={message.role}
-                skills={message.skills}
-              />
-            ))}
-            {/* Queued messages */}
-            {queuedMessages.map((queued, index) => (
-              <div key={queued.id} className="group flex gap-3 flex-row-reverse">
-                {/* Avatar placeholder for alignment */}
-                <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-primary-100 dark:bg-primary-900 opacity-50">
-                  <ClockIcon className="w-4 h-4 text-primary-600 dark:text-primary-400" />
-                </div>
-                {/* Queued message content */}
-                <div className="flex-1 max-w-[80%] text-right">
-                  <div className="relative inline-block rounded-lg rounded-tr-none px-4 py-3 bg-primary-100/50 dark:bg-primary-900/30 border border-dashed border-primary-300 dark:border-primary-700">
-                    {/* Cancel button */}
-                    <button
-                      onClick={() => removeQueuedMessage(queued.id)}
-                      className="absolute top-2 right-2 p-1 rounded text-gray-400 hover:text-red-500 dark:text-gray-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                      title="Cancel queued message"
-                    >
-                      <XMarkIcon className="w-4 h-4" />
-                    </button>
-                    {/* Queued badge */}
-                    <div className="flex items-center gap-1.5 text-xs text-primary-600 dark:text-primary-400 mb-1">
-                      <ClockIcon className="w-3 h-3" />
-                      <span>Queued {index > 0 ? `#${index + 1}` : ''}</span>
-                    </div>
-                    <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
-                      {queued.content}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            ))}
-            <div ref={messagesEndRef} />
+            <button
+              onClick={() => {
+                setStepOverride({ mode: 'oneline', version: (stepOverride?.version ?? 0) + 1 })
+                setInsightOverride({ collapsed: true, version: (insightOverride?.version ?? 0) + 1 })
+                setGroupOverride({ expanded: false, version: (groupOverride?.version ?? 0) + 1 })
+              }}
+              className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+              title="Collapse all steps"
+            >
+              <ChevronUpIcon className="w-3.5 h-3.5" />
+              Collapse
+            </button>
+            <button
+              onClick={() => {
+                setStepOverride({ mode: 'condensed', version: (stepOverride?.version ?? 0) + 1 })
+                setInsightOverride({ collapsed: false, version: (insightOverride?.version ?? 0) + 1 })
+                setGroupOverride({ expanded: true, version: (groupOverride?.version ?? 0) + 1 })
+              }}
+              className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+              title="Expand all steps"
+            >
+              <ChevronDownIcon className="w-3.5 h-3.5" />
+              Expand
+            </button>
           </>
         )}
+        <button
+          onClick={handleCopyAll}
+          className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
+            copiedAll
+              ? 'text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20'
+              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+          }`}
+          title="Copy entire conversation"
+        >
+          {copiedAll ? (
+            <>
+              <ClipboardDocumentCheckIcon className="w-4 h-4" />
+              Copied!
+            </>
+          ) : (
+            <>
+              <ClipboardDocumentIcon className="w-4 h-4" />
+              Copy All
+            </>
+          )}
+        </button>
+        <div className="relative">
+          <button
+            onClick={() => { setShareOpen(!shareOpen); setShareResult(null); setShareError(null) }}
+            className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+            title="Share session"
+          >
+            <ShareIcon className="w-4 h-4" />
+            Share
+          </button>
+          {shareOpen && (
+            <div className="absolute right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-3 w-72">
+              <div className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-2">Share this session</div>
+
+              {/* Public link toggle */}
+              <div className="flex items-center justify-between mb-2 pb-2 border-b border-gray-100 dark:border-gray-700">
+                <div className="flex items-center gap-1.5">
+                  <LinkIcon className="w-3.5 h-3.5 text-gray-400" />
+                  <span className="text-xs text-gray-600 dark:text-gray-400">Public link</span>
+                </div>
+                <button
+                  onClick={handleTogglePublic}
+                  className={`relative w-8 h-4 rounded-full transition-colors ${
+                    isPublic ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'
+                  }`}
+                >
+                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                    isPublic ? 'translate-x-4' : 'translate-x-0.5'
+                  }`} />
+                </button>
+              </div>
+              {isPublic && publicUrl && (
+                <div className="flex gap-1 mb-2">
+                  <input
+                    type="text"
+                    value={publicUrl}
+                    readOnly
+                    className="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-gray-50 dark:bg-gray-700 text-gray-700 dark:text-gray-300 truncate"
+                  />
+                  <button
+                    onClick={handleCopyPublicUrl}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${
+                      publicCopied ? 'bg-green-100 dark:bg-green-900/30 text-green-600' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                    }`}
+                  >
+                    {publicCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              )}
+
+              {/* Email sharing */}
+              <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Or invite by email</div>
+              <div className="flex gap-1">
+                <input
+                  type="email"
+                  value={shareEmail}
+                  onChange={(e) => setShareEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleShare()}
+                  placeholder="Email address"
+                  className="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  autoFocus
+                />
+                <button
+                  onClick={handleShare}
+                  className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                >
+                  Send
+                </button>
+              </div>
+              {shareResult && (
+                <div className="mt-2 text-xs text-green-600 dark:text-green-400">
+                  <span>Shared! </span>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(shareResult); }}
+                    className="underline hover:no-underline"
+                  >
+                    Copy link
+                  </button>
+                </div>
+              )}
+              {shareError && (
+                <div className="mt-2 text-xs text-red-600 dark:text-red-400">{shareError}</div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Messages area */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-3xl mx-auto px-6 py-4 space-y-6">
+          {groups.map((group) => {
+            if (group.kind === 'user') {
+              const message = group.message
+              return (
+                <MessageBubble
+                  key={message.id}
+                  type={message.type}
+                  content={message.content}
+                  timestamp={message.timestamp}
+                  stepNumber={message.stepNumber}
+                  isLive={message.isLive}
+                  isPending={message.isPending}
+                  defaultExpanded={message.defaultExpanded}
+                  isFinalInsight={message.isFinalInsight}
+                  onViewResult={message.isFinalInsight && message.content?.toLowerCase().includes('proof')
+                    ? openProofPanel : undefined}
+                  role={message.role}
+                  skills={message.skills}
+                  stepStartedAt={message.stepStartedAt}
+                  stepDurationMs={message.stepDurationMs}
+                  stepAttempts={message.stepAttempts}
+                  stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
+                  stepDisplayModeVersion={stepOverride?.version}
+                  contentExpanded={groupOverride?.expanded}
+                  contentExpandedVersion={groupOverride?.version}
+                  isSuperseded={message.isSuperseded}
+                  onStepEdit={(stepNumber, newGoal) => replanFromStep(stepNumber, 'edit', newGoal)}
+                  onStepDelete={(stepNumber) => replanFromStep(stepNumber, 'delete')}
+                  stepOutputs={message.stepNumber ? stepOutputsMap.get(message.stepNumber) : undefined}
+                  onOutputClick={(output) => handleOutputClick(message.stepNumber, output)}
+                  onRoleClick={handleRoleClick}
+                  onEditMessage={(text) => setEditValue(text)}
+                />
+              )
+            }
+
+            if (group.kind === 'single') {
+              const message = group.message
+              let queryText: string | undefined
+              for (let i = messages.indexOf(message) - 1; i >= 0; i--) {
+                if (messages[i].type === 'user') {
+                  queryText = messages[i].content
+                  break
+                }
+              }
+              return (
+                <MessageBubble
+                  key={message.id}
+                  type={message.type}
+                  content={message.content}
+                  timestamp={message.timestamp}
+                  stepNumber={message.stepNumber}
+                  isLive={message.isLive}
+                  isPending={message.isPending}
+                  defaultExpanded={message.defaultExpanded}
+                  isFinalInsight={message.isFinalInsight}
+                  contentExpanded={groupOverride?.expanded}
+                  contentExpandedVersion={groupOverride?.version}
+                  queryText={queryText}
+                  isSuperseded={message.isSuperseded}
+                />
+              )
+            }
+
+            // Bot group
+            return (
+              <BotMessageGroup
+                key={group.messages[0].id}
+                messages={group.messages}
+                stepOverride={stepOverride}
+                insightOverride={insightOverride}
+                groupOverride={groupOverride}
+                stepOutputsMap={stepOutputsMap}
+                onOutputClick={handleOutputClick}
+                onRoleClick={handleRoleClick}
+                onStepEdit={(stepNumber, newGoal) => replanFromStep(stepNumber, 'edit', newGoal)}
+                onStepDelete={(stepNumber) => replanFromStep(stepNumber, 'delete')}
+                openProofPanel={openProofPanel}
+                allMessages={messages}
+              />
+            )
+          })}
+          {/* Queued messages */}
+          {queuedMessages.map((queued, index) => (
+            <div key={queued.id} className="group">
+              <div className="flex items-center gap-3 mb-1">
+                <div className="w-8 h-8 rounded-full flex items-center justify-center bg-primary-100 dark:bg-primary-900 opacity-50">
+                  <ClockIcon className="w-4 h-4 text-primary-600 dark:text-primary-400" />
+                </div>
+                <span className="font-semibold text-sm text-gray-900 dark:text-gray-100">You</span>
+                <span className="text-xs text-primary-600 dark:text-primary-400">Queued {index > 0 ? `#${index + 1}` : ''}</span>
+              </div>
+              <div className="ml-11 relative">
+                <button
+                  onClick={() => removeQueuedMessage(queued.id)}
+                  className="absolute top-0 right-0 p-1 rounded text-gray-400 hover:text-red-500 dark:text-gray-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="Cancel queued message"
+                >
+                  <XMarkIcon className="w-4 h-4" />
+                </button>
+                <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap opacity-60">
+                  {queued.content}
+                </p>
+              </div>
+            </div>
+          ))}
+          <div ref={messagesEndRef} />
+        </div>
       </div>
 
       {/* Query input */}
-      <AutocompleteInput onSubmit={handleSubmit} disabled={isCreatingSession} />
+      <AutocompleteInput onSubmit={(q) => { setEditValue(null); handleSubmit(q) }} disabled={isCreatingSession} editValue={editValue} />
     </div>
   )
 }

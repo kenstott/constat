@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 03ea0819-8858-4e71-8369-1f80c9ef8716
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -20,7 +21,7 @@ Usage:
         schema_manager=schema_manager,
         api_catalog=api_catalog,
         config=config,
-        fact_resolver=fact_resolver,
+        fact_resolver=fact_resolver
     )
 
     # Get tool schemas for LLM

@@ -8,6 +8,7 @@ help_commands:
   - ["/tables", "List available tables", "Data Exploration"]
   - ["/show <table>", "Show table contents", "Data Exploration"]
   - ["/export <table> [file]", "Export table to CSV or XLSX", "Data Exploration"]
+  - ["/export inspection [file]", "Export session inspection (state) to JSON", "Data Exploration"]
   - ["/query <sql>", "Run SQL query on datastore", "Data Exploration"]
   - ["/code [step]", "Show generated code (all or specific step)", "Data Exploration"]
   - ["/download-code [file]", "Download all code as Python script", "Data Exploration"]
@@ -16,6 +17,12 @@ help_commands:
   - ["/state", "Show session state", "Session"]
   - ["/reset", "Clear session state and start fresh", "Session"]
   - ["/redo [instruction]", "Retry last query (with optional modifications)", "Session"]
+  - ["/objectives", "List session objectives", "Session"]
+  - ["/objective-edit <N> <text>", "Edit objective N and replan", "Session"]
+  - ["/objective-delete <N>", "Delete objective N and replan", "Session"]
+  - ["/step-redo <N>", "Redo from step N", "Session"]
+  - ["/step-delete <N>", "Delete step N and replan", "Session"]
+  - ["/step-edit <N> <goal>", "Edit step N goal and replan", "Session"]
   - ["/update, /refresh", "Refresh metadata and rebuild cache", "Session"]
   - ["/context", "Show context size and token usage", "Session"]
   - ["/compact", "Compact context to reduce token usage", "Session"]
@@ -45,29 +52,46 @@ help_commands:
   - ["/preferences", "Show current preferences", "Preferences"]
   - ["/user [name]", "Show or set current user", "Preferences"]
   # Analysis
-  - ["/discover [scope] <query>", "Search data sources (database|api|document)", "Analysis"]
+  - ["/discover <query>", "Search all data sources (returns structured JSON)", "Analysis"]
   - ["/summarize <target>", "Summarize plan|session|facts|<table>", "Analysis"]
-  - ["/prove", "Verify conversation claims with auditable proof", "Analysis"]
+  - ["/reason", "Verify conversation claims with auditable reasoning chain", "Analysis"]
+  - ["/replay-reason", "Re-execute stored reason-chain code without LLM codegen", "Analysis"]
   - ["/correct <text>", "Record a correction for future reference", "Analysis"]
   - ["/learnings", "Show learnings and rules", "Analysis"]
   - ["/compact-learnings", "Promote similar learnings into rules", "Analysis"]
   - ["/rule <text>", "Add a new rule directly", "Analysis"]
   - ["/rule-edit <id> <text>", "Edit an existing rule", "Analysis"]
   - ["/rule-delete <id>", "Delete a rule", "Analysis"]
-  # Roles & Skills
-  - ["/role [name]", "Show or set current role", "Roles & Skills"]
-  - ["/roles", "List available roles", "Roles & Skills"]
-  - ["/role-create <name>", "Create a new role", "Roles & Skills"]
-  - ["/role-edit <name> <prompt>", "Edit a role's prompt", "Roles & Skills"]
-  - ["/role-delete <name>", "Delete a role", "Roles & Skills"]
-  - ["/role-draft <name> <desc>", "Draft a role using AI", "Roles & Skills"]
-  - ["/skill [name]", "Show active or activate a skill", "Roles & Skills"]
-  - ["/skills", "List available skills", "Roles & Skills"]
-  - ["/skill-create <name>", "Create a new skill", "Roles & Skills"]
-  - ["/skill-edit <name> <content>", "Edit a skill's content", "Roles & Skills"]
-  - ["/skill-delete <name>", "Delete a skill", "Roles & Skills"]
-  - ["/skill-deactivate <name>", "Deactivate a skill", "Roles & Skills"]
-  - ["/skill-draft <name> <desc>", "Draft a skill using AI", "Roles & Skills"]
+  # Agents & Skills
+  - ["/agent [name]", "Show or set current agent", "Agents & Skills"]
+  - ["/agents", "List available agents", "Agents & Skills"]
+  - ["/agent-create <name>", "Create a new agent", "Agents & Skills"]
+  - ["/agent-edit <name> <prompt>", "Edit an agent's prompt", "Agents & Skills"]
+  - ["/agent-delete <name>", "Delete an agent", "Agents & Skills"]
+  - ["/agent-draft <name> <desc>", "Draft an agent using AI", "Agents & Skills"]
+  - ["/skill [name]", "Show active or activate a skill", "Agents & Skills"]
+  - ["/skills", "List available skills", "Agents & Skills"]
+  - ["/skill-create <name>", "Create a new skill", "Agents & Skills"]
+  - ["/skill-edit <name> <content>", "Edit a skill's content", "Agents & Skills"]
+  - ["/skill-delete <name>", "Delete a skill", "Agents & Skills"]
+  - ["/skill-deactivate <name>", "Deactivate a skill", "Agents & Skills"]
+  - ["/skill-draft <name> <desc>", "Draft a skill using AI", "Agents & Skills"]
+  - ["/skill-download <name> [file]", "Download skill as Claude Desktop zip", "Agents & Skills"]
+  # Glossary
+  - ["/glossary [scope]", "Show glossary (all|defined|deprecated)", "Glossary"]
+  - ["/define <name> <def>", "Add a glossary definition", "Glossary"]
+  - ["/undefine <name>", "Remove a glossary definition", "Glossary"]
+  - ["/refine <name>", "AI-refine a glossary definition", "Glossary"]
+  # Diagnostics (LLM tool inspection)
+  - ["/schema <db.table>", "Show detailed table schema (as LLM sees it)", "Diagnostics"]
+  - ["/search-tables <query>", "Semantic search for relevant tables", "Diagnostics"]
+  - ["/search-apis <query>", "Semantic search for relevant APIs", "Diagnostics"]
+  - ["/search-docs <query>", "Semantic search for relevant documents", "Diagnostics"]
+  - ["/lookup <name>", "Look up glossary term with full details", "Diagnostics"]
+  - ["/entity <name>", "Find entity across schema and documents", "Diagnostics"]
+  - ["/known-facts", "List all known/cached facts (LLM view)", "Diagnostics"]
+  - ["/sources <query>", "Find relevant sources for a query (LLM context)", "Diagnostics"]
+  - ["/search-chunks <query>", "Raw similarity search on all chunks", "Diagnostics"]
   # Exit
   - ["/quit, /q", "Exit the session", "Exit"]
 
@@ -102,18 +126,18 @@ command_descriptions:
   apis: "List APIs"
   documents: "List documents"
   files: "List data files"
-  discover: "Semantic search across all data sources"
+  discover: "Search all data sources (returns structured JSON)"
   learnings: "Show learnings and rules"
   rule: "Add a new rule"
   rule-edit: "Edit an existing rule"
   rule-delete: "Delete a rule"
   correct: "Record a correction"
-  role: "Set or show current role"
-  roles: "List available roles"
-  role-create: "Create a new role"
-  role-edit: "Edit a role's prompt"
-  role-delete: "Delete a role"
-  role-draft: "Draft a role using AI"
+  agent: "Set or show current agent"
+  agents: "List available agents"
+  agent-create: "Create a new agent"
+  agent-edit: "Edit an agent's prompt"
+  agent-delete: "Delete an agent"
+  agent-draft: "Draft an agent using AI"
   skill: "Show or activate a skill"
   skills: "List available skills"
   skill-create: "Create a new skill"
@@ -121,4 +145,27 @@ command_descriptions:
   skill-delete: "Delete a skill"
   skill-deactivate: "Deactivate a skill"
   skill-draft: "Draft a skill using AI"
-  prove: "Verify conversation with auditable proof"
+  skill-download: "Download skill as Claude Desktop zip"
+  objectives: "List session objectives"
+  objective-edit: "Edit an objective and replan"
+  objective-delete: "Delete an objective and replan"
+  redo: "Replan and re-execute the last query"
+  replay: "Re-execute stored code without LLM codegen"
+  step-redo: "Redo from a step"
+  step-delete: "Delete a step and replan"
+  step-edit: "Edit a step goal and replan"
+  reason: "Verify conversation with auditable reasoning chain"
+  replay-reason: "Re-execute stored reason-chain code without LLM codegen"
+  glossary: "Show glossary terms"
+  define: "Add a glossary definition"
+  undefine: "Remove a glossary definition"
+  refine: "AI-refine a glossary definition"
+  schema: "Show detailed table schema"
+  search-tables: "Semantic search for tables"
+  search-apis: "Semantic search for APIs"
+  search-docs: "Semantic search for documents"
+  lookup: "Look up glossary term"
+  entity: "Find entity across sources"
+  known-facts: "List known facts"
+  sources: "Find relevant sources"
+  search-chunks: "Raw similarity search on chunks"

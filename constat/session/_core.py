@@ -1,0 +1,789 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: 5a8018d7-b0db-4830-a53f-edfecfe0fffd
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
+"""Core mixin: __init__, resources, events, state."""
+
+from __future__ import annotations
+
+import logging
+import time
+from pathlib import Path
+from typing import Callable, Optional, Any
+
+import constat.llm
+from constat.catalog.api_schema_manager import APISchemaManager
+from constat.catalog.preload_cache import MetadataPreloadCache
+from constat.catalog.schema_manager import SchemaManager
+from constat.core.config import Config
+from constat.core.tiered_config import ResolvedConfig
+from constat.core.models import Plan
+from constat.core.resources import SessionResources
+from constat.discovery.concept_detector import ConceptDetector
+from constat.discovery.doc_tools import DocumentDiscoveryTools
+from constat.embedding_loader import EmbeddingModelLoader
+from constat.execution.executor import PythonExecutor
+from constat.execution.fact_resolver import FactResolver
+from constat.execution.intent_classifier import IntentClassifier
+from constat.execution.mode import (
+    Phase, TurnIntent, ConversationState, PrimaryIntent,
+)
+from constat.execution.parallel_scheduler import ExecutionContext
+from constat.execution.planner import Planner
+from constat.execution.scratchpad import Scratchpad
+from constat.providers import TaskRouter
+from constat.session._types import (
+    SessionConfig, StepEvent, ApprovalCallback, ClarificationCallback,
+)
+from constat.storage.history import SessionHistory
+from constat.storage.learnings import LearningStore
+from constat.storage.registry import ConstatRegistry
+from constat.storage.duckdb_session_store import DuckDBSessionStore
+
+logger = logging.getLogger(__name__)
+
+
+class CoreMixin:
+
+    def __init__(
+        self,
+        config: Config,
+        session_id: str,
+        session_config: Optional[SessionConfig] = None,
+        history: Optional[SessionHistory] = None,
+        progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
+        user_id: Optional[str] = None,
+        data_dir: Optional[Path] = None,
+    ):
+        self.session_id = session_id  # Always provided by client
+
+        self.config = config
+        self.resolved_config: Optional[ResolvedConfig] = None
+        self.session_config = session_config or SessionConfig()
+        self.user_id = user_id or "default"
+        self.data_dir = data_dir or Path(".constat")
+
+        # Start loading embedding model in background immediately
+        # This allows the model to load while other initialization happens
+        EmbeddingModelLoader.get_instance().start_loading()
+
+        # Initialize components with timing — parallel when both have work
+        from concurrent.futures import ThreadPoolExecutor
+        t0 = time.time()
+        self.schema_manager = SchemaManager(config)
+        self.api_schema_manager = APISchemaManager(config)
+
+        if config.apis:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                schema_future = pool.submit(self.schema_manager.initialize, progress_callback=progress_callback)
+                api_future = pool.submit(self.api_schema_manager.initialize, progress_callback=progress_callback)
+                schema_future.result()
+                api_future.result()
+        else:
+            self.schema_manager.initialize(progress_callback=progress_callback)
+        logger.debug(f"Session init: SchemaManager + APISchemaManager took {time.time() - t0:.2f}s")
+
+        # Metadata preload cache for faster context loading
+        t0 = time.time()
+        self.preload_cache = MetadataPreloadCache(config)
+        self._preloaded_context: Optional[str] = None
+        # noinspection PyUnresolvedReferences
+        self._load_preloaded_context()
+        logger.debug(f"Session init: MetadataPreloadCache took {time.time() - t0:.2f}s")
+
+        # Task router for model routing with escalation
+        self.router = TaskRouter(config.llm)
+
+        # Document discovery tools (for reference documents)
+        # Create split vector store: user DB (main) + system DB (ATTACHed as sys)
+        t0 = time.time()
+        from constat.core.paths import user_vault_dir
+        from constat.storage.split_store import SplitVectorStore
+        from constat.discovery.vector_store import DuckDBVectorStore
+        from constat.core.domain_tiers import get_domain_tier
+
+        from constat.core.paths import migrate_db_name
+        user_vault = user_vault_dir(self.data_dir, self.user_id)
+        user_db = migrate_db_name(user_vault, "vectors.duckdb", "user.duckdb")
+        system_db = migrate_db_name(self.data_dir, "vectors.duckdb", "system.duckdb")
+        user_db.parent.mkdir(parents=True, exist_ok=True)
+
+        domain_tier_fn = lambda d: get_domain_tier(d, config, self.user_id)
+
+        split_store = SplitVectorStore(
+            user_db_path=user_db,
+            system_db_path=system_db if system_db.exists() else None,
+            init_sql=["INSTALL vss", "LOAD vss", "INSTALL fts", "LOAD fts"],
+        )
+        self._split_store = split_store
+
+        vector_store = DuckDBVectorStore.from_split(
+            split_store,
+            domain_tier_fn=domain_tier_fn,
+        )
+
+        self.doc_tools = DocumentDiscoveryTools(
+            config, router=self.router, skip_auto_index=True,
+            vector_store=vector_store,
+        )
+        # Wire schema managers to use the same split store so domain loading
+        # writes chunks to the correct DB (not the default .constat/system.duckdb)
+        self.schema_manager._vector_store = vector_store
+        self.api_schema_manager._vector_store = vector_store
+        logger.debug(f"Session init: DocumentDiscoveryTools took {time.time() - t0:.2f}s")
+
+        # Entity extraction is handled by session_manager.refresh_entities_async()
+        # after session creation — not during __init__ to avoid dual extraction race
+        self._entities_extracted = False
+
+        constat.llm.set_backend(self.router)
+        # noinspection PyUnresolvedReferences
+        constat.llm.on_call(self._handle_llm_call_event)
+
+        # Default provider (for backward compatibility - e.g., fact resolver)
+        self.llm = self.router._get_provider(
+            self.router.routing_config.get_models_for_task("general")[0]
+        )
+
+        self.planner = Planner(
+            config, self.schema_manager, self.router,
+            doc_tools=self.doc_tools,
+            api_schema_manager=self.api_schema_manager,
+        )
+
+
+        self.executor = PythonExecutor(
+            timeout_seconds=config.execution.timeout_seconds,
+            allowed_imports=config.execution.allowed_imports or None,
+        )
+
+        self.history = history or SessionHistory(user_id=self.user_id)
+
+        # Session state
+        # Note: self.session_id is set at the top of __init__ (required parameter)
+        # Store server_session_id for history mapping (allows find_session_by_server_id)
+        self.server_session_id: Optional[str] = session_id  # Server UUID for reverse lookup
+        self.plan: Optional[Plan] = None
+        self.scratchpad = Scratchpad()
+        self.datastore: Optional[DuckDBSessionStore] = None  # Persistent storage (only shared state between steps)
+
+        # Central registry for tables and artifacts (shared across sessions)
+        self.registry = ConstatRegistry(base_dir=self.data_dir)
+
+        # Session-scoped data sources (added via /database and /file commands)
+        self.session_databases: dict[str, dict] = {}  # name -> {type, uri, description}
+        self.session_files: dict[str, dict] = {}  # name -> {uri, auth, description}
+
+        # Domain APIs (added when domains are activated)
+        self._domain_apis: dict[str, Any] = {}  # name -> ApiConfig
+
+        # Consolidated view of all available resources (single source of truth)
+        self.resources = SessionResources()
+        self._init_resources_from_config()
+
+        # Pass resources to planner (after resources are initialized)
+        self.planner.resources = self.resources
+
+        # Fact resolver for auditable mode
+        self.fact_resolver = FactResolver(
+            llm=self.llm,
+            schema_manager=self.schema_manager,
+            config=self.config,
+            event_callback=self._handle_fact_resolver_event,
+            doc_tools=self.doc_tools,  # Enable document-based fact resolution
+            router=self.router,
+        )
+
+        # Learning store for corrections and patterns
+        self.learning_store = LearningStore(base_dir=self.data_dir, user_id=self.user_id)
+
+        # Pass learning store to planner for injecting learned rules
+        self.planner.set_learning_store(self.learning_store)
+
+        # Agent manager for user-defined agents ({data_dir}/{user_id}/agents.yaml)
+        from constat.core.agents import AgentManager
+        self.agent_manager = AgentManager(user_id=self.user_id, base_dir=self.data_dir)
+
+        # Agent matcher for dynamic agent selection based on query
+        from constat.core.agent_matcher import AgentMatcher
+        self.agent_matcher = AgentMatcher(self.agent_manager)
+        # Initialize lazily on first use to avoid blocking startup
+
+        # Skill manager: loads system, domain, and user skills in precedence order
+        from constat.core.skills import SkillManager
+        system_skills_dir = Path(config.config_dir) / "skills" if config.config_dir else None
+        self.skill_manager = SkillManager(
+            user_id=self.user_id, base_dir=self.data_dir,
+            system_skills_dir=system_skills_dir,
+        )
+
+        # Skill matcher for dynamic skill selection based on query
+        from constat.core.skill_matcher import SkillMatcher
+        self.skill_matcher = SkillMatcher(self.skill_manager)
+        # Initialize lazily on first use to avoid blocking startup
+
+        # Wire skill manager into planner so active skills appear in planning prompts
+        self.planner.set_skill_manager(self.skill_manager)
+
+        # Track current agent for this query (None = shared context)
+        self._current_agent_id: Optional[str] = None
+
+        # Event callbacks for monitoring
+        self._event_handlers: list[Callable[[StepEvent], None]] = []
+
+        # Approval callback (set via set_approval_callback)
+        self._approval_callback: Optional[ApprovalCallback] = None
+
+        # Clarification callback (set via set_clarification_callback)
+        self._clarification_callback: Optional[ClarificationCallback] = None
+
+        # Tool response cache for schema tools (cleared on refresh)
+        self._tool_cache: dict[str, Any] = {}
+
+        # Cached proof result (set after prove_conversation completes)
+        self.last_proof_result: Optional[dict] = None
+
+        # Proof user validations and step hints (set during prove flow)
+        self._proof_user_validations: list[dict] = []
+        self._proof_step_hints: list = []
+
+        # Concept detector for conditional prompt injection (lazy init on first use)
+        self._concept_detector = ConceptDetector()
+
+        # Phase 3: Conversation state and intent classifier
+        # Initialize conversation state with idle phase
+        self._conversation_state: ConversationState = ConversationState(
+            phase=Phase.IDLE,
+        )
+
+        # Intent classifier for turn-level intent detection
+        # Pass router as LLM provider for fallback classification
+        self._intent_classifier: IntentClassifier = IntentClassifier(
+            llm_provider=self.router,
+        )
+
+        # Precompute intent classifier embeddings in background
+        # so first classify() call doesn't race the model loader
+        import threading
+        def _precompute_intent_embeddings():
+            try:
+                EmbeddingModelLoader.get_instance().get_model()  # block until ready
+                self._intent_classifier.precompute()
+                logger.debug("Intent classifier embeddings precomputed")
+            except Exception as e:
+                logger.warning(f"Intent classifier precompute failed: {e}")
+        threading.Thread(target=_precompute_intent_embeddings, daemon=True).start()
+
+        # Phase 4: Execution Control
+        # Cancellation flag for stopping execution mid-flight
+        self._cancelled: bool = False
+
+        # Intent queue for messages received during execution
+        # Queue behavior per intent type:
+        # - plan_new: Queue 1, latest wins (new request replaces queued)
+        # - control: Queue in order, process after execution
+        # - query: No queue, answered in parallel immediately
+        # Each entry is a tuple of (TurnIntent, user_input_string)
+        self._intent_queue: list[tuple[TurnIntent, str]] = []
+
+        # Execution context for cancellation signaling to scheduler
+        self._execution_context: ExecutionContext = ExecutionContext()
+
+    def _init_resources_from_config(self) -> None:
+        """Initialize resources from base config."""
+        # Add databases from config
+        for name, db_config in self.config.databases.items():
+            self.resources.add_database(
+                name=name,
+                description=db_config.description or "",
+                db_type=db_config.type or "sql",
+                source="config",
+            )
+
+        # Add APIs from config
+        if self.config.apis:
+            for name, api_config in self.config.apis.items():
+                self.resources.add_api(
+                    name=name,
+                    description=api_config.description or "",
+                    api_type=api_config.type or "graphql",
+                    source="config",
+                )
+
+        # Add documents from config
+        if self.config.documents:
+            for name, doc_config in self.config.documents.items():
+                self.resources.add_document(
+                    name=name,
+                    description=doc_config.description or "",
+                    doc_type=doc_config.type or "auto",
+                    source="config",
+                )
+
+    def add_domain_resources(
+        self,
+        domain_filename: str,
+        databases: dict = None,
+        apis: dict = None,
+        documents: dict = None,
+    ) -> None:
+        """Add resources from a domain.
+
+        Args:
+            domain_filename: Domain filename for source tracking
+            databases: Dict of database configs
+            apis: Dict of API configs
+            documents: Dict of document configs
+        """
+        source = f"domain:{domain_filename}"
+
+        if databases:
+            for name, db_config in databases.items():
+                self.resources.add_database(
+                    name=name,
+                    description=getattr(db_config, 'description', '') or "",
+                    db_type=getattr(db_config, 'type', 'sql') or "sql",
+                    source=source,
+                )
+
+        if apis:
+            for name, api_config in apis.items():
+                self.resources.add_api(
+                    name=name,
+                    description=getattr(api_config, 'description', '') or "",
+                    api_type=getattr(api_config, 'type', 'graphql') or "graphql",
+                    source=source,
+                )
+
+        if documents:
+            for name, doc_config in documents.items():
+                self.resources.add_document(
+                    name=name,
+                    description=getattr(doc_config, 'description', '') or "",
+                    doc_type=getattr(doc_config, 'type', 'file') or "file",
+                    source=source,
+                )
+
+    def remove_domain_resources(self, domain_filename: str) -> None:
+        """Remove all resources from a domain.
+
+        Args:
+            domain_filename: Domain filename
+        """
+        source = f"domain:{domain_filename}"
+        self.resources.remove_by_source(source)
+
+    def sync_resources_to_history(self) -> None:
+        """Sync current resources to session history (session.json).
+
+        Call this after loading/unloading domains to keep history in sync.
+        """
+        if self.session_id and self.history:
+            self.history.update_resources(
+                session_id=self.session_id,
+                databases=self.resources.database_names,
+                apis=self.resources.api_names,
+                documents=self.resources.document_names,
+            )
+
+    def set_approval_callback(self, callback: ApprovalCallback) -> None:
+        """
+        Set the callback for plan approval.
+
+        The callback receives a PlanApprovalRequest and must return a PlanApprovalResponse.
+
+        Args:
+            callback: Function that handles approval requests
+        """
+        self._approval_callback = callback
+
+    def set_clarification_callback(self, callback: ClarificationCallback) -> None:
+        """
+        Set the callback for requesting clarification on ambiguous questions.
+
+        The callback receives a ClarificationRequest and must return a ClarificationResponse.
+
+        Args:
+            callback: Function that handles clarification requests
+        """
+        self._clarification_callback = callback
+
+    def on_event(self, handler: Callable[[StepEvent], None]) -> None:
+        """Register an event handler for step events."""
+        self._event_handlers.append(handler)
+
+    def _emit_event(self, event: StepEvent) -> None:
+        """Emit an event to all handlers."""
+        for handler in self._event_handlers:
+            try:
+                handler(event)
+            except Exception as e:
+                logger.warning(f"[EVENT] Handler error for {event.event_type}: {e}")
+
+    def _handle_fact_resolver_event(self, event_type: str, data: dict) -> None:
+        """Convert fact resolver events to StepEvents and emit them."""
+        self._emit_event(StepEvent(
+            event_type=event_type,
+            step_number=data.get("step", 0),
+            data=data,
+        ))
+
+    def _sync_user_facts_to_planner(self) -> None:
+        """Sync current user facts to the planner for use in planning prompts."""
+        try:
+            all_facts = self.fact_resolver.get_all_facts()
+            # Convert Fact objects to simple name -> value dict
+            facts_dict = {name: fact.value for name, fact in all_facts.items()}
+            self.planner.set_user_facts(facts_dict)
+        except Exception as e:
+            logger.debug(f"Failed to sync user facts to planner: {e}")
+
+    def _sync_glossary_to_planner(self, query: str) -> None:
+        """Build glossary context for the query and pass it to the planner."""
+        try:
+            context = self._build_glossary_context(query)
+            self.planner.set_glossary_context(context)
+        except Exception as e:
+            logger.debug(f"Failed to sync glossary to planner: {e}")
+
+    def _sync_available_agents_to_planner(self) -> None:
+        """Sync available agents to the planner for agent-based step assignment."""
+        try:
+            agent_names = self.agent_manager.list_agents()  # Returns list[str]
+            # Convert to list of dicts with name and description
+            agents_list = []
+            for name in agent_names:
+                agent = self.agent_manager.get_agent(name)
+                if agent:
+                    agents_list.append({"name": name, "description": agent.description or ""})
+            logger.info(f"[AGENTS] Syncing {len(agents_list)} agents to planner: {[a['name'] for a in agents_list]}")
+            self.planner.set_available_agents(agents_list)
+        except Exception as e:
+            logger.warning(f"Failed to sync agents to planner: {e}")
+
+    def cancel_execution(self) -> None:
+        """
+        Cancel the current execution.
+
+        Sets the cancellation flag which will be checked between steps.
+        Completed facts and results are preserved; only pending steps are cancelled.
+
+        This method is thread-safe and can be called from another thread
+        (e.g., in response to Ctrl+C or user typing "stop").
+        """
+        self._cancelled = True
+        self._execution_context.cancel()
+
+        # Emit cancellation event
+        self._emit_event(StepEvent(
+            event_type="execution_cancelled",
+            step_number=0,
+            data={"message": "Execution cancelled by user"}
+        ))
+
+        logger.debug("Execution cancellation requested")
+
+    def is_cancelled(self) -> bool:
+        """
+        Check if cancellation has been requested.
+
+        Returns:
+            True if cancellation has been requested.
+        """
+        return self._cancelled
+
+    def reset_cancellation(self) -> None:
+        """
+        Reset the cancellation flag.
+
+        Called at the start of a new execution to clear any previous
+        cancellation state.
+        """
+        self._cancelled = False
+        self._execution_context.reset()
+
+    def queue_intent(self, intent: TurnIntent, user_input: str) -> bool:
+        """
+        Queue an intent for processing after current execution completes.
+
+        Queue behavior depends on intent type:
+        - plan_new: Queue 1, latest wins (new request replaces queued)
+        - control: Queue in order, process after execution
+        - query: Not queued - should be handled in parallel immediately
+
+        Args:
+            intent: The TurnIntent to queue.
+            user_input: The original user input (stored with intent for later processing).
+
+        Returns:
+            True if the intent was queued, False if it should be handled immediately.
+        """
+        if intent.primary == PrimaryIntent.QUERY:
+            # Query intents are not queued - they're answered in parallel
+            return False
+
+        if intent.primary == PrimaryIntent.PLAN_NEW:
+            # Queue 1, latest wins - replace any existing queued plan_new
+            self._intent_queue = [
+                (i, inp) for i, inp in self._intent_queue
+                if i.primary != PrimaryIntent.PLAN_NEW
+            ]
+            self._intent_queue.append((intent, user_input))
+            logger.debug(f"Queued plan_new intent (latest wins), queue size: {len(self._intent_queue)}")
+            return True
+
+        if intent.primary == PrimaryIntent.CONTROL:
+            # Control intents queue in order
+            self._intent_queue.append((intent, user_input))
+            logger.debug(f"Queued control intent, queue size: {len(self._intent_queue)}")
+            return True
+
+        if intent.primary == PrimaryIntent.PLAN_CONTINUE:
+            # Plan continue triggers replan - cancel current and queue
+            self.cancel_execution()
+            self._intent_queue.append((intent, user_input))
+            logger.debug(f"Queued plan_continue intent (triggers replan), queue size: {len(self._intent_queue)}")
+            return True
+
+        return False
+
+    def get_queued_intents_count(self) -> int:
+        """
+        Get the number of queued intents.
+
+        Returns:
+            The number of intents waiting to be processed.
+        """
+        return len(self._intent_queue)
+
+    def process_queued_intents(self) -> list[dict]:
+        """
+        Process all queued intents after execution completes.
+
+        Intents are processed in queue order. The queue is cleared
+        after processing.
+
+        Returns:
+            List of result dicts from processing each queued intent.
+        """
+        if not self._intent_queue:
+            return []
+
+        results = []
+        queued = list(self._intent_queue)
+        self._intent_queue = []
+
+        logger.debug(f"Processing {len(queued)} queued intents")
+
+        for intent, user_input in queued:
+            try:
+                if intent.primary == PrimaryIntent.PLAN_NEW:
+                    # noinspection PyUnresolvedReferences
+                    result = self._handle_plan_new_intent(intent, user_input)
+                elif intent.primary == PrimaryIntent.PLAN_CONTINUE:
+                    # noinspection PyUnresolvedReferences
+                    result = self._handle_plan_continue_intent(intent, user_input)
+                elif intent.primary == PrimaryIntent.CONTROL:
+                    # noinspection PyUnresolvedReferences
+                    result = self._handle_control_intent(intent, user_input)
+                else:
+                    result = {
+                        "success": False,
+                        "error": f"Unexpected queued intent type: {intent.primary}",
+                    }
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Error processing queued intent: {e}")
+                results.append({
+                    "success": False,
+                    "error": str(e),
+                })
+
+        return results
+
+    def clear_intent_queue(self) -> int:
+        """
+        Clear all queued intents.
+
+        Returns:
+            The number of intents that were cleared.
+        """
+        count = len(self._intent_queue)
+        self._intent_queue = []
+        logger.debug(f"Cleared {count} queued intents")
+        return count
+
+    def get_execution_context(self) -> ExecutionContext:
+        """
+        Get the execution context for external monitoring.
+
+        Returns:
+            The ExecutionContext that can be used to check/request cancellation.
+        """
+        return self._execution_context
+
+    def is_executing(self) -> bool:
+        """
+        Check if execution is currently in progress.
+
+        Returns:
+            True if the session is in EXECUTING phase.
+        """
+        return self._conversation_state.phase == Phase.EXECUTING
+
+    def _compute_proof_hash(self, combined_problem: str) -> str:
+        """Hash proof inputs to detect when re-proof is needed.
+
+        Only incorporates the question, clarifications, and follow-ups
+        (i.e. ``combined_problem``).  Scratchpad entries and table versions
+        are excluded because the proof itself creates tables that would
+        invalidate the cache on the next call.
+        """
+        import hashlib
+        return hashlib.sha256(combined_problem.encode()).hexdigest()
+
+    def _emit_cached_proof_events(self, result: dict) -> None:
+        """Emit proof events from cached result so UI updates correctly."""
+        proof_nodes = result.get("proof_nodes", [])
+
+        # Build id→name map so dependencies can use the same "{id}: {name}" format as live path
+        id_to_name = {node["id"]: node["name"] for node in proof_nodes}
+
+        def _fact_label(node: dict) -> str:
+            return f"{node['id']}: {node['name']}"
+
+        def _dep_labels(deps: list) -> list[str]:
+            return [f"{did}: {id_to_name[did]}" for did in deps if did in id_to_name]
+
+        self._emit_event(StepEvent(
+            event_type="proof_start",
+            step_number=0,
+            data={"problem": result.get("problem", "")[:100], "cached": True},
+        ))
+        # Emit fact_start for each node so the UI builds the DAG structure
+        for node in proof_nodes:
+            self._emit_event(StepEvent(
+                event_type="fact_start",
+                step_number=0,
+                data={
+                    "fact_name": _fact_label(node),
+                    "fact_description": node.get("description", ""),
+                    "dependencies": _dep_labels(node.get("dependencies", [])),
+                    "cached": True,
+                },
+            ))
+        # Signal DAG is complete so UI opens the panel
+        self._emit_event(StepEvent(
+            event_type="dag_execution_start",
+            step_number=0,
+            data={"cached": True},
+        ))
+        for node in proof_nodes:
+            self._emit_event(StepEvent(
+                event_type="fact_resolved",
+                step_number=0,
+                data={
+                    "fact_name": _fact_label(node),
+                    "value": node.get("value"),
+                    "source": node.get("source", ""),
+                    "confidence": node.get("confidence", 1.0),
+                    "dependencies": _dep_labels(node.get("dependencies", [])),
+                    "cached": True,
+                },
+            ))
+        self._emit_event(StepEvent(
+            event_type="proof_complete",
+            step_number=0,
+            data={
+                "success": True,
+                "confidence": result.get("confidence", 0.0),
+                "cached": True,
+            },
+        ))
+        summary = result.get("summary")
+        if not summary and self.datastore:
+            try:
+                art = self.datastore.get_artifact_by_name("proof_summary")
+                if art:
+                    summary = art.content
+            except Exception:
+                pass
+        if summary:
+            self._emit_event(StepEvent(
+                event_type="proof_summary_ready",
+                step_number=0,
+                data={"summary": summary},
+            ))
+
+    def _save_proof_result(self, result: dict, proof_hash: str | None = None) -> None:
+        """Persist last_proof_result to session state.json and proven grounding."""
+        import json as _json
+
+        def _make_serializable(obj):
+            """Convert non-JSON-serializable objects (DataFrames, etc.) to strings."""
+            if isinstance(obj, dict):
+                return {k: _make_serializable(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_make_serializable(v) for v in obj]
+            try:
+                _json.dumps(obj)
+                return obj
+            except (TypeError, ValueError):
+                # DataFrame, numpy array, etc. — convert to summary string
+                if hasattr(obj, '__len__'):
+                    return f"{len(obj)} rows"
+                return str(obj)[:500]
+
+        state = self.history.load_state(self.session_id) or {}
+        state["last_proof_result"] = _make_serializable(result)
+        if proof_hash:
+            state["proof_inputs_hash"] = proof_hash
+        self.history.save_state(self.session_id, state)
+        self._persist_proven_grounding(result)
+
+    def _persist_proven_grounding(self, result: dict) -> None:
+        """Extract source patterns from proof nodes and persist as proven grounding."""
+        proof_nodes = result.get("proof_nodes", [])
+        if not proof_nodes:
+            return
+
+        relational = None
+        if self.doc_tools and hasattr(self.doc_tools, '_vector_store'):
+            relational = getattr(self.doc_tools._vector_store, '_relational', None)
+        if not relational:
+            return
+
+        import re as _re
+        from constat.testing.grounding import build_source_patterns
+
+        for node in proof_nodes:
+            raw_name = node.get("name", "")
+            if not raw_name:
+                continue
+            name = _re.sub(r"^[A-Z]\d+:\s*", "", raw_name)
+            if not name:
+                continue
+
+            patterns = build_source_patterns(node)
+            if not patterns:
+                continue
+
+            entity_name = name.strip().lower().replace(" ", "_")
+            relational.save_proven_grounding(entity_name, patterns)
+
+    def get_state(self) -> dict:
+        """Get current session state for inspection or resumption."""
+        return {
+            "session_id": self.session_id,
+            "plan": self.plan,
+            "scratchpad": self.scratchpad.to_markdown(),
+            "state": self.datastore.get_all_state() if self.datastore else {},
+            "completed_steps": self.plan.completed_steps if self.plan else [],
+            "datastore_tables": self.datastore.list_tables() if self.datastore else [],
+        }

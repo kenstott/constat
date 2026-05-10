@@ -1,9 +1,23 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 8e77cac3-68b6-408d-8a54-55f2a6dae6d4
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Status Bar component
 
-import { useSessionStore } from '@/store/sessionStore'
-import { useUIStore } from '@/store/uiStore'
+import { useState } from 'react'
+import { useReactiveVar } from '@apollo/client'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useAuth } from '@/contexts/AuthContext'
+import { themeVar, setTheme, menuOpenVar } from '@/graphql/ui-state'
 import {
   Bars3Icon,
+  PencilSquareIcon,
   SignalIcon,
   SignalSlashIcon,
   SunIcon,
@@ -21,8 +35,22 @@ const statusColors: Record<string, string> = {
 }
 
 export function StatusBar() {
-  const { session, status, wsConnected } = useSessionStore()
-  const { theme, setTheme, toggleMenu } = useUIStore()
+  const { session, status, subscriptionConnected, createSession, clearProofFacts } = useSessionContext()
+  const { userId } = useAuth()
+  const theme = useReactiveVar(themeVar)
+  const toggleMenu = () => menuOpenVar(!menuOpenVar())
+  const [isCreating, setIsCreating] = useState(false)
+
+  const handleNewConversation = async () => {
+    if (isCreating) return
+    setIsCreating(true)
+    try {
+      clearProofFacts()
+      await createSession(userId, true)
+    } finally {
+      setIsCreating(false)
+    }
+  }
 
   const toggleTheme = () => {
     const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light'
@@ -38,6 +66,16 @@ export function StatusBar() {
         aria-label="Toggle menu"
       >
         <Bars3Icon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+      </button>
+
+      {/* New conversation */}
+      <button
+        onClick={handleNewConversation}
+        disabled={isCreating}
+        className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+        title="New conversation"
+      >
+        <PencilSquareIcon className={`w-5 h-5 text-gray-600 dark:text-gray-400${isCreating ? ' animate-spin' : ''}`} />
       </button>
 
       {/* Logo/Title */}
@@ -69,13 +107,13 @@ export function StatusBar() {
 
       {/* Connection status */}
       <div className="flex items-center gap-1.5">
-        {wsConnected ? (
+        {subscriptionConnected ? (
           <SignalIcon className="w-4 h-4 text-green-500" />
         ) : (
           <SignalSlashIcon className="w-4 h-4 text-red-500" />
         )}
         <span className="text-xs text-gray-500 dark:text-gray-400">
-          {wsConnected ? 'Connected' : 'Disconnected'}
+          {subscriptionConnected ? 'Connected' : 'Disconnected'}
         </span>
       </div>
 

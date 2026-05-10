@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 137f2b5f-4faf-4f0d-bd26-34f6d5c0de50
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -103,7 +104,8 @@ class PythonExecutor:
 
         return None
 
-    def compile(self, code: str) -> tuple[Optional[Any], Optional[CompileError]]:
+    @staticmethod
+    def compile(code: str) -> tuple[Optional[Any], Optional[CompileError]]:
         """Compile code, returning (compiled, error)."""
         try:
             compiled = compile(code, "<generated>", "exec")
@@ -159,10 +161,15 @@ class PythonExecutor:
         stderr_capture = io.StringIO()
 
         # Prevent exit()/quit() from killing the server
-        def _blocked_exit(*args, **kwargs):
+        def _blocked_exit(*_args, **_kwargs):
             raise RuntimeError("exit() is not allowed in generated code")
         exec_globals["exit"] = _blocked_exit
         exec_globals["quit"] = _blocked_exit
+
+        # Prevent input() from blocking the server
+        def _blocked_input(*_args, **_kwargs):
+            raise RuntimeError("input() is not allowed — use ask_user() for user_input steps")
+        exec_globals["input"] = _blocked_input
 
         # Execute
         try:
@@ -176,7 +183,7 @@ class PythonExecutor:
                 namespace=exec_globals,  # Return namespace for auto-saving
             )
 
-        except SystemExit as e:
+        except SystemExit:
             # LLM generated code that calls exit() - treat as error, don't crash server
             return ExecutionResult(
                 success=False,
@@ -237,7 +244,7 @@ def format_error_for_retry(result: ExecutionResult, code: str) -> str:
     return "\n".join(parts)
 
 
-def _get_prescriptive_fix(error_text: str, code: str) -> str:
+def _get_prescriptive_fix(error_text: str, _code: str) -> str:
     """Return specific fix instructions for common errors."""
     error_lower = error_text.lower()
 
@@ -245,7 +252,8 @@ def _get_prescriptive_fix(error_text: str, code: str) -> str:
     if "find_relevant_tables" in error_text or "get_table_schema" in error_text:
         return (
             "The function find_relevant_tables() and get_table_schema() are NOT available. "
-            "These are planning-only tools. Use pd.read_sql(query, db_<name>) to query tables directly. "
+            "These are planning-only tools. Use store.query('SELECT ... FROM db_name.table') or "
+            "store.create_view('name', 'SELECT ...', step_number=N) to query tables directly. "
             "The table schema is already provided in the prompt - use that information."
         )
 
@@ -253,20 +261,21 @@ def _get_prescriptive_fix(error_text: str, code: str) -> str:
     if "execute" in error_lower and ("engine" in error_lower or "attribute" in error_lower):
         return (
             "Do NOT use db.execute() or db_<name>.execute() - this does not work in SQLAlchemy 2.0. "
-            "Use pd.read_sql(query, db_<name>) for ALL database queries."
+            "Use store.query('SELECT ... FROM db_name.table') or store.create_view() instead."
         )
 
-    # Schema prefix errors (SQLite doesn't support them)
+    # Schema prefix errors (pd.read_sql can't handle federated schema prefixes)
     if "no such table" in error_lower and "." in error_text:
-        # Extract the table name with schema prefix
         import re
         match = re.search(r'no such table[:\s]+(\w+\.\w+)', error_text, re.IGNORECASE)
         if match:
             full_name = match.group(1)
-            table_only = full_name.split('.')[-1]
             return (
-                f"SQLite does NOT support schema prefixes. Change '{full_name}' to just '{table_only}'. "
-                f"Use: pd.read_sql('SELECT * FROM {table_only}', db_<name>)"
+                f"pd.read_sql does NOT support schema prefixes like '{full_name}'. "
+                f"REPLACE the entire pd.read_sql call with store.query() or store.create_view() which handle federation automatically:\n"
+                f"  store.create_view('name', 'SELECT ... FROM {full_name}', step_number=N)  # lazy view\n"
+                f"  df = store.query('SELECT ... FROM {full_name}')  # immediate DataFrame\n"
+                f"Do NOT use pd.read_sql for this query."
             )
 
     # Store methods that don't exist

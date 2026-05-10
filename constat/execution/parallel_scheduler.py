@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 0079d52c-e84c-4eb1-b3ce-ac515770b437
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -201,7 +202,7 @@ class ParallelStepScheduler:
                 # Process results
                 for i, result in enumerate(results):
                     step_num = wave_steps[i]
-                    step = plan.get_step(step_num)
+                    _step = plan.get_step(step_num)
 
                     if isinstance(result, Exception):
                         # Step raised an exception
@@ -264,6 +265,7 @@ class ParallelStepScheduler:
             try:
                 # Apply timeout
                 loop = asyncio.get_event_loop()
+                # noinspection PyTypeChecker
                 result = await asyncio.wait_for(
                     loop.run_in_executor(
                         self._executor,
@@ -301,7 +303,7 @@ class ParallelStepScheduler:
             SchedulerResult with execution details
         """
         try:
-            loop = asyncio.get_running_loop()
+            _loop = asyncio.get_running_loop()
         except RuntimeError:
             # No running loop - safe to use asyncio.run()
             return asyncio.run(self.execute_plan(plan, initial_namespace))

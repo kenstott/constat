@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: f07f067c-7a3e-41e2-a953-e33c2dca1cf3
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,6 +10,7 @@
 
 """Tests for SessionHistory."""
 
+from __future__ import annotations
 import json
 import pytest
 import tempfile
@@ -211,9 +213,9 @@ class TestSessionHistory:
         """Test session ID format includes timestamp."""
         session_id = history.create_session(config_dict={}, databases=[])
 
-        # Format: YYYY-MM-DD_HHMMSS_uuuuuu (microseconds)
+        # Format: YYYY-MM-DD_HH-MM-SS_uuuuuu (microseconds)
         parts = session_id.split("_")
         assert len(parts) == 3
         assert len(parts[0]) == 10  # Date
-        assert len(parts[1]) == 6   # Time
+        assert len(parts[1]) == 8   # Time (HH-MM-SS)
         assert len(parts[2]) == 6   # Microseconds suffix

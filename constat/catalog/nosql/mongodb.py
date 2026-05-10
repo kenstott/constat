@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 411c0f18-a7e2-46e2-88eb-06a45ab2b88a
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -25,7 +26,7 @@ class MongoDBConnector(NoSQLConnector):
         )
         connector.connect()
 
-        # List collections
+        # List collections.
         collections = connector.get_collections()
 
         # Get schema (inferred from samples)
@@ -220,7 +221,7 @@ class MongoDBConnector(NoSQLConnector):
             return [str(result.inserted_id)]
         else:
             result = coll.insert_many(documents)
-            return [str(id) for id in result.inserted_ids]
+            return [str(doc_id) for doc_id in result.inserted_ids]
 
     def update(
         self,

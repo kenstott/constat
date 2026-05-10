@@ -1,0 +1,7 @@
+# Module Boundaries (for parallel work)
+- Backend and frontend are fully independent — safe to work in parallel
+- `constat/server/routes/` depends on `constat/session/` and `constat/storage/`
+- `constat/session/` depends on `constat/execution/`, `constat/storage/`, `constat/providers/`
+- `constat/execution/` depends on `constat/storage/`, `constat/llm/`
+- `constat-ui/src/store/` depends on `constat-ui/src/api/` and `constat-ui/src/types/`
+- `constat-ui/src/components/` depends on `constat-ui/src/store/` and `constat-ui/src/hooks/`

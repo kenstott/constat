@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 2f120e18-db0a-47e4-8539-a394c64fe103
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -33,6 +34,7 @@ class GrokProvider(OpenAIProvider):
         self,
         api_key: Optional[str] = None,
         model: str = "grok-2-latest",
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Grok provider.
@@ -40,23 +42,10 @@ class GrokProvider(OpenAIProvider):
         Args:
             api_key: xAI API key (or uses XAI_API_KEY env var)
             model: Model to use (e.g., "grok-2-latest", "grok-2", "grok-1")
+            timeout: Client-level timeout in seconds
         """
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "Grok provider requires the openai package. "
-                "Install with: pip install openai"
-            )
-
         import os
 
         # Use XAI_API_KEY env var if no key provided
         resolved_key = api_key or os.environ.get("XAI_API_KEY")
-
-        kwargs = {"base_url": self.XAI_BASE_URL}
-        if resolved_key:
-            kwargs["api_key"] = resolved_key
-
-        self.client = OpenAI(**kwargs)
-        self.model = model
+        super().__init__(api_key=resolved_key, model=model, base_url=self.XAI_BASE_URL, timeout=timeout)

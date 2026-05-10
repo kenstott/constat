@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: c7fce584-06eb-4f38-9f86-49b7ed422ae0
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,51 +10,210 @@
 
 """Thread-safe DuckDB connection management.
 
-DuckDB connections are NOT thread-safe. This module provides thread-local
-connection pooling to ensure each thread has its own connection to the
-database file.
+Uses a single shared connection protected by a reentrant lock.
+All threads serialize access through the lock — DuckDB's C++ engine
+is not safe for concurrent cursor access from a single connection.
 
 Usage:
     pool = DuckDBConnectionPool("/path/to/db.duckdb")
 
-    # Get a connection for the current thread
+    # Get the shared connection (caller must not hold it across awaits)
+    conn = pool.get_connection()
+    conn.execute("SELECT * FROM table")
+
+    # Or use the context manager
     with pool.connection() as conn:
         conn.execute("SELECT * FROM table")
-
-    # Or use directly
-    conn = pool.get_connection()
-    try:
-        conn.execute("SELECT * FROM table")
-    finally:
-        # Connection stays open for thread reuse
-        pass
-
-The pool automatically:
-- Creates one connection per thread (thread-local)
-- Reuses connections within the same thread
-- Handles connection cleanup on close()
 """
 
+import atexit
 import logging
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Generator
 
+import weakref
+
 import duckdb
 
 logger = logging.getLogger(__name__)
 
+# Track all live pools so they can be closed before process exit
+_all_pools: weakref.WeakSet["DuckDBConnectionPool"] = weakref.WeakSet()
+
+
+def close_all_pools() -> None:
+    """Close all live DuckDBConnectionPool instances.
+
+    Call before process exit to avoid SIGABRT from DuckDB's C++ destructors.
+    """
+    for pool in list(_all_pools):
+        try:
+            pool.close()
+        except Exception:
+            pass
+
+
+# Release DuckDB file locks on interpreter exit (crash, SIGTERM, etc.)
+atexit.register(close_all_pools)
+
+
+def _try_kill_orphan_lock_holder(error_msg: str) -> None:
+    """Parse PID from DuckDB lock error and kill if it's an orphaned child process.
+
+    sentence-transformers/torch can spawn multiprocessing children that inherit
+    the DuckDB file handle and survive parent process termination.
+    """
+    import os
+    import re
+    import signal
+
+    match = re.search(r"\(PID (\d+)\)", error_msg)
+    if not match:
+        return
+    pid = int(match.group(1))
+    if pid == os.getpid():
+        return
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        return
+
+    try:
+        with open(f"/proc/{pid}/cmdline", "r") as f:
+            cmdline = f.read()
+    except FileNotFoundError:
+        import subprocess
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=5,
+        )
+        cmdline = result.stdout.strip()
+
+    if "multiprocessing" in cmdline or "resource_tracker" in cmdline:
+        logger.warning(f"Killing orphaned multiprocessing child PID {pid}")
+        try:
+            os.kill(pid, signal.SIGKILL)
+            import time
+            time.sleep(0.5)
+        except OSError:
+            pass
+
+
+class _PendingResult:
+    """Holds RLock from execute() until a terminal fetch completes.
+
+    DuckDB's execute() returns the connection for chaining — cursor state
+    lives on the connection object.  The lock must span execute→fetch to
+    prevent another thread's execute from clobbering the cursor between
+    the two calls.
+
+    For fire-and-forget calls (DDL / INSERT with no fetch), CPython's
+    reference counting invokes __del__ immediately when the temporary
+    _PendingResult goes out of scope, releasing the lock.
+    """
+
+    __slots__ = ("_conn", "_lock", "_released")
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection, lock: threading.RLock):
+        self._conn = conn
+        self._lock = lock  # Lock is HELD — acquired by caller
+        self._released = False
+
+    def _release(self):
+        if not self._released:
+            self._released = True
+            self._lock.release()
+
+    def fetchall(self):
+        try:
+            return self._conn.fetchall()
+        finally:
+            self._release()
+
+    def fetchone(self):
+        try:
+            return self._conn.fetchone()
+        finally:
+            self._release()
+
+    def fetchdf(self):
+        try:
+            return self._conn.fetchdf()
+        finally:
+            self._release()
+
+    def df(self):
+        try:
+            return self._conn.df()
+        finally:
+            self._release()
+
+    def fetchnumpy(self):
+        try:
+            return self._conn.fetchnumpy()
+        finally:
+            self._release()
+
+    @property
+    def description(self):
+        return self._conn.description
+
+    @property
+    def rowcount(self):
+        return self._conn.rowcount
+
+    def __del__(self):
+        self._release()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+class _LockedConnection:
+    """Proxy that serializes execute+fetch cycles through a lock.
+
+    execute() acquires the lock and returns a _PendingResult that holds
+    it until a terminal fetch operation (fetchall, fetchone, etc.) or
+    until the _PendingResult is garbage-collected.
+    """
+
+    __slots__ = ("_conn", "_lock")
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection, lock: threading.RLock):
+        self._conn = conn
+        self._lock = lock
+
+    def execute(self, *args, **kwargs):
+        self._lock.acquire()
+        try:
+            self._conn.execute(*args, **kwargs)
+            return _PendingResult(self._conn, self._lock)
+        except:
+            self._lock.release()
+            raise
+
+    def executemany(self, *args, **kwargs):
+        with self._lock:
+            self._conn.executemany(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
 
 class DuckDBConnectionPool:
-    """Thread-safe DuckDB connection pool using thread-local storage.
+    """Thread-safe DuckDB access using a single serialized connection.
 
-    Each thread gets its own connection to the database file. Connections
-    are reused within the same thread for efficiency.
+    One duckdb.connect() is created at init. All threads share this
+    single connection protected by a reentrant lock. The lock serializes
+    all access — DuckDB's C++ engine crashes on concurrent cursor access.
 
     Attributes:
-        db_path: Path to the DuckDB database file
-        read_only: Whether connections should be read-only
+        _db_path: Path to the DuckDB database file
+        _read_only: Whether the connection is read-only
     """
 
     def __init__(
@@ -62,110 +222,68 @@ class DuckDBConnectionPool:
         read_only: bool = False,
         config: Optional[dict] = None,
     ):
-        """Initialize the connection pool.
-
-        Args:
-            db_path: Path to DuckDB database file (or ":memory:" for in-memory)
-            read_only: Open connections in read-only mode
-            config: Optional DuckDB configuration dict
-        """
         self._db_path = str(db_path)
         self._read_only = read_only
         self._config = config or {}
-        self._local = threading.local()
-        self._connections: dict[int, duckdb.DuckDBPyConnection] = {}
-        self._lock = threading.Lock()
         self._closed = False
+        self._lock = threading.RLock()
+
+        # Single connection — retry on lock conflict
+        import time
+        last_err = None
+        for attempt in range(5):
+            try:
+                self._shared_conn = duckdb.connect(
+                    self._db_path,
+                    read_only=self._read_only,
+                    config=self._config,
+                )
+                last_err = None
+                break
+            except duckdb.IOException as e:
+                if "Could not set lock" in str(e) and attempt < 4:
+                    last_err = e
+                    _try_kill_orphan_lock_holder(str(e))
+                    logger.warning(f"DuckDB lock conflict, retrying in {attempt + 1}s...")
+                    time.sleep(attempt + 1)
+                else:
+                    raise
+        if last_err is not None:
+            raise last_err
+        _all_pools.add(self)
 
     @property
     def db_path(self) -> str:
-        """Get the database path."""
         return self._db_path
 
-    def get_connection(self) -> duckdb.DuckDBPyConnection:
-        """Get or create a connection for the current thread.
+    def get_connection(self) -> "_LockedConnection":
+        """Get the single shared connection wrapped in a locking proxy.
 
         Returns:
-            DuckDB connection for the current thread
+            Locked proxy that serializes execute/executemany calls
 
         Raises:
             RuntimeError: If the pool has been closed
         """
         if self._closed:
             raise RuntimeError("Connection pool has been closed")
-
-        thread_id = threading.get_ident()
-
-        # Check thread-local cache first (fast path)
-        conn = getattr(self._local, 'connection', None)
-        if conn is not None:
-            try:
-                # Verify connection is still valid
-                conn.execute("SELECT 1")
-                return conn
-            except Exception:
-                # Connection is dead, remove it
-                logger.debug(f"Thread {thread_id}: connection dead, creating new one")
-                self._remove_connection(thread_id)
-
-        # Create new connection (slow path)
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("Connection pool has been closed")
-
-            conn = self._create_connection()
-            self._local.connection = conn
-            self._connections[thread_id] = conn
-            logger.debug(f"Thread {thread_id}: created new DuckDB connection")
-            return conn
-
-    def _create_connection(self) -> duckdb.DuckDBPyConnection:
-        """Create a new DuckDB connection."""
-        return duckdb.connect(
-            self._db_path,
-            read_only=self._read_only,
-            config=self._config,
-        )
-
-    def _remove_connection(self, thread_id: int) -> None:
-        """Remove a connection from tracking."""
-        with self._lock:
-            if thread_id in self._connections:
-                try:
-                    self._connections[thread_id].close()
-                except Exception:
-                    pass
-                del self._connections[thread_id]
-            if hasattr(self._local, 'connection'):
-                delattr(self._local, 'connection')
+        return _LockedConnection(self._shared_conn, self._lock)
 
     @contextmanager
     def connection(self) -> Generator[duckdb.DuckDBPyConnection, None, None]:
-        """Context manager for getting a thread-local connection.
-
-        Yields:
-            DuckDB connection for the current thread
-
-        Example:
-            with pool.connection() as conn:
-                result = conn.execute("SELECT * FROM table").fetchall()
-        """
-        yield self.get_connection()
+        """Context manager for the shared connection (holds lock for duration)."""
+        with self._lock:
+            yield self.get_connection()
 
     def close(self) -> None:
-        """Close all connections in the pool.
-
-        After calling close(), the pool cannot be used again.
-        """
-        with self._lock:
-            self._closed = True
-            for thread_id, conn in list(self._connections.items()):
-                try:
-                    conn.close()
-                    logger.debug(f"Thread {thread_id}: closed DuckDB connection")
-                except Exception as e:
-                    logger.warning(f"Error closing connection for thread {thread_id}: {e}")
-            self._connections.clear()
+        """Close the shared connection."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._shared_conn.close()
+        except Exception as e:
+            logger.warning(f"Error closing DuckDB connection: {e}")
 
     def __enter__(self) -> "DuckDBConnectionPool":
         return self
@@ -175,24 +293,23 @@ class DuckDBConnectionPool:
 
     @property
     def active_connections(self) -> int:
-        """Get the number of active connections."""
-        with self._lock:
-            return len(self._connections)
+        return 0 if self._closed else 1
+
+    # Backward compat
+    @property
+    def _connections(self) -> dict[int, duckdb.DuckDBPyConnection]:
+        return {}
 
 
 class ThreadLocalDuckDB:
-    """Simpler interface for single-database thread-local connections.
+    """Wrapper providing a single DuckDB connection with init_sql support.
 
-    This is a convenience wrapper that provides a connection property
-    that automatically returns the correct connection for the current thread.
+    Despite the name (kept for backward compatibility), this now uses
+    a single shared connection — no per-thread cursors.
 
     Usage:
         db = ThreadLocalDuckDB("/path/to/db.duckdb")
-        db.conn.execute("SELECT * FROM table")  # Thread-safe
-
-        # Or with the pool directly
-        with db.pool.connection() as conn:
-            conn.execute("...")
+        db.conn.execute("SELECT * FROM table")
     """
 
     def __init__(
@@ -202,54 +319,57 @@ class ThreadLocalDuckDB:
         config: Optional[dict] = None,
         init_sql: Optional[list[str]] = None,
     ):
-        """Initialize thread-local DuckDB wrapper.
-
-        Args:
-            db_path: Path to DuckDB database file
-            read_only: Open connections in read-only mode
-            config: Optional DuckDB configuration dict
-            init_sql: SQL statements to run on each new connection
-        """
         self._pool = DuckDBConnectionPool(db_path, read_only, config)
         self._init_sql = init_sql or []
-        self._initialized_threads: set[int] = set()
         self._init_lock = threading.Lock()
+
+        # Run init_sql on the shared connection
+        conn = self._pool.get_connection()
+        for sql in self._init_sql:
+            try:
+                conn.execute(sql)
+            except Exception as e:
+                logger.debug(f"Init SQL failed (may be expected): {e}")
 
     @property
     def pool(self) -> DuckDBConnectionPool:
-        """Get the underlying connection pool."""
         return self._pool
 
     @property
     def conn(self) -> duckdb.DuckDBPyConnection:
-        """Get the connection for the current thread.
-
-        Runs init_sql on first access for each thread.
-        """
-        conn = self._pool.get_connection()
-        thread_id = threading.get_ident()
-
-        # Run init SQL for new threads
-        if thread_id not in self._initialized_threads:
-            with self._init_lock:
-                if thread_id not in self._initialized_threads:
-                    for sql in self._init_sql:
-                        try:
-                            conn.execute(sql)
-                        except Exception as e:
-                            logger.debug(f"Init SQL failed (may be expected): {e}")
-                    self._initialized_threads.add(thread_id)
-
-        return conn
+        """Get the single shared connection."""
+        return self._pool.get_connection()
 
     def execute(self, sql: str, params=None):
-        """Execute SQL on the current thread's connection."""
         if params:
             return self.conn.execute(sql, params)
         return self.conn.execute(sql)
 
+    def add_init_sql(self, sql: str) -> None:
+        """Run SQL on the shared connection."""
+        with self._init_lock:
+            self._init_sql.append(sql)
+        try:
+            self._pool.get_connection().execute(sql)
+        except Exception as e:
+            logger.debug(f"add_init_sql failed: {e}")
+
+    def remove_init_sql(self, predicate) -> None:
+        with self._init_lock:
+            self._init_sql = [s for s in self._init_sql if not predicate(s)]
+
+    def run_on_all_connections(self, sql: str) -> None:
+        """Execute SQL on the shared connection.
+
+        Kept for backward compat — with a single connection,
+        this just runs on the shared connection.
+        """
+        try:
+            self._pool.get_connection().execute(sql)
+        except Exception as e:
+            logger.debug(f"run_on_all_connections failed: {e}")
+
     def close(self) -> None:
-        """Close all connections."""
         self._pool.close()
 
     def __enter__(self) -> "ThreadLocalDuckDB":

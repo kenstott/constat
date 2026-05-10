@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: f7e8e73b-a7a2-4d09-9577-329e94732b29
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -39,6 +40,7 @@ class OpenAIProvider(BaseLLMProvider):
         api_key: Optional[str] = None,
         model: str = "gpt-4o",
         base_url: Optional[str] = None,
+        timeout: Optional[float] = None,
     ):
         """
         Initialize OpenAI provider.
@@ -47,6 +49,7 @@ class OpenAIProvider(BaseLLMProvider):
             api_key: OpenAI API key (or uses OPENAI_API_KEY env var)
             model: Model to use (e.g., "gpt-4o", "gpt-4-turbo", "gpt-4")
             base_url: Optional custom base URL for OpenAI-compatible APIs
+            timeout: Client-level timeout in seconds (default 120)
         """
         try:
             from openai import OpenAI
@@ -56,7 +59,7 @@ class OpenAIProvider(BaseLLMProvider):
                 "Install with: pip install openai"
             )
 
-        kwargs = {}
+        kwargs = {"timeout": timeout or 120.0, "max_retries": 0}
         if api_key:
             kwargs["api_key"] = api_key
         if base_url:
@@ -81,6 +84,7 @@ class OpenAIProvider(BaseLLMProvider):
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 4096,
         model: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         Generate a response, automatically handling tool calls.
@@ -105,6 +109,8 @@ class OpenAIProvider(BaseLLMProvider):
                 "messages": messages,
                 "max_tokens": max_tokens,
             }
+            if timeout is not None:
+                kwargs["timeout"] = timeout
             if openai_tools:
                 kwargs["tools"] = openai_tools
                 kwargs["tool_choice"] = "auto"

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: a5a1a79a-8cb6-4fee-a875-4e6483a9d114
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,6 +10,7 @@
 
 """Tests for tiered fact resolution."""
 
+from __future__ import annotations
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 import pandas as pd
@@ -69,7 +71,7 @@ class TestTieredResolution:
         """Test that tiered resolution is enabled by default."""
         strategy = ResolutionStrategy()
         assert strategy.use_tiered_resolution is True
-        assert strategy.tier1_timeout == 15.0
+        assert strategy.tier1_timeout == 30.0
 
     def test_tier1_sources_default(self):
         """Test default Tier 1 sources."""

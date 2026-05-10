@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 2ea421ab-7a49-40c4-a6c2-143c1f0e5f43
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -24,6 +25,7 @@ import numpy as np
 from constat.discovery.models import EnrichedChunk
 
 if TYPE_CHECKING:
+    # noinspection PyUnresolvedReferences
     from constat.discovery.vector_store import VectorStore
     from constat.catalog.schema_manager import SchemaManager
     from constat.catalog.api_schema_manager import APISchemaManager
@@ -44,7 +46,7 @@ class UnifiedDiscovery:
         schema_manager: Optional["SchemaManager"] = None,
         api_schema_manager: Optional["APISchemaManager"] = None,
         embed_fn: Optional[callable] = None,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
         session_id: str | None = None,
     ):
         """Initialize unified discovery.
@@ -54,23 +56,23 @@ class UnifiedDiscovery:
             schema_manager: Schema manager for table details
             api_schema_manager: API schema manager for endpoint details
             embed_fn: Function to embed text queries
-            project_ids: Active project IDs for scoping
+            domain_ids: Active domain IDs for scoping
             session_id: Current session ID for scoping
         """
         self._vector_store = vector_store
         self._schema_manager = schema_manager
         self._api_schema_manager = api_schema_manager
         self._embed_fn = embed_fn
-        self._project_ids = project_ids
+        self._domain_ids = domain_ids
         self._session_id = session_id
 
     def set_scope(
         self,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
         session_id: str | None = None,
     ) -> None:
         """Update the discovery scope."""
-        self._project_ids = project_ids
+        self._domain_ids = domain_ids
         self._session_id = session_id
 
     def discover(
@@ -105,7 +107,7 @@ class UnifiedDiscovery:
         enriched_chunks = self._vector_store.search_enriched(
             query_embedding=query_embedding,
             limit=limit,
-            project_ids=self._project_ids,
+            domain_ids=self._domain_ids,
             session_id=self._session_id,
         )
 
@@ -131,7 +133,7 @@ class UnifiedDiscovery:
         # Find the entity using find_entity_by_name
         entity = self._vector_store.find_entity_by_name(
             name=entity_name,
-            project_ids=self._project_ids,
+            domain_ids=self._domain_ids,
             session_id=self._session_id,
         )
 
@@ -144,7 +146,7 @@ class UnifiedDiscovery:
                     entity_name = results[0].entities[0].name
                     entity = self._vector_store.find_entity_by_name(
                         name=entity_name,
-                        project_ids=self._project_ids,
+                        domain_ids=self._domain_ids,
                         session_id=self._session_id,
                     )
 
@@ -157,16 +159,15 @@ class UnifiedDiscovery:
             }
 
         # Get chunks mentioning this entity
-        # Returns: list of (chunk_id, DocumentChunk, mention_count, confidence)
+        # Returns: list of (chunk_id, DocumentChunk, confidence)
         chunk_results = self._vector_store.get_chunks_for_entity(
             entity_id=entity.id,
             limit=limit,
-            project_ids=self._project_ids,
-            session_id=self._session_id,
+            domain_ids=self._domain_ids,
         )
 
         # Convert to dict format for _get_cooccurring_entities
-        chunks_for_related = [{"chunk_id": chunk_id} for chunk_id, _, _, _ in chunk_results]
+        chunks_for_related = [{"chunk_id": chunk_id} for chunk_id, _, _ in chunk_results]
 
         # Get related entities (co-occurring in same chunks)
         related = self._get_cooccurring_entities(entity.id, chunks_for_related)
@@ -183,9 +184,9 @@ class UnifiedDiscovery:
                     "content": chunk.content,
                     "document": chunk.document_name,
                     "section": chunk.section,
-                    "relevance": mention_count,
+                    "relevance": confidence,
                 }
-                for chunk_id, chunk, mention_count, confidence in chunk_results
+                for chunk_id, chunk, confidence in chunk_results
             ],
             "related_entities": related,
         }
@@ -199,30 +200,10 @@ class UnifiedDiscovery:
         if not chunks:
             return []
 
-        chunk_ids = [c.get("chunk_id") for c in chunks if c.get("chunk_id")]
-        if not chunk_ids:
-            return []
-
         try:
-            placeholders = ",".join(["?" for _ in chunk_ids])
-            result = self._vector_store._conn.execute(
-                f"""
-                SELECT DISTINCT e.name, e.type, COUNT(*) as co_occurrences
-                FROM chunk_entities ce
-                JOIN entities e ON ce.entity_id = e.id
-                WHERE ce.chunk_id IN ({placeholders})
-                  AND e.id != ?
-                GROUP BY e.id, e.name, e.type
-                ORDER BY co_occurrences DESC
-                LIMIT 5
-                """,
-                chunk_ids + [entity_id],
-            ).fetchall()
-
-            return [
-                {"name": row[0], "type": row[1], "co_occurrences": row[2]}
-                for row in result
-            ]
+            return self._vector_store.get_cooccurring_entities(
+                entity_id, self._session_id or "", limit=5,
+            )
         except Exception as e:
             logger.warning(f"Error finding co-occurring entities: {e}")
             return []
@@ -251,7 +232,7 @@ class UnifiedDiscovery:
         # Find the source entity
         entity = self._vector_store.find_entity_by_name(
             name=entity_name,
-            project_ids=self._project_ids,
+            domain_ids=self._domain_ids,
             session_id=self._session_id,
         )
 
@@ -262,10 +243,9 @@ class UnifiedDiscovery:
         chunk_results = self._vector_store.get_chunks_for_entity(
             entity_id=entity.id,
             limit=10,
-            project_ids=self._project_ids,
-            session_id=self._session_id,
+            domain_ids=self._domain_ids,
         )
-        chunks_for_related = [{"chunk_id": chunk_id} for chunk_id, _, _, _ in chunk_results]
+        chunks_for_related = [{"chunk_id": chunk_id} for chunk_id, _, _ in chunk_results]
         cooccurring = self._get_cooccurring_entities(entity.id, chunks_for_related)
         for r in cooccurring:
             results.append({
@@ -281,11 +261,11 @@ class UnifiedDiscovery:
             if isinstance(query_embedding, list):
                 query_embedding = np.array(query_embedding)
 
-            similar = self._vector_store.search_catalog_entities(
+            similar = self._vector_store.search_similar_entities(
                 query_embedding=query_embedding,
                 limit=limit + 1,  # +1 to exclude self
                 min_similarity=0.6,
-                project_ids=self._project_ids,
+                domain_ids=self._domain_ids,
                 session_id=self._session_id,
             )
             for s in similar:
@@ -307,7 +287,7 @@ class UnifiedDiscovery:
                     results.append(r)
 
         # Sort by strength and limit
-        results.sort(key=lambda r: r.get("strength", 0), reverse=True)
+        results.sort(key=lambda item: item.get("strength", 0), reverse=True)
         return results[:limit]
 
     def _get_fk_relations(self, table_name: str) -> list[dict]:

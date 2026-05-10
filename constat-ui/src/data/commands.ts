@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 8a27dada-8c7f-4d1d-991b-8a3465a00f2e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Static command definitions for client-side autocomplete
 // Derived from HELP_COMMANDS in constat/commands/help.py
 
@@ -60,12 +70,51 @@ export const COMMANDS: CommandDef[] = [
   { command: '/user', description: 'Show or set current user', category: 'Preferences', argType: 'text' },
 
   // Analysis
-  { command: '/discover', description: 'Search data sources', category: 'Analysis', argType: 'scope' },
+  { command: '/discover', description: 'Search all data sources (returns structured JSON)', category: 'Analysis', argType: 'text' },
   { command: '/summarize', description: 'Summarize plan|session|facts|<table>', category: 'Analysis', argType: 'entity' },
-  { command: '/prove', description: 'Verify conversation claims with auditable proof', category: 'Analysis' },
+  { command: '/reason', description: 'Verify conversation claims with auditable reasoning chain', category: 'Analysis' },
   { command: '/correct', description: 'Record a correction for future reference', category: 'Analysis', argType: 'text' },
   { command: '/learnings', description: 'Show learnings and rules', category: 'Analysis' },
   { command: '/compact-learnings', description: 'Promote similar learnings into rules', category: 'Analysis' },
+
+  // Diagnostics (LLM tool inspection)
+  { command: '/schema', description: 'Show detailed table schema (as LLM sees it)', category: 'Diagnostics', argType: 'table' },
+  { command: '/search-tables', description: 'Semantic search for relevant tables', category: 'Diagnostics', argType: 'text' },
+  { command: '/search-apis', description: 'Semantic search for relevant APIs', category: 'Diagnostics', argType: 'text' },
+  { command: '/search-docs', description: 'Semantic search for relevant documents', category: 'Diagnostics', argType: 'text' },
+  { command: '/lookup', description: 'Look up glossary term with full details', category: 'Diagnostics', argType: 'entity' },
+  { command: '/entity', description: 'Find entity across schema and documents', category: 'Diagnostics', argType: 'entity' },
+  { command: '/known-facts', description: 'List all known/cached facts (LLM view)', category: 'Diagnostics' },
+  { command: '/sources', description: 'Find relevant sources for a query', category: 'Diagnostics', argType: 'text' },
+  { command: '/search-chunks', description: 'Raw similarity search on all chunks', category: 'Diagnostics', argType: 'text' },
+
+  // Glossary
+  { command: '/glossary', description: 'Show glossary (all|defined|deprecated)', category: 'Glossary', argType: 'scope' },
+  { command: '/define', description: 'Add a glossary definition', category: 'Glossary', argType: 'text' },
+  { command: '/undefine', description: 'Remove a glossary definition', category: 'Glossary', argType: 'entity' },
+  { command: '/refine', description: 'AI-refine a glossary definition', category: 'Glossary', argType: 'entity' },
+
+  // Rules
+  { command: '/rule', description: 'Add a new rule directly', category: 'Analysis', argType: 'text' },
+  { command: '/rule-edit', description: 'Edit an existing rule', category: 'Analysis', argType: 'text' },
+  { command: '/rule-delete', description: 'Delete a rule', category: 'Analysis', argType: 'text' },
+  { command: '/move-rule', description: 'Move a rule to a domain', category: 'Analysis', argType: 'text' },
+
+  // Agents & Skills
+  { command: '/agent', description: 'Show or set current agent', category: 'Agents & Skills', argType: 'text' },
+  { command: '/agents', description: 'List available agents', category: 'Agents & Skills' },
+  { command: '/agent-create', description: 'Create a new agent', category: 'Agents & Skills', argType: 'text' },
+  { command: '/agent-edit', description: 'Edit an agent\'s prompt', category: 'Agents & Skills', argType: 'text' },
+  { command: '/agent-delete', description: 'Delete an agent', category: 'Agents & Skills', argType: 'text' },
+  { command: '/agent-draft', description: 'Draft an agent using AI', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill', description: 'Show or activate a skill', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skills', description: 'List available skills', category: 'Agents & Skills' },
+  { command: '/skill-create', description: 'Create a new skill', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill-edit', description: 'Edit a skill\'s content', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill-delete', description: 'Delete a skill', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill-deactivate', description: 'Deactivate a skill', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill-draft', description: 'Draft a skill using AI', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill-download', description: 'Download skill as Claude Desktop zip', category: 'Agents & Skills', argType: 'text' },
 
   // Exit
   { command: '/quit', description: 'Exit the session', category: 'Exit' },

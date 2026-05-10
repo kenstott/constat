@@ -1,21 +1,28 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 0c999e87-d0f5-404f-9ce5-45d20652325f
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Main Layout component
 
 import { ReactNode, useState, useCallback, useEffect } from 'react'
 import { StatusBar } from './StatusBar'
 import { HamburgerMenu } from './HamburgerMenu'
-import { Toolbar } from './Toolbar'
+import { useReactiveVar } from '@apollo/client'
+import { artifactPanelHiddenVar, toggleArtifactPanel } from '@/graphql/ui-state'
+import { Squares2X2Icon } from '@heroicons/react/24/outline'
 
 interface MainLayoutProps {
   conversationPanel: ReactNode
   artifactPanel: ReactNode
-  onNewQuery?: () => void
-  onShowProof?: () => void
-  onShowHelp?: () => void
-  isCreatingNewSession?: boolean
 }
 
-const MIN_PANEL_WIDTH = 200
-const MAX_PANEL_WIDTH = 800
+const MIN_PANEL_WIDTH = 150
 const DEFAULT_PANEL_WIDTH = 384 // w-96
 const PANEL_WIDTH_KEY = 'constat-panel-width'
 
@@ -25,7 +32,7 @@ function getSavedPanelWidth(): number {
     const saved = localStorage.getItem(PANEL_WIDTH_KEY)
     if (saved) {
       const width = parseInt(saved, 10)
-      if (!isNaN(width) && width >= MIN_PANEL_WIDTH && width <= MAX_PANEL_WIDTH) {
+      if (!isNaN(width) && width >= MIN_PANEL_WIDTH) {
         return width
       }
     }
@@ -38,13 +45,10 @@ function getSavedPanelWidth(): number {
 export function MainLayout({
   conversationPanel,
   artifactPanel,
-  onNewQuery,
-  onShowProof,
-  onShowHelp,
-  isCreatingNewSession,
 }: MainLayoutProps) {
   const [panelWidth, setPanelWidth] = useState(getSavedPanelWidth)
   const [isResizing, setIsResizing] = useState(false)
+  const artifactPanelHidden = useReactiveVar(artifactPanelHiddenVar)
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -54,10 +58,9 @@ export function MainLayout({
   const handleMouseMove = useCallback(
     (e: MouseEvent) => {
       if (!isResizing) return
-
-      // Calculate new width (panel is on the right, so we measure from right edge)
       const newWidth = window.innerWidth - e.clientX
-      const clampedWidth = Math.min(Math.max(newWidth, MIN_PANEL_WIDTH), MAX_PANEL_WIDTH)
+      const maxWidth = window.innerWidth - MIN_PANEL_WIDTH
+      const clampedWidth = Math.min(Math.max(newWidth, MIN_PANEL_WIDTH), maxWidth)
       setPanelWidth(clampedWidth)
     },
     [isResizing]
@@ -65,7 +68,6 @@ export function MainLayout({
 
   const handleMouseUp = useCallback(() => {
     setIsResizing(false)
-    // Save to localStorage when resizing ends
     try {
       localStorage.setItem(PANEL_WIDTH_KEY, panelWidth.toString())
     } catch {
@@ -99,30 +101,38 @@ export function MainLayout({
 
       {/* Main content area */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Conversation Panel */}
-        <main className="flex-1 flex flex-col overflow-hidden">
+        {/* Conversation Panel — always visible */}
+        <main className="flex-1 flex flex-col overflow-hidden relative">
           {conversationPanel}
+          <button
+            onClick={toggleArtifactPanel}
+            className="absolute top-3 right-3 p-1.5 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 z-10"
+            title={artifactPanelHidden ? 'Show details panel' : 'Hide details panel'}
+          >
+            <Squares2X2Icon className="w-5 h-5" />
+          </button>
         </main>
 
-        {/* Resize Handle */}
-        <div
-          className={`w-1 cursor-col-resize hover:bg-primary-400 transition-colors ${
-            isResizing ? 'bg-primary-500' : 'bg-gray-200 dark:bg-gray-700'
-          }`}
-          onMouseDown={handleMouseDown}
-        />
+        {artifactPanelHidden ? null : (
+          <>
+            {/* Resize Handle */}
+            <div
+              className={`w-1 cursor-col-resize hover:bg-primary-400 transition-colors ${
+                isResizing ? 'bg-primary-500' : 'bg-gray-200 dark:bg-gray-700'
+              }`}
+              onMouseDown={handleMouseDown}
+            />
 
-        {/* Artifact Panel */}
-        <aside
-          className="border-l border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden bg-gray-50 dark:bg-gray-900"
-          style={{ width: panelWidth }}
-        >
-          {artifactPanel}
-        </aside>
+            {/* Artifact Panel */}
+            <aside
+              className="border-l border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden bg-gray-50 dark:bg-gray-900"
+              style={{ width: panelWidth }}
+            >
+              {artifactPanel}
+            </aside>
+          </>
+        )}
       </div>
-
-      {/* Toolbar */}
-      <Toolbar onNewQuery={onNewQuery} onShowProof={onShowProof} onShowHelp={onShowHelp} isCreatingNewSession={isCreatingNewSession} />
     </div>
   )
 }

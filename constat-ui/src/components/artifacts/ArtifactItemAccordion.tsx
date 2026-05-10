@@ -1,19 +1,127 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: b52f7ded-0da5-4d62-88ab-a631ea098f0e
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Artifact Item Accordion - individual artifact with expandable content and fullscreen mode
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import {
   ChevronDownIcon,
   ChevronRightIcon,
   ArrowsPointingOutIcon,
   ArrowDownTrayIcon,
+  TrashIcon,
   XMarkIcon,
   StarIcon as StarOutline,
+  EllipsisVerticalIcon,
 } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
-import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
-import * as sessionsApi from '@/api/sessions'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useTableMutations } from '@/hooks/useTables'
+import { useArtifactMutations } from '@/hooks/useArtifacts'
+import { apolloClient } from '@/graphql/client'
+import { TABLE_DATA_QUERY, ARTIFACT_QUERY, ARTIFACT_VERSIONS_QUERY, toTableData, toArtifactContent, toArtifactVersions } from '@/graphql/operations/data'
 import type { Artifact, ArtifactContent, ArtifactVersionInfo, TableData } from '@/types/api'
+
+/** Parse CSV text into header + rows and render as a scrollable table. */
+function CsvTableView({ content, maxHeight }: { content: string; maxHeight?: string }) {
+  const { columns, rows } = useMemo(() => {
+    const lines = content.split('\n').filter((l) => l.trim())
+    if (lines.length === 0) return { columns: [] as string[], rows: [] as string[][] }
+
+    // Naive CSV parse (handles quoted fields with commas)
+    const parseLine = (line: string): string[] => {
+      const result: string[] = []
+      let current = ''
+      let inQuotes = false
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (ch === '"') {
+          if (inQuotes && line[i + 1] === '"') {
+            current += '"'
+            i++
+          } else {
+            inQuotes = !inQuotes
+          }
+        } else if (ch === ',' && !inQuotes) {
+          result.push(current.trim())
+          current = ''
+        } else {
+          current += ch
+        }
+      }
+      result.push(current.trim())
+      return result
+    }
+
+    const cols = parseLine(lines[0])
+    const dataRows = lines.slice(1).map(parseLine)
+    return { columns: cols, rows: dataRows }
+  }, [content])
+
+  if (columns.length === 0) {
+    return (
+      <div className="text-sm text-gray-500 dark:text-gray-400 py-4 px-3">
+        Empty CSV
+      </div>
+    )
+  }
+
+  return (
+    <div className="overflow-auto" style={{ maxHeight: maxHeight || '300px' }}>
+      <table className="min-w-full text-sm">
+        <thead className="sticky top-0 bg-white dark:bg-gray-900">
+          <tr className="border-b border-gray-200 dark:border-gray-700">
+            {columns.map((col, i) => (
+              <th
+                key={i}
+                className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap"
+              >
+                {col}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+          {rows.map((row, ri) => (
+            <tr key={ri} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+              {columns.map((_, ci) => (
+                <td
+                  key={ci}
+                  className="px-3 py-2 text-gray-700 dark:text-gray-300 whitespace-nowrap"
+                >
+                  {row[ci] ?? ''}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** Heuristic: does this text look like CSV data?
+ *  Checks that the first line has 2+ comma-separated fields and
+ *  at least one subsequent data line has a similar field count. */
+function looksLikeCsv(text: string): boolean {
+  if (!text) return false
+  const lines = text.split('\n').filter((l) => l.trim())
+  if (lines.length < 2) return false
+  const headerFields = lines[0].split(',').length
+  if (headerFields < 2) return false
+  // Check that at least one data line has a comparable field count
+  const dataFields = lines[1].split(',').length
+  return dataFields >= headerFields - 1 && dataFields <= headerFields + 1
+}
 
 interface ArtifactItemAccordionProps {
   artifact: Artifact
@@ -21,8 +129,9 @@ interface ArtifactItemAccordionProps {
 }
 
 export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: ArtifactItemAccordionProps) {
-  const { session } = useSessionStore()
-  const { toggleArtifactStar, toggleTableStar } = useArtifactStore()
+  const { session } = useSessionContext()
+  const { toggleStar: toggleArtifactStar, deleteArtifact: removeArtifact } = useArtifactMutations()
+  const { toggleStar: toggleTableStar } = useTableMutations()
   const [isOpen, setIsOpen] = useState(initiallyOpen)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [content, setContent] = useState<ArtifactContent | null>(null)
@@ -34,18 +143,26 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
   const [versions, setVersions] = useState<ArtifactVersionInfo[] | null>(null)
   const [viewingVersionId, setViewingVersionId] = useState<number | null>(null)
   const versionDropdownRef = useRef<HTMLDivElement>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   const isTable = artifact.artifact_type === 'table'
   const hasVersions = (artifact.version_count ?? 1) > 1
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!session) return
+    if (!confirm(`Remove "${artifact.title || artifact.name}"?`)) return
+    removeArtifact(artifact.id)
+  }
 
   const handleToggleStar = (e: React.MouseEvent) => {
     e.stopPropagation()
     if (session) {
       if (isTable) {
-        // For tables, use toggleTableStar with the table name
-        toggleTableStar(session.session_id, artifact.name)
+        toggleTableStar(artifact.name)
       } else {
-        toggleArtifactStar(session.session_id, artifact.id)
+        toggleArtifactStar(artifact.id)
       }
     }
   }
@@ -64,18 +181,19 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
       try {
         if (isTable) {
           // Fetch table data instead of artifact content
-          const data = await sessionsApi.getTableData(
-            session.session_id,
-            artifact.name,
-            tablePage
-          )
-          setTableData(data)
+          const { data: result } = await apolloClient.query({
+            query: TABLE_DATA_QUERY,
+            variables: { sessionId: session.session_id, tableName: artifact.name, page: tablePage },
+            fetchPolicy: 'network-only',
+          })
+          setTableData(toTableData(result.tableData))
         } else {
-          const artifactContent = await sessionsApi.getArtifact(
-            session.session_id,
-            artifact.id
-          )
-          setContent(artifactContent)
+          const { data: result } = await apolloClient.query({
+            query: ARTIFACT_QUERY,
+            variables: { sessionId: session.session_id, artifactId: artifact.id },
+            fetchPolicy: 'network-only',
+          })
+          setContent(toArtifactContent(result.artifact))
         }
       } catch (err) {
         setError(String(err))
@@ -146,6 +264,18 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     return () => document.removeEventListener('mousedown', handleClick)
   }, [showVersions])
 
+  // Close overflow menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [menuOpen])
+
   const handleVersionBadgeClick = async (e: React.MouseEvent) => {
     e.stopPropagation()
     if (!session || !hasVersions) return
@@ -158,8 +288,13 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     // Fetch versions if not loaded
     if (!versions) {
       try {
-        const resp = await sessionsApi.getArtifactVersions(session.session_id, artifact.id)
-        setVersions(resp.versions)
+        const { data: result } = await apolloClient.query({
+          query: ARTIFACT_VERSIONS_QUERY,
+          variables: { sessionId: session.session_id, artifactId: artifact.id },
+          fetchPolicy: 'network-only',
+        })
+        const mapped = toArtifactVersions(result.artifactVersions)
+        setVersions(mapped.versions)
       } catch (err) {
         console.error('Failed to load artifact versions:', err)
         return
@@ -183,8 +318,12 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     setLoading(true)
     setError(null)
     try {
-      const artifactContent = await sessionsApi.getArtifact(session.session_id, versionId)
-      setContent(artifactContent)
+      const { data: result } = await apolloClient.query({
+        query: ARTIFACT_QUERY,
+        variables: { sessionId: session.session_id, artifactId: versionId },
+        fetchPolicy: 'network-only',
+      })
+      setContent(toArtifactContent(result.artifact))
       setIsOpen(true)
     } catch (err) {
       setError(String(err))
@@ -253,7 +392,15 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
         }
 
         // For other artifacts, fetch content and download
-        const artifactContent = content || await sessionsApi.getArtifact(session.session_id, artifact.id)
+        let artifactContent = content
+        if (!artifactContent) {
+          const { data: result } = await apolloClient.query({
+            query: ARTIFACT_QUERY,
+            variables: { sessionId: session.session_id, artifactId: artifact.id },
+            fetchPolicy: 'network-only',
+          })
+          artifactContent = toArtifactContent(result.artifact)
+        }
 
         let blob: Blob
         let filename: string
@@ -291,6 +438,12 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
         } else if (artifactContent.artifact_type === 'html' || artifactContent.mime_type === 'text/html') {
           blob = new Blob([artifactContent.content], { type: 'text/html' })
           filename = `${artifact.name}.html`
+        } else if (artifactContent.artifact_type === 'json' || artifactContent.mime_type === 'application/json') {
+          blob = new Blob([artifactContent.content], { type: 'application/json' })
+          filename = `${artifact.name}.json`
+        } else if (artifactContent.artifact_type === 'csv' || artifactContent.mime_type === 'text/csv') {
+          blob = new Blob([artifactContent.content], { type: 'text/csv' })
+          filename = `${artifact.name}.csv`
         } else {
           // Default: download as text
           blob = new Blob([artifactContent.content], { type: 'text/plain' })
@@ -531,6 +684,46 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
       )
     }
 
+    // JSON
+    if (
+      content.artifact_type === 'json' ||
+      content.mime_type === 'application/json'
+    ) {
+      let formatted = content.content
+      try {
+        formatted = JSON.stringify(JSON.parse(content.content), null, 2)
+      } catch {
+        // already formatted or invalid — show as-is
+      }
+      return (
+        <div className="overflow-auto" style={containerStyle}>
+          <SyntaxHighlighter
+            style={oneDark as Record<string, React.CSSProperties>}
+            language="json"
+            PreTag="div"
+            customStyle={{
+              margin: 0,
+              padding: '0.75rem',
+              fontSize: '0.75rem',
+              borderRadius: 0,
+            }}
+            wrapLongLines
+          >
+            {formatted}
+          </SyntaxHighlighter>
+        </div>
+      )
+    }
+
+    // CSV — parse into a table (explicit type or auto-detected from content)
+    if (
+      content.artifact_type === 'csv' ||
+      content.mime_type === 'text/csv' ||
+      (content.artifact_type === 'output' && looksLikeCsv(content.content))
+    ) {
+      return <CsvTableView content={content.content} maxHeight={maxHeight} />
+    }
+
     // SVG
     if (content.artifact_type === 'svg' || content.mime_type === 'image/svg+xml') {
       return (
@@ -593,6 +786,8 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     pptx: 'PowerPoint',
     ppt: 'PowerPoint',
     pdf: 'PDF',
+    json: 'JSON',
+    csv: 'CSV',
   }
   const typeLabel = sourceType
     ? extensionMap[sourceType] || sourceType
@@ -670,30 +865,50 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
             <button
-              onClick={handleToggleStar}
-              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
-              title={artifact.is_starred ? "Unstar" : "Star"}
-            >
-              {artifact.is_starred ? (
-                <StarSolid className="w-4 h-4 text-yellow-500" />
-              ) : (
-                <StarOutline className="w-4 h-4 text-gray-400 hover:text-yellow-500" />
-              )}
-            </button>
-            <button
-              onClick={handleDownload}
-              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
-              title="Download"
-            >
-              <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
-            </button>
-            <button
               onClick={openFullscreen}
               className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
               title="Expand to fullscreen"
             >
               <ArrowsPointingOutIcon className="w-4 h-4 text-gray-500" />
             </button>
+            <div className="relative" ref={menuRef}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setMenuOpen(!menuOpen) }}
+                className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
+                title="More actions"
+              >
+                <EllipsisVerticalIcon className="w-4 h-4 text-gray-500" />
+              </button>
+              {menuOpen && (
+                <div className="absolute right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[140px]">
+                  <button
+                    onClick={(e) => { handleToggleStar(e); setMenuOpen(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    {artifact.is_starred ? (
+                      <StarSolid className="w-4 h-4 text-yellow-500" />
+                    ) : (
+                      <StarOutline className="w-4 h-4 text-gray-400" />
+                    )}
+                    {artifact.is_starred ? 'Unstar' : 'Star'}
+                  </button>
+                  <button
+                    onClick={(e) => { handleDownload(e); setMenuOpen(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
+                    Download
+                  </button>
+                  <button
+                    onClick={(e) => { handleDelete(e); setMenuOpen(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <TrashIcon className="w-4 h-4" />
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </button>
 

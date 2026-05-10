@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 04c53436-1ee5-46e2-8292-a4ddaa52cf99
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -192,7 +193,7 @@ class FileConnector:
                     row_count = sum(1 for _ in f) - 1  # Subtract header
             else:
                 row_count = len(df)  # Use sample size for remote
-        except Exception:
+        except OSError:
             row_count = len(df)
 
         return FileMetadata(
@@ -205,16 +206,15 @@ class FileConnector:
         )
 
     def _infer_json_schema(self) -> FileMetadata:
-        """Infer schema from a JSON or JSONL file."""
-        import pandas as pd
+        """Infer schema from a JSON or JSONL file using DuckDB."""
+        from constat.catalog.file._duckdb_inference import infer_json_schema_duckdb
 
         try:
-            if self.file_type == FileType.JSONL:
-                df = pd.read_json(self.path, lines=True, nrows=self.sample_size)
-            else:
-                df = pd.read_json(self.path)
-                if len(df) > self.sample_size:
-                    df = df.head(self.sample_size)
+            result = infer_json_schema_duckdb(
+                self.path,
+                sample_size=self.sample_size,
+                jsonl=(self.file_type == FileType.JSONL),
+            )
         except Exception as e:
             return FileMetadata(
                 name=self.name,
@@ -224,29 +224,22 @@ class FileConnector:
                 description=f"Error reading file: {e}",
             )
 
-        columns = self._infer_columns_from_dataframe(df)
-
-        # Get row count
-        try:
-            if self.file_type == FileType.JSONL and not self._is_remote_path():
-                with open(self.path, 'r') as f:
-                    row_count = sum(1 for line in f if line.strip())
-            else:
-                # For regular JSON, re-read to get full count
-                full_df = pd.read_json(
-                    self.path,
-                    lines=(self.file_type == FileType.JSONL)
-                )
-                row_count = len(full_df)
-        except Exception:
-            row_count = len(df)
+        columns = [
+            ColumnInfo(
+                name=c["name"],
+                data_type=c["type"],
+                nullable=c["nullable"],
+                sample_values=c["sample_values"],
+            )
+            for c in result["columns"]
+        ]
 
         return FileMetadata(
             name=self.name,
             path=self.path,
             file_type=self.file_type,
             columns=columns,
-            row_count=row_count,
+            row_count=result["row_count"],
             description=self.description,
         )
 
@@ -292,7 +285,7 @@ class FileConnector:
             sample_values = col.dropna().head(5).tolist()
 
             # Check nullability
-            nullable = col.isna().any()
+            nullable = bool(col.isna().any())
 
             columns.append(ColumnInfo(
                 name=str(col_name),
@@ -303,7 +296,8 @@ class FileConnector:
 
         return columns
 
-    def _pandas_dtype_to_string(self, dtype) -> str:
+    @staticmethod
+    def _pandas_dtype_to_string(dtype) -> str:
         """Convert pandas dtype to string representation."""
         dtype_str = str(dtype)
 
@@ -324,7 +318,8 @@ class FileConnector:
         else:
             return dtype_str
 
-    def _arrow_type_to_string(self, arrow_type) -> str:
+    @staticmethod
+    def _arrow_type_to_string(arrow_type) -> str:
         """Convert PyArrow type to string representation."""
         import pyarrow as pa
 

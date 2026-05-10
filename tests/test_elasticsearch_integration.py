@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 43657a4d-2b40-40a2-baf7-6895e6c85aee
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,6 +10,7 @@
 
 """Integration tests for Elasticsearch connector (requires Docker)."""
 
+from __future__ import annotations
 import pytest
 
 from constat.catalog.nosql.elasticsearch import ElasticsearchConnector
@@ -205,7 +207,11 @@ class TestElasticsearchSearch:
         results = connector.search("products", "noise-cancelling")
 
         assert len(results) >= 1
-        assert any("headphones" in r["name"].lower() for r in results)
+        # Product name is "Sony WH-1000XM5"; "headphones" is in description
+        assert any(
+            "noise" in r.get("description", "").lower() or "wh-1000" in r.get("name", "").lower()
+            for r in results
+        )
 
         connector.disconnect()
 

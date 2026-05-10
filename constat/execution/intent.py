@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 1992ba84-4991-49da-96a6-1b93fe2f108c
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -354,7 +355,8 @@ class IntentClassification:
 
         return suggestions
 
-    def _would_auto_execute_intent(self, intent: FollowUpIntent, expensive: bool) -> bool:
+    @staticmethod
+    def _would_auto_execute_intent(intent: FollowUpIntent, expensive: bool) -> bool:
         """Check if a specific intent would be auto-executed."""
         if intent in QUICK_INTENTS:
             return True

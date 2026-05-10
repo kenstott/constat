@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: da6f0cbf-f250-490f-b332-c10bbd22aaa8
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,6 +10,7 @@
 
 """Tests for resource-level hashing functionality."""
 
+from __future__ import annotations
 import os
 import tempfile
 import pytest
@@ -24,7 +26,7 @@ def temp_db():
     # Create a temp directory and use a path within it
     # Don't create the file - DuckDB will create it
     temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test_vectors.duckdb")
+    db_path = os.path.join(temp_dir, "test_system.duckdb")
 
     # Set environment variable to use this path
     old_path = os.environ.get("CONSTAT_VECTOR_STORE_PATH")
@@ -88,11 +90,11 @@ class TestResourceHashing:
         """Test resource hashes for different source IDs."""
         # Same resource name but different sources
         vector_store.set_resource_hash("__base__", "database", "db1", "base_hash")
-        vector_store.set_resource_hash("project1", "database", "db1", "project_hash")
+        vector_store.set_resource_hash("domain1", "database", "db1", "domain_hash")
 
         # Each source has its own hash
         assert vector_store.get_resource_hash("__base__", "database", "db1") == "base_hash"
-        assert vector_store.get_resource_hash("project1", "database", "db1") == "project_hash"
+        assert vector_store.get_resource_hash("domain1", "database", "db1") == "domain_hash"
 
     def test_delete_resource_hash(self, vector_store):
         """Test deleting resource hashes."""
@@ -118,7 +120,7 @@ class TestResourceHashing:
         vector_store.set_resource_hash("__base__", "database", "db1", "hash1")
         vector_store.set_resource_hash("__base__", "database", "db2", "hash2")
         vector_store.set_resource_hash("__base__", "api", "api1", "hash3")
-        vector_store.set_resource_hash("project1", "database", "db1", "hash4")
+        vector_store.set_resource_hash("domain1", "database", "db1", "hash4")
 
         # Get all for base
         all_hashes = vector_store.get_resource_hashes_for_source("__base__")
@@ -134,16 +136,16 @@ class TestResourceHashing:
         assert "db2" in db_hashes
         assert "api1" not in db_hashes
 
-        # Get for project1
-        project_hashes = vector_store.get_resource_hashes_for_source("project1")
-        assert len(project_hashes) == 1
-        assert project_hashes["db1"] == "hash4"
+        # Get for domain1
+        domain_hashes = vector_store.get_resource_hashes_for_source("domain1")
+        assert len(domain_hashes) == 1
+        assert domain_hashes["db1"] == "hash4"
 
     def test_clear_resource_hashes_for_source(self, vector_store):
         """Test clearing all resource hashes for a source."""
         vector_store.set_resource_hash("__base__", "database", "db1", "hash1")
         vector_store.set_resource_hash("__base__", "api", "api1", "hash2")
-        vector_store.set_resource_hash("project1", "database", "db1", "hash3")
+        vector_store.set_resource_hash("domain1", "database", "db1", "hash3")
 
         # Clear base hashes
         count = vector_store.clear_resource_hashes_for_source("__base__")
@@ -153,8 +155,8 @@ class TestResourceHashing:
         assert vector_store.get_resource_hash("__base__", "database", "db1") is None
         assert vector_store.get_resource_hash("__base__", "api", "api1") is None
 
-        # Project hash still exists
-        assert vector_store.get_resource_hash("project1", "database", "db1") == "hash3"
+        # Domain hash still exists
+        assert vector_store.get_resource_hash("domain1", "database", "db1") == "hash3"
 
 
 class TestDeleteResourceChunks:
@@ -176,8 +178,8 @@ class TestDeleteResourceChunks:
         # Create dummy embeddings
         embeddings = np.random.rand(count, vector_store.EMBEDDING_DIM).astype(np.float32)
 
-        project_id = None if source_id == "__base__" else source_id
-        vector_store.add_chunks(chunks, embeddings, source=source_type, project_id=project_id)
+        domain_id = None if source_id == "__base__" else source_id
+        vector_store.add_chunks(chunks, embeddings, source=source_type, domain_id=domain_id)
 
         return chunks
 
@@ -199,17 +201,17 @@ class TestDeleteResourceChunks:
         remaining = vector_store.count()
         assert remaining == 2
 
-    def test_delete_resource_chunks_project(self, vector_store):
-        """Test deleting chunks for a project resource."""
-        # Add chunks to base and project (different doc names due to add_chunks dedup logic)
+    def test_delete_resource_chunks_domain(self, vector_store):
+        """Test deleting chunks for a domain resource."""
+        # Add chunks to base and domain (different doc names due to add_chunks dedup logic)
         self._add_test_chunks(vector_store, "__base__", "base_doc", "document", count=2)
-        self._add_test_chunks(vector_store, "project1", "project_doc", "document", count=3)
+        self._add_test_chunks(vector_store, "domain1", "domain_doc", "document", count=3)
 
         total = vector_store.count()
         assert total == 5
 
-        # Delete only project1's chunks
-        deleted = vector_store.delete_resource_chunks("project1", "document", "project_doc")
+        # Delete only domain1's chunks
+        deleted = vector_store.delete_resource_chunks("domain1", "document", "domain_doc")
         assert deleted == 3
 
         # Base chunks still exist
@@ -256,6 +258,8 @@ class TestResourceHashComputation:
             path = test_file
             description = "Test doc"
             format = "markdown"
+            url = None
+            type = "markdown"
 
         # Compute hash
         hash1 = _compute_doc_resource_hash("test_doc", MockDocConfig(), temp_dir)
@@ -287,6 +291,8 @@ class TestResourceHashComputation:
             path = test_file
             description = "Stable doc"
             format = "markdown"
+            url = None
+            type = "markdown"
 
         # Compute hash twice without changes
         hash1 = _compute_doc_resource_hash("stable_doc", MockDocConfig(), temp_dir)
@@ -315,8 +321,8 @@ class TestIncrementalUpdateFlow:
             ))
 
         embeddings = np.random.rand(count, vector_store.EMBEDDING_DIM).astype(np.float32)
-        project_id = None if source_id == "__base__" else source_id
-        vector_store.add_chunks(chunks, embeddings, source=source_type, project_id=project_id)
+        domain_id = None if source_id == "__base__" else source_id
+        vector_store.add_chunks(chunks, embeddings, source=source_type, domain_id=domain_id)
 
     def test_incremental_update_single_resource(self, vector_store):
         """Test updating a single resource without affecting others."""

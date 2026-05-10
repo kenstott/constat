@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: aa42a583-5c8f-4104-903f-feb891939f28
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -142,6 +143,7 @@ class QueryEngine:
         )
 
         # Build API overview if configured (filtered by permissions)
+        # noinspection DuplicatedCode
         api_overview = ""
         if self.config.apis:
             api_lines = ["\n## Available APIs"]
@@ -264,6 +266,19 @@ class QueryEngine:
             return ENGINE_TOOLS
         return SCHEMA_TOOLS
 
+    def _build_retry_data_sources(self) -> str:
+        """Build data source summary for retry prompts."""
+        lines: list[str] = []
+        by_db: dict[str, list[str]] = {}
+        for table_meta in self.schema_manager.metadata_cache.values():
+            by_db.setdefault(table_meta.database, []).append(table_meta.name)
+        if by_db:
+            lines.append("\nDATA SOURCES:")
+            for db_name in sorted(by_db):
+                tables = sorted(by_db[db_name])
+                lines.append(f"  {db_name}: {', '.join(tables)}")
+        return "\n".join(lines) if lines else ""
+
     def _get_execution_globals(self) -> dict:
         """Get globals dict for code execution."""
         globals_dict = {}
@@ -283,7 +298,7 @@ class QueryEngine:
                 if first_sql_db is None:
                     first_sql_db = conn
 
-        # Also include dynamically added databases (from projects) not in config
+        # Also include dynamically added databases (from domains) not in config
         # SQL connections
         for db_name in self.schema_manager.connections.keys():
             if db_name not in config_db_names:
@@ -291,6 +306,7 @@ class QueryEngine:
                 globals_dict[f"db_{db_name}"] = conn
                 if first_sql_db is None:
                     first_sql_db = conn
+        # noinspection DuplicatedCode
         # NoSQL connections
         for db_name in self.schema_manager.nosql_connections.keys():
             if db_name not in config_db_names:
@@ -359,6 +375,7 @@ class QueryEngine:
                 retry_message = RETRY_PROMPT_TEMPLATE.format(
                     error_details=last_error,
                     previous_code=last_code,
+                    data_sources=self._build_retry_data_sources(),
                 )
                 code = self.llm.generate_code(
                     system=system_prompt,

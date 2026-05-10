@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: f39424a1-ff4b-41bd-9ced-2fd83ba9c411
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Plan Approval Dialog - modal for reviewing and approving execution plans
 
 import { useState } from 'react'
@@ -13,7 +23,7 @@ import {
   TrashIcon,
 } from '@heroicons/react/24/outline'
 import { CheckCircleIcon as CheckCircleSolid, XCircleIcon } from '@heroicons/react/24/solid'
-import { useSessionStore } from '@/store/sessionStore'
+import { useSessionContext } from '@/contexts/SessionContext'
 import type { Step } from '@/types/api'
 
 const stepStatusIcons: Record<string, { icon: typeof ClockIcon; color: string }> = {
@@ -71,16 +81,24 @@ function StepItem({ step, index, isExpanded, onToggle, modification, onModificat
             Modified
           </span>
         )}
-        <button
+        <div
+          role="button"
+          tabIndex={0}
           onClick={(e) => {
             e.stopPropagation()
             onDelete()
           }}
-          className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.stopPropagation()
+              onDelete()
+            }
+          }}
+          className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors cursor-pointer"
           title="Delete step"
         >
           <TrashIcon className="w-4 h-4" />
-        </button>
+        </div>
       </button>
 
       {isExpanded && (
@@ -131,7 +149,7 @@ function StepItem({ step, index, isExpanded, onToggle, modification, onModificat
 }
 
 export function PlanApprovalDialog() {
-  const { status, plan, approvePlan, rejectPlan } = useSessionStore()
+  const { status, plan, approvePlan, rejectPlan } = useSessionContext()
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set())
   const [stepModifications, setStepModifications] = useState<Record<number, string>>({})
   const [deletedSteps, setDeletedSteps] = useState<Set<number>>(new Set())
@@ -144,13 +162,7 @@ export function PlanApprovalDialog() {
   }
 
   const steps = plan.steps || []
-  // Transform clarification numbering from 0-indexed to 1-indexed for display
-  const rawProblem = plan.problem || 'Processing...'
-  const problem = rawProblem.replace(/Clarifications:\s*([\s\S]*)/g, (_match: string, clarifications: string) => {
-    // Replace "0:", "1:", etc. with "1:", "2:", etc.
-    const renumbered = clarifications.replace(/^(\d+):/gm, (_: string, num: string) => `${parseInt(num) + 1}:`)
-    return `Clarifications:\n${renumbered}`
-  })
+  const problem = plan.problem || 'Processing...'
 
   // Filter out deleted steps for display
   const visibleSteps = steps.filter((step, index) => {

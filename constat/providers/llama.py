@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 163f16ae-bee1-4373-af24-df16e20f0de6
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -42,6 +43,7 @@ class OllamaProvider(OpenAIProvider):
         self,
         model: str = "llama3.2",
         base_url: Optional[str] = None,
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Ollama provider.
@@ -49,21 +51,13 @@ class OllamaProvider(OpenAIProvider):
         Args:
             model: Model to use (e.g., "llama3.2", "llama3.1", "codellama")
             base_url: Custom Ollama server URL (default: http://localhost:11434/v1)
+            timeout: Client-level timeout in seconds
         """
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "Ollama provider requires the openai package. "
-                "Install with: pip install openai"
-            )
-
         url = base_url or self.DEFAULT_BASE_URL
         self._base_url = url.rstrip("/v1").rstrip("/")  # Store base for API calls
 
         # Ollama doesn't require an API key
-        self.client = OpenAI(base_url=url, api_key="ollama")
-        self.model = model
+        super().__init__(api_key="ollama", model=model, base_url=url, timeout=timeout)
         self._supports_tools_cache: Optional[bool] = None
 
     @property
@@ -86,20 +80,24 @@ class OllamaProvider(OpenAIProvider):
         # Try to verify via Ollama API
         try:
             import httpx
-            response = httpx.post(
-                f"{self._base_url}/api/show",
-                json={"name": self.model},
-                timeout=5.0,
-            )
-            if response.status_code == 200:
-                data = response.json()
-                # Check model info for tool support indicators
-                template = data.get("template", "")
-                if "tools" in template.lower() or "function" in template.lower():
-                    self._supports_tools_cache = True
-                    return True
-        except Exception:
-            pass  # Fall through to default
+        except ImportError:
+            pass  # httpx not available, fall through to default
+        else:
+            try:
+                response = httpx.post(
+                    f"{self._base_url}/api/show",
+                    json={"name": self.model},
+                    timeout=5.0,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    # Check model info for tool support indicators
+                    template = data.get("template", "")
+                    if "tools" in template.lower() or "function" in template.lower():
+                        self._supports_tools_cache = True
+                        return True
+            except (httpx.HTTPError, ConnectionError, OSError, ValueError, KeyError):
+                pass  # Fall through to default
 
         self._supports_tools_cache = False
         return False
@@ -117,36 +115,23 @@ class TogetherProvider(OpenAIProvider):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        model: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Together AI provider.
 
         Args:
             api_key: Together AI API key (or uses TOGETHER_API_KEY env var)
-            model: Model to use. Popular options:
-                - meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo
-                - meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
-                - codellama/CodeLlama-70b-Instruct-hf
+            model: Model to use. Popular serverless options:
+                - meta-llama/Llama-3.3-70B-Instruct-Turbo (default)
+                - meta-llama/Llama-3.2-1B-Instruct
+            timeout: Client-level timeout in seconds
         """
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "Together provider requires the openai package. "
-                "Install with: pip install openai"
-            )
-
         import os
 
         resolved_key = api_key or os.environ.get("TOGETHER_API_KEY")
-
-        kwargs = {"base_url": self.TOGETHER_BASE_URL}
-        if resolved_key:
-            kwargs["api_key"] = resolved_key
-
-        self.client = OpenAI(**kwargs)
-        self.model = model
+        super().__init__(api_key=resolved_key, model=model, base_url=self.TOGETHER_BASE_URL, timeout=timeout)
 
 
 class GroqProvider(OpenAIProvider):
@@ -162,6 +147,7 @@ class GroqProvider(OpenAIProvider):
         self,
         api_key: Optional[str] = None,
         model: str = "llama-3.3-70b-versatile",
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Groq provider.
@@ -173,25 +159,12 @@ class GroqProvider(OpenAIProvider):
                 - llama-3.1-70b-versatile
                 - llama-3.1-8b-instant
                 - llama3-70b-8192
+            timeout: Client-level timeout in seconds
         """
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "Groq provider requires the openai package. "
-                "Install with: pip install openai"
-            )
-
         import os
 
         resolved_key = api_key or os.environ.get("GROQ_API_KEY")
-
-        kwargs = {"base_url": self.GROQ_BASE_URL}
-        if resolved_key:
-            kwargs["api_key"] = resolved_key
-
-        self.client = OpenAI(**kwargs)
-        self.model = model
+        super().__init__(api_key=resolved_key, model=model, base_url=self.GROQ_BASE_URL, timeout=timeout)
 
 
 # Convenience alias - default to Ollama for local use

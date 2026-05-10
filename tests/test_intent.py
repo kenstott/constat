@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: ada0c9fd-2e74-4fdf-b2f5-da7a797429e4
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,6 +10,7 @@
 
 """Tests for intent classification module."""
 
+from __future__ import annotations
 import pytest
 
 from constat.execution.intent import (

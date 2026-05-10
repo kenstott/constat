@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: f074b178-3c9b-4cad-a01d-bf3dc29f92ff
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -38,7 +39,7 @@ class CompactDAG:
         self.node_center: Dict[str, int] = {}
 
     def _find_linear_tail(self) -> List[str]:
-        """Find longest linear tail ending at a sink."""
+        """Find the longest linear tail ending at a sink."""
         sinks = [n for n in self.graph.nodes() if self.graph.out_degree(n) == 0]
 
         best_chain = []
@@ -94,8 +95,8 @@ class CompactDAG:
         lines = []
 
         # Calculate row width
-        def row_width(row):
-            return sum(len(n) for n in row) + arrow_len * (len(row) - 1)
+        def row_width(r):
+            return sum(len(n) for n in r) + arrow_len * (len(r) - 1)
 
         # Pre-calculate positions for each row
         row_starts = [indent]  # Row 0 starts at indent
@@ -336,13 +337,13 @@ class CompactDAG:
         return '\n'.join(output)
 
 
-def render_dag(graph: nx.DiGraph, style: str = 'single',
+def render_dag(graph: nx.DiGraph, _style: str = 'single',
                snake: bool = True, max_width: int = 80) -> str:
     """Render a DAG compactly. Linear chains snake horizontally at max_width.
 
     Args:
         graph: NetworkX DiGraph (must be a DAG)
-        style: Ignored (kept for backward compatibility)
+        _style: Ignored (kept for backward compatibility)
         snake: Whether to snake linear chains horizontally
         max_width: Maximum width before snaking to next line
 

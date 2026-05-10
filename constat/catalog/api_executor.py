@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 35aa9dba-fe7c-4ada-8671-5c318e5c86fc
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -60,7 +61,7 @@ class APIExecutionError(Exception):
         self.retry_hint = retry_hint
 
 
-def classify_http_error(status_code: int, response_body: str = "") -> tuple[bool, str]:
+def classify_http_error(status_code: int, _response_body: str = "") -> tuple[bool, str]:
     """
     Classify HTTP error by status code to determine retry strategy.
 
@@ -123,7 +124,7 @@ class APIExecutor:
         self,
         config: Config,
         timeout: float = 30.0,
-        project_apis: Optional[dict[str, APIConfig]] = None,
+        domain_apis: Optional[dict[str, APIConfig]] = None,
     ):
         """
         Initialize the API executor.
@@ -131,11 +132,11 @@ class APIExecutor:
         Args:
             config: Configuration containing API definitions
             timeout: Request timeout in seconds
-            project_apis: Additional APIs from active projects
+            domain_apis: Additional APIs from active domains
         """
         self.config = config
         self.timeout = timeout
-        self._project_apis = project_apis or {}
+        self._domain_apis = domain_apis or {}
         self._client: Optional[httpx.Client] = None
 
     @property
@@ -158,21 +159,22 @@ class APIExecutor:
         self.close()
 
     def _get_api_config(self, api_name: str) -> APIConfig:
-        """Get API config by name (checks config.apis and project_apis)."""
+        """Get API config by name (checks config.apis and domain_apis)."""
         # Check config.apis first
         if self.config.apis and api_name in self.config.apis:
             return self.config.apis[api_name]
-        # Check project APIs
-        if api_name in self._project_apis:
-            return self._project_apis[api_name]
+        # Check domain APIs
+        if api_name in self._domain_apis:
+            return self._domain_apis[api_name]
         # Not found
         available = list(self.config.apis.keys()) if self.config.apis else []
-        available.extend(self._project_apis.keys())
+        available.extend(self._domain_apis.keys())
         raise APIExecutionError(
             f"API '{api_name}' not found. Available APIs: {available}"
         )
 
-    def _build_headers(self, api_config: APIConfig) -> dict[str, str]:
+    @staticmethod
+    def _build_headers(api_config: APIConfig) -> dict[str, str]:
         """Build request headers including authentication."""
         headers = {"Content-Type": "application/json"}
 
@@ -418,6 +420,7 @@ class APIExecutor:
             for http_method, operation_def in path_item.items():
                 if http_method in ("get", "post", "put", "patch", "delete"):
                     if operation_def.get("operationId") == operation:
+                        # noinspection PyTypeChecker
                         return path, method or http_method.upper()
 
         raise APIExecutionError(
@@ -450,7 +453,7 @@ class APIExecutor:
                         return yaml.safe_load(response.text)
                     else:
                         return response.json()
-            except Exception:
+            except (httpx.HTTPError, ValueError):
                 pass
 
         return None
@@ -611,7 +614,8 @@ class APIExecutor:
 
         return result
 
-    def _summarize_openapi_spec(self, spec: dict) -> dict[str, Any]:
+    @staticmethod
+    def _summarize_openapi_spec(spec: dict) -> dict[str, Any]:
         """Extract a summary of endpoints from OpenAPI spec."""
         result = {"endpoints": [], "schemas": {}}
 
@@ -781,7 +785,8 @@ class APIExecutor:
 
         return None
 
-    def _is_required(self, type_info: dict) -> bool:
+    @staticmethod
+    def _is_required(type_info: dict) -> bool:
         """Check if a type is non-nullable (required)."""
         return type_info.get("kind") == "NON_NULL"
 

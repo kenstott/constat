@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: f17275da-27bb-46cc-a151-7da5586d60d6
 #
 # Command module - shared command handlers for REPL and UI.
 #
@@ -14,6 +15,7 @@ from constat.commands.base import (
     ListResult,
     TextResult,
     KeyValueResult,
+    JsonResult,
     HelpResult,
     ErrorResult,
 )
@@ -48,12 +50,12 @@ from constat.commands.session_cmds import (
     facts_command,
     context_command,
     preferences_command,
-    role_command,
-    roles_command,
-    role_create_command,
-    role_edit_command,
-    role_delete_command,
-    role_draft_command,
+    agent_command,
+    agents_command,
+    agent_create_command,
+    agent_edit_command,
+    agent_delete_command,
+    agent_draft_command,
     skill_command,
     skills_command,
     skill_create_command,
@@ -77,6 +79,7 @@ __all__ = [
     "ListResult",
     "TextResult",
     "KeyValueResult",
+    "JsonResult",
     "HelpResult",
     "ErrorResult",
     # Registry
@@ -103,13 +106,13 @@ __all__ = [
     "facts_command",
     "context_command",
     "preferences_command",
-    # Role commands
-    "role_command",
-    "roles_command",
-    "role_create_command",
-    "role_edit_command",
-    "role_delete_command",
-    "role_draft_command",
+    # Agent commands
+    "agent_command",
+    "agents_command",
+    "agent_create_command",
+    "agent_edit_command",
+    "agent_delete_command",
+    "agent_draft_command",
     # Skill commands
     "skill_command",
     "skills_command",

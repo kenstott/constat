@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 82c453ff-7282-42d2-be39-d58eb61e2d54
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -23,7 +24,8 @@ from typing import Any, Optional
 
 import httpx
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+from constat.embedding_loader import EmbeddingModelLoader
 
 # Standard GraphQL introspection query
 INTROSPECTION_QUERY = """
@@ -187,6 +189,7 @@ class OperationMetadata:
         }
         # Include response schema if available (for interpreting API results)
         if self.response_schema:
+            # noinspection PyTypeChecker
             result["response_schema"] = self.response_schema
         return result
 
@@ -267,16 +270,13 @@ class APICatalog:
     4. Provide tools for LLM to discover operations
     """
 
-    # Same embedding model as SchemaManager for consistency
-    EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
-
     def __init__(self):
         self.operations: dict[str, OperationMetadata] = {}  # key: "type.name"
 
         # Vector index components
         self._embeddings: Optional[np.ndarray] = None
         self._embedding_keys: list[str] = []
-        self._model: Optional[SentenceTransformer] = None
+        self._model = None
 
         # Cached overview
         self._overview: Optional[str] = None
@@ -301,9 +301,9 @@ class APICatalog:
         if not self.operations:
             return
 
-        # Load embedding model (lazy, shared with SchemaManager)
+        # Load embedding model (shared singleton)
         if self._model is None:
-            self._model = SentenceTransformer(self.EMBEDDING_MODEL)
+            self._model = EmbeddingModelLoader.get_instance().get_model()
 
         # Generate texts for embedding
         texts = []
@@ -477,7 +477,8 @@ class APICatalog:
             result.append(op.full_name)
         return sorted(result)
 
-    def get_tools(self) -> list[dict]:
+    @staticmethod
+    def get_tools() -> list[dict]:
         """
         Get tool definitions for LLM to discover API operations.
 
@@ -567,11 +568,14 @@ def introspect_graphql_endpoint(
         results = catalog.find_relevant_operations("find countries in Europe")
     """
     # Run introspection query
+    default_headers = {"Accept-Encoding": "identity"}
+    if headers:
+        default_headers.update(headers)
     with httpx.Client(timeout=timeout) as client:
         response = client.post(
             url,
             json={"query": INTROSPECTION_QUERY},
-            headers=headers or {},
+            headers=default_headers,
         )
         response.raise_for_status()
         data = response.json()
@@ -752,6 +756,7 @@ def introspect_openapi_spec(
         base_url: Override the base URL from the spec (optional)
         headers: Headers to use when downloading spec (e.g., for auth)
         timeout: Request timeout in seconds
+        api_name: Name for the API catalog
 
     Returns:
         APICatalog populated with operations from the spec
@@ -828,16 +833,16 @@ def introspect_openapi_spec(
 
     # Get base URL
     if base_url:
-        api_base_url = base_url
+        _api_base_url = base_url
     elif is_openapi3:
         servers = spec.get("servers", [])
-        api_base_url = servers[0]["url"] if servers else ""
+        _api_base_url = servers[0]["url"] if servers else ""
     else:
         # Swagger 2.0
         host = spec.get("host", "")
         base_path = spec.get("basePath", "")
         schemes = spec.get("schemes", ["https"])
-        api_base_url = f"{schemes[0]}://{host}{base_path}"
+        _api_base_url = f"{schemes[0]}://{host}{base_path}"
 
     catalog = APICatalog()
     operations = []
@@ -1061,7 +1066,7 @@ def _openapi_type_to_string(schema: dict) -> str:
     return type_map.get(schema_type, schema_type)
 
 
-def _generate_openapi_tags(method: str, path: str, operation_id: str) -> list[str]:
+def _generate_openapi_tags(method: str, path: str, _operation_id: str) -> list[str]:
     """Generate tags for an OpenAPI operation."""
     tags = []
 

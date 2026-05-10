@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: bc51951f-5bcc-42e9-a1f9-afabf909aef5
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -20,12 +21,20 @@ SKILL.md format:
     name: skill-name
     description: What this skill does
     allowed-tools: [Read, Grep]
-    disable-model-invocation: false
-    user-invocable: true
-    context: fork
-    agent: Explore
-    model: sonnet
-    argument-hint: [filename]
+    metadata:
+      disable-model-invocation: false
+      user-invocable: true
+      context: fork
+      agent: Explore
+      model: sonnet
+      argument-hint: "[filename]"
+      exports:
+        - script: proof.py
+          functions: [run_proof, helper_fn]
+      dependencies:
+        - other-skill-name
+      required-resources:
+        - schema:chinook
     ---
 
     Markdown instructions here...
@@ -53,7 +62,8 @@ def get_skills_dir(user_id: str, base_dir: Optional[Path] = None) -> Path:
     """
     if base_dir is None:
         base_dir = Path(".constat")
-    return base_dir / user_id / "skills"
+    from constat.core.paths import user_vault_dir
+    return user_vault_dir(base_dir, user_id) / "skills"
 
 
 def parse_frontmatter(content: str) -> tuple[dict, str]:
@@ -114,13 +124,27 @@ class Skill:
     # UI hints
     argument_hint: str = ""  # Hint for autocomplete (e.g., "[issue-number]")
 
+    # Script exports — declares which functions to inject from which scripts
+    # Format: [{"script": "proof.py", "functions": ["run_proof", "parse_number"]}, ...]
+    exports: list[dict] = field(default_factory=list)
+
+    # Skill dependencies — names of other skills whose exports this skill calls
+    dependencies: list[str] = field(default_factory=list)
+
+    # Resource requirements (same format as grounding patterns: schema:db.table, api:endpoint, document:name)
+    required_resources: list[str] = field(default_factory=list)
+
+    # Domain scoping
+    domain: str = ""   # owning domain filename ("" = unscoped/global)
+    source: str = ""   # "system" | "shared" | "user" | "domain"
+
 
 class SkillManager:
-    """Manages skills loaded from system, project, and user directories.
+    """Manages skills loaded from system, domain, and user directories.
 
     Precedence order (later overrides earlier by name):
         1. System:  {config_dir}/skills/  (alongside config.yaml)
-        2. Project: {project_dir}/skills/ (for each active project)
+        2. Domain: {domain_dir}/skills/ (for each active domain)
         3. User:    {base_dir}/{user_id}/skills/
     """
 
@@ -137,7 +161,8 @@ class SkillManager:
         self._base_dir = base_dir or Path(".constat")
         self._skills_dir = get_skills_dir(user_id, self._base_dir)
         self._system_skills_dir = system_skills_dir
-        self._project_skill_dirs: list[Path] = []
+        self._domain_skill_dirs: list[Path] = []
+        self._domain_skill_domain_map: dict[str, str] = {}  # skills_dir path → domain filename
         self._skills: dict[str, Skill] = {}
         self._active_skills: set[str] = set()
         self._ensure_skills_dir()
@@ -171,14 +196,25 @@ class SkillManager:
                 prompt = body.strip()
 
                 allowed_tools = frontmatter.get("allowed-tools", [])
-                disable_model_invocation = frontmatter.get("disable-model-invocation", False)
-                user_invocable = frontmatter.get("user-invocable", True)
-                context = frontmatter.get("context", "")
-                agent = frontmatter.get("agent", "")
-                model = frontmatter.get("model", "")
-                argument_hint = frontmatter.get("argument-hint", "")
+
+                # Custom fields: prefer metadata, fall back to top-level (backward-compat)
+                meta = frontmatter.get("metadata", {})
+                disable_model_invocation = meta.get("disable-model-invocation", frontmatter.get("disable-model-invocation", False))
+                user_invocable = meta.get("user-invocable", frontmatter.get("user-invocable", True))
+                context = meta.get("context", frontmatter.get("context", ""))
+                agent = meta.get("agent", frontmatter.get("agent", ""))
+                model = meta.get("model", frontmatter.get("model", ""))
+                argument_hint = meta.get("argument-hint", frontmatter.get("argument-hint", ""))
+                exports = meta.get("exports", frontmatter.get("exports", []))
+                dependencies = meta.get("dependencies", frontmatter.get("dependencies", []))
+                required_resources = meta.get("required-resources", frontmatter.get("required-resources", []))
 
                 if prompt:
+                    # Determine domain from directory context
+                    domain_name = ""
+                    if source == "domain":
+                        # skills_dir is {domain_dir}/skills/ — parent is domain dir
+                        domain_name = self._domain_skill_domain_map.get(str(skills_dir), "")
                     self._skills[name] = Skill(
                         name=name,
                         prompt=prompt,
@@ -191,6 +227,11 @@ class SkillManager:
                         agent=agent,
                         model=model,
                         argument_hint=argument_hint,
+                        exports=exports if isinstance(exports, list) else [],
+                        dependencies=dependencies if isinstance(dependencies, list) else [],
+                        required_resources=required_resources if isinstance(required_resources, list) else [],
+                        domain=domain_name,
+                        source=source,
                     )
                     logger.debug(f"Loaded skill: {name} from {skill_dir.name}/SKILL.md ({source})")
 
@@ -200,7 +241,7 @@ class SkillManager:
     def _load_skills(self) -> None:
         """Load skills from all directories in precedence order.
 
-        System < project < user (last wins).
+        System < domain < user (last wins).
         """
         self._skills.clear()
 
@@ -208,46 +249,75 @@ class SkillManager:
         if self._system_skills_dir:
             self._load_skills_from_dir(self._system_skills_dir, "system")
 
-        # 2. Active project skill dirs
-        for project_dir in self._project_skill_dirs:
-            self._load_skills_from_dir(project_dir, "project")
+        # 2. Active domain skill dirs
+        for domain_dir in self._domain_skill_dirs:
+            self._load_skills_from_dir(domain_dir, "domain")
 
         # 3. User skills (highest precedence)
         self._load_skills_from_dir(self._skills_dir, "user")
 
-        logger.info(f"Loaded {len(self._skills)} skills (system={self._system_skills_dir}, projects={len(self._project_skill_dirs)}, user={self._skills_dir})")
+        # Assign domain="user" to unscoped skills
+        for skill in self._skills.values():
+            if not skill.domain:
+                skill.domain = "user"
 
-    def add_project_skills(self, project_dir: Path) -> None:
-        """Add a project skills directory and reload.
+        logger.info(f"Loaded {len(self._skills)} skills (system={self._system_skills_dir}, domains={len(self._domain_skill_dirs)}, user={self._skills_dir})")
+
+    def add_domain_skills(self, domain_dir: Path, domain_filename: str = "") -> None:
+        """Add a domain skills directory and reload.
 
         Args:
-            project_dir: Path to the project's skills/ directory.
+            domain_dir: Path to the domain's skills/ directory.
+            domain_filename: Owning domain filename for scoping.
         """
-        if project_dir not in self._project_skill_dirs:
-            self._project_skill_dirs.append(project_dir)
+        if domain_dir not in self._domain_skill_dirs:
+            self._domain_skill_dirs.append(domain_dir)
+            if domain_filename:
+                self._domain_skill_domain_map[str(domain_dir)] = domain_filename
             self._load_skills()
 
-    def remove_project_skills(self, project_dir: Path) -> None:
-        """Remove a project skills directory and reload."""
-        if project_dir in self._project_skill_dirs:
-            self._project_skill_dirs.remove(project_dir)
+    def remove_domain_skills(self, domain_dir: Path) -> None:
+        """Remove a domain skills directory and reload."""
+        if domain_dir in self._domain_skill_dirs:
+            self._domain_skill_dirs.remove(domain_dir)
             self._load_skills()
 
     def reload(self) -> None:
         """Reload skills from files."""
         self._load_skills()
 
-    def list_skills(self) -> list[str]:
-        """Get list of available skill names."""
+    def list_skills(self, domain: Optional[str] = None) -> list[str]:
+        """Get list of available skill names, optionally filtered by domain."""
+        if domain is not None:
+            return [n for n, s in self._skills.items() if s.domain == domain]
         return list(self._skills.keys())
 
     def get_skill(self, name: str) -> Optional[Skill]:
         """Get a skill by name."""
         return self._skills.get(name)
 
+    def resolve_skill(self, name: str) -> Optional[Skill]:
+        """Resolve a skill by name, supporting qualified names (domain/skill)."""
+        if "/" in name:
+            domain_part, skill_part = name.split("/", 1)
+            for s in self._skills.values():
+                if s.name == skill_part and s.domain == domain_part:
+                    return s
+            return None
+        return self._skills.get(name)
+
+    @staticmethod
+    def qualified_name(skill: Skill) -> str:
+        """Return the qualified name for a skill."""
+        return f"{skill.domain}/{skill.name}" if skill.domain else skill.name
+
     def get_all_skills(self) -> list[Skill]:
         """Get all skills."""
         return list(self._skills.values())
+
+    def get_domain_skills(self, domain: str) -> list[Skill]:
+        """Get skills belonging to a specific domain."""
+        return [s for s in self._skills.values() if s.domain == domain]
 
     def activate_skill(self, name: str) -> bool:
         """Activate a skill.
@@ -320,8 +390,43 @@ class SkillManager:
 
     @property
     def skills_dir(self) -> Path:
-        """Get the path to the skills directory."""
+        """Get the path to the 'skills' directory."""
         return self._skills_dir
+
+    def get_skill_dir(self, name: str, domain: Optional[str] = None) -> Optional[Path]:
+        """Get the full directory path for a skill, searching all skill directories.
+
+        Args:
+            name: Skill name.
+            domain: If provided, scope search to only that domain's dir (or "user" for user dir).
+        """
+        skill = self._skills.get(name)
+        if not skill:
+            return None
+
+        if domain:
+            if domain == "user":
+                search_dirs = [self._skills_dir]
+            else:
+                # Find the domain dir matching the given domain filename
+                search_dirs = [
+                    Path(d) for d, df in self._domain_skill_domain_map.items()
+                    if df == domain
+                ]
+            if not search_dirs:
+                return None
+        else:
+            # Search in reverse precedence: user > domain > system (first match wins)
+            search_dirs = [self._skills_dir]
+            search_dirs.extend(reversed(self._domain_skill_dirs))
+            if self._system_skills_dir:
+                search_dirs.append(self._system_skills_dir)
+
+        for search_dir in search_dirs:
+            candidate = search_dir / skill.filename
+            if candidate.exists():
+                return candidate
+        return None
 
     # CRUD operations for skills
 
@@ -389,7 +494,10 @@ allowed-tools: []
         if not skill:
             return False
 
-        skill_file = self._skills_dir / skill.filename / SKILL_FILENAME
+        skill_dir = self.get_skill_dir(name)
+        if not skill_dir:
+            return False
+        skill_file = skill_dir / SKILL_FILENAME
 
         # Read current content
         with open(skill_file, "r") as f:
@@ -439,7 +547,10 @@ allowed-tools: []
         if not skill:
             return False
 
-        skill_file = self._skills_dir / skill.filename / SKILL_FILENAME
+        skill_dir = self.get_skill_dir(name)
+        if not skill_dir:
+            return False
+        skill_file = skill_dir / SKILL_FILENAME
 
         # Parse the new content to validate and extract fields
         frontmatter, body = parse_frontmatter(content)
@@ -455,6 +566,9 @@ allowed-tools: []
         skill.prompt = body.strip()
         skill.description = frontmatter.get("description", "").strip()
         skill.allowed_tools = frontmatter.get("allowed-tools", [])
+        meta = frontmatter.get("metadata", {})
+        rr = meta.get("required-resources", frontmatter.get("required-resources", []))
+        skill.required_resources = rr if isinstance(rr, list) else []
 
         # Handle name change
         if new_name != name:
@@ -467,11 +581,12 @@ allowed-tools: []
 
         return True
 
-    def delete_skill(self, name: str) -> bool:
+    def delete_skill(self, name: str, domain: Optional[str] = None) -> bool:
         """Delete a skill.
 
         Args:
             name: Skill name
+            domain: If provided, scope deletion to only that domain's dir.
 
         Returns:
             True if deleted, False if not found
@@ -480,12 +595,22 @@ allowed-tools: []
         if not skill:
             return False
 
-        skill_dir = self._skills_dir / skill.filename
+        skill_dir = self.get_skill_dir(name, domain=domain)
+        if not skill_dir:
+            # Already gone from disk — just clean up in-memory
+            del self._skills[name]
+            self._active_skills.discard(name)
+            return True
         try:
             # Remove the SKILL.md file
             skill_file = skill_dir / SKILL_FILENAME
             if skill_file.exists():
                 skill_file.unlink()
+            # Remove scripts dir if present
+            scripts_dir = skill_dir / "scripts"
+            if scripts_dir.exists():
+                import shutil
+                shutil.rmtree(scripts_dir)
             # Remove the directory if empty
             if skill_dir.exists() and not any(skill_dir.iterdir()):
                 skill_dir.rmdir()
@@ -510,15 +635,19 @@ allowed-tools: []
         if not skill:
             return None
 
-        skill_file = self._skills_dir / skill.filename / SKILL_FILENAME
+        skill_dir = self.get_skill_dir(name)
+        if not skill_dir:
+            return None
+        skill_file = skill_dir / SKILL_FILENAME
         try:
             with open(skill_file, "r") as f:
                 content = f.read()
-            return (content, str(skill_file))
+            return content, str(skill_file)
         except OSError:
             return None
 
-    def draft_skill(self, name: str, user_description: str, llm) -> tuple[str, str]:
+    @staticmethod
+    def draft_skill(name: str, user_description: str, llm) -> tuple[str, str]:
         """Draft a skill using LLM based on user description.
 
         Args:
@@ -572,7 +701,7 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
         )
 
         content = result.strip()
-        # Remove markdown code block wrapper if present
+        # Remove Markdown code block wrapper if present
         if content.startswith("```"):
             lines = content.split("\n")
             content = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
@@ -585,13 +714,13 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
                 if len(parts) >= 3:
                     frontmatter = yaml.safe_load(parts[1])
                     description = frontmatter.get("description", "")
-            except Exception:
+            except (yaml.YAMLError, AttributeError):
                 pass
 
         return content, description
 
+    @staticmethod
     def skill_from_proof(
-        self,
         name: str,
         proof_nodes: list[dict],
         proof_summary: str | None,
@@ -599,12 +728,29 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
         llm,
         description: str | None = None,
         script_params: list[dict] | None = None,
+        result_schemas: dict[str, list[dict]] | None = None,
+        documents: list[dict] | None = None,
+        apis: list[dict] | None = None,
+        databases: list[dict] | None = None,
     ) -> tuple[str, str]:
         """Distill a completed proof into SKILL.md content.
 
         Args:
+            name: Skill name
+            proof_nodes: List of proof node dicts from the proof tree
+            proof_summary: LLM-generated narrative summary of the proof
+            original_problem: The original problem/claim being proven
+            llm: LLM provider for generating skill content
+            description: Optional human-readable description
             script_params: List of dicts with 'name' and 'default' keys describing
                           run_proof() keyword arguments.
+            result_schemas: Dict mapping dataset name to list of column dicts
+                           (each with 'name', 'type', 'nullable' keys).
+                           These are the ACTUAL output columns from the script.
+            documents: List of dicts with 'name' and 'path' keys for reference
+                       documents exposed as module-level constants.
+            apis: List of dicts with 'name', 'type', 'url' for API sources.
+            databases: List of dicts with 'name', 'uri' for database sources.
 
         Returns (content, description).
         """
@@ -625,7 +771,7 @@ A skill file has two parts:
    - **Capability**: What the skill does (1-2 sentences)
    - **Data Sources**: Which APIs/databases it uses (names and what they provide)
    - **Parameters**: The `run_proof()` function signature — each parameter, its type, default value, and what it controls
-   - **Returns**: What datasets are returned (names, key columns, data types)
+   - **Returns**: `run_proof()` returns `dict[str, DataFrame | str | dict | bytes]` mapping artifact names to values. Document each key name, its value type, and columns for DataFrames.
    - **Usage**: How to call `run_proof()` with examples showing parameter overrides
 
 DO NOT include:
@@ -655,6 +801,18 @@ Output the complete SKILL.md content (frontmatter + markdown body). No explanati
             }
             nodes_summary.append(entry)
 
+        # Build actual schema documentation
+        schema_docs = ""
+        if result_schemas:
+            schema_lines = ["\n## ACTUAL OUTPUT SCHEMAS (from executed script — use these EXACT column names):\n"]
+            for dataset_name, columns in result_schemas.items():
+                schema_lines.append(f"### Dataset: `{dataset_name}`")
+                for col in columns:
+                    col_type = col.get("type", "unknown")
+                    schema_lines.append(f"  - `{col['name']}` ({col_type})")
+                schema_lines.append("")
+            schema_docs = "\n".join(schema_lines)
+
         user_prompt = f"""Create a skill named "{name}" from this completed analysis.
 
 Original problem: {original_problem}
@@ -666,12 +824,18 @@ Analysis steps (verified facts with derivation strategies):
 
 Generate a SKILL.md focused on capabilities, parameters, and return values. Do NOT describe internal implementation.
 
-The executable script is `scripts/proof.py` with a `run_proof()` function that returns `dict[str, DataFrame]` (all datasets plus `_result` key for the final output).
+The executable script is `scripts/proof.py` with a `run_proof()` function that returns `dict[str, DataFrame | str | dict | bytes]` mapping artifact names to values. Value types: DataFrame (tabular data), str (markdown/text), dict (JSON), bytes (images). The `_result` key holds the final/primary output.
 
 {f"run_proof() parameters:{chr(10)}" + chr(10).join(f"- {p['name']}: default={p['default']}" for p in script_params) if script_params else "run_proof() takes no parameters."}
 
-The SKILL.md must clearly document: what it does, what parameters run_proof() accepts, and what columns/datasets it returns."""
+run_proof() also accepts these keyword arguments to override data source configuration. Each defaults to the module-level constant. The Parameters and Usage sections MUST document ALL of these as named keyword arguments:
+{(chr(10).join(f"- doc_{d['name'].lower().replace('-', '_').replace(' ', '_')} (str): path to {d['name']} document, default=DOC_{d['name'].upper().replace('-', '_').replace(' ', '_')} ({d['path']!r})" for d in documents)) if documents else ""}
+{(chr(10).join(f"- db_{d['name']} (SQLAlchemy Engine): connection to {d['name']} database, default=create_engine({d['uri']!r})" for d in databases)) if databases else ""}
+{(chr(10).join(f"- api_{a['name'].lower()}_url (str): {'GraphQL' if a.get('type') == 'graphql' else 'REST'} endpoint URL, default=API_{a['name'].upper()}_URL ({a['url']!r})" for a in apis)) if apis else ""}
+{schema_docs}
+CRITICAL: The "Returns" section MUST document the EXACT column names and types shown above. Do NOT invent, rename, or omit any columns. Copy them verbatim from the ACTUAL OUTPUT SCHEMAS."""
 
+        # noinspection DuplicatedCode
         result = llm.generate(
             system=system_prompt,
             user_message=user_prompt,
@@ -679,7 +843,7 @@ The SKILL.md must clearly document: what it does, what parameters run_proof() ac
         )
 
         content = result.strip()
-        # Remove markdown code block wrapper if present
+        # Remove Markdown code block wrapper if present
         if content.startswith("```"):
             lines = content.split("\n")
             content = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
@@ -692,7 +856,7 @@ The SKILL.md must clearly document: what it does, what parameters run_proof() ac
                 if len(parts) >= 3:
                     frontmatter = yaml.safe_load(parts[1])
                     extracted_description = frontmatter.get("description", extracted_description)
-            except Exception:
+            except (yaml.YAMLError, AttributeError):
                 pass
 
         return content, extracted_description

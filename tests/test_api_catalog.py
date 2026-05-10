@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 5580f563-6a56-4561-be5e-520b376e4c87
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,6 +10,7 @@
 
 """Tests for API Catalog with vector search."""
 
+from __future__ import annotations
 import pytest
 
 from constat.catalog.api_catalog import (

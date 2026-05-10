@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 29f7223b-7d3e-4f87-a64e-f8ebd898cb84
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -87,6 +88,7 @@ class ConstatAPIImpl:
         problem: str,
         *,
         require_approval: bool = True,
+        force_plan: bool = False,
     ) -> SolveResult:
         """Solve a new problem, generating and executing a plan."""
         # Store original approval setting and temporarily override
@@ -94,7 +96,7 @@ class ConstatAPIImpl:
         self._session.session_config.require_approval = require_approval
 
         try:
-            result = self._session.solve(problem)
+            result = self._session.solve(problem, force_plan=force_plan)
             return self._convert_solve_result(result)
         except Exception as e:
             return SolveResult(success=False, error=str(e))
@@ -237,7 +239,7 @@ class ConstatAPIImpl:
 
         # Get pre-compaction stats
         estimator = ContextEstimator(self._session.datastore)
-        pre_stats = estimator.estimate()
+        _pre_stats = estimator.estimate()
 
         # Run compaction
         compactor = ContextCompactor(self._session.datastore, self._session.llm)
@@ -255,7 +257,7 @@ class ConstatAPIImpl:
         """Reset session context for a new query.
 
         Clears: plan, scratchpad, datastore tables, artifacts, state, session facts
-        Keeps: data sources, projects, learnings
+        Keeps: data sources, domains, learnings
         """
         self._session.plan = None
         # Clear in-memory scratchpad sections
@@ -289,7 +291,7 @@ class ConstatAPIImpl:
         def session_event_handler(event):
             callback(event.event_type, event.data)
 
-        self._session.add_event_handler(session_event_handler)
+        self._session.on_event(session_event_handler)
 
     def set_clarification_callback(self, callback: Callable) -> None:
         """Set callback for clarification requests."""
@@ -370,6 +372,7 @@ class ConstatAPIImpl:
 
     def audit(self) -> dict:
         """Run an audit of the session."""
+        # noinspection PyUnresolvedReferences
         return self._session.audit()
 
     def prove_conversation(self) -> dict:
@@ -574,11 +577,13 @@ class ConstatAPIImpl:
     # Detection
     # -------------------------------------------------------------------------
 
-    def detect_display_overrides(self, text: str) -> DisplayOverrides:
+    @staticmethod
+    def detect_display_overrides(text: str) -> DisplayOverrides:
         """Detect display preference overrides in natural language."""
         return detect_display_overrides(text)
 
-    def detect_nl_correction(self, text: str) -> CorrectionDetection:
+    @staticmethod
+    def detect_nl_correction(text: str) -> CorrectionDetection:
         """Detect if text contains a correction pattern."""
         return detect_nl_correction(text)
 
@@ -668,28 +673,46 @@ class ConstatAPIImpl:
             raw_output=result.get("raw_output"),
         )
 
-    def _extract_steps(self, result: dict) -> tuple[StepInfo, ...]:
+    @staticmethod
+    def _extract_steps(result: dict) -> tuple[StepInfo, ...]:
         """Extract step information from result dict."""
-        steps = []
-        plan = result.get("plan", {})
+        from constat.core.models import Plan
+
+        plan = result.get("plan")
+        if plan is None:
+            return ()
+
+        # Handle Plan object (returned by session.solve)
+        if isinstance(plan, Plan):
+            steps = []
+            for step in plan.steps:
+                status = step.status.value if step.status else "pending"
+                steps.append(StepInfo(
+                    number=step.number,
+                    description=step.goal,
+                    status=status,
+                    code=step.code if hasattr(step, "code") else None,
+                ))
+            return tuple(steps)
+
+        # Handle dict plan (legacy / serialized)
         plan_steps = plan.get("steps", []) if isinstance(plan, dict) else []
         step_results = result.get("step_results", [])
-
+        steps = []
         for i, step in enumerate(plan_steps):
             status = "completed" if i < len(step_results) else "pending"
             if i < len(step_results) and not step_results[i].get("success", True):
                 status = "failed"
-
             steps.append(StepInfo(
                 number=i + 1,
-                description=step.get("description", ""),
+                description=step.get("description", "") or step.get("goal", ""),
                 status=status,
                 code=step.get("code"),
             ))
-
         return tuple(steps)
 
-    def _extract_artifacts(self, result: dict) -> tuple[ArtifactInfo, ...]:
+    @staticmethod
+    def _extract_artifacts(result: dict) -> tuple[ArtifactInfo, ...]:
         """Extract artifact information from result dict."""
         artifacts = []
         raw_artifacts = result.get("artifacts", [])

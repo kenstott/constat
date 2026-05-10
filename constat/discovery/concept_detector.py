@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 30f08ee8-76a4-4539-8c14-f1c8718e042e
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -63,7 +64,7 @@ class ConceptDetector:
         concepts = detector.detect("create a sales dashboard", target="step")
         # Returns: [DetectedConcept(concept_id='dashboard_layout', similarity=0.82, ...)]
 
-        # Get injectable content
+        # Get injectable content.
         content = detector.get_sections_for_prompt("create a dashboard", "step")
     """
 
@@ -78,7 +79,7 @@ class ConceptDetector:
         """Initialize the concept detector.
 
         Args:
-            model: Optional pre-loaded SentenceTransformer model.
+            model: Optional preloaded SentenceTransformer model.
                    If None, loads the model on first use.
             threshold: Minimum cosine similarity to consider a concept detected.
                       Default 0.55 balances precision and recall.

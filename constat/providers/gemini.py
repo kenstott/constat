@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: aa303e53-a25e-44b1-9656-dc6be6a2a914
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -24,6 +25,7 @@ class GeminiProvider(BaseLLMProvider):
         self,
         api_key: Optional[str] = None,
         model: str = "gemini-1.5-pro",
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Gemini provider.
@@ -33,6 +35,7 @@ class GeminiProvider(BaseLLMProvider):
             model: Model to use (e.g., "gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro")
         """
         try:
+            # noinspection PyUnresolvedReferences
             import google.generativeai as genai
         except ImportError:
             raise ImportError(
@@ -46,7 +49,8 @@ class GeminiProvider(BaseLLMProvider):
         self.genai = genai
         self.model_name = model
 
-    def _convert_tools_to_gemini_format(self, tools: list[dict]) -> list:
+    @staticmethod
+    def _convert_tools_to_gemini_format(tools: list[dict]) -> list:
         """Convert Anthropic-style tools to Gemini function declarations.
 
         Anthropic format:
@@ -54,6 +58,7 @@ class GeminiProvider(BaseLLMProvider):
 
         Gemini format uses FunctionDeclaration objects.
         """
+        # noinspection PyUnresolvedReferences
         from google.generativeai.types import FunctionDeclaration
 
         function_declarations = []
@@ -78,12 +83,14 @@ class GeminiProvider(BaseLLMProvider):
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 4096,
         model: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         Generate a response, automatically handling tool calls.
 
         Converts Anthropic-style tool definitions to Gemini format.
         """
+        # noinspection PyUnresolvedReferences
         from google.generativeai.types import Tool
 
         tool_handlers = tool_handlers or {}
@@ -110,9 +117,10 @@ class GeminiProvider(BaseLLMProvider):
         chat = model_instance.start_chat(history=[])
 
         # Send initial message
+        # noinspection PyTypeChecker
         kwargs = {"content": user_message}
         if gemini_tools:
-            kwargs["tools"] = gemini_tools
+            kwargs["tools"] = gemini_tools  # type: ignore[assignment]
 
         response = chat.send_message(**kwargs)
 
@@ -151,6 +159,7 @@ class GeminiProvider(BaseLLMProvider):
                 break
 
             # Send function responses back
+            # noinspection PyUnresolvedReferences
             from google.generativeai.types import Part
 
             response_parts = [

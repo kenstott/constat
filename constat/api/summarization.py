@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 6fb7fd3f-fa1b-4980-b206-851b7a2a5a2c
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -59,7 +60,7 @@ Provide a 2-3 sentence summary covering:
         result = llm.generate(
             system="You are a concise technical summarizer.",
             user_message=prompt,
-            max_tokens=self.llm.max_output_tokens,
+            max_tokens=llm.max_output_tokens,
         )
         return SummarizeResult(success=True, summary=result)
     except Exception as e:
@@ -76,10 +77,11 @@ def summarize_session(session: "Session", llm) -> SummarizeResult:
     Returns:
         SummarizeResult with session summary or error
     """
-    session_info = []
+    session_info = [
+        f"Session ID: {session.session_id or 'Not started'}",
+    ]
 
     # Session ID and mode
-    session_info.append(f"Session ID: {session.session_id or 'Not started'}")
     if hasattr(session, 'current_mode'):
         session_info.append(f"Mode: {session.current_mode}")
 
@@ -107,6 +109,7 @@ def summarize_session(session: "Session", llm) -> SummarizeResult:
     if not session_info:
         return SummarizeResult(success=False, error="No session state to summarize")
 
+    # noinspection DuplicatedCode
     prompt = f"""Summarize this session state concisely:
 
 {chr(10).join(session_info)}
@@ -117,7 +120,7 @@ Provide a 2-3 sentence summary of what this session has accomplished and its cur
         result = llm.generate(
             system="You are a concise technical summarizer.",
             user_message=prompt,
-            max_tokens=self.llm.max_output_tokens,
+            max_tokens=llm.max_output_tokens,
         )
         return SummarizeResult(success=True, summary=result)
     except Exception as e:
@@ -147,6 +150,7 @@ def summarize_facts(session: "Session", llm) -> SummarizeResult:
         value_str = str(fact.value)[:100] if fact.value else "None"
         facts_text.append(f"- {name}: {value_str} (source: {source})")
 
+    # noinspection DuplicatedCode
     prompt = f"""Summarize these cached facts concisely:
 
 {chr(10).join(facts_text)}
@@ -160,11 +164,46 @@ Provide a summary covering:
         result = llm.generate(
             system="You are a concise technical summarizer.",
             user_message=prompt,
-            max_tokens=self.llm.max_output_tokens,
+            max_tokens=llm.max_output_tokens,
         )
         return SummarizeResult(success=True, summary=result)
     except Exception as e:
         return SummarizeResult(success=False, error=str(e))
+
+
+def _build_proof_mermaid(proof_nodes: list[dict]) -> str:
+    """Build a mermaid flowchart from proof nodes."""
+    lines = ["```mermaid", "flowchart TD"]
+
+    for node in proof_nodes:
+        nid = node.get("id", "")
+        name = node.get("name", nid)
+        value = str(node.get("value", ""))[:40]
+        label = f"{nid}: {name}"
+        if value and value != "None":
+            label += f"<br/>{value}"
+        # Escape quotes in label
+        label = label.replace('"', '#quot;')
+        lines.append(f'    {nid}["{label}"]')
+
+    # Edges from dependencies
+    for node in proof_nodes:
+        nid = node.get("id", "")
+        for dep in node.get("dependencies", []):
+            lines.append(f"    {dep} --> {nid}")
+
+    # Styles: one style directive per node (mermaid doesn't support comma-separated IDs)
+    for n in proof_nodes:
+        nid = n.get("id", "")
+        if n.get("status") == "failed":
+            lines.append(f"    style {nid} fill:#FEE2E2,stroke:#EF4444,color:#991B1B")
+        elif nid.startswith("P"):
+            lines.append(f"    style {nid} fill:#DBEAFE,stroke:#3B82F6,color:#1E40AF")
+        elif nid.startswith("I"):
+            lines.append(f"    style {nid} fill:#DCFCE7,stroke:#22C55E,color:#166534")
+
+    lines.append("```")
+    return "\n".join(lines)
 
 
 def summarize_proof(
@@ -240,10 +279,11 @@ Write as a clear explanation for someone reviewing the audit trail."""
         result = llm.generate(
             system="You are an auditor explaining a proof derivation clearly and accurately.",
             user_message=prompt,
-            max_tokens=1000,
+            max_tokens=llm.max_output_tokens,
         )
         logger.info(f"[summarize_proof] LLM returned result length={len(result) if result else 0}")
-        return SummarizeResult(success=True, summary=result)
+        diagram = _build_proof_mermaid(proof_nodes)
+        return SummarizeResult(success=True, summary=f"{diagram}\n\n{result}")
     except Exception as e:
         logger.error(f"[summarize_proof] LLM call failed: {e}", exc_info=True)
         return SummarizeResult(success=False, error=str(e))
@@ -314,7 +354,7 @@ Provide a 2-3 sentence summary covering:
         result = llm.generate(
             system="You are a concise data analyst.",
             user_message=prompt,
-            max_tokens=self.llm.max_output_tokens,
+            max_tokens=llm.max_output_tokens,
         )
         return SummarizeResult(success=True, summary=result)
 

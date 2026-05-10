@@ -1,0 +1,609 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: 277bcfc6-2bf3-4b1f-ada9-88bcad437ca4
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
+"""Step code and inference code endpoints."""
+
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from constat.server.auth import CurrentUserId
+from constat.server.routes.data import get_session_manager
+from constat.server.session_manager import SessionManager
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+# ============================================================================
+# Step Code Endpoints
+# ============================================================================
+
+
+@router.get("/{session_id}/steps")
+async def list_step_codes(
+    session_id: str,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """List all step codes for a session.
+
+    Returns the code executed for each step in the plan, stored on disk.
+
+    Args:
+        session_id: Session ID
+        user_id: Authenticated user ID
+        session_manager: Injected session manager
+
+    Returns:
+        List of step codes with step_number, goal, and code
+
+    Raises:
+        404: Session not found
+    """
+    # Try to get the session from memory first
+    # noinspection DuplicatedCode
+    managed = session_manager.get_session_or_none(session_id)
+
+    if managed:
+        history = managed.session.history
+        history_session_id = managed.session.session_id
+        logger.debug(f"[list_step_codes] Found managed session. Server: {session_id}, History: {history_session_id}")
+    else:
+        # Session not in memory - try reverse lookup from disk
+        from constat.storage.history import SessionHistory
+        history = SessionHistory(user_id=user_id)
+        history_session_id = history.find_session_by_server_id(session_id)
+        logger.debug(f"[list_step_codes] Session not in memory. Reverse lookup found: {history_session_id}")
+
+    try:
+        steps = history.list_step_codes(history_session_id) if history_session_id else []
+        logger.debug(f"[list_step_codes] Found {len(steps)} steps")
+
+        return {
+            "steps": steps,
+            "total": len(steps),
+            # Include session ID info for debugging
+            "session_info": {
+                "server_session_id": session_id,
+                "history_session_id": history_session_id,
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"Error listing step codes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{session_id}/scratchpad")
+async def get_scratchpad(
+    session_id: str,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Get the execution scratchpad (goal + narrative per step)."""
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not managed.session.datastore:
+        return {"entries": [], "total": 0}
+    try:
+        entries = managed.session.datastore.get_scratchpad()
+        return {"entries": entries, "total": len(entries)}
+    except Exception as e:
+        logger.error(f"Error getting scratchpad: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{session_id}/inference-codes")
+async def list_inference_codes(
+    session_id: str,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """List all inference codes for a session (auditable mode)."""
+    managed = session_manager.get_session_or_none(session_id)
+
+    if managed:
+        history = managed.session.history
+        history_session_id = managed.session.session_id
+    else:
+        from constat.storage.history import SessionHistory
+        history = SessionHistory(user_id=user_id)
+        history_session_id = history.find_session_by_server_id(session_id)
+
+    try:
+        inferences = history.list_inference_codes(history_session_id) if history_session_id else []
+        return {"inferences": inferences, "total": len(inferences)}
+    except Exception as e:
+        logger.error(f"Error listing inference codes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _gather_source_configs(managed) -> tuple[list[dict], list[dict], list[dict]]:
+    """Extract api, database, and document configs from a session for script generation."""
+    apis = []
+    if managed and managed.session.config and managed.session.config.apis:
+        for name, api_config in managed.session.config.apis.items():
+            apis.append({
+                "name": name,
+                "type": api_config.type,
+                "url": api_config.url or "",
+            })
+
+    databases = []
+    seen_db_names = set()
+    if managed and managed.session.config and managed.session.config.databases:
+        for name, db_config in managed.session.config.databases.items():
+            if not db_config.is_file_source():
+                databases.append({"name": name, "uri": db_config.uri or ""})
+                seen_db_names.add(name)
+
+    # Include dynamically added databases (from domains) not in base config
+    if managed and hasattr(managed.session, 'schema_manager'):
+        from constat.catalog.sql_transpiler import TranspilingConnection
+        for name, conn in managed.session.schema_manager.connections.items():
+            if name not in seen_db_names:
+                if isinstance(conn, TranspilingConnection):
+                    uri = str(conn.engine.url)
+                else:
+                    uri = str(conn.url)
+                databases.append({"name": name, "uri": uri})
+                seen_db_names.add(name)
+
+    documents = []
+    if managed and hasattr(managed.session, 'doc_tools') and managed.session.doc_tools:
+        for name, doc in managed.session.doc_tools._loaded_documents.items():
+            if doc.config and doc.config.path:
+                from pathlib import Path as _Path
+                resolved = _Path(doc.config.path).resolve()
+                if resolved.exists():
+                    documents.append({"name": name, "path": str(resolved)})
+
+    return apis, databases, documents
+
+
+def generate_inference_script(
+    inferences: list[dict],
+    premises: list[dict],
+    apis: list[dict],
+    databases: list[dict],
+    session_label: str,
+    documents: list[dict] | None = None,
+) -> str:
+    """Generate a standalone Python script from inference codes.
+
+    Returns the script content as a string.
+    """
+    import ast as _ast
+
+    # Build ATTACH statements for source databases
+    attach_lines = []
+    for db in databases:
+        uri = db.get("uri", "")
+        name = db.get("name", "")
+        if uri.startswith("sqlite"):
+            # Extract file path from sqlite:///path or sqlite:///file:path?mode=ro
+            db_path = uri.replace("sqlite:///", "").split("?")[0].replace("file:", "")
+            attach_lines.append(
+                f"        self._conn.execute(\"ATTACH '{db_path}' AS {name} (TYPE SQLITE, READ_ONLY)\")"
+            )
+
+    lines = [
+        '#!/usr/bin/env python3',
+        '"""',
+        f'Constat Inference Code - Session {session_label}',
+        '',
+        'Auto-generated from auditable mode execution.',
+        'Each inference function derives facts from premises using code.',
+        '"""',
+        '',
+        'import pandas as pd',
+        'import numpy as np',
+        'import duckdb',
+        'import json',
+        'import tempfile',
+        'from pathlib import Path',
+        '',
+        '',
+        '# ============================================================================',
+        '# Store Class',
+        '# ============================================================================',
+        '',
+        'class _DataStore:',
+        '    def __init__(self):',
+        '        self._conn = duckdb.connect()',
+        '        self._files: dict[str, any] = {}',
+    ]
+
+    # Attach source databases
+    if attach_lines:
+        lines.append('        # Attach source databases')
+        lines.extend(attach_lines)
+
+    lines.extend([
+        '',
+        '    def create_view(self, name: str, sql: str, **kwargs) -> None:',
+        '        self._conn.execute(f"CREATE OR REPLACE VIEW {name} AS {sql}")',
+        '',
+        '    def save_dataframe(self, name: str, df: pd.DataFrame, **kwargs) -> None:',
+        '        self._conn.register(name, df)',
+        '        self._files[name] = df',
+        '        print(f"Saved: {name} ({len(df)} rows)")',
+        '',
+        '    def query(self, sql: str) -> pd.DataFrame:',
+        '        return self._conn.execute(sql).fetchdf()',
+        '',
+        '    def save_artifact(self, name: str, content, artifact_type: str = None, **kwargs) -> None:',
+        '        """Save a non-tabular artifact (markdown, JSON, image bytes, etc.)."""',
+        '        self._files[name] = content',
+        '        kind = artifact_type or type(content).__name__',
+        '        print(f"Saved artifact: {name} ({kind})")',
+        '',
+        '    def load_dataframe(self, name: str) -> pd.DataFrame:',
+        '        if name not in self._files:',
+        '            return self._conn.execute(f"SELECT * FROM {name}").fetchdf()',
+        '        return self._files[name]',
+        '',
+        '',
+        'store = _DataStore()',
+        '',
+    ])
+
+    # Detect document names referenced in inference code via doc_read() or
+    # llm_extract_table(document=...) — these need helpers even if _gather_source_configs
+    # missed the document (e.g. cross-domain documents).
+    import re as _re
+    _all_inf_code = '\n'.join(inf.get("code", "") for inf in inferences)
+    _code_doc_names: set[str] = set()
+    for _m in _re.finditer(r"doc_read\(['\"]([^'\"]+)['\"]\)", _all_inf_code):
+        _code_doc_names.add(_m.group(1))
+    for _m in _re.finditer(r"llm_extract_table\([^)]*document\s*=\s*['\"]([^'\"]+)['\"]", _all_inf_code):
+        _code_doc_names.add(_m.group(1))
+
+    # Merge code-detected doc names with provided documents list
+    _doc_by_name = {d['name']: d for d in (documents or [])}
+    for _dn in _code_doc_names:
+        if _dn not in _doc_by_name:
+            _doc_by_name[_dn] = {"name": _dn, "path": None}  # path unknown
+    _effective_docs = list(_doc_by_name.values())
+
+    # Generate document constants and helpers
+    if _effective_docs:
+        lines.extend([
+            '',
+            '# ============================================================================',
+            '# Document Sources',
+            '# ============================================================================',
+            '',
+        ])
+        for doc in _effective_docs:
+            const_name = f"DOC_{doc['name'].upper().replace('-', '_').replace(' ', '_')}"
+            if doc.get('path'):
+                lines.append(f"{const_name} = {doc['path']!r}")
+            else:
+                lines.append(f"{const_name} = None  # TODO: set path to {doc['name']!r} document")
+        lines.extend([
+            '',
+            '',
+            'def doc_read(name: str) -> str:',
+            '    """Read a reference document by name. Returns the document text content."""',
+            '    _doc_paths = {',
+        ])
+        for doc in _effective_docs:
+            const_name = f"DOC_{doc['name'].upper().replace('-', '_').replace(' ', '_')}"
+            lines.append(f"        {doc['name']!r}: {const_name},")
+        lines.extend([
+            '    }',
+            '    path = _doc_paths.get(name)',
+            '    if not path:',
+            '        raise ValueError(f"Document \'{name}\' not found. Available: {list(_doc_paths.keys())}")',
+            '    return Path(path).read_text()',
+            '',
+            '',
+            'from constat.llm import llm_extract_table as _llm_extract_table',
+            '',
+            '',
+            'def llm_extract_table(description: str, document: str, columns: list[str] | None = None, dtypes: dict[str, str] | None = None) -> pd.DataFrame:',
+            '    """Extract structured data from a document using LLM. Raises ValueError if no data found.',
+            '    dtypes: optional dict mapping column names to types (str, int, float, bool) for post-extraction conversion."""',
+            '    text = doc_read(document)',
+            '    return _llm_extract_table(text, description, columns=columns, dtypes=dtypes)',
+            '',
+            '',
+        ])
+
+    # Add module-level defaults for constant premises (overridable via run_proof kwargs)
+    constant_premises_early = [p for p in premises if p.get("source") in ("embedded", "llm_knowledge")]
+    if constant_premises_early:
+        lines.append('# Default parameters (overridable via run_proof kwargs)')
+        for p in constant_premises_early:
+            pname = p["name"].lower().replace(" ", "_").replace("-", "_")
+            value = p["value"]
+            try:
+                literal = _ast.literal_eval(value)
+                lines.append(f'_{pname} = {repr(literal)}')
+            except (ValueError, SyntaxError):
+                lines.append(f'_{pname} = {repr(value)}')
+        lines.append('')
+
+    # Add API helpers
+    if apis:
+        lines.extend(['import requests', ''])
+        for api in apis:
+            if api['type'] == 'graphql':
+                lines.extend([
+                    f"API_{api['name'].upper()}_URL = '{api['url']}'",
+                    '',
+                    f'def api_{api["name"]}(query: str, variables: dict = None) -> dict:',
+                    f'    """GraphQL query against {api["name"]}."""',
+                    f'    resp = requests.post(API_{api["name"].upper()}_URL, json={{"query": query, "variables": variables or {{}}}})',
+                    '    resp.raise_for_status()',
+                    '    result = resp.json()',
+                    '    if "errors" in result and not result.get("data"):',
+                    '        raise ValueError(f"GraphQL errors (no data returned): {result[\'errors\'][0][\'message\']}")',
+                    '    return result.get("data", result)',
+                    '',
+                    '',
+                ])
+            else:
+                lines.extend([
+                    f"API_{api['name'].upper()}_URL = '{api['url']}'",
+                    '',
+                    f'def api_{api["name"]}(method_path: str, params: dict = None) -> dict:',
+                    f'    """REST call to {api["name"]}."""',
+                    '    parts = method_path.split(" ", 1)',
+                    '    method = parts[0].upper()',
+                    '    path = parts[1] if len(parts) > 1 else "/"',
+                    f'    url = API_{api["name"].upper()}_URL.rstrip("/") + ("/" + path.lstrip("/") if not path.startswith("/") else path)',
+                    '    resp = requests.request(method, url, params=params)',
+                    '    resp.raise_for_status()',
+                    '    return resp.json()',
+                    '',
+                    '',
+                ])
+
+    # Add database helpers
+    if databases:
+        lines.append('from sqlalchemy import create_engine')
+        lines.append('')
+        for db in databases:
+            db_const = f"DB_{db['name'].upper().replace('-', '_').replace(' ', '_')}"
+            lines.append(f"{db_const} = create_engine('{db['uri']}')")
+            lines.append(f"db_{db['name']} = {db_const}")
+        lines.extend(['', ''])
+
+    # LLM primitives — auto-detects provider from env vars (ANTHROPIC_API_KEY, etc.)
+    lines.extend([
+        '# LLM primitives — auto-detects provider from env vars (ANTHROPIC_API_KEY, etc.)',
+        'from constat.llm.wrappers import llm_map, llm_classify, llm_score',
+        'from constat.llm import llm_extract, llm_summarize',
+        '',
+        '',
+        '# ============================================================================',
+        '# Inference Functions',
+        '# ============================================================================',
+        '',
+    ])
+
+    # Add each inference as a function
+    for inf in inferences:
+        iid = inf["inference_id"]
+        name = inf.get("name", iid)
+        operation = inf.get("operation", "")
+        code = inf.get("code", "pass")
+
+        lines.append(f'def {iid.lower()}_{name.lower().replace(" ", "_").replace("-", "_")}():')
+        lines.append(f'    """{iid}: {name} = {operation}"""')
+        for code_line in code.split('\n'):
+            if code_line.strip():
+                lines.append(f'    {code_line}')
+            else:
+                lines.append('')
+        lines.append('    return _result')
+        lines.extend(['', ''])
+
+    # Load premises for parameter generation
+    constant_premises = [p for p in premises if p.get("source") in ("embedded", "llm_knowledge")]
+
+    # Add main runner
+    lines.extend([
+        '# ============================================================================',
+        '# Main',
+        '# ============================================================================',
+        '',
+    ])
+
+    # Build run_proof signature — only constants actually used in inference code
+    param_parts = []
+    # (global_name, param_name) pairs for setting globals inside run_proof
+    global_overrides = []
+
+    # Collect all inference code to check which constants are referenced
+    all_inference_code = '\n'.join(inf.get("code", "") for inf in inferences)
+
+    # 1. Premise constants (always included — they parameterize the analysis)
+    param_names = []
+    for p in constant_premises:
+        pname = p["name"].lower().replace(" ", "_").replace("-", "_")
+        param_names.append((pname, p["name"]))
+        value = p["value"]
+        try:
+            literal = _ast.literal_eval(value)
+            param_parts.append(f'{pname}={repr(literal)}')
+        except (ValueError, SyntaxError):
+            param_parts.append(f'{pname}={repr(value)}')
+        global_overrides.append((f'_{pname}', pname))
+
+    # 2. Document paths — use _effective_docs (includes code-detected docs)
+    for doc in _effective_docs:
+        if doc['name'] in all_inference_code:
+            const_name = f"DOC_{doc['name'].upper().replace('-', '_').replace(' ', '_')}"
+            param_parts.append(f"{const_name.lower()}={const_name}")
+            global_overrides.append((const_name, const_name.lower()))
+
+    # 3. Database connections — only if schema-qualified queries reference the database
+    #    Use uppercase DB_X constant as default, lowercase db_x as param (matches doc pattern)
+    if databases:
+        for db in databases:
+            if f"{db['name']}." in all_inference_code:
+                db_var = f"db_{db['name']}"
+                db_const = f"DB_{db['name'].upper().replace('-', '_').replace(' ', '_')}"
+                param_parts.append(f"{db_var}={db_const}")
+                global_overrides.append((db_const, db_var))
+
+    # 4. API URLs — only if api_<name> is called in inference code
+    if apis:
+        for api in apis:
+            if f"api_{api['name']}" in all_inference_code:
+                url_var = f"API_{api['name'].upper()}_URL"
+                param_parts.append(f"{url_var.lower()}={url_var}")
+                global_overrides.append((url_var, url_var.lower()))
+
+    sig = ', '.join(param_parts)
+    lines.append(f'def run_proof({sig}):')
+    lines.append('    """Execute all inferences and return collected artifacts.')
+    lines.append('')
+    lines.append('    Returns:')
+    lines.append('        dict[str, DataFrame | str | dict | bytes]: Artifact map.')
+    lines.append('        Values: DataFrame (table), str (markdown/text), dict (JSON), bytes (image).')
+    lines.append('        The final result is also available under the "_result" key.')
+    lines.append('    """')
+
+    # Set globals from kwargs
+    if global_overrides:
+        global_names = [g for g, _ in global_overrides]
+        lines.append(f'    global {", ".join(global_names)}')
+        for global_name, param_name in global_overrides:
+            lines.append(f'    {global_name} = {param_name}')
+        lines.append('')
+
+    # Store premise constants
+    if constant_premises:
+        lines.append('    # Store premise constants')
+        lines.append('    _premises = {}')
+        for pname, original_name in param_names:
+            lines.append(f'    _premises["{original_name}"] = {pname}')
+        lines.append('    store.save_dataframe("_premises", pd.DataFrame([_premises]))')
+        lines.append('')
+
+    lines.append('    _last = None')
+    for inf in inferences:
+        iid = inf["inference_id"]
+        name = inf.get("name", iid)
+        func_name = f'{iid.lower()}_{name.lower().replace(" ", "_").replace("-", "_")}'
+        lines.append(f'    print("\\n=== {iid}: {name} ===")')
+        lines.append(f'    _last = {func_name}()')
+    lines.extend([
+        '',
+        '    # Record views as artifacts (kept lazy — not materialized)',
+        '    for row in store._conn.execute(',
+        '        "SELECT table_name FROM information_schema.tables '
+            "WHERE table_schema = 'main' AND table_type = 'VIEW'\""
+        ').fetchall():',
+        '        vname = row[0]',
+        '        if vname not in store._files:',
+        '            sql = store._conn.execute(',
+        '                f"SELECT sql FROM duckdb_views() WHERE view_name = \'{vname}\'"',
+        '            ).fetchone()',
+        '            store._files[vname] = ("__view__", sql[0] if sql else vname)',
+        '',
+        '    # Save final result and return artifacts',
+        '    if _last is not None:',
+        '        if hasattr(_last, "to_parquet"):',
+        '            store.save_dataframe("_result", _last)',
+        '        else:',
+        '            store.save_artifact("_result", _last)',
+        '    return dict(store._files)',
+        '',
+        '',
+        'if __name__ == "__main__":',
+        '    results = run_proof()',
+        '    print("\\n=== Results ===")',
+        '    for name, val in results.items():',
+        '        if isinstance(val, tuple) and len(val) == 2 and val[0] == "__view__":',
+        '            # Materialize view for standalone display',
+        '            df = store._conn.execute(f"SELECT * FROM {name}").fetchdf()',
+        '            print(f"\\n--- {name} (view, {len(df)} rows) ---")',
+        '            print(df.to_string(max_rows=10))',
+        '        elif hasattr(val, "to_string"):',
+        '            print(f"\\n--- {name} ({len(val)} rows) ---")',
+        '            print(val.to_string(max_rows=10))',
+        '        elif isinstance(val, bytes):',
+        '            print(f"\\n--- {name} ({len(val)} bytes) ---")',
+        '        elif isinstance(val, dict):',
+        '            print(f"\\n--- {name} (JSON) ---")',
+        '            print(json.dumps(val, indent=2, default=str)[:500])',
+        '        else:',
+        '            print(f"\\n--- {name} ---")',
+        '            print(str(val)[:500])',
+        '',
+    ])
+
+    return '\n'.join(lines)
+
+
+@router.get("/{session_id}/download-inference-code")
+async def download_inference_code(
+    session_id: str,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+):
+    """Download all inference codes as a standalone Python script.
+
+    Generates a self-contained script with API helpers, store class,
+    and each inference step as a function that can be run independently.
+    """
+    from fastapi.responses import Response
+
+    managed = session_manager.get_session_or_none(session_id)
+
+    if managed:
+        history = managed.session.history
+        history_session_id = managed.session.session_id
+    else:
+        from constat.storage.history import SessionHistory
+        history = SessionHistory(user_id=user_id)
+        history_session_id = history.find_session_by_server_id(session_id)
+
+    try:
+        if not history_session_id:
+            raise HTTPException(status_code=404, detail="No inference code available for this session.")
+
+        inferences = history.list_inference_codes(history_session_id)
+        if not inferences:
+            raise HTTPException(status_code=404, detail="No inference code available. Run an auditable query first.")
+
+        apis, databases, documents = _gather_source_configs(managed)
+        premises = history.list_inference_premises(history_session_id)
+
+        script_content = generate_inference_script(
+            inferences=inferences,
+            premises=premises,
+            apis=apis,
+            databases=databases,
+            session_label=session_id[:8],
+            documents=documents,
+        )
+        return Response(
+            content=script_content,
+            media_type="text/x-python",
+            headers={
+                "Content-Disposition": f'attachment; filename="session_{session_id[:8]}_inference.py"'
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading inference code: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

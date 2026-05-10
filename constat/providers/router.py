@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: d41eb6e6-6f3f-4e43-bae3-993aa3863bf8
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -19,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from constat.core.config import LLMConfig, ModelSpec
+from constat.core.config import LLMConfig, ModelSpec, TaskRoutingConfig
 from constat.core.models import TaskType
 from constat.providers.base import BaseLLMProvider
 
@@ -46,6 +47,8 @@ class TaskResult:
     escalations: list[EscalationEvent] = field(default_factory=list)
     attempts: int = 1
     total_time_ms: int = 0
+    # Index of the model used within the chain (for skip_models alignment)
+    model_index: int = 0
 
 
 class TaskRouter:
@@ -95,11 +98,130 @@ class TaskRouter:
         self.routing_config = llm_config.get_task_routing()
         self._provider_cache: dict[str, BaseLLMProvider] = {}
 
+        # Domain-aware routing: domain_path → TaskRoutingConfig
+        # Checked before system routing, walking up the domain hierarchy
+        self._domain_routing: dict[str, TaskRoutingConfig] = {}
+
+        # User-level routing override (checked after domain, before system)
+        self._user_routing: Optional[TaskRoutingConfig] = None
+
         # Escalation history for observability
         self._escalation_history: list[EscalationEvent] = []
 
         # Escalation callback
         self._on_escalation: Optional[Callable[[EscalationEvent], None]] = None
+
+    def set_domain_routing(self, domain_path: str, config: TaskRoutingConfig) -> None:
+        """Set task routing for a specific domain.
+
+        Args:
+            domain_path: Dot-delimited domain path (e.g., "sales.north-america")
+            config: TaskRoutingConfig for this domain
+        """
+        self._domain_routing[domain_path] = config
+
+    def set_user_routing(self, config: TaskRoutingConfig) -> None:
+        """Set user-level task routing override."""
+        self._user_routing = config
+
+    def _resolve_models_for_domain(
+        self, task_type: str, complexity: str, domain: Optional[str]
+    ) -> list[ModelSpec]:
+        """Resolve model chain by walking domain hierarchy → user → system.
+
+        Escalation order:
+            1. Exact domain match
+            2. Walk up domain hierarchy (trim rightmost path segment)
+            3. User-level routing
+            4. System-level routing (self.routing_config)
+
+        First tier with a chain for this task_type wins.
+        Within that chain, the existing escalation (try each model) applies.
+        """
+        # Walk domain hierarchy
+        if domain:
+            parts = domain.split(".")
+            for i in range(len(parts), 0, -1):
+                ancestor = ".".join(parts[:i])
+                routing = self._domain_routing.get(ancestor)
+                if routing:
+                    models = routing.get_models_for_task(task_type, complexity)
+                    if models:
+                        return models
+
+        # User-level routing
+        if self._user_routing:
+            models = self._user_routing.get_models_for_task(task_type, complexity)
+            if models:
+                return models
+
+        # System-level routing (existing behavior)
+        return self.routing_config.get_models_for_task(task_type, complexity)
+
+    def resolve_model_family(
+        self,
+        task_type: TaskType,
+        complexity: str = "medium",
+        domain: Optional[str] = None,
+        skip_models: int = 0,
+        model_override: Optional[str] = None,
+    ) -> str:
+        """Resolve the provider family for the first model that would handle this task.
+
+        Returns the provider name (e.g., 'anthropic', 'ollama', 'openai').
+        """
+        models = self._resolve_models_for_domain(task_type.value, complexity, domain)
+        if not models:
+            fallback_map = {"user_input": "python_analysis"}
+            fallback_type = fallback_map.get(task_type.value)
+            if fallback_type:
+                models = self._resolve_models_for_domain(fallback_type, complexity, domain)
+        if not models:
+            models = self.routing_config.get_models_for_task("general", complexity)
+        if not models:
+            models = [ModelSpec(model=self.llm_config.model)]
+        if model_override:
+            models = [ModelSpec(model=model_override)] + models
+        if skip_models > 0 and len(models) > 1:
+            models = models[min(skip_models, len(models) - 1):]
+        return (models[0].provider or self.llm_config.provider).lower()
+
+    def get_routing_layers(
+        self, active_domains: Optional[list[str]] = None
+    ) -> dict[str, dict[str, list[ModelSpec]]]:
+        """Return routing layers: system defaults, user overrides, and per-domain overrides.
+
+        Returns:
+            dict with keys "system", optionally "user", and domain paths.
+            Each value maps task_type → list of ModelSpec.
+            "system" includes all task types; other layers include only overrides.
+        """
+        layers: dict[str, dict[str, list[ModelSpec]]] = {}
+
+        # System layer — full routing (defaults merged with config)
+        system: dict[str, list[ModelSpec]] = {}
+        for task_type, entry in self.routing_config.routes.items():
+            system[task_type] = entry.models
+        layers["system"] = system
+
+        # User layer — overrides only
+        if self._user_routing and self._user_routing.routes:
+            user: dict[str, list[ModelSpec]] = {}
+            for task_type, entry in self._user_routing.routes.items():
+                user[task_type] = entry.models
+            layers["user"] = user
+
+        # Domain layers — only show active domains, overrides only
+        domains_to_show = set(active_domains or [])
+        for domain_path, config in self._domain_routing.items():
+            if not domains_to_show or domain_path in domains_to_show:
+                domain_routes: dict[str, list[ModelSpec]] = {}
+                for task_type, entry in config.routes.items():
+                    domain_routes[task_type] = entry.models
+                if domain_routes:
+                    layers[domain_path] = domain_routes
+
+        return layers
 
     def on_escalation(self, callback: Callable[[EscalationEvent], None]) -> None:
         """Register callback for escalation events."""
@@ -128,15 +250,18 @@ class TaskRouter:
         module = importlib.import_module(module_path)
         return getattr(module, class_name)
 
+    @staticmethod
     def _get_cache_key(
-        self,
         provider_name: str,
         base_url: Optional[str] = None,
+        timeout: Optional[int] = None,
     ) -> str:
         """Generate cache key for a provider configuration."""
         key = provider_name.lower()
         if base_url:
             key += f":{base_url}"
+        if timeout:
+            key += f":t{timeout}"
         return key
 
     def _get_provider(self, spec: ModelSpec) -> BaseLLMProvider:
@@ -145,7 +270,7 @@ class TaskRouter:
         provider_name = spec.provider or self.llm_config.provider
         base_url = spec.base_url or self.llm_config.base_url
 
-        cache_key = self._get_cache_key(provider_name, base_url)
+        cache_key = self._get_cache_key(provider_name, base_url, spec.timeout_seconds)
 
         if cache_key not in self._provider_cache:
             provider_class = self._get_provider_class(provider_name)
@@ -153,14 +278,21 @@ class TaskRouter:
             # Build kwargs
             kwargs = {"model": spec.model}
 
-            # Add API key if provider likely needs it
-            if self.llm_config.api_key and provider_name not in ("ollama", "llama"):
+            # API key resolution: spec.api_key → global key (if same provider) → provider env var
+            if spec.api_key:
+                kwargs["api_key"] = spec.api_key
+            elif self.llm_config.api_key and provider_name == (self.llm_config.provider or "").lower():
                 kwargs["api_key"] = self.llm_config.api_key
 
             # Add base_url if provided
             if base_url:
                 kwargs["base_url"] = base_url
 
+            # Set client-level timeout from model spec
+            if spec.timeout_seconds:
+                kwargs["timeout"] = float(spec.timeout_seconds)
+
+            logger.info(f"Creating provider {provider_name}/{spec.model} (api_key={'set' if 'api_key' in kwargs else 'from env'}, timeout={spec.timeout_seconds or 120}s)")
             self._provider_cache[cache_key] = provider_class(**kwargs)
 
         return self._provider_cache[cache_key]
@@ -174,6 +306,9 @@ class TaskRouter:
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 4096,
         complexity: str = "medium",
+        domain: Optional[str] = None,
+        skip_models: int = 0,
+        model_override: Optional[str] = None,
     ) -> TaskResult:
         """
         Execute a task with automatic model escalation.
@@ -186,23 +321,53 @@ class TaskRouter:
             tool_handlers: Optional tool handler functions
             max_tokens: Max tokens to generate
             complexity: Complexity hint (low, medium, high)
+            domain: Optional domain path for domain-aware routing.
+                    Walks domain hierarchy → user → system to find model chain.
+            model_override: Optional model to prepend to the chain (agent override).
 
         Returns:
             TaskResult with content and escalation info
         """
         start_time = time.time()
-        models = self.routing_config.get_models_for_task(
+
+        effective_domain = domain
+
+        models = self._resolve_models_for_domain(
             task_type.value,
-            complexity
+            complexity,
+            effective_domain,
         )
 
-        # If no models configured for this task type, use general fallback
+        # If no models configured for this task type, try related task types
+        # before falling back to the generic "general" chain.
+        if not models:
+            # user_input steps generate simple Python — use python_analysis chain
+            fallback_map = {"user_input": "python_analysis"}
+            fallback_type = fallback_map.get(task_type.value)
+            if fallback_type:
+                models = self._resolve_models_for_domain(fallback_type, complexity, effective_domain)
+
         if not models:
             models = self.routing_config.get_models_for_task("general", complexity)
 
         # If still no models, use default from llm_config
         if not models:
             models = [ModelSpec(model=self.llm_config.model)]
+
+        # Prepend agent model override (tried first, falls back to normal chain)
+        if model_override:
+            models = [ModelSpec(model=model_override)] + models
+
+        # Skip leading models (used for runtime-error escalation)
+        # Clamp to keep at least the last model in the chain
+        if skip_models > 0 and len(models) > 1:
+            effective_skip = min(skip_models, len(models) - 1)
+            skipped = models[:effective_skip]
+            models = models[effective_skip:]
+            logger.info(
+                f"[ESCALATION] Skipping {len(skipped)} model(s) for {task_type.value} "
+                f"due to runtime errors: {[f'{(s.provider or self.llm_config.provider)}/{s.model}' for s in skipped]}"
+            )
 
         escalations = []
         last_error = None
@@ -219,7 +384,11 @@ class TaskRouter:
                     tool_handlers=tool_handlers,
                     max_tokens=max_tokens,
                     model=spec.model,
+                    timeout=float(spec.timeout_seconds) if spec.timeout_seconds else None,
                 )
+
+                if content is None:
+                    raise ValueError("Provider returned empty response")
 
                 elapsed_ms = int((time.time() - start_time) * 1000)
 
@@ -235,7 +404,7 @@ class TaskRouter:
                         response_time_ms=elapsed_ms,
                         success=True,
                     )
-                except Exception:
+                except (ImportError, OSError, ValueError):
                     pass  # Don't fail task execution due to logging
 
                 return TaskResult(
@@ -246,6 +415,7 @@ class TaskRouter:
                     escalations=escalations,
                     attempts=i + 1,
                     total_time_ms=elapsed_ms,
+                    model_index=skip_models + i,
                 )
 
             except Exception as e:
@@ -294,6 +464,9 @@ class TaskRouter:
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 12288,
         complexity: str = "medium",
+        domain: Optional[str] = None,
+        skip_models: int = 0,
+        model_override: Optional[str] = None,
     ) -> TaskResult:
         """Execute and extract code from response."""
         result = self.execute(
@@ -304,6 +477,9 @@ class TaskRouter:
             tool_handlers=tool_handlers,
             max_tokens=max_tokens,
             complexity=complexity,
+            domain=domain,
+            skip_models=skip_models,
+            model_override=model_override,
         )
 
         if result.success:
@@ -312,8 +488,9 @@ class TaskRouter:
 
         return result
 
-    def _extract_code(self, text: str) -> str:
-        """Extract code from markdown code blocks.
+    @staticmethod
+    def _extract_code(text: str) -> str:
+        """Extract code from Markdown code blocks.
 
         Handles various cases:
         - Complete markdown blocks: ```python ... ```
@@ -322,7 +499,7 @@ class TaskRouter:
         """
         text = text.strip()
 
-        # Case 1: Complete markdown code block
+        # Case 1: Complete Markdown code block
         pattern = r"```(?:python|sql)?\s*(.*?)\s*```"
         match = re.search(pattern, text, re.DOTALL)
         if match:
@@ -366,9 +543,72 @@ class TaskRouter:
         """Clear escalation history."""
         self._escalation_history.clear()
 
+    def set_domain_models(self, models: list) -> None:
+        """Inject fine-tuned models into domain-aware routing.
+
+        For each model with status='ready', prepends to the appropriate
+        domain's routing chain (or system routing if no domain).
+        """
+        for ft_model in models:
+            if ft_model.status != "ready" or not ft_model.fine_tuned_model_id:
+                continue
+            spec = ModelSpec(
+                provider=ft_model.provider,
+                model=ft_model.fine_tuned_model_id,
+            )
+            domain = getattr(ft_model, "domain", None)
+            if domain:
+                # Inject into domain-specific routing
+                if domain not in self._domain_routing:
+                    self._domain_routing[domain] = TaskRoutingConfig(routes={})
+                for task_type in ft_model.task_types:
+                    self._domain_routing[domain].prepend_model(task_type, spec)
+                    logger.info(
+                        f"Prepended fine-tuned model {ft_model.name} "
+                        f"({ft_model.fine_tuned_model_id}) to {domain}/{task_type}"
+                    )
+            else:
+                # No domain — prepend to system routing
+                for task_type in ft_model.task_types:
+                    self.routing_config.prepend_model(task_type, spec)
+                    logger.info(
+                        f"Prepended fine-tuned model {ft_model.name} "
+                        f"({ft_model.fine_tuned_model_id}) to system/{task_type}"
+                    )
+
     def clear_cache(self) -> None:
         """Clear the provider cache."""
         self._provider_cache.clear()
+
+    def generate_vision(
+        self,
+        system: str,
+        image_bytes: bytes,
+        mime_type: str,
+        text_prompt: str,
+        max_tokens: int = 1024,
+        model: str | None = None,
+    ) -> str:
+        """Vision generation via the summarization model chain."""
+        models = self._resolve_models_for_domain(
+            TaskType.SUMMARIZATION.value, "low", None
+        )
+        if not models:
+            models = self.routing_config.get_models_for_task("general", "low")
+        if not models:
+            from constat.core.config import ModelSpec
+            models = [ModelSpec(model=self.llm_config.model)]
+
+        spec = models[0]
+        provider = self._get_provider(spec)
+        return provider.generate_vision(
+            system=system,
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            text_prompt=text_prompt,
+            max_tokens=max_tokens,
+            model=spec.model,
+        )
 
     def generate(
         self,

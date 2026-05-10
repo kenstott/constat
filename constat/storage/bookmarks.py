@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 0a428187-868d-4899-98c8-439c6cc5952c
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -75,7 +76,8 @@ class BookmarkStore:
         with open(self.file_path, "w") as f:
             yaml.dump(self._data, f, default_flow_style=False, sort_keys=False)
 
-    def _expand_env(self, value: str) -> str:
+    @staticmethod
+    def _expand_env(value: str) -> str:
         """Expand environment variables in a string."""
         return os.path.expandvars(value)
 

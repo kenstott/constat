@@ -1,0 +1,388 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: e66ccd66-ca34-450c-8bec-c449610ddb01
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
+"""Entity endpoints."""
+
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from constat.server.routes.data import get_session_manager
+from constat.server.session_manager import SessionManager
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+@router.get("/{session_id}/entities")
+async def list_entities(
+    session_id: str,
+    entity_type: str | None = Query(default=None, description="Filter by entity type"),
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """List extracted entities from the session.
+
+    Returns deduplicated entities with their reference locations.
+
+    Args:
+        session_id: Session ID
+        entity_type: Optional filter by type (table, column, concept, etc.)
+        session_manager: Injected session manager
+
+    Returns:
+        List of entities with references
+
+    Raises:
+        404: Session not found
+    """
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Use dict keyed by normalized_name only for deduplication (merge across types)
+    from constat.discovery.models import normalize_entity_name, display_entity_name
+
+    # Consolidate similar types into simpler categories for display
+    TYPE_CONSOLIDATION = {
+        "api_endpoint": "api_endpoint",
+        "api_schema": "api_schema",
+        "api_field": "api_field",
+        "rest_field": "api_field",  # REST fields -> api_field
+        "rest": "api_endpoint",     # REST endpoint -> api_endpoint
+        "openapi/model": "api_schema", # REST schema -> api_schema
+        "graphql_type": "graphql",
+        "graphql_field": "graphql",
+    }
+
+    # Type priority for picking primary type when merging (higher = preferred)
+    # API fields should NOT lose to table/column when they're clearly API-sourced
+    # Schema elements come after API-specific types to avoid misclassification
+    TYPE_PRIORITY = {
+        "api_field": 95,      # API fields should win over generic table/column
+        "api_endpoint": 90,
+        "api_schema": 85,
+        "api": 82,            # Generic API type
+        "graphql": 80,
+        "table": 75,          # Schema types below API types
+        "column": 70,
+        "action": 50,         # Actions (verbs extracted from documents)
+        "concept": 40,
+        "business_term": 30,
+        "organization": 20,
+        "product": 20,
+        "location": 20,
+        "event": 20,
+    }
+
+    entity_map: dict[str, dict[str, Any]] = {}
+
+    # Cache for related entities queries (entity_id -> list of related)
+    related_entities_cache: dict[str, list[dict]] = {}
+
+    def get_related_entities(vector_store, ent_id_param: str, sess_id: str, limit: int = 5) -> list[dict]:
+        """Find entities that co-occur in the same chunks as the given entity.
+
+        Returns list of {"name": str, "type": str, "co_occurrences": int}
+        """
+        if ent_id_param in related_entities_cache:
+            return related_entities_cache[ent_id_param]
+
+        try:
+            related_list = vector_store.get_cooccurring_entities(ent_id_param, sess_id, limit)
+            related_entities_cache[ent_id_param] = related_list
+            return related_list
+        except Exception as err:
+            logger.debug(f"Could not get related entities for {ent_id_param}: {err}")
+            return []
+
+    def consolidate_source(source_str: str) -> str:
+        """Consolidate column-level schema sources to table level.
+
+        schema:hr.performance_reviews.employee_id -> schema:hr.performance_reviews
+        schema:hr.performance_reviews -> schema:hr.performance_reviews (unchanged)
+        business_rules -> business_rules (unchanged)
+        """
+        if source_str.startswith("schema:"):
+            parts = source_str.split(".")
+            # schema:db.table.column -> keep schema:db.table
+            # schema:db.table -> keep as is
+            if len(parts) >= 3:
+                # Has column part, consolidate to table
+                return ".".join(parts[:2])
+        return source_str
+
+    def add_entity(
+        entity_name: str,
+        local_entity_type: str,
+        entity_source: str,
+        metadata: dict,
+        entity_references: list[dict] | None = None,
+        related_entities: list[dict] | None = None,
+    ):
+        """Add or merge an entity into the map.
+
+        Normalizes entity names for deduplication and display:
+        - Cache key uses normalized (lowercase, singular) form only
+        - Entities with same name but different types are merged
+        - API endpoint/schema types are consolidated to just "api"
+        - GraphQL type/field types are consolidated to just "graphql"
+        """
+        # Consolidate type
+        local_entity_type = TYPE_CONSOLIDATION.get(local_entity_type, local_entity_type)
+
+        # Detect and correct type based on reference sources
+        # If all references are from API sources but type is table/column, correct it
+        if local_entity_type in ("table", "column") and entity_references:
+            api_refs = [r for r in entity_references if r.get("document", "").startswith("api:")]
+            non_api_refs = [r for r in entity_references if not r.get("document", "").startswith("api:")]
+            if api_refs and not non_api_refs:
+                # All references are API - infer type from section patterns
+                sections = [r.get("section", "") for r in api_refs]
+                if any("field" in s.lower() for s in sections):
+                    local_entity_type = "api_field"
+                elif any("schema" in s.lower() for s in sections):
+                    local_entity_type = "api_schema"
+                else:
+                    local_entity_type = "api_endpoint"
+
+        normalized = normalize_entity_name(entity_name)
+        display = display_entity_name(entity_name)
+        key = normalized.lower()
+
+        # Get original_name from metadata, or use raw name if different from display
+        original_name = metadata.get("original_name")
+        if not original_name and entity_name != display and entity_name != normalized:
+            original_name = entity_name
+            metadata = {**metadata, "original_name": original_name}
+
+        # Consolidate source (e.g., schema:db.table.column -> schema:db.table)
+        consolidated_source = consolidate_source(entity_source)
+
+        if key not in entity_map:
+            entity_map[key] = {
+                "id": str(hash(f"{display}")),
+                "name": display,
+                "type": local_entity_type,
+                "types": [local_entity_type],
+                "sources": [consolidated_source],
+                "metadata": metadata,
+                "references": entity_references or [],
+                "related_entities": related_entities or [],
+                "mention_count": len(entity_references) if entity_references else 0,
+                "original_name": original_name,
+            }
+        else:
+            existing = entity_map[key]
+            # Add type if new
+            if local_entity_type not in existing["types"]:
+                existing["types"].append(local_entity_type)
+                # Update primary type if new type has higher priority
+                if TYPE_PRIORITY.get(local_entity_type, 0) > TYPE_PRIORITY.get(existing["type"], 0):
+                    existing["type"] = local_entity_type
+            # Merge: add consolidated source if new
+            if consolidated_source not in existing["sources"]:
+                existing["sources"].append(consolidated_source)
+            # Merge references with deduplication (by document + section)
+            if entity_references:
+                existing_refs = {(r["document"], r["section"]) for r in existing["references"]}
+                for ref in entity_references:
+                    ref_key = (ref["document"], ref["section"])
+                    if ref_key not in existing_refs:
+                        existing["references"].append(ref)
+                        existing_refs.add(ref_key)
+                existing["mention_count"] = len(existing["references"])
+            # Merge related_entities (prefer the one with more entries)
+            if related_entities and len(related_entities) > len(existing.get("related_entities", [])):
+                existing["related_entities"] = related_entities
+            # Merge metadata
+            existing["metadata"].update(metadata)
+            # Update original_name if not already set
+            if original_name and not existing.get("original_name"):
+                existing["original_name"] = original_name
+
+    # 1. Get entities from vector store (includes schema, api, document sources)
+    try:
+        # Vector store is accessed via doc_tools
+        vs = None
+        if hasattr(managed.session, "doc_tools") and managed.session.doc_tools:
+            vs = managed.session.doc_tools._vector_store
+        if vs:
+            active_domains = getattr(managed, "active_domains", []) or []
+            where_clause, params = vs.entity_visibility_filter(
+                session_id, active_domains, alias="e",
+            )
+
+            # Debug: check chunk_entities for this session (via entity_id join)
+            ce_count = vs.count_session_links(session_id)
+            print(f"[ENTITIES] session_id={session_id[:8]}, chunk_entities for session: {ce_count}")
+
+            # Get entities visible to this session
+            result = vs.list_entities_with_refcount(where_clause, params)
+
+            # Filter to entities with refs, collect IDs for batch queries
+            filtered_rows = []
+            for row in result:
+                ent_id, name, display_name, semantic_type, ner_type, ref_count = row
+                if entity_type and semantic_type != entity_type:
+                    continue
+                if ref_count == 0:
+                    continue
+                filtered_rows.append(row)
+
+            entity_ids = [row[0] for row in filtered_rows]
+
+            # Batch-fetch references and co-occurrences (2 queries instead of 2*N)
+            all_refs = vs.batch_get_entity_references(entity_ids) if entity_ids else {}
+            all_related = vs.batch_get_cooccurring_entities(entity_ids, session_id) if entity_ids else {}
+
+            for row in filtered_rows:
+                ent_id, name, display_name, semantic_type, ner_type, ref_count = row
+
+                references = [
+                    {"document": doc_name, "section": section, "confidence": confidence}
+                    for doc_name, section, confidence in all_refs.get(ent_id, [])
+                ]
+
+                source = "ner" if ner_type else "schema"
+                related = all_related.get(ent_id, [])
+
+                add_entity(
+                    name, semantic_type or "concept", source,
+                    {"display_name": display_name, "ner_type": ner_type},
+                    references, related
+                )
+    except Exception as e:
+        logger.warning(f"Could not get entities from vector_store: {e}")
+
+    # 2. Get schema entities from schema_manager (only if not already in vector store with refs)
+    try:
+        if managed.session.schema_manager:
+            metadata_cache = managed.session.schema_manager.metadata_cache
+            for full_name, table_meta in metadata_cache.items():
+                db_name = table_meta.database
+                table_name = table_meta.name
+
+                # Add table entity - always add to ensure proper type merging
+                # (table type has higher priority than concept/business_term)
+                if not entity_type or entity_type == "table":
+                    add_entity(
+                        table_name, "table", "schema",
+                        {"database": db_name, "full_name": full_name},
+                        [{"document": f"Database: {db_name}", "section": "Schema", "mentions": 1}]
+                    )
+
+                # Add column entities - always add to ensure proper type merging
+                if not entity_type or entity_type == "column":
+                    for col in table_meta.columns:
+                        add_entity(
+                            col.name, "column", "schema",
+                            {
+                                "table": table_name,
+                                "database": db_name,
+                                "dtype": col.type if col.type else None,
+                            },
+                            [{"document": f"Table: {table_name}", "section": f"Database: {db_name}", "mentions": 1}]
+                        )
+    except Exception as e:
+        logger.warning(f"Could not get entities from schema_manager: {e}")
+
+    # 3. Get API entities from config - always add to ensure proper type merging
+    try:
+        if managed.session.config and managed.session.config.apis:
+            for api_name, api_config in managed.session.config.apis.items():
+                if not entity_type or entity_type in ("api", "api_endpoint"):
+                    add_entity(
+                        api_name, "api", "api",
+                        {"base_url": getattr(api_config, "base_url", None)},
+                        [{"document": f"API: {api_name}", "section": "Configuration", "mentions": 1}]
+                    )
+    except Exception as e:
+        logger.warning(f"Could not get API entities: {e}")
+
+    # 4. Get document entities from config - always add to ensure proper type merging
+    try:
+        if managed.session.config and managed.session.config.documents:
+            for doc_name in managed.session.config.documents.keys():
+                if not entity_type or entity_type == "concept":
+                    add_entity(
+                        doc_name, "concept", "document",
+                        {"source": "document_config"},
+                        [{"document": doc_name, "section": "Indexed Document", "mentions": 1}]
+                    )
+    except Exception as e:
+        logger.warning(f"Could not get document entities: {e}")
+
+    # 5. Get entities from active domains - always add to ensure proper type merging
+    try:
+        active_domains = getattr(managed, "active_domains", [])
+        if active_domains and managed.session.config:
+            for domain_filename in active_domains:
+                domain = managed.session.config.load_domain(domain_filename)
+                if domain:
+                    # Add domain API entities
+                    if not entity_type or entity_type in ("api", "api_endpoint"):
+                        for api_name, api_config in domain.apis.items():
+                            add_entity(
+                                api_name, "api", "api",
+                                {"base_url": getattr(api_config, "base_url", None), "domain": domain_filename},
+                                [{"document": f"API: {api_name}", "section": f"Domain: {domain_filename}", "mentions": 1}]
+                            )
+
+                    # Add domain document entities
+                    if not entity_type or entity_type == "concept":
+                        for doc_name in domain.documents.keys():
+                            add_entity(
+                                doc_name, "concept", "document",
+                                {"source": "domain", "domain": domain_filename},
+                                [{"document": doc_name, "section": f"Domain: {domain_filename}", "mentions": 1}]
+                            )
+    except Exception as e:
+        logger.warning(f"Could not get entities from active domains: {e}")
+
+    entities = list(entity_map.values())
+
+    logger.debug(f"list_entities: returning {len(entities)} entities for session {session_id[:8]}")
+    return {"entities": entities}
+
+
+@router.post("/{session_id}/entities/{entity_id}/glossary")
+async def add_entity_to_glossary(
+    session_id: str,
+    entity_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Add an entity to the glossary/business terms.
+
+    Args:
+        session_id: Session ID
+        entity_id: Entity ID to add
+        session_manager: Injected session manager
+
+    Returns:
+        Confirmation
+
+    Raises:
+        404: Session or entity not found
+    """
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Try to add to glossary via session
+    try:
+        if hasattr(managed.session, "add_to_glossary"):
+            managed.session.add_to_glossary(entity_id)
+            return {"status": "added", "entity_id": entity_id}
+    except Exception as e:
+        logger.warning(f"Could not add to glossary: {e}")
+
+    return {"status": "added", "entity_id": entity_id, "note": "Glossary update pending"}

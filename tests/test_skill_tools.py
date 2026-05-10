@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 62865bf3-3520-4433-87de-dc636967197c
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,6 +10,7 @@
 
 """Tests for skill discovery and loading tools."""
 
+from __future__ import annotations
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -108,8 +110,9 @@ description: A test skill for unit testing
 allowed-tools:
   - Read
   - Grep
-model: claude-sonnet
-user-invocable: true
+metadata:
+  model: claude-sonnet
+  user-invocable: true
 ---
 
 # Test Skill
@@ -332,7 +335,8 @@ Content.
         (skill_dir / "SKILL.md").write_text("""---
 name: hidden-skill
 description: A hidden skill
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 Content.
 """)
@@ -503,7 +507,8 @@ name: dict-skill
 description: A serializable skill
 allowed-tools:
   - Read
-model: claude-sonnet
+metadata:
+  model: claude-sonnet
 ---
 Content.
 """)

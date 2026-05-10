@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 8b031608-ebac-4dd1-ad95-f3c91460a7b5
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,9 +10,12 @@
 
 """Tests for DAG data structures and parallel execution."""
 
+from __future__ import annotations
 import pytest
 import time
 from concurrent.futures import ThreadPoolExecutor
+
+from unittest.mock import MagicMock
 
 from constat.execution.dag import (
     NodeStatus,
@@ -19,6 +23,7 @@ from constat.execution.dag import (
     ExecutionDAG,
     parse_plan_to_dag,
     extract_dependencies,
+    deduplicate_inferences,
     DAGExecutor,
     ExecutionResult,
     dag_to_display_format,
@@ -561,3 +566,164 @@ class TestIntegration:
         display = dag_to_display_format(dag)
         assert "PREMISES:" in display
         assert "INFERENCES:" in display
+
+
+class TestDeduplicateInferences:
+    """Tests for deduplicate_inferences DAG wiring review."""
+
+    @staticmethod
+    def _make_router(response_json: dict) -> MagicMock:
+        """Create a mock router returning the given JSON."""
+        import json
+        router = MagicMock()
+        result = MagicMock()
+        result.content = json.dumps(response_json)
+        router.execute.return_value = result
+        return router
+
+    def test_removes_miswired_duplicate_and_rewires_downstream(self):
+        """Redundant inference is dropped and downstream refs rewired."""
+        premises = [
+            {"id": "P1", "name": "comments", "description": "Employee comments", "source": "database:hr"},
+        ]
+        inferences = [
+            {"id": "I1", "name": "data", "operation": "fetch(P1)", "explanation": "get data"},
+            {"id": "I2", "name": "sentiment_a", "operation": "llm_classify(I1)", "explanation": "classify sentiment"},
+            {"id": "I3", "name": "sentiment_b", "operation": "llm_classify(I1)", "explanation": "classify sentiment again"},
+            {"id": "I4", "name": "summary", "operation": "aggregate(I2, I3)", "explanation": "combine"},
+        ]
+        router = self._make_router({
+            "remove": [{"drop": "I3", "use_instead": "I2", "reason": "same classification on same data"}],
+            "rewire": [],
+        })
+
+        result = deduplicate_inferences(premises, inferences, router)
+
+        assert len(result) == 3
+        ids = [inf["id"] for inf in result]
+        assert ids == ["I1", "I2", "I3"]
+        # Former I4 (now I3) should reference I2 twice instead of I2+old-I3
+        assert result[2]["operation"] == "aggregate(I2, I2)"
+
+    def test_no_issues_returns_unchanged(self):
+        """When wiring is correct, inferences returned unchanged."""
+        premises = [{"id": "P1", "name": "data", "description": "d", "source": "database:db"}]
+        inferences = [
+            {"id": "I1", "name": "a", "operation": "calc(P1)", "explanation": "x"},
+            {"id": "I2", "name": "b", "operation": "calc(I1)", "explanation": "y"},
+            {"id": "I3", "name": "c", "operation": "calc(I2)", "explanation": "z"},
+        ]
+        router = self._make_router({"remove": [], "rewire": []})
+
+        result = deduplicate_inferences(premises, inferences, router)
+
+        assert len(result) == 3
+        assert [inf["id"] for inf in result] == ["I1", "I2", "I3"]
+
+    def test_rewire_fixes_wrong_input(self):
+        """Inference referencing raw premise instead of prior output gets rewired."""
+        premises = [{"id": "P1", "name": "raw", "description": "d", "source": "database:db"}]
+        inferences = [
+            {"id": "I1", "name": "processed", "operation": "clean(P1)", "explanation": "clean"},
+            {"id": "I2", "name": "result", "operation": "analyze(P1)", "explanation": "should use I1"},
+            {"id": "I3", "name": "final", "operation": "summarize(I2)", "explanation": "summarize"},
+        ]
+        router = self._make_router({
+            "remove": [],
+            "rewire": [{"inference": "I2", "old_ref": "P1", "new_ref": "I1", "reason": "should analyze cleaned data"}],
+        })
+
+        result = deduplicate_inferences(premises, inferences, router)
+
+        assert result[1]["operation"] == "analyze(I1)"
+
+    def test_rewire_rejected_if_orphans_inference(self):
+        """Rewire that would leave an inference with no dependents is rejected."""
+        premises = [
+            {"id": "P1", "name": "employees", "description": "d", "source": "database:hr"},
+        ]
+        inferences = [
+            {"id": "I1", "name": "joined", "operation": "join(P1)", "explanation": "join"},
+            {"id": "I2", "name": "with_ratings", "operation": "enrich(I1)", "explanation": "add ratings"},
+            {"id": "I3", "name": "sentiment", "operation": "llm_score(I2)", "explanation": "score sentiment"},
+            {"id": "I4", "name": "raises", "operation": "calc(I3, P1)", "explanation": "compute raises"},
+        ]
+        # LLM incorrectly suggests rewiring I4 from I3 to I2
+        router = self._make_router({
+            "remove": [],
+            "rewire": [{"inference": "I4", "old_ref": "I3", "new_ref": "I2", "reason": "skip sentiment"}],
+        })
+
+        result = deduplicate_inferences(premises, inferences, router)
+
+        # I4 should still reference I3 — rewire must be rejected
+        i4 = next(inf for inf in result if inf["id"] == "I4")
+        assert "I3" in i4["operation"]
+        assert i4["operation"] == "calc(I3, P1)"
+
+    def test_llm_failure_returns_unchanged(self):
+        """If LLM call fails, inferences returned unchanged."""
+        premises = [{"id": "P1", "name": "d", "description": "d", "source": "database:db"}]
+        inferences = [
+            {"id": "I1", "name": "a", "operation": "x(P1)", "explanation": ""},
+            {"id": "I2", "name": "b", "operation": "y(I1)", "explanation": ""},
+            {"id": "I3", "name": "c", "operation": "z(I2)", "explanation": ""},
+        ]
+        router = MagicMock()
+        router.execute.side_effect = RuntimeError("API down")
+
+        result = deduplicate_inferences(premises, inferences, router)
+
+        assert len(result) == 3
+
+    def test_invalid_json_returns_unchanged(self):
+        """If LLM returns invalid JSON, inferences returned unchanged."""
+        premises = [{"id": "P1", "name": "d", "description": "d", "source": "database:db"}]
+        inferences = [
+            {"id": "I1", "name": "a", "operation": "x(P1)", "explanation": ""},
+            {"id": "I2", "name": "b", "operation": "y(I1)", "explanation": ""},
+            {"id": "I3", "name": "c", "operation": "z(I2)", "explanation": ""},
+        ]
+        router = MagicMock()
+        result_mock = MagicMock()
+        result_mock.content = "not json at all"
+        router.execute.return_value = result_mock
+
+        result = deduplicate_inferences(premises, inferences, router)
+
+        assert len(result) == 3
+
+    def test_ignores_invalid_drop_target(self):
+        """Removal with non-existent ID is skipped."""
+        premises = [{"id": "P1", "name": "d", "description": "d", "source": "database:db"}]
+        inferences = [
+            {"id": "I1", "name": "a", "operation": "x(P1)", "explanation": ""},
+            {"id": "I2", "name": "b", "operation": "y(I1)", "explanation": ""},
+            {"id": "I3", "name": "c", "operation": "z(I2)", "explanation": ""},
+        ]
+        router = self._make_router({
+            "remove": [{"drop": "I99", "use_instead": "I1", "reason": "bogus"}],
+            "rewire": [],
+        })
+
+        result = deduplicate_inferences(premises, inferences, router)
+
+        assert len(result) == 3
+
+    def test_markdown_fenced_json_parsed(self):
+        """LLM response wrapped in markdown fences is handled."""
+        premises = [{"id": "P1", "name": "d", "description": "d", "source": "database:db"}]
+        inferences = [
+            {"id": "I1", "name": "a", "operation": "x(P1)", "explanation": ""},
+            {"id": "I2", "name": "b", "operation": "x(P1)", "explanation": ""},
+            {"id": "I3", "name": "c", "operation": "z(I1, I2)", "explanation": ""},
+        ]
+        router = MagicMock()
+        result_mock = MagicMock()
+        result_mock.content = '```json\n{"remove": [{"drop": "I2", "use_instead": "I1", "reason": "same op"}], "rewire": []}\n```'
+        router.execute.return_value = result_mock
+
+        result = deduplicate_inferences(premises, inferences, router)
+
+        assert len(result) == 2
+        assert result[1]["operation"] == "z(I1, I1)"

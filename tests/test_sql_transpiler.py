@@ -1,10 +1,12 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: a5de0d83-5bdc-4056-82f4-c607dab2e11e
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
 
 """Tests for SQL transpilation functionality."""
 
+from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -186,7 +188,6 @@ class TestTranspilingConnection:
 class TestIntegration:
     """Integration tests with real databases."""
 
-    @pytest.mark.skipif(True, reason="Requires SQLite database")
     def test_with_real_sqlite(self):
         """Test transpilation with a real SQLite database."""
         from sqlalchemy import create_engine

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: e733d093-0868-4398-8612-6094dc0adfdf
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -17,6 +18,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Callable, Optional
 
 import requests
@@ -87,7 +89,7 @@ class APISchemaManager:
     - GraphQL schema introspection via __schema query
     - REST API metadata from config descriptions
     - OpenAPI spec parsing for REST APIs
-    - Vector embeddings for semantic search (stored in shared vectors.duckdb)
+    - Vector embeddings for semantic search (stored in shared system.duckdb)
     - Caching for performance
     """
 
@@ -126,27 +128,38 @@ class APISchemaManager:
         if self._load_metadata_cache(config_hash):
             logger.debug("Loaded API schema from cache")
             self._progress_callback = None
-            return
+        else:
+            # Introspect APIs
+            self._introspect_apis()
 
-        # Introspect APIs
-        self._introspect_apis()
+            # Save metadata cache
+            self._save_metadata_cache(config_hash)
 
-        # Save metadata cache
-        self._save_metadata_cache(config_hash)
+            self._progress_callback = None
 
-        self._progress_callback = None
+        # Ensure vector store is available for search (chunks built at server startup)
+        if self._vector_store is None:
+            from constat.discovery.vector_store import DuckDBVectorStore
+            self._vector_store = DuckDBVectorStore()
 
-    def build_chunks(self) -> None:
+    def build_chunks(self, domain_id: str | None = None, vector_store=None) -> None:
         """Build chunks for search (called at server startup).
 
         Creates chunks in the embeddings table for semantic search.
         Does NOT create catalog entities - those are built per-session via initialize().
+
+        Args:
+            domain_id: Domain ID for these chunks (e.g. "hr-reporting")
+            vector_store: Optional shared vector store instance
         """
+        self._domain_id = domain_id
         if not self.config.apis:
             return
 
         # Initialize vector store
-        if self._vector_store is None:
+        if vector_store is not None:
+            self._vector_store = vector_store
+        elif self._vector_store is None:
             from constat.discovery.vector_store import DuckDBVectorStore
             self._vector_store = DuckDBVectorStore()
 
@@ -224,7 +237,7 @@ class APISchemaManager:
         cache_dir = self.CACHE_DIR
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save schema metadata only (embeddings stored in vectors.duckdb)
+        # Save schema metadata only (embeddings stored in system.duckdb)
         cache_data = {
             "config_hash": config_hash,
             "endpoints": {
@@ -388,7 +401,7 @@ class APISchemaManager:
         logger.info(f"Introspected GraphQL API '{name}': {len([k for k in self.metadata_cache if k.startswith(name)])} types/endpoints")
 
     def _extract_return_type_fields(self, field_def: dict, all_types: list) -> list[APIFieldMetadata]:
-        """Extract fields from the return type of a query/mutation."""
+        """Extract fields from the return type of query/mutation."""
         type_info = field_def.get("type", {})
         type_name = self._get_type_name(type_info)
 
@@ -469,7 +482,8 @@ class APISchemaManager:
             # No spec available, use basic metadata
             self._add_basic_metadata(name, api_config)
 
-    def _fetch_openapi_spec(self, spec_url: str, headers: dict = None) -> Optional[dict]:
+    @staticmethod
+    def _fetch_openapi_spec(spec_url: str, headers: dict = None) -> Optional[dict]:
         """Fetch OpenAPI spec from URL."""
         try:
             req_headers = {"Accept": "application/json"}
@@ -483,7 +497,8 @@ class APISchemaManager:
             logger.warning(f"Failed to fetch OpenAPI spec from {spec_url}: {e}")
             return None
 
-    def _load_openapi_spec_file(self, spec_path: str) -> Optional[dict]:
+    @staticmethod
+    def _load_openapi_spec_file(spec_path: str) -> Optional[dict]:
         """Load OpenAPI spec from local file."""
         import yaml
         from pathlib import Path
@@ -569,7 +584,7 @@ class APISchemaManager:
             meta = APIEndpointMetadata(
                 api_name=name,
                 endpoint_name=schema_name,
-                api_type="rest/schema",
+                api_type="openapi/model",
                 description=schema_def.get("description") or schema_def.get("title"),
                 fields=fields,
             )
@@ -577,7 +592,8 @@ class APISchemaManager:
 
         logger.info(f"Parsed OpenAPI spec '{name}': {len([k for k in self.metadata_cache if k.startswith(name)])} endpoints/schemas")
 
-    def _extract_response_fields(self, operation: dict, schemas: dict) -> list[APIFieldMetadata]:
+    @staticmethod
+    def _extract_response_fields(operation: dict, schemas: dict) -> list[APIFieldMetadata]:
         """Extract fields from the response schema."""
         fields = []
         responses = operation.get("responses", {})
@@ -614,7 +630,8 @@ class APISchemaManager:
 
         return fields
 
-    def _extract_rest_return_type(self, operation: dict, schemas: dict) -> Optional[str]:
+    @staticmethod
+    def _extract_rest_return_type(operation: dict, _schemas: dict) -> Optional[str]:
         """Extract the return type signature from a REST response schema."""
         responses = operation.get("responses", {})
 
@@ -642,7 +659,7 @@ class APISchemaManager:
 
         return None
 
-    def add_api_dynamic(self, name: str, api_config: APIConfig) -> bool:
+    def add_api_dynamic(self, name: str, api_config: APIConfig, domain_id: str | None = None) -> bool:
         """Dynamically add and introspect an API after initialization.
 
         This allows adding APIs at runtime without reinitializing
@@ -651,6 +668,7 @@ class APISchemaManager:
         Args:
             name: Name for the API
             api_config: API configuration
+            domain_id: Domain ID for chunk tagging
 
         Returns:
             True if successfully added
@@ -670,6 +688,7 @@ class APISchemaManager:
                 self._model = EmbeddingModelLoader.get_instance().get_model()
 
             if self._model is not None and self._vector_store is not None:
+                self._domain_id = domain_id
                 self._add_chunks_for_api(name)
 
             logger.info(f"Dynamically added API: {name} ({api_config.type})")
@@ -678,32 +697,103 @@ class APISchemaManager:
             logger.exception(f"Failed to dynamically add API {name}: {e}")
             return False
 
-    def _add_chunks_for_api(self, api_name: str) -> None:
-        """Build and store chunks for a single API's endpoints using chonk DocumentLoader.
+    @staticmethod
+    def _build_endpoint_field_chunks(
+        endpoints: Iterable[tuple[str, "APIEndpointMetadata"]],
+    ) -> list:
+        """Build DocumentChunks for API endpoint and field metadata.
 
         Args:
-            api_name: Name of the API to build chunks for
+            endpoints: Iterable of (full_name, endpoint_meta) pairs to process.
+
+        Returns:
+            List of DocumentChunk for endpoints and their fields.
         """
         from chonk.loader import DocumentLoader
         from chonk.schema import EndpointMeta as ChonkEndpointMeta, FieldMeta as ChonkFieldMeta
 
-        chonk_endpoints = [
-            ChonkEndpointMeta(
-                path=meta.endpoint_name,
-                method=meta.http_method,
-                description=meta.description,
-                endpoint_type=meta.api_type,
-                source_api=meta.api_name,
-                fields=[
-                    ChonkFieldMeta(name=f.name, field_type=f.type or "unknown", description=f.description)
-                    for f in meta.fields
-                ],
-            )
-            for meta in self.metadata_cache.values()
-            if meta.api_name == api_name
-        ]
+        chunks: list[DocumentChunk] = []
+        for full_name, meta in endpoints:
+            field_names = [f.name for f in meta.fields]
 
-        chunks = DocumentLoader().load_api(chonk_endpoints)
+            # Determine chunk_type based on api_type
+            if meta.api_type == "graphql_query":
+                endpoint_chunk_type = ChunkType.GRAPHQL_QUERY
+                field_chunk_type = ChunkType.GRAPHQL_FIELD
+            elif meta.api_type == "graphql_mutation":
+                endpoint_chunk_type = ChunkType.GRAPHQL_MUTATION
+                field_chunk_type = ChunkType.GRAPHQL_FIELD
+            elif meta.api_type == "graphql_type":
+                endpoint_chunk_type = ChunkType.GRAPHQL_TYPE
+                field_chunk_type = ChunkType.GRAPHQL_FIELD
+            elif meta.api_type == "openapi/model":
+                endpoint_chunk_type = ChunkType.API_SCHEMA
+                field_chunk_type = ChunkType.API_SCHEMA
+            else:
+                endpoint_chunk_type = ChunkType.API_ENDPOINT
+                field_chunk_type = ChunkType.API_ENDPOINT
+
+            # Endpoint chunk - always include all available context
+            endpoint_lines: list[str] = []
+            header = f"{meta.endpoint_name} endpoint in {meta.api_name} API"
+            if meta.http_method and meta.http_path:
+                header += f" ({meta.http_method} {meta.http_path})"
+            endpoint_lines.append(header)
+            if meta.description:
+                endpoint_lines.append(meta.description)
+            if meta.return_type:
+                endpoint_lines.append(f"Returns: {meta.return_type}")
+            if field_names:
+                endpoint_lines.append(f"Fields: {', '.join(field_names)}")
+
+            chunks.append(DocumentChunk(
+                document_name=f"api:{full_name}",
+                content="\n".join(endpoint_lines),
+                section=meta.api_type,
+                chunk_index=0,
+                source="api",
+                chunk_type=endpoint_chunk_type,
+            ))
+
+            # Field chunks - enriched with API context
+            for i, field_meta in enumerate(meta.fields):
+                field_type = field_meta.type if field_meta.type else "unknown type"
+                field_header = f"{field_meta.name} field ({field_type}) in {meta.endpoint_name} endpoint ({meta.api_name} API"
+                if meta.http_method and meta.http_path:
+                    field_header += f", {meta.http_method} {meta.http_path}"
+                field_header += ")"
+
+                field_lines: list[str] = [field_header]
+                if meta.description:
+                    field_lines.append(f"Endpoint: {meta.description[:80]}")
+                if field_meta.description:
+                    field_lines.append(field_meta.description)
+                if field_meta.is_required:
+                    field_lines.append("Required: yes")
+
+                chunks.append(DocumentChunk(
+                    document_name=f"api:{full_name}.{field_meta.name}",
+                    content="\n".join(field_lines),
+                    section=meta.api_type,
+                    chunk_index=i,
+                    source="api",
+                    chunk_type=field_chunk_type,
+                ))
+
+        return chunks
+
+    def _add_chunks_for_api(self, api_name: str) -> None:
+        """Build and store chunks for a single API's endpoints.
+
+        Args:
+            api_name: Name of the API to build chunks for
+        """
+        filtered_endpoints = (
+            (full_name, meta)
+            for full_name, meta in self.metadata_cache.items()
+            if meta.api_name == api_name
+        )
+        chunks = self._build_endpoint_field_chunks(filtered_endpoints)
 
         if not chunks:
             logger.debug(f"No metadata to create chunks for API: {api_name}")
@@ -713,7 +803,7 @@ class APISchemaManager:
             try:
                 texts = [c.content for c in chunks]
                 embeddings = self._model.encode(texts, convert_to_numpy=True)
-                self._vector_store.add_chunks(chunks, embeddings, source="api")
+                self._vector_store.add_chunks(chunks, embeddings, source="api", domain_id=getattr(self, '_domain_id', None))
                 logger.info(f"Stored {len(chunks)} chunks for API: {api_name}")
             except Exception as e:
                 logger.warning(f"Failed to store chunks for API {api_name}: {e}")
@@ -738,66 +828,7 @@ class APISchemaManager:
         Entity extraction is done at session-time by extract_entities_for_session(),
         not here. This keeps init-time fast and avoids duplicate extraction.
         """
-        # Lazy import
-        from constat.discovery.models import DocumentChunk
-
-        # Collect chunks for ALL endpoints and fields
-        chunks: list[DocumentChunk] = []
-        for full_name, meta in self.metadata_cache.items():
-            field_names = [f.name for f in meta.fields]
-
-            # Determine chunk_type based on api_type
-            if meta.api_type == "graphql_query":
-                endpoint_chunk_type = "graphql_query"
-                field_chunk_type = "graphql_field"
-            elif meta.api_type == "graphql_mutation":
-                endpoint_chunk_type = "graphql_mutation"
-                field_chunk_type = "graphql_field"
-            elif meta.api_type == "graphql_type":
-                endpoint_chunk_type = "graphql_type"
-                field_chunk_type = "graphql_field"
-            elif meta.api_type == "rest/schema":
-                endpoint_chunk_type = "api_schema"
-                field_chunk_type = "api_schema"
-            else:
-                endpoint_chunk_type = "api_endpoint"
-                field_chunk_type = "api_endpoint"
-
-            # Endpoint chunk - use description if available, otherwise structured text
-            if meta.description:
-                endpoint_content = f"{meta.endpoint_name} endpoint: {meta.description}"
-            else:
-                endpoint_content = f"{meta.endpoint_name} endpoint in {meta.api_name} API"
-                if meta.http_method and meta.http_path:
-                    endpoint_content += f" ({meta.http_method} {meta.http_path})"
-                if field_names:
-                    endpoint_content += f" with fields: {', '.join(field_names)}"
-
-            chunks.append(DocumentChunk(
-                document_name=f"api:{full_name}",
-                content=endpoint_content,
-                section=meta.api_type,
-                chunk_index=0,
-                source="api",
-                chunk_type=endpoint_chunk_type,
-            ))
-
-            # Field chunks
-            for i, field_meta in enumerate(meta.fields):
-                if field_meta.description:
-                    field_content = f"{field_meta.name} field in {meta.endpoint_name}: {field_meta.description}"
-                else:
-                    field_type = field_meta.type if field_meta.type else "unknown type"
-                    field_content = f"{field_meta.name} field ({field_type}) in {meta.endpoint_name} endpoint"
-
-                chunks.append(DocumentChunk(
-                    document_name=f"api:{full_name}.{field_meta.name}",
-                    content=field_content,
-                    section=meta.api_type,
-                    chunk_index=i,
-                    source="api",
-                    chunk_type=field_chunk_type,
-                ))
+        chunks = self._build_endpoint_field_chunks(self.metadata_cache.items())
 
         if not chunks:
             logger.debug("No API metadata to create chunks from")
@@ -808,7 +839,7 @@ class APISchemaManager:
             try:
                 texts = [c.content for c in chunks]
                 embeddings = self._model.encode(texts, convert_to_numpy=True)
-                self._vector_store.add_chunks(chunks, embeddings, source="api")
+                self._vector_store.add_chunks(chunks, embeddings, source="api", domain_id=getattr(self, '_domain_id', None))
                 logger.debug(f"Stored {len(chunks)} API description chunks")
             except Exception as e:
                 logger.warning(f"Failed to store API description chunks: {e}")
@@ -831,8 +862,15 @@ class APISchemaManager:
         Returns:
             List of dicts with api_name, endpoint, type, description, fields, similarity
         """
-        if self._vector_store is None or self._vector_store.count_catalog_entities(source='api') == 0:
+        # noinspection PyUnresolvedReferences
+        if self._vector_store is None:
+            logger.warning("[find_relevant_apis] _vector_store is None")
             return []
+        api_chunk_count = self._vector_store.count(source='api')
+        if api_chunk_count == 0:
+            logger.warning("[find_relevant_apis] No API chunks in vector store (count=0)")
+            return []
+        logger.debug(f"[find_relevant_apis] {api_chunk_count} API chunks, {len(self.metadata_cache)} metadata entries")
 
         # Lazy load model if needed
         if self._model is None:
@@ -841,23 +879,36 @@ class APISchemaManager:
         # Encode query
         query_embedding = self._model.encode([query], convert_to_numpy=True)
 
-        # Search unified catalog entities for API endpoints
-        results = self._vector_store.search_catalog_entities(
-            query_embedding, source='api', limit=limit, min_similarity=min_similarity
+        # Search API chunks by source
+        # noinspection PyUnresolvedReferences
+        results = self._vector_store.search_by_source(
+            query_embedding, source='api', limit=limit, min_similarity=min_similarity,
+            query_text=query,
         )
 
-        # Transform results to match expected format
-        return [
-            {
-                "api_name": r["metadata"].get("api_name", ""),
-                "endpoint": r["name"],
-                "type": r["metadata"].get("api_type", ""),
-                "description": r["metadata"].get("description"),
-                "fields": r["metadata"].get("fields", []),
-                "similarity": r["similarity"],
-            }
-            for r in results
-        ]
+        # Transform results to match expected format using metadata cache
+        output = []
+        logger.debug(f"[find_relevant_apis] search returned {len(results)} results")
+        for _chunk_id, similarity, chunk in results:
+            # document_name is "api:{full_name}", extract full_name
+            full_name = chunk.document_name.removeprefix("api:")
+            meta = self.metadata_cache.get(full_name)
+            if not meta:
+                logger.debug(f"[find_relevant_apis] metadata miss for '{full_name}' (cache keys: {list(self.metadata_cache.keys())[:5]})")
+            if meta:
+                entry = {
+                    "api_name": meta.api_name,
+                    "type": meta.api_type,
+                    "description": meta.description,
+                    "fields": [f.name for f in meta.fields],
+                    "similarity": similarity,
+                }
+                if meta.api_type == "openapi/model":
+                    entry["model"] = meta.endpoint_name
+                else:
+                    entry["endpoint"] = meta.endpoint_name
+                output.append(entry)
+        return output
 
     def get_api_schema(self, api_name: str) -> list[APIEndpointMetadata]:
         """Get all endpoints for a specific API."""
@@ -890,10 +941,10 @@ class APISchemaManager:
                 results.append((f"api:{key}:desc", meta.description))
 
             # Field names and descriptions
-            for field in meta.fields:
-                results.append((f"api:{key}.{field.name}", field.name))
-                if field.description:
-                    results.append((f"api:{key}.{field.name}:desc", field.description))
+            for api_field in meta.fields:
+                results.append((f"api:{key}.{api_field.name}", api_field.name))
+                if api_field.description:
+                    results.append((f"api:{key}.{api_field.name}:desc", api_field.description))
 
         return results
 
@@ -910,8 +961,8 @@ class APISchemaManager:
             entities.add(meta.endpoint_name)
 
             # Add field names
-            for field in meta.fields:
-                entities.add(field.name)
+            for api_field in meta.fields:
+                entities.add(api_field.name)
 
         return list(entities)
 

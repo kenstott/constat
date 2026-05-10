@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 57e8b1e2-31a8-4dd2-8469-d47cc16f81f9
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -20,6 +21,7 @@ Test Strategy:
 - SessionFeedbackHandler: Mock display to verify event routing
 """
 
+from __future__ import annotations
 from dataclasses import dataclass, field
 from io import StringIO
 from unittest.mock import Mock, patch, MagicMock
@@ -402,7 +404,7 @@ class TestFeedbackDisplayState:
 class TestFeedbackDisplayLifecycle:
     """Tests for Live display lifecycle management."""
 
-    @patch('constat.repl.feedback.Live')
+    @patch('constat.repl.feedback._display_core.Live')
     def test_start_creates_live_display(self, MockLive):
         """start() creates and starts Live display."""
         display = FeedbackDisplay()
@@ -413,7 +415,7 @@ class TestFeedbackDisplayLifecycle:
         MockLive.return_value.start.assert_called_once()
         assert display._live is MockLive.return_value
 
-    @patch('constat.repl.feedback.Live')
+    @patch('constat.repl.feedback._display_core.Live')
     def test_stop_stops_live_display(self, MockLive):
         """stop() stops Live display and clears reference."""
         display = FeedbackDisplay()
@@ -433,7 +435,7 @@ class TestFeedbackDisplayLifecycle:
 
         assert display._live is None
 
-    @patch('constat.repl.feedback.Live')
+    @patch('constat.repl.feedback._display_core.Live')
     def test_multiple_stops_are_safe(self, MockLive):
         """Calling stop() multiple times is safe."""
         display = FeedbackDisplay()

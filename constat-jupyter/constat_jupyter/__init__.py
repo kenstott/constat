@@ -1,0 +1,55 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: 22100525-b7fa-4762-992e-59724ebcb5fb
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
+import polars
+polars.Config.set_tbl_hide_column_data_types(True)
+polars.Config.set_tbl_rows(100)
+
+from .client import ConstatClient
+from .session import Session
+from .entity_cache import EntityCache, inflate_glossary
+from .models import SolveResult, Artifact, StepInfo, ConstatError
+
+__all__ = ["ConstatClient", "Session", "SolveResult", "Artifact", "StepInfo", "ConstatError", "EntityCache", "inflate_glossary"]
+__version__ = "0.1.1"
+
+
+def load_ipython_extension(ipython):
+    from .magic import ConstatMagic, _constat_cell_transform
+
+    magic = ConstatMagic(ipython)
+    ipython.register_magics(magic)
+
+    # Register input transformer so %%constat cells are rewritten to
+    # ``await _constat_run(...)`` — Jupyter's native async execution
+    # blocks properly until the query completes.
+    mgr = ipython.input_transformer_manager
+    if _constat_cell_transform not in mgr.cleanup_transforms:
+        mgr.cleanup_transforms.insert(0, _constat_cell_transform)
+
+    # Inject a stub so %%constat before %constat connect gives a clear error
+    async def _stub(*_a, **_kw):
+        from IPython.display import display, HTML
+        display(HTML(
+            '<div style="color:red;padding:8px;border:1px solid red;border-radius:4px">'
+            '<b>Error:</b> Not connected. Run <code>%constat connect</code> first.</div>'
+        ))
+        return None
+    ipython.user_ns.setdefault("_constat_run", _stub)
+
+
+def unload_ipython_extension(ipython):
+    from .magic import _constat_cell_transform
+
+    mgr = ipython.input_transformer_manager
+    if _constat_cell_transform in mgr.cleanup_transforms:
+        mgr.cleanup_transforms.remove(_constat_cell_transform)
+    for name in ("_constat_run", "_constat_client", "_constat_session", "_constat_result"):
+        ipython.user_ns.pop(name, None)

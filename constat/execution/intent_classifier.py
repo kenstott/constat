@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 4d55b2be-075a-4767-a6b3-5548b66c5c13
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -61,7 +62,7 @@ class IntentClassifier:
        If confidence < 0.65, sub-intent is None (default behavior for that primary).
 
     The classifier supports multi-intent messages by splitting on sentence
-    delimiters (. and ;) and classifying each segment. On conflict, the latest
+    delimiters '('. and ';)' and classifying each segment. On conflict, the latest
     intent wins (handles natural self-correction patterns).
     """
 
@@ -148,6 +149,7 @@ class IntentClassifier:
                 logger.warning(f"Unknown primary intent in exemplars: {intent_name}")
                 continue
 
+            # noinspection PyUnresolvedReferences
             embeddings = self._model.encode(exemplars, normalize_embeddings=True)
             self._primary_embeddings[intent] = embeddings
 
@@ -168,6 +170,7 @@ class IntentClassifier:
                     logger.warning(f"Unknown sub-intent in exemplars: {sub_name}")
                     continue
 
+                # noinspection PyUnresolvedReferences
                 embeddings = self._model.encode(exemplars, normalize_embeddings=True)
                 self._sub_embeddings[primary][sub] = embeddings
 
@@ -211,7 +214,8 @@ class IntentClassifier:
         # Single segment classification
         return self._classify_single(user_input.strip(), context)
 
-    def _split_message(self, user_input: str) -> list[str]:
+    @staticmethod
+    def _split_message(user_input: str) -> list[str]:
         """Split message on sentence delimiters for multi-intent handling.
 
         Splits on . and ; but preserves:
@@ -235,6 +239,17 @@ class IntentClassifier:
 
         return segments
 
+    # Priority order: actionable intents beat session-management intents.
+    # When a multi-sentence message mixes PLAN_NEW + CONTROL, the PLAN_NEW
+    # sentence is the real request and the CONTROL match is a false positive
+    # from qualifiers like "do not worry about low confidence".
+    _PRIMARY_PRIORITY = {
+        PrimaryIntent.PLAN_NEW: 4,
+        PrimaryIntent.PLAN_CONTINUE: 3,
+        PrimaryIntent.QUERY: 2,
+        PrimaryIntent.CONTROL: 1,
+    }
+
     def _classify_multi_segment(
         self,
         segments: list[str],
@@ -242,9 +257,11 @@ class IntentClassifier:
     ) -> TurnIntent:
         """Classify multiple segments and resolve conflicts.
 
-        Classifies each segment independently. On conflict (same primary intent),
-        the latest segment wins - this handles natural self-correction patterns
-        like "analyze sales. wait, I got that wrong. analyze revenue instead."
+        Classifies each segment in parallel. When all segments agree on
+        primary intent, the latest wins (handles self-correction). When
+        primaries conflict, the highest-priority actionable intent wins —
+        PLAN_NEW beats CONTROL because qualifiers like "be creative, do not
+        worry about X" are style instructions, not session commands.
 
         Args:
             segments: List of message segments.
@@ -253,19 +270,38 @@ class IntentClassifier:
         Returns:
             TurnIntent from the winning segment.
         """
-        intents: list[TurnIntent] = []
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        for segment in segments:
-            intent = self._classify_single(segment, context)
-            intents.append(intent)
+        intents: list[TurnIntent] = [None] * len(segments)
+
+        with ThreadPoolExecutor(max_workers=len(segments)) as executor:
+            futures = {
+                executor.submit(self._classify_single, seg, context): i
+                for i, seg in enumerate(segments)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                intents[idx] = future.result()
 
         if not intents:
             return TurnIntent(primary=PrimaryIntent.QUERY)
 
-        # Latest wins on conflict - return the last non-trivial intent
-        # A "trivial" intent would be one that looks like self-correction
-        # without a new actionable request
-        return intents[-1]
+        # Check if all segments agree on primary intent
+        primaries = {i.primary for i in intents}
+        if len(primaries) == 1:
+            # All agree — latest wins (handles self-correction)
+            return intents[-1]
+
+        # Conflict: pick the highest-priority actionable intent.
+        # Among ties at the same priority, latest wins.
+        best = intents[0]
+        best_priority = self._PRIMARY_PRIORITY.get(best.primary, 0)
+        for intent in intents[1:]:
+            p = self._PRIMARY_PRIORITY.get(intent.primary, 0)
+            if p >= best_priority:
+                best = intent
+                best_priority = p
+        return best
 
     def _classify_single(
         self,
@@ -328,6 +364,7 @@ class IntentClassifier:
             raise RuntimeError("Embedding model not loaded")
 
         # Encode user input
+        # noinspection PyUnresolvedReferences
         input_embedding = self._model.encode(user_input, normalize_embeddings=True)
 
         best_intent = PrimaryIntent.QUERY
@@ -369,16 +406,19 @@ class IntentClassifier:
         if primary not in self._sub_embeddings:
             return None, 0.0
 
+        # noinspection PyUnresolvedReferences
         sub_dict = self._sub_embeddings[primary]
         if not sub_dict:
             return None, 0.0
 
         # Encode user input
+        # noinspection PyUnresolvedReferences
         input_embedding = self._model.encode(user_input, normalize_embeddings=True)
 
         best_sub: Optional[SubIntent] = None
         best_score = 0.0
 
+        # noinspection PyUnresolvedReferences
         for sub, exemplar_embeddings in sub_dict.items():
             similarities = np.dot(exemplar_embeddings, input_embedding)
             max_similarity = float(np.max(similarities))
@@ -389,8 +429,8 @@ class IntentClassifier:
 
         return best_sub, best_score
 
+    @staticmethod
     def _extract_target(
-        self,
         primary: PrimaryIntent,
         user_input: str,
     ) -> Optional[str]:
@@ -472,6 +512,7 @@ class IntentClassifier:
                 "LLM fallback requested but no provider configured, "
                 "using best embedding match despite low confidence"
             )
+            # noinspection DuplicatedCode
             primary, _ = self._classify_primary(user_input)
             sub, sub_confidence = self._classify_sub(primary, user_input)
             if sub is not None and sub_confidence < SUB_THRESHOLD:
@@ -521,6 +562,7 @@ Has active plan: {has_plan}
 Mode: {mode_str}"""
 
         try:
+            # noinspection PyUnresolvedReferences
             result = self._llm_provider.execute(
                 task_type=TaskType.INTENT_CLASSIFICATION,
                 system=system_prompt,
@@ -533,6 +575,7 @@ Mode: {mode_str}"""
         except Exception as e:
             logger.error(f"LLM fallback failed: {e}")
             # Fall back to embedding match
+            # noinspection DuplicatedCode
             primary, _ = self._classify_primary(user_input)
             sub, sub_confidence = self._classify_sub(primary, user_input)
             if sub is not None and sub_confidence < SUB_THRESHOLD:
@@ -603,6 +646,14 @@ Mode: {mode_str}"""
         logger.info(f"LLM classified: primary={primary.value}, sub={sub}, target={target}")
 
         return TurnIntent(primary=primary, sub=sub, target=target)
+
+    def precompute(self) -> None:
+        """Eagerly load the embedding model and precompute exemplar embeddings.
+
+        Call this from a background thread after the embedding model is ready
+        so that the first classify() call doesn't race the model loader.
+        """
+        self._load_embedding_model()
 
     def set_llm_provider(self, provider: object) -> None:
         """Set the LLM provider for fallback classification.

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 5ca23944-86b0-4363-bb43-ee27988f3ff0
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -22,10 +23,12 @@ On-Premise / Self-Hosted:
 - MongoDB: Document store (collections, documents)
 - Cassandra: Wide-column store (keyspaces, tables) - also DataStax Astra
 - Elasticsearch: Search engine (indices, documents) - also Elastic Cloud, OpenSearch
+- Neo4j: Graph database (nodes, relationships)
+- Jaeger: Distributed tracing (services, spans)
 
 Cloud-Native:
 - DynamoDB: AWS key-value/document store
-- Cosmos DB: Azure multi-model database (SQL/Core API)
+- Cosmos DB: Azure multimodel database (SQL/Core API)
 - Firestore: Google Cloud document database
 
 Usage:
@@ -34,10 +37,10 @@ Usage:
     connector = MongoDBConnector(uri="mongodb://localhost:27017", database="mydb")
     connector.connect()
 
-    # Get schema overview
+    # Get schema overview.
     overview = connector.get_overview()
 
-    # Get collection schema
+    # Get collection schema.
     schema = connector.get_collection_schema("users")
 
     # Query
@@ -71,7 +74,9 @@ from .cosmosdb import CosmosDBConnector
 from .dynamodb import DynamoDBConnector
 from .elasticsearch import ElasticsearchConnector
 from .firestore import FirestoreConnector
+from .jaeger import JaegerConnector
 from .mongodb import MongoDBConnector
+from .neo4j import Neo4jConnector
 
 __all__ = [
     # Base classes
@@ -83,6 +88,8 @@ __all__ = [
     "MongoDBConnector",
     "CassandraConnector",
     "ElasticsearchConnector",
+    "Neo4jConnector",
+    "JaegerConnector",
     # Cloud connectors
     "DynamoDBConnector",
     "CosmosDBConnector",

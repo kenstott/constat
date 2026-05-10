@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: f4226bd1-957e-43e2-b277-b660b4729376
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -80,6 +81,7 @@ async def list_database_tables(
     Args:
         database_name: Name of the database
         session_id: Session ID for schema access
+        session_manager: Injected session manager
 
     Returns:
         List of tables in the database
@@ -87,7 +89,9 @@ async def list_database_tables(
     Raises:
         404: Session or database not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     if not managed.has_database(database_name):
         raise HTTPException(status_code=404, detail=f"Database not found: {database_name}")
@@ -126,6 +130,7 @@ async def get_table_schema(
         database_name: Name of the database
         table_name: Name of the table
         session_id: Session ID for schema access
+        session_manager: Injected session manager
 
     Returns:
         Detailed table schema including columns and relationships
@@ -133,7 +138,9 @@ async def get_table_schema(
     Raises:
         404: Session, database, or table not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     try:
         full_name = f"{database_name}.{table_name}"
@@ -188,6 +195,7 @@ async def search_schema(
         query: Natural language search query
         session_id: Session ID for schema access
         limit: Maximum number of results
+        session_manager: Injected session manager
 
     Returns:
         List of matching tables with relevance scores
@@ -195,7 +203,9 @@ async def search_schema(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     try:
         results = managed.session.schema_manager.find_relevant_tables(
@@ -231,6 +241,7 @@ async def get_api_schema(
     Args:
         api_name: Name of the API
         session_id: Session ID for schema access
+        session_manager: Injected session manager
 
     Returns:
         API schema overview including endpoints/queries
@@ -238,16 +249,18 @@ async def get_api_schema(
     Raises:
         404: Session or API not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     try:
-        # Check config APIs and project APIs
+        # Check config APIs and domain APIs
         api_config = managed.session.config.apis.get(api_name)
         if not api_config:
-            for project_filename in managed.active_projects:
-                project = managed.session.config.load_project(project_filename)
-                if project and api_name in project.apis:
-                    api_config = project.apis[api_name]
+            for domain_filename in managed.active_domains:
+                domain = managed.session.config.load_domain(domain_filename)
+                if domain and api_name in domain.apis:
+                    api_config = domain.apis[api_name]
                     break
         if not api_config:
             raise HTTPException(status_code=404, detail=f"API not found: {api_name}")
@@ -302,6 +315,7 @@ async def refresh_schema(
     Args:
         session_id: Session ID for schema refresh
         force_full: Whether to force full rebuild
+        session_manager: Injected session manager
 
     Returns:
         Refresh statistics
@@ -309,7 +323,9 @@ async def refresh_schema(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     try:
         stats = managed.session.refresh_metadata(force_full=force_full)

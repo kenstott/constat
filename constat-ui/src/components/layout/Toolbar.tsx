@@ -1,15 +1,26 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: aa69fe55-eea0-465d-84a8-2699a7d31eb5
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Toolbar component
 
-import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
+import { useReactiveVar } from '@apollo/client'
+import { useSessionContext } from '@/contexts/SessionContext'
+import { useArtifactContext } from '@/contexts/ArtifactContext'
+import { useTables } from '@/hooks/useTables'
+import { briefModeVar, toggleBriefMode } from '@/graphql/ui-state'
 import {
   PlusIcon,
   StopIcon,
   QuestionMarkCircleIcon,
-  CircleStackIcon,
-  LightBulbIcon,
-  DocumentIcon,
   CheckBadgeIcon,
+  BoltIcon,
 } from '@heroicons/react/24/outline'
 
 interface ToolbarProps {
@@ -20,16 +31,10 @@ interface ToolbarProps {
 }
 
 export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSession }: ToolbarProps) {
-  const { session, status, cancelExecution } = useSessionStore()
-  const { databases, apis, documents, facts, artifacts, tables, stepCodes } = useArtifactStore()
-
-  // Count datasources (databases + APIs + documents)
-  const datasourceCount = databases.length + apis.length + documents.length
-
-  // Count results (tables + non-code/error/output artifacts) - matches Results accordion
-  const excludedArtifactTypes = new Set(['code', 'error', 'output', 'table'])
-  const resultArtifacts = artifacts.filter((a) => !excludedArtifactTypes.has(a.artifact_type))
-  const resultsCount = tables.length + resultArtifacts.length
+  const { status, cancelExecution } = useSessionContext()
+  const { stepCodes } = useArtifactContext()
+  const { tables } = useTables()
+  const briefMode = useReactiveVar(briefModeVar)
 
   const isExecuting = status === 'planning' || status === 'executing'
 
@@ -44,6 +49,7 @@ export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSess
           onClick={onNewQuery}
           disabled={isExecuting || isCreatingNewSession}
           className="btn-secondary text-xs disabled:opacity-50"
+          title="Start a new query session"
         >
           {isCreatingNewSession ? (
             <svg className="w-4 h-4 mr-1 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -60,10 +66,19 @@ export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSess
           onClick={onShowProof}
           disabled={isExecuting || !hasExecutedPlan}
           className="btn-secondary text-xs disabled:opacity-50"
-          title={hasExecutedPlan ? "Show proof tree / reasoning chain" : "Execute a query first to view proof"}
+          title={hasExecutedPlan ? "Show reasoning chain" : "Execute a query first to view reasoning chain"}
         >
           <CheckBadgeIcon className="w-4 h-4 mr-1" />
-          Proof
+          Reason-Chain
+        </button>
+
+        <button
+          onClick={toggleBriefMode}
+          className={`btn-secondary text-xs ${briefMode ? 'bg-primary-100 dark:bg-primary-900/30 border-primary-400 dark:border-primary-600 text-primary-700 dark:text-primary-300' : ''}`}
+          title={briefMode ? "Brief mode ON — skipping insight synthesis" : "Brief mode OFF — full insight synthesis"}
+        >
+          <BoltIcon className="w-4 h-4 mr-1" />
+          Brief
         </button>
 
         {isExecuting && (
@@ -86,24 +101,6 @@ export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSess
 
       {/* Spacer */}
       <div className="flex-1" />
-
-      {/* Stats */}
-      {session && (
-        <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-          <div className="flex items-center gap-1" title="Data Sources: Connected databases, APIs, and documents available for querying">
-            <CircleStackIcon className="w-4 h-4" />
-            <span>{datasourceCount}</span>
-          </div>
-          <div className="flex items-center gap-1" title="Results: Tables, charts, and other analysis outputs">
-            <DocumentIcon className="w-4 h-4" />
-            <span>{resultsCount}</span>
-          </div>
-          <div className="flex items-center gap-1" title="Facts: Discovered insights and computed values stored for reference">
-            <LightBulbIcon className="w-4 h-4" />
-            <span>{facts.length}</span>
-          </div>
-        </div>
-      )}
 
       {/* Help */}
       <button onClick={onShowHelp} className="btn-ghost text-xs">

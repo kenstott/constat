@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 52e42734-d08d-46f0-a641-d28bcba5dc87
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -10,7 +11,7 @@
 """Prompt logging for tracking LLM prompt sizes and costs.
 
 This module provides instrumentation for analyzing prompt design efficiency.
-It logs prompt characteristics to help identify bloated or sub-optimal prompts.
+It logs prompt characteristics to help identify bloated or suboptimal prompts.
 """
 
 import json
@@ -198,11 +199,12 @@ class PromptLogger:
             "by_task_type": self._stats_by_field(entries, "task_type"),
         }
 
-    def _stats_by_field(self, entries: list[dict], field: str) -> dict:
+    @staticmethod
+    def _stats_by_field(entries: list[dict], group_field: str) -> dict:
         """Get average chars by a grouping field."""
         groups: dict[str, list[int]] = {}
         for e in entries:
-            key = e.get(field, "unknown")
+            key = e.get(group_field, "unknown")
             if key not in groups:
                 groups[key] = []
             groups[key].append(e["total_chars"])

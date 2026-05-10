@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: d37541e6-125b-418f-b56e-fd7df6414453
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -59,6 +60,7 @@ class MistralProvider(OpenAIProvider):
         api_key: Optional[str] = None,
         model: str = "mistral-large-latest",
         base_url: Optional[str] = None,
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Mistral provider.
@@ -66,22 +68,15 @@ class MistralProvider(OpenAIProvider):
         Args:
             api_key: Mistral API key (or uses MISTRAL_API_KEY env var)
             model: Model to use. Options:
-                - mistral-large-latest (flagship, best quality)
+                - mistral-large-latest (flagship, the best quality)
                 - mistral-small-latest (fast, cost-effective)
                 - codestral-latest (code generation)
                 - mistral-nemo (open-weight 12B)
                 - ministral-8b-latest (edge 8B)
                 - ministral-3b-latest (edge 3B)
             base_url: Custom base URL (default: https://api.mistral.ai/v1)
+            timeout: Client-level timeout in seconds
         """
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "Mistral provider requires the openai package. "
-                "Install with: pip install openai"
-            )
-
         resolved_key = api_key or os.environ.get("MISTRAL_API_KEY")
         if not resolved_key:
             raise ValueError(
@@ -90,9 +85,7 @@ class MistralProvider(OpenAIProvider):
             )
 
         url = base_url or self.MISTRAL_BASE_URL
-
-        self.client = OpenAI(base_url=url, api_key=resolved_key)
-        self.model = model
+        super().__init__(api_key=resolved_key, model=model, base_url=url, timeout=timeout)
 
     @classmethod
     def list_models(cls) -> dict[str, str]:
@@ -111,6 +104,7 @@ class CodestralProvider(MistralProvider):
         self,
         api_key: Optional[str] = None,
         model: str = "codestral-latest",
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Codestral provider.
@@ -118,5 +112,6 @@ class CodestralProvider(MistralProvider):
         Args:
             api_key: Mistral API key (or uses MISTRAL_API_KEY env var)
             model: Codestral model variant (default: codestral-latest)
+            timeout: Client-level timeout in seconds
         """
-        super().__init__(api_key=api_key, model=model)
+        super().__init__(api_key=api_key, model=model, timeout=timeout)

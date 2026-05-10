@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 94187df8-d399-4aba-8430-2563353d102b
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -105,6 +106,7 @@ async def upload_file_multipart(
     Args:
         session_id: Session ID
         file: The file to upload
+        session_manager: Injected session manager
 
     Returns:
         Information about the uploaded file including file:// URI
@@ -112,7 +114,9 @@ async def upload_file_multipart(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Generate file ID and path
     file_id = f"f_{uuid.uuid4().hex[:12]}"
@@ -165,6 +169,7 @@ async def upload_file_data_uri(
     Args:
         session_id: Session ID
         body: File upload request with base64 data
+        session_manager: Injected session manager
 
     Returns:
         Information about the uploaded file including file:// URI
@@ -173,7 +178,9 @@ async def upload_file_data_uri(
         404: Session not found
         400: Invalid data format
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Parse data URI or raw base64
     data = body.data
@@ -240,6 +247,7 @@ async def list_uploaded_files(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         List of uploaded files
@@ -247,7 +255,9 @@ async def list_uploaded_files(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     files = _get_uploaded_files_for_session(managed)
 
     return UploadedFileListResponse(
@@ -276,6 +286,7 @@ async def download_file(
     Args:
         session_id: Session ID
         file_id: File ID
+        session_manager: Injected session manager
 
     Returns:
         File content
@@ -283,7 +294,10 @@ async def download_file(
     Raises:
         404: Session or file not found
     """
-    managed = session_manager.get_session(session_id)
+    # noinspection DuplicatedCode
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     files = _get_uploaded_files_for_session(managed)
 
     # Find the file
@@ -313,6 +327,7 @@ async def delete_file(
     Args:
         session_id: Session ID
         file_id: File ID
+        session_manager: Injected session manager
 
     Returns:
         Deletion confirmation
@@ -320,7 +335,10 @@ async def delete_file(
     Raises:
         404: Session or file not found
     """
-    managed = session_manager.get_session(session_id)
+    # noinspection DuplicatedCode
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     files = _get_uploaded_files_for_session(managed)
 
     # Find and remove the file
@@ -366,6 +384,7 @@ async def add_file_reference(
     Args:
         session_id: Session ID
         body: File reference request
+        session_manager: Injected session manager
 
     Returns:
         File reference information
@@ -373,7 +392,9 @@ async def add_file_reference(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Call session.add_file if available
     try:
@@ -425,6 +446,7 @@ async def list_file_references(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         List of file references
@@ -432,7 +454,9 @@ async def list_file_references(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     file_refs = managed._file_refs
 
     return FileRefListResponse(
@@ -461,6 +485,7 @@ async def delete_file_reference(
     Args:
         session_id: Session ID
         name: File reference name
+        session_manager: Injected session manager
 
     Returns:
         Deletion confirmation with counts
@@ -468,7 +493,9 @@ async def delete_file_reference(
     Raises:
         404: Session or file reference not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     file_refs = managed._file_refs
 
     # Find and remove from file refs
@@ -493,8 +520,9 @@ async def delete_file_reference(
     # Refresh entities to remove references to the deleted file
     session_manager.refresh_entities_async(session_id)
 
-    # Persist resources for session restoration
+    # Persist resources and remove from user config
     managed.save_resources()
+    managed._remove_doc_from_user_config(managed.user_id, name)
 
     return {
         "status": "deleted",
@@ -506,6 +534,216 @@ async def delete_file_reference(
 # ============================================================================
 # Document Upload Endpoints (for file picker)
 # ============================================================================
+
+
+import threading
+
+from pydantic import BaseModel as _BaseModel
+
+
+def _ingest_source_async(
+    session_manager: SessionManager,
+    managed: ManagedSession,
+    name: str,
+    doc_config: "DocumentConfig",
+    session_id: str,
+) -> None:
+    """Run document ingestion in a background thread, pushing WS events."""
+    from constat.server.models import EventType
+
+    def _run():
+        import time
+        t0 = time.time()
+        session_manager._push_event(managed, EventType.SOURCE_INGEST_START, {
+            "session_id": session_id,
+            "name": name,
+        })
+        try:
+            success, msg = managed.session.doc_tools.add_document_from_config(
+                name, doc_config, session_id=session_id,
+            )
+            duration_ms = int((time.time() - t0) * 1000)
+            if success:
+                # Update last_refreshed on the file ref
+                for ref in managed._file_refs:
+                    if ref.get("name") == name:
+                        ref["last_refreshed"] = datetime.now(timezone.utc).isoformat()
+                        break
+                managed.save_resources()
+                session_manager._push_event(managed, EventType.SOURCE_INGEST_COMPLETE, {
+                    "session_id": session_id,
+                    "name": name,
+                    "message": msg,
+                    "duration_ms": duration_ms,
+                })
+                session_manager.refresh_entities_async(session_id)
+            else:
+                session_manager._push_event(managed, EventType.SOURCE_INGEST_ERROR, {
+                    "session_id": session_id,
+                    "name": name,
+                    "error": msg,
+                    "duration_ms": duration_ms,
+                })
+        except Exception as e:
+            duration_ms = int((time.time() - t0) * 1000)
+            logger.exception(f"Source ingestion failed for {name}: {e}")
+            session_manager._push_event(managed, EventType.SOURCE_INGEST_ERROR, {
+                "session_id": session_id,
+                "name": name,
+                "error": str(e),
+                "duration_ms": duration_ms,
+            })
+
+    thread = threading.Thread(target=_run, name=f"ingest-{name}-{session_id[:8]}", daemon=True)
+    thread.start()
+
+
+class AddDocumentURIRequest(_BaseModel):
+    """Request to add a document from a URI."""
+    name: str
+    url: str
+    description: str = ""
+    headers: dict[str, str] = {}
+    follow_links: bool = False
+    max_depth: int = 2
+    max_documents: int = 20
+    same_domain_only: bool = True
+    exclude_patterns: list[str] = []
+    type: str = "auto"
+
+
+@router.post("/{session_id}/documents/add-uri")
+async def add_document_uri(
+    session_id: str,
+    body: AddDocumentURIRequest,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Add and index a document from a URL (async).
+
+    Returns immediately after registering the source. Ingestion runs in a
+    background thread and pushes source_ingest_start/complete/error via WS.
+    """
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    session = managed.session
+    if not hasattr(session, "doc_tools") or not session.doc_tools:
+        raise HTTPException(status_code=503, detail="Document tools not available")
+
+    from constat.core.config import DocumentConfig
+
+    doc_config = DocumentConfig(
+        url=body.url,
+        description=body.description,
+        headers=body.headers,
+        follow_links=body.follow_links,
+        max_depth=body.max_depth,
+        max_documents=body.max_documents,
+        same_domain_only=body.same_domain_only,
+        exclude_patterns=body.exclude_patterns,
+        type=body.type,
+    )
+
+    # Track as file reference immediately
+    managed._file_refs.append({
+        "name": body.name,
+        "uri": body.url,
+        "has_auth": bool(body.headers),
+        "description": body.description,
+        "added_at": datetime.now(timezone.utc).isoformat(),
+        "document_config": doc_config.model_dump(exclude_defaults=True),
+    })
+    managed.save_resources()
+
+    _ingest_source_async(session_manager, managed, body.name, doc_config, session_id)
+
+    return {"status": "accepted", "name": body.name}
+
+
+class AddEmailSourceRequest(_BaseModel):
+    """Request to add an IMAP email source."""
+    name: str
+    url: str
+    username: str
+    password: str | None = None
+    auth_type: str = "basic"
+    mailbox: str = "INBOX"
+    since: str | None = None
+    max_messages: int = 500
+    include_headers: bool = True
+    extract_attachments: bool = True
+    oauth2_client_id: str | None = None
+    oauth2_client_secret: str | None = None
+    oauth2_tenant_id: str | None = None
+    oauth2_refresh_token: str | None = None
+
+
+@router.post("/{session_id}/documents/add-email")
+async def add_email_source(
+    session_id: str,
+    body: AddEmailSourceRequest,
+    request: Request,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Add and index an IMAP email source (async).
+
+    Returns immediately. Pushes source_ingest_start, source_ingest_complete,
+    or source_ingest_error via GraphQL subscription.
+    """
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    session = managed.session
+    if not hasattr(session, "doc_tools") or not session.doc_tools:
+        raise HTTPException(status_code=503, detail="Document tools not available")
+
+    from constat.core.config import DocumentConfig
+
+    doc_config = DocumentConfig(
+        url=body.url,
+        username=body.username,
+        password=body.password,
+        auth_type=body.auth_type,
+        mailbox=body.mailbox,
+        since=body.since,
+        max_messages=body.max_messages,
+        include_headers=body.include_headers,
+        extract_attachments=body.extract_attachments,
+        extract_images=True,
+        oauth2_client_id=body.oauth2_client_id,
+        oauth2_client_secret=body.oauth2_client_secret,
+        oauth2_tenant_id=body.oauth2_tenant_id,
+    )
+
+    # Browser OAuth2 flow: use server-configured client credentials with user's refresh token
+    if body.oauth2_refresh_token:
+        server_config = request.app.state.server_config
+        if body.oauth2_tenant_id or (body.url and any(k in body.url.lower() for k in ('outlook', 'office365', 'microsoft'))):
+            doc_config.oauth2_client_id = server_config.microsoft_email_client_id
+            doc_config.oauth2_client_secret = body.oauth2_refresh_token
+            doc_config.oauth2_tenant_id = body.oauth2_tenant_id or server_config.microsoft_email_tenant_id
+        else:
+            doc_config.oauth2_client_id = server_config.google_email_client_id
+            doc_config.oauth2_client_secret = body.oauth2_refresh_token
+            doc_config.password = server_config.google_email_client_secret
+        doc_config.auth_type = "oauth2_refresh"
+
+    # Track as file reference immediately (before ingestion completes)
+    managed._file_refs.append({
+        "name": body.name,
+        "uri": body.url,
+        "has_auth": True,
+        "description": f"IMAP email source ({body.mailbox})",
+        "added_at": datetime.now(timezone.utc).isoformat(),
+        "document_config": doc_config.model_dump(exclude_defaults=True),
+    })
+    managed.save_resources()
+
+    _ingest_source_async(session_manager, managed, body.name, doc_config, session_id)
+
+    return {"status": "accepted", "name": body.name}
 
 
 @router.post("/{session_id}/documents/upload")
@@ -529,6 +767,7 @@ async def upload_documents(
     Args:
         session_id: Session ID
         files: List of files to upload
+        session_manager: Injected session manager
 
     Returns:
         Upload results including indexed document names
@@ -537,10 +776,13 @@ async def upload_documents(
         404: Session not found
         400: No valid documents provided
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Document extensions (indexed for search)
-    doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm', '.pptx', '.xlsx'}
+    doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm', '.pptx', '.xlsx',
+                      '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.webp', '.bmp', '.gif', '.svg'}
     # Data file extensions (added as databases) - xlsx excluded due to multi-sheet complexity
     data_extensions = {'.csv', '.tsv', '.parquet', '.json'}
 
@@ -586,7 +828,7 @@ async def upload_documents(
             now = datetime.now(timezone.utc)
 
             if is_data_file:
-                # For JSON files, validate structure (must be array of objects)
+                # For JSON files, validate structure (must be an array of objects)
                 if suffix == '.json':
                     import json as json_module
                     try:
@@ -661,16 +903,8 @@ async def upload_documents(
                     "path": str(file_path),
                 })
             else:
-                # Index as a document (triggers entity extraction)
-                managed.session.add_file(
-                    name=name,
-                    uri=uri,
-                    description=f"Uploaded document: {file.filename}",
-                )
-
-                # Track as a file reference
-                file_refs = managed._file_refs
-                file_refs.append({
+                # Track as a file reference immediately
+                managed._file_refs.append({
                     "name": name,
                     "uri": uri,
                     "has_auth": False,
@@ -678,10 +912,15 @@ async def upload_documents(
                     "added_at": now.isoformat(),
                 })
 
+                # Index document async (add_file does chunking/embedding)
+                from constat.core.config import DocumentConfig
+                doc_config = DocumentConfig(url=uri, description=f"Uploaded: {file.filename}")
+                _ingest_source_async(session_manager, managed, name, doc_config, session_id)
+
                 results.append({
                     "filename": file.filename,
                     "name": name,
-                    "status": "indexed",
+                    "status": "accepted",
                     "path": str(file_path),
                 })
 
@@ -696,20 +935,17 @@ async def upload_documents(
     if not results:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    # If any databases or documents were added, refresh entities for the session
     database_count = sum(1 for r in results if r.get("status") == "database")
-    indexed_count = sum(1 for r in results if r.get("status") == "indexed")
+    accepted_count = sum(1 for r in results if r.get("status") == "accepted")
 
-    if database_count > 0 or indexed_count > 0:
-        session_manager.refresh_entities_async(session_id)
-
-    # Persist resources for session restoration
-    if database_count > 0 or indexed_count > 0:
+    # Databases are registered synchronously — refresh entities + persist for those
+    if database_count > 0:
         managed.save_resources()
+        session_manager.refresh_entities_async(session_id)
 
     return {
         "status": "success",
-        "indexed_count": indexed_count,
+        "accepted_count": accepted_count,
         "database_count": database_count,
         "total_files": len(files),
         "results": results,
@@ -727,6 +963,7 @@ async def get_document(
     Args:
         session_id: Session ID
         name: Document name (query parameter to handle names with slashes)
+        session_manager: Injected session manager
 
     Returns:
         Document content and metadata
@@ -734,15 +971,14 @@ async def get_document(
     Raises:
         404: Session or document not found
     """
-    print(f"[GET_DOC] name={name!r}")
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.session.doc_tools:
-        print("[GET_DOC] doc_tools not available")
         raise HTTPException(status_code=404, detail="Document tools not available")
 
     result = managed.session.doc_tools.get_document(name)
-    print(f"[GET_DOC] result keys={list(result.keys())}, error={result.get('error')}")
 
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
@@ -761,6 +997,7 @@ async def serve_file(
     Args:
         session_id: Session ID (for authentication)
         path: Absolute path to the file
+        session_manager: Injected session manager
 
     Returns:
         FileResponse for the requested file
@@ -770,25 +1007,21 @@ async def serve_file(
         403: Access denied (path outside allowed directories)
     """
     # Verify session exists (for authentication)
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     file_path = Path(path)
-    print(f"[SERVE_FILE] Requested path: {path}")
-    print(f"[SERVE_FILE] file_path exists: {file_path.exists()}")
 
     # Security: Only allow files within the config directory
     config_dir = Path(managed.session.config.config_dir).resolve() if managed.session.config.config_dir else None
-    print(f"[SERVE_FILE] config_dir: {config_dir}")
     if config_dir:
         try:
-            rel = file_path.resolve().relative_to(config_dir)
-            print(f"[SERVE_FILE] Relative path: {rel}")
-        except ValueError as e:
-            print(f"[SERVE_FILE] Access denied: {e}")
+            file_path.resolve().relative_to(config_dir)
+        except ValueError:
             raise HTTPException(status_code=403, detail="Access denied: file outside config directory")
 
     if not file_path.exists():
-        print(f"[SERVE_FILE] File not found: {file_path}")
         raise HTTPException(status_code=404, detail="File not found")
 
     # Determine media type
@@ -798,6 +1031,15 @@ async def serve_file(
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".tiff": "image/tiff",
+        ".tif": "image/tiff",
+        ".svg": "image/svg+xml",
     }
     media_type = media_types.get(suffix, "application/octet-stream")
 
@@ -806,3 +1048,41 @@ async def serve_file(
         media_type=media_type,
         filename=file_path.name,
     )
+
+
+# ---------------------------------------------------------------------------
+# Immediate document source refresh (bypasses interval)
+# ---------------------------------------------------------------------------
+
+@router.post("/{session_id}/documents/refresh")
+async def refresh_documents(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Trigger immediate source refresh for all eligible sources.
+
+    Bypasses the interval check. Pushes SOURCE_REFRESH_COMPLETE when done.
+    """
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if not managed._file_refs:
+        return {"status": "skipped", "reason": "no_sources"}
+
+    import asyncio
+    from constat.server.source_refresher import refresh_session_sources
+
+    # Force refresh by clearing last_refreshed on all refs
+    for ref in managed._file_refs:
+        ref.pop("last_refreshed", None)
+
+    asyncio.get_event_loop().run_in_executor(
+        None,
+        refresh_session_sources,
+        managed,
+        session_manager,
+        0,  # interval=0 forces all to refresh
+    )
+
+    return {"status": "started"}

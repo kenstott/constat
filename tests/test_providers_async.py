@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 77ddc3ea-3b9b-4283-82ae-93ce9e1472bc
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -13,10 +14,11 @@ These methods wrap synchronous generate() calls using ThreadPoolExecutor
 for use in async contexts (e.g., AsyncFactResolver).
 """
 
+from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch, AsyncMock
-from typing import Optional, Callable
+from typing import Callable
 
 import pytest
 
@@ -33,10 +35,10 @@ class ConcreteTestProvider(BaseLLMProvider):
         self,
         system: str,
         user_message: str,
-        tools: Optional[list[dict]] = None,
-        tool_handlers: Optional[dict[str, Callable]] = None,
+        tools: list[dict] | None = None,
+        tool_handlers: dict[str, Callable] | None = None,
         max_tokens: int = 4096,
-        model: Optional[str] = None,
+        model: str | None = None,
     ) -> str:
         return self.generate_mock(
             system=system,

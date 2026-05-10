@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 1ac14e6f-b5c3-42f9-9773-8d20914964f6
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -101,6 +102,7 @@ class DynamoDBConnector(NoSQLConnector):
     def connect(self) -> None:
         """Connect to DynamoDB."""
         try:
+            # noinspection PyUnresolvedReferences
             import boto3
         except ImportError:
             raise ImportError(
@@ -268,13 +270,14 @@ class DynamoDBConnector(NoSQLConnector):
         if not self._resource:
             raise RuntimeError("Not connected to DynamoDB")
 
+        # noinspection PyUnresolvedReferences
         from boto3.dynamodb.conditions import Key, Attr
 
         table = self._resource.Table(collection)
 
         # Build key condition expression
         key_condition = None
-        filter_expression = None
+        _filter_expression = None
 
         for key, value in query.items():
             if isinstance(value, dict):
@@ -338,6 +341,7 @@ class DynamoDBConnector(NoSQLConnector):
         if not self._resource:
             raise RuntimeError("Not connected to DynamoDB")
 
+        # noinspection PyUnresolvedReferences
         from boto3.dynamodb.conditions import Attr
 
         table = self._resource.Table(collection)

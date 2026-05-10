@@ -1,8 +1,19 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: db4cdae5-6389-4af0-9ad2-b5e1fd9d7712
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 // Artifact Accordion component
 
 import { ReactNode } from 'react'
 import { ChevronDownIcon } from '@heroicons/react/24/outline'
-import { useUIStore } from '@/store/uiStore'
+import { useReactiveVar } from '@apollo/client'
+import { expandedSectionsVar, toggleSection } from '@/graphql/ui-state'
 
 interface AccordionSectionProps {
   id: string
@@ -15,14 +26,14 @@ interface AccordionSectionProps {
 }
 
 export function AccordionSection({ id, title, count, icon, action, command, children }: AccordionSectionProps) {
-  const { expandedArtifactSections, toggleArtifactSection } = useUIStore()
+  const expandedArtifactSections = useReactiveVar(expandedSectionsVar)
   const isExpanded = expandedArtifactSections.includes(id)
 
   return (
-    <div className="border-b border-gray-200 dark:border-gray-700">
+    <div id={`section-${id}`} className="border-b border-gray-200 dark:border-gray-700">
       <div className="flex items-center">
         <button
-          onClick={() => toggleArtifactSection(id)}
+          onClick={() => toggleSection(id)}
           className="flex-1 flex items-center gap-2 px-4 py-3 text-left hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
         >
           {icon && <span className="text-gray-500 dark:text-gray-400">{icon}</span>}

@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: 7cb76719-830d-4657-96d1-9d673d72cb48
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -6,6 +7,9 @@
 # NOTICE: Use of this software for training artificial intelligence or
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
+
+import urllib.request
+import urllib.error
 
 """Skill discovery and loading tools for LLM integration.
 
@@ -37,7 +41,7 @@ Skill Locations (searched in order):
     3. Config-specified paths
 
 Link Following:
-    Skills can reference additional files via markdown links:
+    Skills can reference additional files via Markdown links:
     - Relative links: [indicators](references/indicators.md)
     - URLs: [docs](https://example.com/docs.md)
 
@@ -216,7 +220,7 @@ class SkillManager:
                     skill = self._load_skill_file(skill_file)
                     if skill and skill.name not in self._skills:
                         self._skills[skill.name] = skill
-                except Exception:
+                except OSError:
                     # Skip invalid skill files
                     continue
 
@@ -284,7 +288,7 @@ class SkillManager:
                 content = file_path.read_text(encoding="utf-8")
                 skill.additional_files[filename] = content
                 return content
-            except Exception:
+            except OSError:
                 return None
 
         return None
@@ -321,14 +325,16 @@ class SkillManager:
             elif isinstance(tools_value, list):
                 allowed_tools = tools_value
 
+        # Custom fields: prefer metadata, fall back to top-level (backward-compat)
+        meta = metadata.get("metadata", {})
         skill_metadata = SkillMetadata(
             name=name,
             description=description,
             allowed_tools=allowed_tools,
-            model=metadata.get("model"),
-            context=metadata.get("context"),
-            agent=metadata.get("agent"),
-            user_invocable=metadata.get("user-invocable", True),
+            model=meta.get("model", metadata.get("model")),
+            context=meta.get("context", metadata.get("context")),
+            agent=meta.get("agent", metadata.get("agent")),
+            user_invocable=meta.get("user-invocable", metadata.get("user-invocable", True)),
         )
 
         # Parse links from content (lazy discovery - content not fetched yet)
@@ -341,9 +347,10 @@ class SkillManager:
             links=links,
         )
 
-    def _parse_links(self, content: str) -> list[SkillLink]:
+    @staticmethod
+    def _parse_links(content: str) -> list[SkillLink]:
         """
-        Parse markdown links from content.
+        Parse Markdown links from content.
 
         Extracts both relative file links and URLs for lazy loading.
         Excludes anchor-only links (#section) and image links.
@@ -355,9 +362,9 @@ class SkillManager:
             List of discovered links
         """
         links = []
-        # Match markdown links: [text](target)
+        # Match Markdown links: [text](target)
         # Excludes images: ![alt](src)
-        link_pattern = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)')
+        link_pattern = re.compile(r'(?<!!)\[([^]]+)]\(([^)]+)\)')
 
         for line_num, line in enumerate(content.split('\n'), start=1):
             for match in link_pattern.finditer(line):
@@ -439,7 +446,7 @@ class SkillManager:
             if file_path.exists() and file_path.is_file():
                 try:
                     content = file_path.read_text(encoding="utf-8")
-                except Exception:
+                except OSError:
                     content = None
             else:
                 content = None
@@ -450,7 +457,8 @@ class SkillManager:
 
         return content
 
-    def _fetch_url(self, url: str, timeout: int = 30) -> Optional[str]:
+    @staticmethod
+    def _fetch_url(url: str, timeout: int = 30) -> Optional[str]:
         """
         Fetch content from a URL.
 
@@ -470,15 +478,15 @@ class SkillManager:
         except ImportError:
             # Fall back to urllib if httpx not available
             try:
-                import urllib.request
                 with urllib.request.urlopen(url, timeout=timeout) as response:
                     return response.read().decode("utf-8")
-            except Exception:
+            except (urllib.error.URLError, OSError, ValueError):
                 return None
         except Exception:
             return None
 
-    def _parse_frontmatter(self, content: str) -> tuple[Optional[dict], str]:
+    @staticmethod
+    def _parse_frontmatter(content: str) -> tuple[Optional[dict], str]:
         """
         Parse YAML frontmatter from markdown content.
 

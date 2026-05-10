@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: f5fa70bf-3208-4a2b-ac22-78cb4245fda2
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -10,16 +11,16 @@ Permissions are defined in the config.yaml under the 'permissions' section:
 ```yaml
 permissions:
   users:
-    kennethstott@gmail.com:
-      admin: true
-      projects: []
+    8TgdzQHw7EbTHSJY9osIuCElbGF2:
+      persona: platform_admin
+      domains: []
       databases: []
       documents: []
       apis: []
 
-    analyst@company.com:
-      admin: false
-      projects:
+    xK9mPqR2wYnZaB4cD7eF1gH3iJ5:
+      persona: domain_user
+      domains:
         - sales-analytics.yaml
       databases:
         - sales
@@ -28,8 +29,8 @@ permissions:
       apis: []
 
   default:
-    admin: false
-    projects: []
+    persona: viewer
+    domains: []
     databases: []
     documents: []
     apis: []
@@ -39,7 +40,7 @@ permissions:
 import logging
 from typing import Any, Optional
 
-from constat.server.config import ServerConfig, UserPermissions as ConfigUserPermissions
+from constat.server.config import Persona, ServerConfig, UserPermissions as ConfigUserPermissions
 
 logger = logging.getLogger(__name__)
 
@@ -51,54 +52,96 @@ class UserPermissions:
         self,
         user_id: str,
         email: Optional[str] = None,
-        admin: bool = False,
-        projects: Optional[list[str]] = None,
+        persona: str = Persona.VIEWER,
+        domains: Optional[list[str]] = None,
         databases: Optional[list[str]] = None,
         documents: Optional[list[str]] = None,
         apis: Optional[list[str]] = None,
+        skills: Optional[list[str]] = None,
+        agents: Optional[list[str]] = None,
+        rules: Optional[list[str]] = None,
+        facts: Optional[list[str]] = None,
     ):
         self.user_id = user_id
         self.email = email
-        self.admin = admin
-        self.projects = projects or []
+        self.persona = persona
+        self.domains = domains or []
         self.databases = databases or []
         self.documents = documents or []
         self.apis = apis or []
+        self.skills = skills or []
+        self.agents = agents or []
+        self.rules = rules or []
+        self.facts = facts or []
 
-    def can_access_project(self, project_filename: str) -> bool:
-        """Check if user can access a specific project."""
-        if self.admin:
+    @property
+    def is_admin(self) -> bool:
+        """Derived admin status from persona."""
+        return self.persona == Persona.PLATFORM_ADMIN
+
+    def can_access_domain(self, domain_filename: str) -> bool:
+        """Check if user can access a specific domain."""
+        if self.is_admin:
             return True
-        return project_filename in self.projects
+        return domain_filename in self.domains
 
     def can_access_database(self, db_name: str) -> bool:
         """Check if user can access a specific database."""
-        if self.admin:
+        if self.is_admin:
             return True
         return db_name in self.databases
 
     def can_access_document(self, doc_name: str) -> bool:
         """Check if user can access a specific document."""
-        if self.admin:
+        if self.is_admin:
             return True
         return doc_name in self.documents
 
     def can_access_api(self, api_name: str) -> bool:
         """Check if user can access a specific API."""
-        if self.admin:
+        if self.is_admin:
             return True
         return api_name in self.apis
+
+    def can_access_skill(self, name: str) -> bool:
+        """Check if user can access a specific skill."""
+        if self.is_admin:
+            return True
+        return name in self.skills
+
+    def can_access_agent(self, name: str) -> bool:
+        """Check if user can access a specific agent."""
+        if self.is_admin:
+            return True
+        return name in self.agents
+
+    def can_access_rule(self, rule_id: str) -> bool:
+        """Check if user can access a specific rule."""
+        if self.is_admin:
+            return True
+        return rule_id in self.rules
+
+    def can_access_fact(self, name: str) -> bool:
+        """Check if user can access a specific fact."""
+        if self.is_admin:
+            return True
+        return name in self.facts
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API response."""
         return {
             "user_id": self.user_id,
             "email": self.email,
-            "admin": self.admin,
-            "projects": self.projects,
+            "admin": self.is_admin,
+            "persona": self.persona,
+            "domains": self.domains,
             "databases": self.databases,
             "documents": self.documents,
             "apis": self.apis,
+            "skills": self.skills,
+            "agents": self.agents,
+            "rules": self.rules,
+            "facts": self.facts,
         }
 
     @classmethod
@@ -112,30 +155,34 @@ class UserPermissions:
         return cls(
             user_id=user_id,
             email=email,
-            admin=config_perms.admin,
-            projects=config_perms.projects,
+            persona=config_perms.persona,
+            domains=config_perms.domains,
             databases=config_perms.databases,
             documents=config_perms.documents,
             apis=config_perms.apis,
+            skills=config_perms.skills,
+            agents=config_perms.agents,
+            rules=config_perms.rules,
+            facts=config_perms.facts,
         )
 
 
 def get_user_permissions(
     server_config: ServerConfig,
-    email: str,
-    user_id: str = "",
+    user_id: str,
+    email: str = "",
 ) -> UserPermissions:
     """Get permissions for a user from server config.
 
     Args:
         server_config: Server configuration containing permissions
-        email: User's email address
-        user_id: Firebase user ID (for reference)
+        user_id: Stable user identifier (Firebase UID, etc.)
+        email: User's email address (informational, not used for lookup)
 
     Returns:
         UserPermissions object
     """
-    config_perms = server_config.permissions.get_user_permissions(email)
+    config_perms = server_config.permissions.get_user_permissions(user_id=user_id)
     return UserPermissions.from_config(config_perms, user_id=user_id, email=email)
 
 
@@ -149,14 +196,19 @@ def list_all_permissions(server_config: ServerConfig) -> list[dict[str, Any]]:
         List of user permission dicts
     """
     result = []
-    for email, perms in server_config.permissions.users.items():
+    for user_id, perms in server_config.permissions.users.items():
         result.append({
-            "email": email,
-            "admin": perms.admin,
-            "projects": perms.projects,
+            "user_id": user_id,
+            "admin": perms.persona == Persona.PLATFORM_ADMIN,
+            "persona": perms.persona,
+            "domains": perms.domains,
             "databases": perms.databases,
             "documents": perms.documents,
             "apis": perms.apis,
+            "skills": perms.skills,
+            "agents": perms.agents,
+            "rules": perms.rules,
+            "facts": perms.facts,
         })
     return result
 
@@ -164,20 +216,25 @@ def list_all_permissions(server_config: ServerConfig) -> list[dict[str, Any]]:
 def compute_effective_permissions(
     user_perms: Optional[UserPermissions],
     config: "Config",
-    active_projects: Optional[list[str]] = None,
+    active_domains: Optional[list[str]] = None,
     permissions_configured: bool = True,
 ) -> dict[str, Optional[set[str]]]:
-    """Compute effective allowed resources by merging permissions and active projects.
+    """Compute effective allowed resources using least-privilege intersection.
 
     Rules:
-    - If no permissions configured (permissions_configured=False) → no filtering
-    - If user is admin → no filtering
-    - Otherwise, merge explicit permissions + active project resources
+    - If no permissions configured (permissions_configured=False) -> no filtering
+    - If user is admin -> no filtering
+    - Otherwise, start with user's global permissions, then INTERSECT with
+      domain-level restrictions (if a domain has its own permissions.yaml).
+    - If a domain has no permissions.yaml, all of that domain's resources are
+      available (no additional restriction from the domain side).
+    - Final allowed = resources the user has global permission for AND that
+      aren't restricted by domain-scoped permissions.
 
     Args:
         user_perms: User's base permissions (None if no permissions configured)
-        config: Config with project definitions
-        active_projects: Currently active project IDs (if any)
+        config: Config with domain definitions
+        active_domains: Currently active domain IDs (if any)
         permissions_configured: Whether permissions are configured at all
 
     Returns:
@@ -191,37 +248,83 @@ def compute_effective_permissions(
             "allowed_databases": None,
             "allowed_apis": None,
             "allowed_documents": None,
+            "allowed_skills": None,
+            "allowed_agents": None,
+            "allowed_rules": None,
+            "allowed_facts": None,
         }
 
     # Admins see everything
-    if user_perms.admin:
+    if user_perms.is_admin:
         return {
             "allowed_databases": None,
             "allowed_apis": None,
             "allowed_documents": None,
+            "allowed_skills": None,
+            "allowed_agents": None,
+            "allowed_rules": None,
+            "allowed_facts": None,
         }
 
-    # Start with explicit permissions
+    # Start with user's global permissions
     allowed_databases = set(user_perms.databases)
     allowed_apis = set(user_perms.apis)
     allowed_documents = set(user_perms.documents)
+    allowed_skills = set(user_perms.skills)
+    allowed_agents = set(user_perms.agents)
+    allowed_rules = set(user_perms.rules)
+    allowed_facts = set(user_perms.facts)
 
-    # Add resources from active projects the user has access to
-    active_projects = active_projects or []
-    for project_id in active_projects:
-        # Check user has access to this project
-        if not user_perms.can_access_project(project_id):
+    # Process active domains
+    active_domains = active_domains or []
+    for domain_id in active_domains:
+        # Check user has access to this domain
+        if not user_perms.can_access_domain(domain_id):
             continue
 
-        # Load project and add all its resources
-        project = config.load_project(project_id)
-        if project:
-            allowed_databases.update(project.databases.keys())
-            allowed_apis.update(project.apis.keys())
-            allowed_documents.update(project.documents.keys())
+        domain = config.load_domain(domain_id)
+        if not domain:
+            continue
+
+        domain_databases = set(domain.databases.keys())
+        domain_apis = set(domain.apis.keys())
+        domain_documents = set(domain.documents.keys())
+
+        # Check if domain has its own permissions.yaml
+        if domain.permissions is not None:
+            # Domain has scoped permissions — intersect with domain restrictions
+            domain_perms = domain.permissions.get_user_permissions(user_id=user_perms.user_id)
+            domain_allowed_dbs = set(domain_perms.databases)
+            domain_allowed_apis = set(domain_perms.apis)
+            domain_allowed_docs = set(domain_perms.documents)
+            domain_allowed_skills = set(domain_perms.skills)
+            domain_allowed_agents = set(domain_perms.agents)
+            domain_allowed_rules = set(domain_perms.rules)
+            domain_allowed_facts = set(domain_perms.facts)
+
+            # User gets domain resources that are in BOTH their global permissions
+            # and the domain's allowed list (least privilege)
+            allowed_databases.update(domain_databases & domain_allowed_dbs)
+            allowed_apis.update(domain_apis & domain_allowed_apis)
+            allowed_documents.update(domain_documents & domain_allowed_docs)
+            allowed_skills.update(domain_allowed_skills)
+            allowed_agents.update(domain_allowed_agents)
+            allowed_rules.update(domain_allowed_rules)
+            allowed_facts.update(domain_allowed_facts)
+        else:
+            # No domain permissions — all domain resources available
+            # but still intersected with user's global permissions implicitly
+            # (user must have global permission OR domain grants access)
+            allowed_databases.update(domain_databases)
+            allowed_apis.update(domain_apis)
+            allowed_documents.update(domain_documents)
 
     return {
         "allowed_databases": allowed_databases,
         "allowed_apis": allowed_apis,
         "allowed_documents": allowed_documents,
+        "allowed_skills": allowed_skills,
+        "allowed_agents": allowed_agents,
+        "allowed_rules": allowed_rules,
+        "allowed_facts": allowed_facts,
     }

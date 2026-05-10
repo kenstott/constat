@@ -1,4 +1,5 @@
 # Copyright (c) 2025 Kenneth Stott
+# Canary: ea33fe8b-0a43-467b-afce-0eb052a23a55
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
@@ -9,6 +10,7 @@
 
 """Tests for Scratchpad."""
 
+from __future__ import annotations
 import pytest
 from constat.execution.scratchpad import Scratchpad
 
