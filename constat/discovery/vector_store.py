@@ -39,6 +39,7 @@ def _run_entity_extraction(
     business_terms,
     add_entities_fn,
     link_fn,
+    spacy_model: str = "en_core_web_sm",
 ) -> int:
     """Two-pass entity extraction using chonk's SchemaMatcher + SpacyMatcher."""
     from chonk.ner import SchemaMatcher, SpacyMatcher, merge_matches
@@ -48,7 +49,7 @@ def _run_entity_extraction(
         api_terms=api_terms or [],
         business_terms=business_terms or [],
     )
-    spacy_matcher = SpacyMatcher()
+    spacy_matcher = SpacyMatcher(model=spacy_model)
 
     _SEMANTIC = {
         "schema": SemanticType.CONCEPT,
@@ -276,7 +277,7 @@ class DuckDBVectorStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Use thread-local connection pool for thread safety
-        from constat.storage.thread_local_duckdb import ThreadLocalDuckDB
+        from constat.storage.duckdb_pool import ThreadLocalDuckDB
         self._db = ThreadLocalDuckDB(
             str(self._db_path),
             init_sql=["INSTALL vss", "LOAD vss", "INSTALL fts", "LOAD fts"],
@@ -432,7 +433,7 @@ class DuckDBVectorStore:
     @property
     def _conn(self):
         """Direct DuckDB connection access for raw SQL."""
-        return self._store.vector._conn
+        return self._db.conn
 
     @property
     def _fts_dirty(self):
@@ -1162,14 +1163,39 @@ class DuckDBVectorStore:
     def search_enriched(self, *a, **kw):
         return self._store.search_enriched(*a, **kw)
 
+    def search_enhanced(
+        self,
+        query_embedding,
+        limit: int = 5,
+        domain_ids: list[str] | None = None,
+        session_id: str | None = None,
+        query_text: str | None = None,
+        chunk_types: list[str] | None = None,
+        lane_entity_min_sim: float | None = None,
+        mode: str = "vector_first",
+        relationship_index=None,
+        return_scored: bool = False,
+    ):
+        """EnhancedSearch with MMR diversity + entity expansion, post-filtered by chunk_type."""
+        from constat.storage._enhanced_adapter import run_enhanced_search
+        return run_enhanced_search(
+            vector=self._vector,
+            relational=self._relational,
+            query_embedding=query_embedding,
+            limit=limit,
+            query_text=query_text,
+            domain_ids=domain_ids,
+            session_id=session_id,
+            chunk_types=chunk_types,
+            lane_entity_min_sim=lane_entity_min_sim,
+            mode=mode,
+            relationship_index=relationship_index,
+            return_scored=return_scored,
+        )
+
     def search_similar_entities(self, *a, **kw):
         return self._store.search_similar_entities(*a, **kw)
 
-    def extract_entities_for_session(self, *a, **kw):
-        return self._store.extract_entities_for_session(*a, **kw)
-
-    def extract_entities_for_domain(self, *a, **kw):
-        return self._store.extract_entities_for_domain(*a, **kw)
 
     # ------------------------------------------------------------------
     # Session/document cleanup — cross-layer, delegate to relational with fts callback

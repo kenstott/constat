@@ -11,54 +11,47 @@
 """Tests for user domain NER visibility (Fix 2)."""
 
 from __future__ import annotations
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 import pytest
 
 
-class TestRunEntityExtractionIncludesUserId:
-    def test_user_id_added_to_domain_ids(self):
-        """_run_entity_extraction includes managed.user_id in domain_ids."""
+class TestRunEntityExtractionUsesChonkSync:
+    def test_chonk_sync_called_with_domain_names(self):
+        """_run_entity_extraction calls sync_entities_from_chonk (not spaCy NER)."""
         from constat.server.session_manager import SessionManager
 
         sm = SessionManager.__new__(SessionManager)
         sm._sessions = {}
         sm._lock = MagicMock()
 
-        # Create mock managed session
         managed = MagicMock()
         managed.user_id = "alice"
         managed.active_domains = ["hr-reporting"]
-        managed._dynamic_dbs = []
-        managed.resolved_config = None
 
-        # Create mock session
         session = MagicMock()
         session.config.domains = {"sales-analytics": MagicMock()}
-        session.config.relationships = None
-        session.config.ner_stop_list = None
-        session.doc_tools = MagicMock()
-        session.doc_tools._vector_store = None
-        session.doc_tools._stop_list = set()
-        session.schema_manager.get_entity_names.return_value = []
-        session._get_api_entity_names.return_value = []
+        session.doc_tools._vector_store = MagicMock()
 
         sm._sessions["sess-1"] = managed
 
-        # Patch extract_entities_for_session to capture args
-        captured_domain_ids = []
-        original = session.doc_tools.extract_entities_for_session
+        captured_domain_names = []
 
-        def capture_extract(*args, **kwargs):
-            captured_domain_ids.extend(kwargs.get("domain_ids", []))
-            return {"added": [], "removed": []}
+        def fake_sync(chonk_store, vector_store, domain_names, session_id):
+            captured_domain_names.extend(domain_names)
+            return 0
 
-        session.doc_tools.extract_entities_for_session = capture_extract
+        def fake_desc_sync(*args, **kwargs):
+            return 0
 
-        sm._run_entity_extraction("sess-1", session)
+        fake_chonk_store = MagicMock()
 
-        assert "alice" in captured_domain_ids, f"Expected 'alice' in {captured_domain_ids}"
-        assert "hr-reporting" in captured_domain_ids
-        assert "sales-analytics" in captured_domain_ids
+        with patch("constat.storage._chonk_registry.get_global_store_readonly", return_value=fake_chonk_store), \
+             patch("constat.storage._chonk_entity_sync.sync_entities_from_chonk", side_effect=fake_sync), \
+             patch("constat.storage._chonk_glossary_sync.sync_entity_descriptions_to_glossary", side_effect=fake_desc_sync):
+            sm._run_entity_extraction("sess-1", session)
+
+        assert "sales-analytics" in captured_domain_names
+        assert "hr-reporting" in captured_domain_names
 
 
 class TestChunkVisibilityFilterIncludesUserDomain:

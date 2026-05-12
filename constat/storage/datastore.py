@@ -237,6 +237,19 @@ class DataStore:
                     if nested:
                         nested.rollback()  # Column already exists
 
+            # Add dq_constraints and dq_results columns to table registry
+            for col_def in ("dq_constraints TEXT", "dq_results TEXT"):
+                nested = conn.begin_nested() if _use_savepoint else None
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE _constat_table_registry ADD COLUMN {col_def}"
+                    ))
+                    if nested:
+                        nested.commit()
+                except (SAOperationalError, SAProgrammingError):
+                    if nested:
+                        nested.rollback()
+
             # Add user_query and objective_index columns to scratchpad for existing databases
             for col_def in ("user_query TEXT", "objective_index INTEGER"):
                 nested = conn.begin_nested() if _use_savepoint else None
@@ -362,6 +375,7 @@ class DataStore:
         step_number: int = 0,
         description: str = "",
         role_id: Optional[str] = None,
+        dq_constraints: Optional[list[str]] = None,
     ) -> None:
         """
         Save a pandas DataFrame as a table.
@@ -372,6 +386,7 @@ class DataStore:
             step_number: Which step created this table
             description: Human-readable description
             role_id: Role that created this table (provenance)
+            dq_constraints: DQ constraint expressions declared by step code-gen
         """
         # Cannot save DataFrame with no columns - would generate invalid SQL
         if len(df.columns) == 0:
@@ -404,18 +419,29 @@ class DataStore:
         df.to_sql(name, self.engine, if_exists="replace", index=False)
 
         # Update registry
-        self._upsert(
-            "_constat_table_registry",
-            "table_name",
-            name,
-            {
-                "step_number": step_number,
-                "row_count": len(df),
-                "description": description,
-                "role_id": role_id,
-                "version": new_version,
-            }
-        )
+        registry_data: dict = {
+            "step_number": step_number,
+            "row_count": len(df),
+            "description": description,
+            "role_id": role_id,
+            "version": new_version,
+        }
+        if dq_constraints is not None:
+            registry_data["dq_constraints"] = json.dumps(dq_constraints, default=self._json_serializer)
+        self._upsert("_constat_table_registry", "table_name", name, registry_data)
+
+    def save_dq_results(self, name: str, results: list[dict]) -> None:
+        """Persist DQ constraint results alongside a registered table.
+
+        Args:
+            name: Table name (must already be registered)
+            results: List of {constraint, passed, value} dicts
+        """
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("UPDATE _constat_table_registry SET dq_results = :r WHERE table_name = :n"),
+                {"r": json.dumps(results, default=self._json_serializer), "n": name},
+            )
 
     def load_dataframe(self, name: str) -> Optional[pd.DataFrame]:
         """
@@ -543,7 +569,8 @@ class DataStore:
         """
         with self.engine.connect() as conn:
             rows = conn.execute(text("""
-                SELECT table_name, step_number, row_count, created_at, description, role_id, version
+                SELECT table_name, step_number, row_count, created_at, description, role_id, version,
+                       dq_constraints, dq_results
                 FROM _constat_table_registry
                 ORDER BY step_number, table_name
             """)).fetchall()
@@ -551,11 +578,12 @@ class DataStore:
         results = []
         for row in rows:
             table_name = row[0]
-            # Skip versioned backup tables
             if self._VERSION_BACKUP_PATTERN.match(table_name):
                 continue
             version = row[6] or 1
-            results.append({
+            dq_constraints = json.loads(row[7]) if row[7] else None
+            dq_results = json.loads(row[8]) if row[8] else None
+            entry: dict = {
                 "name": table_name,
                 "step_number": row[1],
                 "row_count": row[2],
@@ -563,8 +591,14 @@ class DataStore:
                 "description": row[4],
                 "role_id": row[5],
                 "version": version,
-                "version_count": version,  # version N means N versions exist (1..N)
-            })
+                "version_count": version,
+            }
+            if dq_constraints is not None:
+                entry["dq_constraints"] = dq_constraints
+            if dq_results is not None:
+                entry["dq_results"] = dq_results
+                entry["dq_passed"] = all(r.get("passed", False) for r in dq_results)
+            results.append(entry)
         return results
 
     def get_table_versions(self, name: str) -> list[dict]:

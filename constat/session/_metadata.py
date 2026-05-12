@@ -358,21 +358,9 @@ class MetadataMixin:
             logger.debug("Entities already extracted for this session")
             return 0
 
-        t0 = time.time()
-        schema_terms = list(self.schema_manager.get_entity_names())
-        api_terms = list(self._get_api_entity_names())
-
-        entity_count = self.doc_tools._vector_store.extract_entities_for_session(
-            session_id=self.session_id,
-            domain_ids=domain_ids,
-            schema_terms=schema_terms,
-            api_terms=api_terms,
-        )
-
         # noinspection PyAttributeOutsideInit
         self._entities_extracted = True
-        logger.debug(f"Entity extraction took {time.time() - t0:.2f}s ({entity_count} entities)")
-        return entity_count
+        return 0
 
     def rebuild_entities(self, domain_ids: list[str] | None = None) -> int:
         """Rebuild entity catalog (e.g., when domains change).

@@ -18,12 +18,10 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from constat.core.config import Config, DocumentConfig
-from constat.discovery.entity_extractor import EntityExtractor
 from constat.discovery.models import (
     DocumentChunk,
     LoadedDocument,
 )
-from ._entities import _deduplicate_chunk_links, _extract_links_from_chunks
 from ._chunking import (  # noqa: F401 — re-exported for backward compatibility
     _is_table_line,
     _is_list_line,
@@ -96,6 +94,8 @@ class _CoreMixin:
         self.config = config
         self.allowed_documents = allowed_documents
         self._router = router
+        self._chonk_config = getattr(config, "chonk", None)
+        self._relationship_index = None  # set by caller after schema_manager builds FK triples
         self._loaded_documents: dict[str, LoadedDocument] = {}
 
         # Use shared embedding model loader (may already be loading in background)
@@ -256,8 +256,6 @@ class _CoreMixin:
         # Add to vector store
         self._vector_store.add_chunks(chunks, embeddings, source="document")
 
-        # Extract and store entities
-        self._extract_and_store_entities(chunks, schema_entities)
 
     def embed_entity_values(
         self,
@@ -856,44 +854,6 @@ class _CoreMixin:
         # Index all loaded documents
         self._index_loaded_documents(schema_entities)
 
-    def _extract_and_store_entities(
-        self,
-        chunks: list[DocumentChunk],
-        schema_entities: Optional[list[str]] = None,
-    ) -> None:
-        """Extract entities from chunks and store them using spaCy NER.
-
-        Args:
-            chunks: Document chunks to extract entities from
-            schema_entities: Known schema entity names for matching
-        """
-        # Skip if vector store doesn't support entities
-        if not hasattr(self._vector_store, 'add_entities'):
-            return
-
-        # Create extractor with schema entities and spaCy NER
-        # Use "__document__" as session_id for general document extraction
-        extractor = EntityExtractor(
-            session_id="__document__",
-            schema_terms=schema_entities,
-            api_terms=self._collect_api_terms(),
-            stop_list=self._stop_list,
-        )
-
-        # Extract entities from each chunk
-        all_links = _extract_links_from_chunks(extractor, chunks)
-
-        # Store all unique entities (skip those without domain_id — relational store requires it)
-        entities = extractor.get_all_entities()
-        storable = [e for e in entities if e.domain_id]
-        logger.debug(f"Entity extraction: {len(entities)} unique entities ({len(storable)} with domain_id), {len(all_links)} links from {len(chunks)} chunks")
-        if storable:
-            self._vector_store.add_entities(storable, session_id="__document__")
-
-        # Store all chunk-entity links (deduplicated by chunk_id + entity_id)
-        if all_links:
-            self._vector_store.link_chunk_entities(_deduplicate_chunk_links(all_links))
-
     TABLE_CHUNK_LIMIT = CHUNK_SIZE * 4  # 6000 chars — allow oversized but not unbounded
 
     def _index_loaded_doc(
@@ -915,13 +875,6 @@ class _CoreMixin:
             chunks, embeddings, source="document",
             domain_id=domain_id, session_id=session_id,
         )
-        if not skip_entity_extraction:
-            if domain_id:
-                self._extract_and_store_entities_domain(chunks, domain_id)
-            elif session_id:
-                self._extract_and_store_entities_session(chunks, session_id)
-            else:
-                self._extract_and_store_entities(chunks, self._schema_entities)
         return len(chunks)
 
     def _index_loaded_docs_batch(
@@ -971,14 +924,6 @@ class _CoreMixin:
             all_chunks, embeddings, source="document",
             domain_id=domain_id, session_id=session_id,
         )
-
-        if not skip_entity_extraction:
-            if domain_id:
-                self._extract_and_store_entities_domain(all_chunks, domain_id)
-            elif session_id:
-                self._extract_and_store_entities_session(all_chunks, session_id)
-            else:
-                self._extract_and_store_entities(all_chunks, self._schema_entities)
 
         return len(all_chunks)
 

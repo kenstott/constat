@@ -20,6 +20,15 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 
+class PlanError(Exception):
+    """Raised by step code when the goal is structurally impossible.
+
+    The step LLM raises this when the available data cannot satisfy the step's
+    goal regardless of how the code is written — missing column, empty source,
+    impossible join, etc. Triggers replanning rather than retry.
+    """
+
+
 @dataclass
 class CompileError:
     """Python compilation/syntax error."""
@@ -47,6 +56,7 @@ class ExecutionResult:
     stderr: str = ""
     compile_error: Optional[CompileError] = None
     runtime_error: Optional[ExecutionRuntimeError] = None
+    plan_error: Optional[str] = None  # Step raised PlanError — replan, don't retry
     return_value: Any = None
     namespace: Optional[dict] = None  # Variables after execution (for auto-saving)
 
@@ -183,6 +193,14 @@ class PythonExecutor:
                 namespace=exec_globals,  # Return namespace for auto-saving
             )
 
+        except PlanError as e:
+            return ExecutionResult(
+                success=False,
+                stdout=stdout_capture.getvalue(),
+                stderr=stderr_capture.getvalue(),
+                plan_error=str(e),
+            )
+
         except SystemExit:
             # LLM generated code that calls exit() - treat as error, don't crash server
             return ExecutionResult(
@@ -208,6 +226,110 @@ class PythonExecutor:
                     traceback=tb,
                 ),
             )
+
+
+def _error_fingerprint(error: str) -> tuple[str, str]:
+    """Extract (exception_type, key_term) from an error string."""
+    import re
+    # Exception type: first word before colon or space
+    type_match = re.match(r'([A-Za-z]+(?:Error|Exception|Warning))', error)
+    exc_type = type_match.group(1) if type_match else "Error"
+    # Key term: quoted name, column ref, or 'not defined' variable
+    term_match = re.search(r"['\"]([^'\"]{1,60})['\"]", error)
+    key_term = term_match.group(1) if term_match else ""
+    return exc_type, key_term
+
+
+def detect_structural_failure(
+    error_history: list[tuple[str, str]],
+    threshold: int = 3,
+) -> str | None:
+    """Return a plan-error reason if the same root cause repeats across model escalations.
+
+    Each entry is (error_text, model_id). Detection requires:
+    - Same fingerprint appearing >= threshold times, AND
+    - At least 2 distinct models have produced that fingerprint (ruling out
+      a single model being stuck at wrong temperature or insufficient training).
+
+    A single model repeating the same error triggers escalation but not PlanError.
+    The same error surviving escalation to a different model is structural.
+    """
+    if len(error_history) < threshold:
+        return None
+
+    recent = error_history[-threshold:]
+    fingerprints = [_error_fingerprint(err) for err, _ in recent]
+
+    if len(set(fingerprints)) != 1:
+        return None
+
+    models_seen = {model for _, model in recent}
+    if len(models_seen) < 2:
+        return None  # All from same model — escalate first, don't give up yet
+
+    exc_type, key_term = fingerprints[0]
+    term_desc = f" ('{key_term}')" if key_term else ""
+    return (
+        f"Repeated {exc_type}{term_desc} across {threshold} attempts on "
+        f"{len(models_seen)} different models — structural failure, not a model or code problem"
+    )
+
+
+def build_input_guard(expected_inputs: list[str], available_tables: set[str]) -> str:
+    """Build a preamble that asserts each expected input exists and is non-empty.
+
+    Only guards inputs that are known store tables — skips scalars/state keys
+    that aren't in the table registry.
+    """
+    table_inputs = [name for name in expected_inputs if name in available_tables]
+    if not table_inputs:
+        return ""
+
+    lines = ["# --- input existence guard (framework-injected) ---"]
+    for name in table_inputs:
+        lines.append(f"_guard_{name} = store.load_dataframe({name!r})")
+        lines.append(f"if _guard_{name} is None: raise AssertionError('Required input missing: {name}')")
+        lines.append(f"if len(_guard_{name}) == 0: raise AssertionError('Required input is empty: {name}')")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def parse_dq_annotations(code: str) -> dict[str, list[str]]:
+    """Extract @dq annotations from generated code.
+
+    Syntax: # @dq[table_name]: <expression>
+    Example: # @dq[orders]: len(df) > 0
+
+    Returns {table_name: [expr, ...]}
+    """
+    import re
+    pattern = re.compile(r'#\s*@dq\[(\w+)\]:\s*(.+)')
+    result: dict[str, list[str]] = {}
+    for line in code.splitlines():
+        m = pattern.match(line.strip())
+        if m:
+            table, expr = m.group(1), m.group(2).strip()
+            result.setdefault(table, []).append(expr)
+    return result
+
+
+def run_dq_constraints(
+    constraints: list[str],
+    table_name: str,
+    exec_globals: dict,
+) -> list[dict]:
+    """Evaluate DQ constraint expressions and return results.
+
+    Each result: {constraint, passed, value, error}
+    """
+    results = []
+    for expr in constraints:
+        try:
+            value = eval(expr, exec_globals)  # noqa: S307 — expressions are LLM-generated, sandboxed
+            results.append({"constraint": expr, "passed": bool(value), "value": value})
+        except Exception as e:
+            results.append({"constraint": expr, "passed": False, "error": str(e)})
+    return results
 
 
 def format_error_for_retry(result: ExecutionResult, code: str) -> str:

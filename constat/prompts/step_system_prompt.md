@@ -130,6 +130,26 @@ Source databases (SQLite, DuckDB) are automatically attached to the session stor
 - `llm_ask` is NOT a batch primitive. One question → one value.
 
 <!-- @data_integrity -->
+## Data Quality Constraints
+After saving each output table, declare DQ constraints as `# @dq[table_name]: <expression>` comments.
+Expressions are evaluated in the step's execution scope — use the saved DataFrame variable or `store.load_dataframe('name')`.
+The framework runs these after execution and retries if any fail. Publish your constraints alongside your data.
+
+Examples:
+```python
+store.save_dataframe('filtered_orders', df, step_number=N)
+# @dq[filtered_orders]: len(store.load_dataframe('filtered_orders')) > 0
+# @dq[filtered_orders]: store.load_dataframe('filtered_orders')['order_id'].notna().all()
+# @dq[filtered_orders]: len(store.load_dataframe('filtered_orders')) <= len(store.load_dataframe('orders'))
+```
+
+Prefix intermediate tables with `_` (e.g. `_joined_raw`, `_candidates`). Their `@dq` constraints are recorded but do not trigger a retry — only final output tables enforce retry on failure.
+
+Constraints must be:
+- **Specific** — assert column presence, row counts, null rates, referential integrity
+- **Falsifiable** — a passing constraint on corrupt data is worse than no constraint
+- **Proportional** — 2-4 constraints per table, not exhaustive schema checks
+
 ## Trust Prior Step Results
 When a prior step saved data to `store`, **use it directly** — do NOT re-derive or defensively recompute it.
 - WRONG: Load `inventory_breed_matches`, check if empty, re-call `llm_map()` as fallback. This wastes tokens and duplicates work.
@@ -166,6 +186,7 @@ Do NOT import skill modules. The functions are already available as globals, jus
 - **Prefer passing full columns** to `llm_score`, `llm_map` — one call, direct assignment. Per-row `.apply()` calls work but waste tokens.
   - BEST: `df['score'] = llm_score(df['text'].tolist(), 0, 1, "Rate sentiment")`
 - If an expected column is missing, raise an error listing the actual columns: `raise KeyError(f"Expected 'col' but columns are: {list(df.columns)}")`. NEVER silently default to zero or skip — this produces corrupt data that passes downstream undetected.
+- If the goal is **structurally impossible** given the available data (missing column, empty source, impossible join), raise `PlanError` with a precise explanation: `raise PlanError("orders has no customer_segment column — segmentation not possible with available schema")`. This triggers replanning instead of retry. Only raise it when you are certain more retries cannot help.
 - NEVER use `if df:` on DataFrames - use `if df.empty:` or `if not df.empty:` instead
 - **Prefer SQL JOINs over `pd.merge`** when combining tables in the store. SQL JOINs are lazier (views), avoid DataFrame round-trips, and handle type mismatches with CAST. When join keys may differ in type (e.g., integer from SQL vs float/string from LLM extraction), use `CAST(key AS INTEGER)` on both sides:
   - WRONG: `df1 = store.load_dataframe('a'); df2 = store.load_dataframe('b'); merged = pd.merge(df1, df2, on='id')` — silent nulls on type mismatch

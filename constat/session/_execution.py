@@ -893,6 +893,8 @@ class ExecutionMixin:
         escalation_threshold = 2
         runtime_failures = 0  # Track consecutive runtime failures for escalation
         skip_models = 0  # How many models to skip in the routing chain
+        error_history: list[tuple[str, str]] = []  # (error, model) for structural failure detection
+        plan_error_reason: str | None = None
 
         for attempt in range(1, max_attempts + 1):
             # Emit detailed generating event
@@ -1024,14 +1026,30 @@ class ExecutionMixin:
 
             # Execute
             exec_globals = self._get_execution_globals()
+            from constat.execution.executor import PlanError as _PlanError
+            exec_globals['PlanError'] = _PlanError
             # ask_user available in all steps — returns cached value from store
             # if it exists, only asks the user if no cached value is found
             exec_globals['ask_user'] = self._make_ask_user(step.number)
             # Set current step number on viz helper so artifacts get correct step attribution
             if 'viz' in exec_globals and hasattr(exec_globals['viz'], 'step_number'):
                 exec_globals['viz'].step_number = step.number
+
+            # Prepend input existence guard
+            if step.expected_inputs and self.datastore:
+                from constat.execution.executor import build_input_guard
+                guard = build_input_guard(step.expected_inputs, tables_before)
+                if guard:
+                    code = guard + code
+
             result = self.executor.execute(code, exec_globals)
             logger.debug(f"[Step {step.number}] Execution result (attempt {attempt}): success={result.success}, error={result.error_message()[:200] if not result.success else 'none'}")
+
+            # PlanError — step says goal is structurally impossible, skip retry
+            if result.plan_error:
+                plan_error_reason = result.plan_error
+                logger.warning(f"[Step {step.number}] PlanError: {plan_error_reason}")
+                break
 
             # Auto-save any DataFrames or lists created during execution
             if result.success and self.datastore:
@@ -1051,6 +1069,34 @@ class ExecutionMixin:
             # Record output artifact after execution
             if self.datastore and result.stdout:
                 self.datastore.add_artifact(step.number, attempt, "output", result.stdout, role_id=self._current_agent_id)
+
+            # Run and persist DQ constraints
+            dq_failure: str | None = None
+            if result.success and self.datastore:
+                from constat.execution.executor import parse_dq_annotations, run_dq_constraints
+                dq_map = parse_dq_annotations(code)
+                for table_name, constraints in dq_map.items():
+                    dq_results = run_dq_constraints(constraints, table_name, result.namespace or {})
+                    self.datastore.save_dq_results(table_name, dq_results)
+                    is_intermediate = table_name.startswith("_")
+                    failed = [r for r in dq_results if not r.get("passed")]
+                    if failed and not is_intermediate and dq_failure is None:
+                        lines = [f"DQ constraint failed on '{table_name}':"]
+                        for r in failed:
+                            lines.append(f"  {r['constraint']} → {r.get('error') or r.get('value')}")
+                        dq_failure = "\n".join(lines)
+                    elif failed and is_intermediate:
+                        logger.warning(f"[Step {step.number}] DQ warning on intermediate '{table_name}': {[r['constraint'] for r in failed]}")
+
+            if result.success and dq_failure:
+                last_code = code
+                last_error = (
+                    f"Code executed without errors, but data quality constraints failed.\n"
+                    f"{dq_failure}\n"
+                    "Fix the transform so all @dq constraints pass."
+                )
+                pending_learning_context = None
+                continue
 
             if result.success:
                 duration_ms = int((time.time() - start_time) * 1000)
@@ -1196,6 +1242,16 @@ class ExecutionMixin:
             last_model = codegen_model
             last_provider = codegen_provider
 
+            # Track error history for structural failure detection
+            raw_error = result.error_message() or ""
+            error_history.append((raw_error, codegen_model or "unknown"))
+            from constat.execution.executor import detect_structural_failure
+            structural_reason = detect_structural_failure(error_history)
+            if structural_reason:
+                plan_error_reason = structural_reason
+                logger.warning(f"[Step {step.number}] Structural failure detected: {structural_reason}")
+                break
+
             # Escalate to next model after repeated runtime failures
             runtime_failures += 1
             if runtime_failures >= escalation_threshold:
@@ -1243,6 +1299,20 @@ class ExecutionMixin:
                     "next_attempt": attempt + 1 if will_retry else None,
                 }
             ))
+
+        # Plan-level failure — structural, not retryable
+        if plan_error_reason:
+            self._emit_event(StepEvent(
+                event_type="step_plan_error",
+                step_number=step.number,
+                data={
+                    "reason": plan_error_reason,
+                    "goal": step.goal,
+                    "attempts": attempt,
+                }
+            ))
+            from constat.execution.executor import PlanError as _PlanError
+            raise _PlanError(f"Step {step.number} ({step.goal!r}): {plan_error_reason}")
 
         # Max retries exceeded - generate suggestions for alternative approaches
         logger.warning(f"[Step {step.number}] Failed after {max_attempts} attempts: {last_error[:200]}")

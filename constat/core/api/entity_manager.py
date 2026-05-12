@@ -23,7 +23,7 @@ scattered across routes and session management code.
 
 import logging
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -39,27 +39,6 @@ class VectorStoreProtocol(Protocol):
         """Clear entities for a specific domain in a session."""
         ...
 
-    def extract_entities_for_session(
-        self,
-        session_id: str,
-        domain_ids: list[str] | None = None,
-        schema_terms: list[str] | None = None,
-        api_terms: list[str] | None = None,
-        business_terms: list[str] | None = None,
-    ) -> int:
-        """Extract entities for all visible chunks in a session."""
-        ...
-
-    def extract_entities_for_domain(
-        self,
-        session_id: str,
-        domain_id: str,
-        schema_terms: list[str] | None = None,
-        api_terms: list[str] | None = None,
-        business_terms: list[str] | None = None,
-    ) -> int:
-        """Extract entities for a specific domain's chunks."""
-        ...
 
 
 @dataclass
@@ -83,105 +62,24 @@ class EntityManager:
     def __init__(
         self,
         vector_store: VectorStoreProtocol,
-        schema_terms_provider: Optional[callable] = None,
-        api_terms_provider: Optional[callable] = None,
+        schema_terms_provider: Optional[Callable] = None,
+        api_terms_provider: Optional[Callable] = None,
     ):
-        """Initialize the entity manager.
-
-        Args:
-            vector_store: Vector store backend for entity storage
-            schema_terms_provider: Callable returning list of schema terms
-            api_terms_provider: Callable returning list of API terms
-        """
         self._vector_store = vector_store
-        self._schema_terms_provider = schema_terms_provider
-        self._api_terms_provider = api_terms_provider
-
-    def _get_schema_terms(self) -> list[str]:
-        """Get current schema terms for NER patterns."""
-        if self._schema_terms_provider:
-            return list(self._schema_terms_provider())
-        return []
-
-    def _get_api_terms(self) -> list[str]:
-        """Get current API terms for NER patterns."""
-        if self._api_terms_provider:
-            return list(self._api_terms_provider())
-        return []
 
     def extract_for_session(
         self,
         session_id: str,
         domain_ids: list[str] | None = None,
     ) -> EntityExtractionResult:
-        """Extract entities for a new session or full refresh.
-
-        Clears existing entities and re-extracts from all visible chunks
-        (base config + active domains).
-
-        Args:
-            session_id: Session ID
-            domain_ids: Active domain IDs to include
-
-        Returns:
-            EntityExtractionResult with extraction stats
-        """
-        try:
-            count = self._vector_store.extract_entities_for_session(
-                session_id=session_id,
-                domain_ids=domain_ids,
-                schema_terms=self._get_schema_terms(),
-                api_terms=self._get_api_terms(),
-            )
-            logger.info(f"Session {session_id}: extracted {count} entities")
-            return EntityExtractionResult(
-                session_id=session_id,
-                entities_added=count,
-                domains_processed=domain_ids,
-            )
-        except Exception as e:
-            logger.exception(f"Error extracting entities for session {session_id}")
-            return EntityExtractionResult(
-                session_id=session_id,
-                error=str(e),
-            )
+        return EntityExtractionResult(session_id=session_id, domains_processed=domain_ids)
 
     def add_domain(
         self,
         session_id: str,
         domain_id: str,
     ) -> EntityExtractionResult:
-        """Incrementally add entities for a newly activated domain.
-
-        Extracts entities from the domain's chunks without clearing
-        existing session entities.
-
-        Args:
-            session_id: Session ID
-            domain_id: Domain ID being activated
-
-        Returns:
-            EntityExtractionResult with extraction stats
-        """
-        try:
-            count = self._vector_store.extract_entities_for_domain(
-                session_id=session_id,
-                domain_id=domain_id,
-                schema_terms=self._get_schema_terms(),
-                api_terms=self._get_api_terms(),
-            )
-            logger.info(f"Session {session_id}: added {count} entities for domain {domain_id}")
-            return EntityExtractionResult(
-                session_id=session_id,
-                entities_added=count,
-                domains_processed=[domain_id],
-            )
-        except Exception as e:
-            logger.exception(f"Error adding entities for domain {domain_id}")
-            return EntityExtractionResult(
-                session_id=session_id,
-                error=str(e),
-            )
+        return EntityExtractionResult(session_id=session_id, domains_processed=[domain_id])
 
     def remove_domain(
         self,

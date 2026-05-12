@@ -451,8 +451,6 @@ def _load_personal_accounts(
                 session_manager._push_event(managed, EventType.SOURCE_INGEST_ERROR, {"name": acct_name, "error": str(e)})
 
         if loaded_any:
-            from constat.discovery.ner_fingerprint import invalidate_ner_fingerprint
-            invalidate_ner_fingerprint(managed.session_id)
             session_manager.refresh_entities_async(managed.session_id)
     except Exception as e:
         logger.warning(f"Failed to load personal accounts for {user_id}: {e}")
@@ -514,8 +512,6 @@ def _index_user_documents(
             session_manager._push_event(managed, EventType.SOURCE_INGEST_ERROR, {"name": doc_name, "error": str(e)})
 
     if indexed_any:
-        from constat.discovery.ner_fingerprint import invalidate_ner_fingerprint
-        invalidate_ner_fingerprint(managed.session_id)
         session_manager.refresh_entities_async(managed.session_id)
 
 
