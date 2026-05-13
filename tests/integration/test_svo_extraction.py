@@ -60,6 +60,16 @@ def svo_extractor():
     if llm_client is None:
         pytest.fail("build_chonk_llm returned None — check provider configuration")
 
+    from constat.storage._chonk_llm import _ConstatLLMClient
+
+    class _LoggingClient(_ConstatLLMClient):
+        def complete(self, prompt: str) -> str:
+            print(f"\n{'='*60}\nRAW INPUT\n{'='*60}\n{prompt}")
+            result = super().complete(prompt)
+            print(f"\n{'='*60}\nRAW OUTPUT\n{'='*60}\n{result}")
+            return result
+
+    llm_client.__class__ = _LoggingClient
     return SVOExtractor(llm=llm_client)
 
 
@@ -133,7 +143,7 @@ class TestSVOExtractEntityAnchored:
                 _SCHEMA_CHUNK, "chunk_ea_1", self._ENTITIES
             )
             triples, descriptions, aliases, rel_descs = result
-            if triples:
+            if triples and descriptions and aliases:
                 break
         print("\n--- entity-anchored triples ---")
         for t in triples:
