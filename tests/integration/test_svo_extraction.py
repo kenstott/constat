@@ -71,6 +71,9 @@ class TestSVOExtractFreeForm:
             result = svo_extractor.extract(_SCHEMA_CHUNK, chunk_id="schema_chunk_1")
             if result:
                 break
+        print("\n--- free-form triples ---")
+        for t in result:
+            print(f"  {t.subject_id} --[{t.verb}]--> {t.object_id}  conf={t.confidence}")
         assert isinstance(result, list), "extract() must return a list"
         assert len(result) > 0, "expected at least one triple from schema text"
 
@@ -132,6 +135,17 @@ class TestSVOExtractEntityAnchored:
             triples, descriptions, aliases, rel_descs = result
             if triples:
                 break
+        print("\n--- entity-anchored triples ---")
+        for t in triples:
+            print(f"  {t.subject_id} --[{t.verb}]--> {t.object_id}  conf={t.confidence}")
+            if t.description:
+                print(f"    → {t.description}")
+        print("--- descriptions ---")
+        for eid, desc in descriptions.items():
+            print(f"  {eid}: {desc}")
+        print("--- aliases ---")
+        for eid, a in aliases.items():
+            print(f"  {eid}: {a}")
         assert isinstance(triples, list)
         assert isinstance(descriptions, dict)
         assert isinstance(aliases, dict)
