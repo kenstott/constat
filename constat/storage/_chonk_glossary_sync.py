@@ -119,14 +119,18 @@ def sync_entity_descriptions_to_glossary(
         if existing and existing.provenance == "human":
             continue
 
+        # Leave definition, aliases, parent_id empty — chonk is authoritative until
+        # a human edits the field (non-empty = human edit) or the term is approved
+        # (approval snapshots chonk values into the term).
         term = GlossaryTerm(
             id=f"chonk_{entity_id}_{session_id}",
             name=name,
             display_name=display_name,
-            definition=description,
+            definition="",
             domain=domain,
-            parent_id=parent_id,
-            parent_verb=parent_verb,
+            parent_id=None,
+            parent_verb="HAS_KIND",
+            aliases=[],
             semantic_type=entity_type,
             status="draft",
             provenance="chonk_llm",

@@ -83,6 +83,7 @@ def _build_term_from_row(
     domain_path_map: dict[str, str],
     source_to_domain: dict[str, str],
     vs,
+    chonk_store=None,
 ) -> GlossaryTermType:
     """Build a GlossaryTermType from a unified glossary row."""
     effective_domain = row.get("domain")
@@ -98,15 +99,35 @@ def _build_term_from_row(
         k: v for k, v in (row.get("tags") or {}).items() if not k.startswith("_")
     }
 
+    # For non-approved chonk_llm terms, read live from chonk for any empty field.
+    # Non-empty field = human edited = term is authoritative.
+    definition = row.get("definition")
+    aliases = row.get("aliases") or []
+    parent_id = row.get("parent_id")
+    if (
+        row.get("provenance") == "chonk_llm"
+        and row.get("status") != "approved"
+        and chonk_store is not None
+    ):
+        name = row["name"]
+        if not definition:
+            descs = chonk_store.get_entity_descriptions([name])
+            definition = descs.get(name, "")
+        if not aliases and hasattr(chonk_store, 'get_entity_aliases'):
+            chonk_aliases = chonk_store.get_entity_aliases([name])
+            aliases = chonk_aliases.get(name, [])
+        if not parent_id and hasattr(chonk_store, 'get_entity_parent'):
+            parent_id = chonk_store.get_entity_parent(name)
+
     return GlossaryTermType(
         name=row["name"],
         display_name=row["display_name"],
-        definition=row.get("definition"),
+        definition=definition,
         domain=effective_domain,
         domain_path=domain_path,
-        parent_id=row.get("parent_id"),
+        parent_id=parent_id,
         parent_verb=row.get("parent_verb") or "HAS_KIND",
-        aliases=row.get("aliases") or [],
+        aliases=aliases,
         semantic_type=row.get("semantic_type"),
         ner_type=row.get("ner_type"),
         cardinality=row.get("cardinality") or "many",
@@ -209,8 +230,9 @@ class Query:
 
             rows = [r for r in rows if _matches(r)]
 
+        chonk_store = getattr(managed.session, '_chonk_store', None)
         terms = [
-            _build_term_from_row(row, user_id, domain_path_map, source_to_domain, vs)
+            _build_term_from_row(row, user_id, domain_path_map, source_to_domain, vs, chonk_store)
             for row in sorted(rows, key=lambda r: r["name"])
         ]
 
@@ -507,6 +529,21 @@ class Mutation:
         if existing.provenance == "llm" and updates:
             updates["provenance"] = "hybrid"
 
+        # Approval snapshot: copy chonk's live values into term for any field still empty
+        if input.status == "approved" and existing.provenance == "chonk_llm":
+            chonk_store = getattr(managed.session, '_chonk_store', None)
+            if chonk_store:
+                descs = chonk_store.get_entity_descriptions([name])
+                if not existing.definition and "definition" not in updates:
+                    updates.setdefault("definition", descs.get(name, ""))
+                chonk_aliases = chonk_store.get_entity_aliases([name]) if hasattr(chonk_store, 'get_entity_aliases') else {}
+                if not existing.aliases and "aliases" not in updates:
+                    updates.setdefault("aliases", chonk_aliases.get(name, []))
+                if not existing.parent_id and "parent_id" not in updates:
+                    chonk_parent = chonk_store.get_entity_parent(name) if hasattr(chonk_store, 'get_entity_parent') else None
+                    if chonk_parent:
+                        updates.setdefault("parent_id", chonk_parent)
+
         if not updates:
             raise ValueError("No fields to update")
 
@@ -542,7 +579,8 @@ class Mutation:
             "canonical_source": updates.get("canonical_source", existing.canonical_source),
             "tags": merged_tags,
         }
-        term_type = _build_term_from_row(row, managed.user_id, domain_path_map, source_to_domain, vs)
+        chonk_store = getattr(managed.session, '_chonk_store', None)
+        term_type = _build_term_from_row(row, managed.user_id, domain_path_map, source_to_domain, vs, chonk_store)
         _publish(info, session_id, GlossaryChangeAction.UPDATED, name, term_type)
         return term_type
 
@@ -777,7 +815,8 @@ class Mutation:
                 "canonical_source": term.canonical_source, "tags": term.tags,
                 "ner_type": None,
             }
-            term_type = _build_term_from_row(row, managed.user_id, domain_path_map, source_to_domain, vs)
+            chonk_store = getattr(managed.session, '_chonk_store', None)
+            term_type = _build_term_from_row(row, managed.user_id, domain_path_map, source_to_domain, vs, chonk_store)
             _publish(info, session_id, GlossaryChangeAction.UPDATED, name, term_type)
         return RefineResultType(name=result["name"], before=result["before"], after=result["after"])
 
