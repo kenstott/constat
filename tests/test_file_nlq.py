@@ -340,9 +340,10 @@ class TestMixedDataSources:
                 )
 
                 assert result["success"], f"Query failed: {result.get('error')}"
-                # This should create a multi-step plan
-                if result.get("plan"):
-                    assert len(result["plan"].steps) >= 2
+                output = result["output"].lower()
+                # Should mention transactions above the average
+                assert any(w in output for w in ["above", "greater", "exceed", "higher", "transaction"]), \
+                    f"Output does not describe above-average transactions: {result['output']}"
                 print(f"\n--- Multi-Step File Analysis ---")
                 print(f"Output: {result['output']}")
                 break

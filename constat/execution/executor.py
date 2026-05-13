@@ -399,6 +399,15 @@ def _get_prescriptive_fix(error_text: str, _code: str) -> str:
                 f"The 'db_<name>' syntax is only for Python variable access, not for SQL schema prefixes. "
                 f"REPLACE 'db_{correct_prefix}.' with '{correct_prefix}.' in all SQL strings."
             )
+        # File-source: LLM used name.name instead of just name (file registered as plain view)
+        match2 = re.search(r"schema \"(\w+)\" does not exist", error_text, re.IGNORECASE)
+        if match2:
+            schema_name = match2.group(1)
+            return (
+                f"WRONG table reference. '{schema_name}' is a file-based source registered as a flat view, not a schema. "
+                f"Use just '{schema_name}' (NOT '{schema_name}.{schema_name}'). "
+                f"Correct SQL: SELECT ... FROM {schema_name} ..."
+            )
 
     # Schema prefix errors (pd.read_sql can't handle federated schema prefixes)
     if "no such table" in error_lower and "." in error_text:
