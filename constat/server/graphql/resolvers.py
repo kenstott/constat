@@ -104,6 +104,7 @@ def _build_term_from_row(
     definition = row.get("definition")
     aliases = row.get("aliases") or []
     parent_id = row.get("parent_id")
+    parent_verb = row.get("parent_verb") or "HAS_KIND"
     if (
         row.get("provenance") == "chonk_llm"
         and row.get("status") != "approved"
@@ -131,7 +132,7 @@ def _build_term_from_row(
         domain=effective_domain,
         domain_path=domain_path,
         parent_id=parent_id,
-        parent_verb=row.get("parent_verb") or "HAS_KIND",
+        parent_verb=parent_verb,
         aliases=aliases,
         semantic_type=row.get("semantic_type"),
         ner_type=row.get("ner_type"),
