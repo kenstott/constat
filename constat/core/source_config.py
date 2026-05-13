@@ -148,6 +148,14 @@ class DatabaseConfig(BaseModel):
     # Supports local paths, s3://, https://, etc.
     path: Optional[str] = None
 
+    # JDBC (via JayDeBeApi)
+    jdbc_driver: Optional[str] = None
+    jdbc_url: Optional[str] = None
+    jar_path: Optional[str | list[str]] = None
+
+    def is_jdbc(self) -> bool:
+        return self.type == "jdbc"
+
     def get_connection_uri(self, config_dir: Optional[str] = None) -> str:
         """
         Get the connection URI with credentials applied.
@@ -528,3 +536,131 @@ class APIConfig(BaseModel):
 
     # Glossary generation gating
     generate_definitions: Union[bool, float, str] = True  # True/False/float threshold/"auto"
+
+
+class ChonkModelSpec(BaseModel):
+    """Model specification for a single chonk feature.
+
+    Falls back to config.llm when omitted. Mirrors ModelSpec in config.py but is
+    self-contained in source_config to avoid circular imports.
+    """
+    model: str
+    provider: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    max_tokens: Optional[int] = None
+
+
+class ChonkConfig(BaseModel):
+    """Optional chonk feature flags and per-feature model overrides.
+
+    search_mode:
+      "auto"         — pick graph_first if relationship_index available, else vector_first
+      "vector_first" — standard vector→entity→MMR pipeline
+      "graph_first"  — NER → RelationshipIndex → entity chunks → vector augment (requires DB schema)
+      "global"       — community_summary chunks only (requires community_summaries=True)
+
+    graph_first and global modes degrade gracefully to vector_first when prerequisites
+    are absent (no relationship_index, no community chunks).
+
+    Per-feature model overrides:
+      ner_model          — spaCy model name for NerPipeline (e.g. "en_core_web_lg")
+      community_llm      — LLM for CommunitySummarizer (falls back to config.llm)
+      svo_llm            — LLM for SVOExtractor (falls back to config.llm)
+      answer_llm         — LLM for AnswerGenerator (falls back to config.llm)
+      embed_model        — sentence-transformers model for chunk embedding
+    """
+    search_mode: str = "auto"
+    entity_expansion: bool = True
+    community_summaries: bool = False
+    lane_entity_min_sim: Optional[float] = None
+
+    # Path to a chonk.toml config file (relative to config.yaml or absolute)
+    toml_path: Optional[str] = None
+
+    # Per-feature model specs
+    ner_model: str = "en_core_web_sm"
+    community_llm: Optional[ChonkModelSpec] = None
+    svo_llm: Optional[ChonkModelSpec] = None
+    answer_llm: Optional[ChonkModelSpec] = None
+    embed_model: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# chonk.toml models — parsed from a separate TOML asset (e.g. demo/chonk.toml)
+# ---------------------------------------------------------------------------
+
+class ChonkVocabEntry(BaseModel):
+    """One entry under [[vocab.entities]] in chonk.toml."""
+    type: str                          # "static" | "db_query"
+    entity_type: str
+    domain: Optional[str] = None       # constat domain_id; None = all domains
+    # static:
+    names: list[str] = []
+    # db_query:
+    connection: Optional[str] = None
+    sql: Optional[str] = None
+
+
+class ChonkIndexFeatures(BaseModel):
+    """Feature flags under [index.features] in chonk.toml."""
+    ner: bool = True
+    schema_vocab: bool = True
+    community: bool = False
+    svo: bool = False
+
+
+class ChonkRetrieval(BaseModel):
+    """Retrieval defaults under [retrieval] in chonk.toml."""
+    search_mode: str = "auto"
+    lane_entity_min_sim: Optional[float] = None
+    entity_ref_expansion: bool = False
+    cluster: bool = False
+
+
+class ChonkLLMOverride(BaseModel):
+    """One LLM override under [llm.*] in chonk.toml."""
+    provider: Optional[str] = None
+    model: str
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    max_tokens: Optional[int] = None
+
+
+class ChonkLLMOverrides(BaseModel):
+    """All LLM overrides under [llm] in chonk.toml."""
+    svo: Optional[ChonkLLMOverride] = None
+    community: Optional[ChonkLLMOverride] = None
+    answer: Optional[ChonkLLMOverride] = None
+
+
+class ChonkIndex(BaseModel):
+    """Settings under [index] in chonk.toml."""
+    spacy_model: str = "en_core_web_sm"
+    features: ChonkIndexFeatures = Field(default_factory=ChonkIndexFeatures)
+
+
+class ChonkTomlConfig(BaseModel):
+    """Top-level model for demo/chonk.toml.
+
+    Load via ``ChonkTomlConfig.from_toml(path)``.
+    """
+    index: ChonkIndex = Field(default_factory=ChonkIndex)
+    retrieval: ChonkRetrieval = Field(default_factory=ChonkRetrieval)
+    llm: ChonkLLMOverrides = Field(default_factory=ChonkLLMOverrides)
+    vocab: dict = Field(default_factory=dict)  # raw; .vocab_entries() parses it
+
+    @classmethod
+    def from_toml(cls, path: "str | Path") -> "ChonkTomlConfig":
+        import tomllib
+        from pathlib import Path as _Path
+        with open(_Path(path), "rb") as f:
+            raw = tomllib.load(f)
+        vocab_raw = raw.pop("vocab", {})
+        obj = cls.model_validate(raw)
+        obj.vocab = vocab_raw
+        return obj
+
+    def vocab_entries(self) -> "list[ChonkVocabEntry]":
+        entries = self.vocab.get("entities", [])
+        return [ChonkVocabEntry.model_validate(e) for e in entries]

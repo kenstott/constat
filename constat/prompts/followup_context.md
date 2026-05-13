@@ -18,5 +18,6 @@ Available state variables:
 - **ENHANCE = UPDATE SOURCE**: "enhance X", "add column to X", "enrich X" → the plan MUST end with a step that saves the updated X. Intermediate mapping/lookup tables are not the deliverable.
 - **WRONG**: Step says "Query customers and orders from database" when `recent_orders` already exists above.
 - **RIGHT**: Step says "Load recent_orders from store and enrich with additional data"
+- Tables annotated with `— from: "..."` show which prior question produced them. If the follow-up question is about a different subject, **ignore tables from unrelated prior questions** and query the database directly instead.
 
 Follow-up question: {question}

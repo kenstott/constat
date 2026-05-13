@@ -3595,6 +3595,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
 
   const [showConfirm, setShowConfirm] = useState(false)
   const [taxonomyPhases, setTaxonomyPhases] = useState<Record<string, boolean>>({
+    chonk_enrich: false,
     early_relationships: true,
     definitions: true,
     late_relationships: true,
@@ -3944,6 +3945,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
             </p>
             <div className="space-y-2">
               {([
+                { key: 'chonk_enrich', label: 'Knowledge Graph', desc: 'Extract SVO relationships, entity descriptions, and aliases (requires LLM)' },
                 { key: 'early_relationships', label: 'Early Relationships', desc: 'Extract text-driven relationships (spaCy + LLM)' },
                 { key: 'definitions', label: 'Definitions', desc: 'Generate definitions and parent/child hierarchy' },
                 { key: 'late_relationships', label: 'Late Relationships', desc: 'Infer glossary-based relationships and deduplicate' },

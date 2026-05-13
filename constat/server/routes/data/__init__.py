@@ -77,8 +77,6 @@ from constat.server.routes.data.entities import router as entities_router
 from constat.server.routes.data.scripts import router as scripts_router
 from constat.server.routes.data.inference import router as inference_router
 from constat.server.routes.data.inference import generate_inference_script, _gather_source_configs
-from constat.server.routes.data.glossary_routes import router as glossary_router
-
 router = APIRouter()
 router.include_router(tables_router)
 router.include_router(artifacts_router)
@@ -86,4 +84,3 @@ router.include_router(facts_router)
 router.include_router(entities_router)
 router.include_router(scripts_router)
 router.include_router(inference_router)
-router.include_router(glossary_router)

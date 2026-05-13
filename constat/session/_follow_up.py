@@ -328,9 +328,25 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         existing_scratchpad = self.datastore.get_scratchpad()
         next_step_number = max((e["step_number"] for e in existing_scratchpad), default=0) + 1
 
+        # Build step→query map so table provenance is visible to the planner.
+        # This lets the planner ignore tables from unrelated prior objectives
+        # without needing a separate topic-shift classifier.
+        step_to_query: dict[int, str] = {
+            e["step_number"]: e["user_query"]
+            for e in existing_scratchpad
+            if e.get("user_query")
+        }
+
         # Generate a plan for the follow-up, providing context
+        def _table_line(t: dict) -> str:
+            base = f'  - `{t["name"]}`: {t.get("row_count", "?")} rows'
+            query = step_to_query.get(t.get("step_number"))
+            if query:
+                base += f' — from: "{query}"'
+            return base
+
         existing_tables_list = (
-            chr(10).join(f'  - `{t["name"]}`: {t.get("row_count", "?")} rows (step {t.get("step_number", "?")})' for t in existing_tables)
+            chr(10).join(_table_line(t) for t in existing_tables)
             if existing_tables else '(none)'
         )
         first_table_name = existing_tables[0]["name"] if existing_tables else "final_answer"

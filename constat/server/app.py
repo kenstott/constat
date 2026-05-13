@@ -45,144 +45,15 @@ from constat.server.routes.queries import shutdown_executor_async
 logger = logging.getLogger(__name__)
 
 
-def _compute_config_hash(data: dict) -> str:
-    """Compute a hash for a configuration dict."""
-    import hashlib
-    import json
-    config_json = json.dumps(data, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(config_json.encode()).hexdigest()[:16]
-
-
-# =============================================================================
-# Source-Level Hashing (combined hash for all resources of a type)
-# =============================================================================
-
-def _compute_db_config_hash(databases: dict) -> str:
-    """Compute a combined hash for all database configurations."""
-    db_data = {}
-    if databases:
-        for db_name, db_config in sorted(databases.items()):
-            db_data[db_name] = {
-                "type": db_config.type or "",
-                "uri": db_config.uri or "",
-                "database": db_config.database or "",
-                "path": db_config.path or "",
-                "jdbc_url": getattr(db_config, "jdbc_url", None) or "",
-                "jdbc_driver": getattr(db_config, "jdbc_driver", None) or "",
-            }
-    return _compute_config_hash(db_data)
-
-
-def _compute_api_config_hash(apis: dict) -> str:
-    """Compute a combined hash for all API configurations."""
-    api_data = {}
-    if apis:
-        for api_name, api_config in sorted(apis.items()):
-            api_data[api_name] = {
-                "type": api_config.type or "",
-                "url": api_config.url or "",
-                "spec_url": api_config.spec_url or "",
-                "spec_path": api_config.spec_path or "",
-            }
-    return _compute_config_hash(api_data)
-
-
-def _compute_doc_config_hash(documents: dict) -> str:
-    """Compute a combined hash for all document configurations."""
-    doc_data = {}
-    if documents:
-        for doc_name, doc_config in sorted(documents.items()):
-            doc_data[doc_name] = {
-                "path": doc_config.path or "",
-                "description": doc_config.description or "",
-                "type": doc_config.type or "",
-            }
-    return _compute_config_hash(doc_data)
-
-
-# =============================================================================
-# Resource-Level Hashing (individual hash per resource for incremental updates)
-# =============================================================================
-
-def _compute_db_resource_hash(db_name: str, db_config) -> str:
-    """Compute a content hash for a single database resource.
-
-    Includes connection config. Schema introspection would be added here
-    for detecting table/column changes.
-    """
-    data = {
-        "name": db_name,
-        "type": db_config.type or "",
-        "uri": db_config.uri or "",
-        "database": db_config.database or "",
-        "path": db_config.path or "",
-    }
-    return _compute_config_hash(data)
-
-
-def _compute_api_resource_hash(api_name: str, api_config) -> str:
-    """Compute a content hash for a single API resource.
-
-    For spec-based APIs, could include spec file hash for change detection.
-    """
-    data = {
-        "name": api_name,
-        "type": api_config.type or "",
-        "url": api_config.url or "",
-        "spec_url": api_config.spec_url or "",
-        "spec_path": api_config.spec_path or "",
-    }
-    return _compute_config_hash(data)
-
-
-def _compute_er_config_hash(entity_resolution: list, apis: dict | None = None) -> str:
-    """Compute a combined hash for entity resolution configuration."""
-    data = {}
-    for i, cfg in enumerate(entity_resolution):
-        data[f"er_{i}"] = {
-            "entity_type": cfg.entity_type, "source": cfg.source,
-            "table": cfg.table, "query": cfg.query, "endpoint": cfg.endpoint,
-            "items_path": cfg.items_path, "name_field": cfg.name_field,
-            "values": sorted(cfg.values) if cfg.values else None,
-            "max_values": cfg.max_values,
-        }
-    if apis:
-        for name, api_cfg in sorted(apis.items()):
-            data[f"api_{name}"] = {"type": getattr(api_cfg, 'type', ''), "url": getattr(api_cfg, 'url', '')}
-    return _compute_config_hash(data)
-
-
-def _compute_doc_resource_hash(doc_name: str, doc_config, config_dir: str | None) -> str:
-    """Compute a content hash for a single document resource.
-
-    Includes file modification time for fast change detection.
-    """
-    import os
-    from pathlib import Path
-
-    data = {
-        "name": doc_name,
-        "path": doc_config.path or "",
-        "url": doc_config.url or "",
-        "description": doc_config.description or "",
-        "type": doc_config.type or "",
-    }
-
-    # Add file mtime for change detection
-    if doc_config.path:
-        doc_path = Path(doc_config.path)
-        if not doc_path.is_absolute() and config_dir:
-            doc_path = (Path(config_dir) / doc_config.path).resolve()
-
-        if doc_path.exists():
-            try:
-                stat = os.stat(doc_path)
-                data["mtime"] = stat.st_mtime
-                data["size"] = stat.st_size
-            except OSError:
-                pass
-
-    return _compute_config_hash(data)
+from constat.server._warmup_hashes import (
+    compute_db_config_hash as _compute_db_config_hash,
+    compute_api_config_hash as _compute_api_config_hash,
+    compute_doc_config_hash as _compute_doc_config_hash,
+    compute_db_resource_hash as _compute_db_resource_hash,
+    compute_api_resource_hash as _compute_api_resource_hash,
+    compute_er_config_hash as _compute_er_config_hash,
+    compute_doc_resource_hash as _compute_doc_resource_hash,
+)
 
 
 def _warmup_vector_store(config: Config) -> None:
@@ -207,6 +78,11 @@ def _warmup_vector_store(config: Config) -> None:
     doc_tools = DocumentDiscoveryTools(config, skip_auto_index=True, router=router)
     vector_store = doc_tools._vector_store
 
+    # Accumulate FK relationship triples from all schema managers built during warmup.
+    # Used for graph_first search mode when available.
+    from chonk.graph import RelationshipIndex as _RelIdx
+    _merged_rel_idx = _RelIdx()
+
     # === BASE CONFIG ===
     source_id = "__base__"
 
@@ -221,6 +97,10 @@ def _warmup_vector_store(config: Config) -> None:
             logger.info(f"  Base databases: building chunks...")
             schema_manager = SchemaManager(config)
             schema_manager.build_chunks(domain_id="__base__", vector_store=vector_store)
+            for triples in schema_manager.relationship_index._by_subject.values():
+                for ts in triples.values():
+                    for t in ts:
+                        _merged_rel_idx.add(t)
             vector_store.set_source_hash(source_id, 'db', db_hash)
             logger.info(f"  Base databases: {len(config.databases)} indexed")
 
@@ -257,6 +137,10 @@ def _warmup_vector_store(config: Config) -> None:
                 )
                 domain_schema_manager = SchemaManager(domain_config)
                 domain_schema_manager.build_chunks(domain_id=domain_name, vector_store=vector_store)
+                for triples in domain_schema_manager.relationship_index._by_subject.values():
+                    for ts in triples.values():
+                        for t in ts:
+                            _merged_rel_idx.add(t)
                 vector_store.set_source_hash(source_id, 'db', db_hash)
                 logger.info(f"  Domain {domain_name} databases: {len(domain.databases)} indexed")
 
@@ -545,7 +429,15 @@ def _warmup_vector_store(config: Config) -> None:
         else:
             logger.info(f"  Domain {domain_name} entity resolution: unchanged, skipping")
 
+    # Wire merged FK relationship index into doc_tools for graph_first search mode.
+    if _merged_rel_idx._by_subject:
+        doc_tools._relationship_index = _merged_rel_idx
+        logger.info(f"  Relationship index: {len(_merged_rel_idx._by_subject)} subjects wired for graph_first mode")
+
     logger.info("  Pre-indexing complete")
+
+    from constat.server._chonk_warmup import warmup_chonk_index
+    warmup_chonk_index(config)
 
 
 async def _shutdown_tasks(session_manager) -> None:

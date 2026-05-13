@@ -59,7 +59,7 @@ dependencies = [
     # JSON Patch (RFC 6902) for entity cache diffs
     "jsonpatch>=1.33",
     # GraphRAG / document chunking
-    "chonk @ git+https://github.com/kenstott/chonk.git",
+    "chonk @ file://../chunkymonkey",
 ]
 
 [project.optional-dependencies]

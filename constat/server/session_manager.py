@@ -840,163 +840,74 @@ class SessionManager:
                 router.set_user_routing(TaskRoutingConfig(routes=routes))
 
     def _run_entity_extraction(self, session_id: str, session: Session) -> dict | None:
-        """Run NER for session's visible documents.
+        """Sync entities from chonk global store into this session's entity table.
 
-        Creates chunk-entity links scoped to this session's entity catalog.
-
-        Args:
-            session_id: Server session ID for storing links
-            session: Session with doc_tools and schema/api entity info
-
-        Returns:
-            Entity diff dict with added/removed lists, or None
+        Returns entity diff dict with added/removed lists, or None.
         """
-        if not session.doc_tools:
-            logger.debug(f"Session {session_id}: no doc_tools, skipping entity extraction")
-            return
+        from constat.storage._chonk_registry import get_global_store_readonly
+        from constat.storage._chonk_entity_sync import sync_entities_from_chonk
+        from constat.storage._chonk_glossary_sync import sync_entity_descriptions_to_glossary
 
-        # Get domain IDs (config + active) and session database names
-        domain_ids = list(session.config.domains.keys()) if session.config.domains else []
-        session_db_names = []
-        if hasattr(self, '_sessions') and session_id in self._sessions:
-            managed = self._sessions[session_id]
-            # Merge active domains (may include dynamically activated ones)
-            for p in (managed.active_domains or []):
-                if p not in domain_ids:
-                    domain_ids.append(p)
-            # Get names of dynamically added databases (include their columns in entities)
-            session_db_names = [db["name"] for db in managed._dynamic_dbs]
-            # Include user-domain chunks in NER visibility
-            if managed.user_id and managed.user_id not in domain_ids:
-                domain_ids.append(managed.user_id)
+        vector_store = (
+            session.doc_tools._vector_store
+            if session.doc_tools and hasattr(session.doc_tools, '_vector_store')
+            else None
+        )
+        if not vector_store:
+            logger.debug(f"Session {session_id}: no vector_store, skipping entity sync")
+            return None
 
-        # Get session's entity catalog
-        # Include columns only for session-added databases (their columns are meaningful)
-        # Config databases often have generic column names ("id", "name", "date")
-        schema_entities = list(session.schema_manager.get_entity_names(
-            include_columns_for_dbs=session_db_names
-        ))
-        api_entities = list(session._get_api_entity_names())
+        managed = self._sessions.get(session_id)
+        domain_names: list[str] = list(session.config.domains.keys()) if session.config.domains else []
+        if managed:
+            for d in (managed.active_domains or []):
+                if d not in domain_names:
+                    domain_names.append(d)
 
-        # Collect relationship terms from resolved config (already merged from all tiers)
-        from constat.catalog.glossary_builder import get_relationship_terms_for_ner
-        business_terms: list[str] = []
-        resolved = self._sessions[session_id].resolved_config if session_id in self._sessions else None
-        if resolved and resolved.relationships:
-            business_terms.extend(get_relationship_terms_for_ner(resolved.relationships))
-        elif session.config.relationships:
-            business_terms.extend(get_relationship_terms_for_ner(session.config.relationships))
+        chonk_store = get_global_store_readonly()
+        if chonk_store is None:
+            logger.debug(f"Session {session_id}: chonk store not ready, skipping entity sync")
+            return None
 
-        # Build NER stop list from resolved config (already merged from all tiers)
-        stop_words: set[str] = set()
-        if resolved and resolved.ner_stop_list:
-            for w in resolved.ner_stop_list:
-                stop_words.add(w.lower())
-        else:
-            for w in (session.config.ner_stop_list or []):
-                stop_words.add(w.lower())
-        if stop_words:
-            session.doc_tools._stop_list = stop_words
-
-        # Read cached entity resolution names (populated during warmup)
-        entity_terms: dict[str, list[str]] = {}
-        entity_details: dict[str, list[str]] = {}
-        vector_store = session.doc_tools._vector_store if hasattr(session.doc_tools, '_vector_store') else None
-        if vector_store and hasattr(vector_store, 'get_entity_resolution_names'):
-            er_source_ids = ["__base__", "__image_labels__"] + domain_ids
-            entity_terms = vector_store.get_entity_resolution_names(er_source_ids)
-            # Image labels flow as business_terms (TERM patterns), not entity_terms (data patterns)
-            image_labels = entity_terms.pop("LABEL", [])
-            if image_labels:
-                business_terms.extend(image_labels)
-                logger.info(f"Session {session_id}: loaded {len(image_labels)} image labels as business terms")
-            if entity_terms:
-                logger.info(f"Session {session_id}: loaded cached entity resolution: "
-                            f"{', '.join(f'{k}={len(v)}' for k, v in entity_terms.items())}")
-
-        logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business entities, {len(stop_words)} stop words")
-
-        # Fingerprint caching — skip NER if scope unchanged
-        from constat.discovery.ner_fingerprint import compute_ner_fingerprint, should_skip_ner, update_ner_fingerprint
-        chunk_ids = []
-        if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
+        try:
+            old_entities: dict[str, tuple[str, str]] = {}
             try:
-                # Use global-only chunks (session_id IS NULL) for fingerprinting.
-                # Session-scoped chunks differ per session_id, making the fingerprint
-                # unique per session even when the semantic scope is identical.
-                chunk_ids = session.doc_tools._vector_store.get_all_chunk_ids(global_only=True)
+                rows = vector_store._conn.execute(
+                    "SELECT name, display_name, semantic_type FROM entities WHERE session_id = ?",
+                    [session_id],
+                ).fetchall()
+                old_entities = {r[0]: (r[1], r[2]) for r in rows}
             except Exception:
                 pass
-        fingerprint = compute_ner_fingerprint(chunk_ids, schema_entities, api_entities, business_terms, entity_terms=entity_terms)
-        logger.info(f"Session {session_id}: NER fingerprint={fingerprint} ({len(chunk_ids)} chunks, {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business)")
 
-        if should_skip_ner(session_id, fingerprint):
-            # Even when NER is skipped, always rebuild clusters (in-memory state lost on restart)
-            if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
-                vs = session.doc_tools._vector_store
-                if hasattr(vs, '_rebuild_clusters'):
-                    vs._clusters_dirty = True
-                    vs._rebuild_clusters(session_id)
-                    logger.info(f"Session {session_id}: rebuilt clusters (NER skipped)")
-            return
+            count = sync_entities_from_chonk(chonk_store, vector_store, domain_names, session_id)
+            logger.info(f"Session {session_id}: synced {count} entities from chonk")
 
-        # Run entity extraction
-        try:
-            # Snapshot old entities for diff
-            old_entities: dict[str, tuple[str, str]] = {}  # name -> (display_name, semantic_type)
-            if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
-                vs = session.doc_tools._vector_store
-                try:
-                    rows = vs._conn.execute(
-                        "SELECT name, display_name, semantic_type FROM entities WHERE session_id = ?",
-                        [session_id],
-                    ).fetchall()
-                    old_entities = {r[0]: (r[1], r[2]) for r in rows}
-                except Exception:
-                    pass
-
-            logger.info(f"Session {session_id}: running extract_entities_for_session with domain_ids={domain_ids}, {len(schema_entities)} schema entities")
-            if schema_entities:
-                logger.debug(f"Session {session_id}: sample schema_entities: {schema_entities[:10]}")
-            link_count = session.doc_tools.extract_entities_for_session(
-                session_id=session_id,
-                domain_ids=domain_ids,
-                schema_entities=schema_entities,
-                api_entities=api_entities,
-                business_terms=business_terms or None,
-                entity_terms=entity_terms or None,
+            # Sync entity descriptions + hierarchy into glossary
+            uid = managed.user_id if managed else "default"
+            n_synced = sync_entity_descriptions_to_glossary(
+                chonk_store, vector_store, domain_names, session_id, uid,
             )
+            if n_synced:
+                logger.info(f"Session {session_id}: synced {n_synced} chonk descriptions to glossary")
 
-            if link_count and link_count > 0:
-                logger.info(f"Session {session_id}: created {link_count} entity links")
-            else:
-                logger.warning(f"Session {session_id}: NO entity links created (link_count={link_count})")
-            # Cache fingerprint on successful extraction
-            update_ner_fingerprint(session_id, fingerprint)
+            # Rebuild clusters
+            if hasattr(vector_store, '_rebuild_clusters'):
+                vector_store._clusters_dirty = True
+                vector_store._rebuild_clusters(session_id)
 
-            # Rebuild clusters eagerly so they're ready for the glossary panel
-            if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
-                vs = session.doc_tools._vector_store
-                if hasattr(vs, '_rebuild_clusters'):
-                    vs._clusters_dirty = True
-                    vs._rebuild_clusters(session_id)
-                    logger.info(f"Session {session_id}: rebuilt clusters after entity extraction")
-
-            # Compute entity diff
             new_entities: dict[str, tuple[str, str]] = {}
-            if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
-                try:
-                    rows = session.doc_tools._vector_store._conn.execute(
-                        "SELECT name, display_name, semantic_type FROM entities WHERE session_id = ?",
-                        [session_id],
-                    ).fetchall()
-                    new_entities = {r[0]: (r[1], r[2]) for r in rows}
-                except Exception:
-                    pass
+            try:
+                rows = vector_store._conn.execute(
+                    "SELECT name, display_name, semantic_type FROM entities WHERE session_id = ?",
+                    [session_id],
+                ).fetchall()
+                new_entities = {r[0]: (r[1], r[2]) for r in rows}
+            except Exception:
+                pass
 
             added_names = set(new_entities.keys()) - set(old_entities.keys())
             removed_names = set(old_entities.keys()) - set(new_entities.keys())
-
             return {
                 "entities_added": len(added_names),
                 "entities_removed": len(removed_names),
@@ -1012,7 +923,7 @@ class SessionManager:
                 },
             }
         except Exception as e:
-            logger.exception(f"Session {session_id}: entity extraction failed: {e}")
+            logger.exception(f"Session {session_id}: entity sync failed: {e}")
             return None
 
     def refresh_entities(self, session_id: str) -> None:
@@ -1216,6 +1127,10 @@ class SessionManager:
 
             terms = []
 
+            # Chonk enrichment: SVO triples, entity descriptions, aliases (optional)
+            if phases.get("chonk_enrich", False):
+                self._run_chonk_enrich_phase(session_id, managed, vector_store, on_progress=on_progress)
+
             # Early relationships: SVO + LLM before glossary (text-driven discovery)
             if phases.get("early_relationships", True):
                 self._run_early_relationships(session_id, managed, vector_store, on_progress=on_progress)
@@ -1356,6 +1271,71 @@ class SessionManager:
             })
         return on_batch
 
+    def _run_chonk_enrich_phase(
+        self,
+        session_id: str,
+        managed: "ManagedSession",
+        vector_store,
+        on_progress: Callable[[str, int], None] | None = None,
+    ) -> None:
+        """Run chonk SVO extraction, entity descriptions, and alias generation.
+
+        Reads chunks + entity co-occurrences from the global chonk Store, calls
+        SVOExtractor.extract_entity_anchored per chunk, persists triples/descriptions/
+        aliases, then syncs descriptions into constat glossary.
+
+        Skips silently if no chonk Store is available or svo feature is disabled.
+        """
+        from constat.storage._chonk_registry import get_global_store_readonly
+        from constat.server._chonk_warmup import _run_svo_phase
+        from constat.storage._chonk_glossary_sync import sync_entity_descriptions_to_glossary
+
+        chonk_store = get_global_store_readonly()
+        if chonk_store is None:
+            return
+
+        config = managed.session.config if managed.session else None
+        if not config:
+            return
+
+        chonk_cfg = getattr(config, "chonk", None)
+        if not chonk_cfg:
+            return
+
+        if on_progress:
+            on_progress("Extracting SVO relationships", 2)
+
+        conn = chonk_store.vector._conn
+        total_chunks = conn.execute(
+            "SELECT COUNT(DISTINCT e.chunk_id) FROM embeddings e "
+            "JOIN chunk_entities ce ON e.chunk_id = ce.chunk_id"
+        ).fetchone()[0]
+
+        processed = 0
+
+        def _svo_progress(n: int) -> None:
+            nonlocal processed
+            processed = n
+            if on_progress and total_chunks:
+                pct = 2 + int(18 * n / total_chunks)
+                on_progress(f"Extracting SVO relationships ({n}/{total_chunks})", min(pct, 19))
+
+        _run_svo_phase(chonk_store, config, on_progress=_svo_progress)
+
+        if on_progress:
+            on_progress("Syncing entity descriptions", 20)
+
+        active_domains = getattr(managed, "active_domains", []) or []
+        domain_names = [d for d in active_domains if d]
+        if domain_names:
+            sync_entity_descriptions_to_glossary(
+                chonk_store, vector_store, domain_names, session_id,
+                managed.user_id or "default",
+            )
+
+        if on_progress:
+            on_progress("Chonk enrichment complete", 22)
+
     def _run_early_relationships(
         self,
         session_id: str,
@@ -1399,13 +1379,8 @@ class SessionManager:
             on_progress("Extracting text relationships", 7)
         svo_rels = []
         try:
-            from constat.discovery.entity_extractor import get_nlp
             from constat.discovery.relationship_extractor import extract_svo_relationships
-            try:
-                nlp = get_nlp()
-            except Exception as e:
-                logger.debug(f"Session {session_id}: spaCy model not available ({e}), skipping Phase 1 SVO extraction")
-                nlp = None
+            nlp = None  # spaCy NER removed; chonk handles SVO extraction
 
             if nlp:
                 svo_rels = extract_svo_relationships(

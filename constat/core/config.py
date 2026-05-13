@@ -22,6 +22,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from constat.core.source_config import (  # noqa: F401
     APIConfig,
+    ChonkConfig,
+    ChonkModelSpec,
     DatabaseConfig,
     DatabaseCredentials,
     DocumentConfig,
@@ -720,6 +722,9 @@ class Config(BaseModel):
 
     # NER stop list — system-level terms to filter out during entity extraction
     ner_stop_list: list[str] = Field(default_factory=list)
+
+    # chonk feature flags (optional; safe defaults leave existing behaviour unchanged)
+    chonk: ChonkConfig = Field(default_factory=ChonkConfig)
 
     @property
     def projects(self) -> dict[str, DomainConfig]:

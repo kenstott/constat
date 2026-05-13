@@ -709,8 +709,7 @@ class APISchemaManager:
         Returns:
             List of DocumentChunk for endpoints and their fields.
         """
-        from chonk.loader import DocumentLoader
-        from chonk.schema import EndpointMeta as ChonkEndpointMeta, FieldMeta as ChonkFieldMeta
+        from constat.discovery.models import ChunkType
 
         chunks: list[DocumentChunk] = []
         for full_name, meta in endpoints:

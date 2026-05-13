@@ -72,6 +72,11 @@ llm:
            model: claude-sonnet-4-20250514
            timeout_seconds: 120
 
+# chonk integration
+chonk:
+  toml_path: demo/chonk.toml
+  search_mode: auto
+
 # Vector store and clustering
 storage:
   vector_store:

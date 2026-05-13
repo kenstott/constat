@@ -219,6 +219,12 @@ def graphql_client(graphql_app):
     return TestClient(graphql_app)
 
 
+pytest_plugins = [
+    "tests.integration.fixtures_docker_db",
+    "tests.integration.fixtures_docker_ai",
+    "tests.integration.fixtures_docker_search",
+]
+
 # NOTE: pytest_collection_modifyitems hook removed.
 # Previously it silently skipped tests marked requires_docker/requires_mongodb/etc.
 # when Docker was unavailable. The fixtures themselves now call pytest.fail() so

@@ -27,13 +27,6 @@ import requests
 
 from tests.integration.fixtures_docker_helpers import is_docker_available
 
-# Register Docker fixture modules so their fixtures are available to all
-# tests under tests/integration/ without explicit imports.
-pytest_plugins = [
-    "tests.integration.fixtures_docker_db",
-    "tests.integration.fixtures_docker_ai",
-    "tests.integration.fixtures_docker_search",
-]
 
 _SERVER_HOST = "127.0.0.1"
 _STARTUP_TIMEOUT = 300  # seconds (warmup includes embedding model + whisper model + image/audio processing)

@@ -28,6 +28,7 @@
 - **REQ-022** (2026-03-29): GlossaryTerm model validation raises ValueError if domain is None via __post_init__.
 - **REQ-023** (2026-03-29): Glossary generation respects domain tier — drafts use session_id, approved terms move to target domain.
 - **REQ-024** (2026-03-29): Chunk domain filtering via JOIN to data_sources table — no redundant domain_id column on chunks.
+- **REQ-109** (2026-05-12): Hierarchy-class SVO verbs (type_of, instance_of, classified_as, part_of, member_of, extends, contains, composed_of) automatically establish parent-child relationships between entities, propagating to GlossaryTerm.parent_id and parent_verb (HAS_KIND for taxonomy, HAS_ONE for composition) during glossary sync.
 
 ## Split Vector Store & Multi-Tenancy
 - **REQ-025** (2026-03-29): Split vector store with system DB (`.constat/vectors.duckdb`) and per-user DBs (`.constat/{uid}.vault/vectors.duckdb`).
@@ -76,6 +77,9 @@
 - **REQ-057** (2026-03-29): Store class composes RelationalStore + DuckDBVectorBackend.
 - **REQ-058** (2026-03-29): Vector store (`constat/discovery/vector_store.py`) is thin wrapper over DuckDB backend.
 - **REQ-106** (2026-04-08): SharePoint list items and calendar events: detect hyperlinks in all text/rich-text fields, fetch linked files (filtered by tenant hostname and document extensions/content-type), and index files alongside parent item content.
+- **REQ-107** (2026-05-12): SVO extraction during chonk warmup: when `[index.features] svo=true` in chonk.toml, extract Subject-Verb-Object triples from indexed chunks using entity-anchored extraction (SVOExtractor.extract_entity_anchored), persist triples to chonk `svo_triples` table and entity descriptions to `entity_descriptions` table (source='llm', priority below user and schema), and build in-memory RelationshipIndex from persisted triples.
+- **REQ-108** (2026-05-12): Chonk-to-glossary sync: after NER runs at session creation, entity descriptions from chonk `entity_descriptions` table are synced into constat glossary_terms as `provenance='chonk_llm'`, `status='draft'`. Human-curated terms (provenance='human') are never overwritten. Hierarchy from SVO triples sets `parent_id` and `parent_verb` on synced terms.
+- **REQ-110** (2026-05-12): Remove constat's session-scoped NER pipeline and replace with chonk as the single entity extraction source. Rationale: (1) dynamic session content (user DBs, uploads) is handled by registering new chonk domains/sources and triggering indexing — active domain selection is a filter at query time; (2) glossary links to entities via name as natural key and is independent of which pipeline extracted them; (3) constat's NER predates chonk integration and is now redundant. The Entity model and ChunkEntity model in discovery/models.py are retained as read models but populated by syncing from chonk's entities + chunk_entities tables rather than running spaCy NER. _run_entity_extraction becomes a sync from chonk global store to constat's session-scoped views. refresh_entities_async triggers chonk re-index of the relevant domain instead of running spaCy.
 
 ## UI & Frontend
 - **REQ-059** (2026-03-29): Frontend modules: `api/` (HTTP/WebSocket clients), `components/` (React), `store/` (Zustand), `types/` (TypeScript), `hooks/` (custom hooks).

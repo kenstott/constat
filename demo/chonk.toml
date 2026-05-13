@@ -1,0 +1,90 @@
+# chonk index configuration for the constat demo
+#
+# This file is read by constat's warmup (app.py) to configure the chonk
+# indexing pipeline. It is separate from config.yaml so chonk concerns
+# stay out of constat's domain/DB/LLM configuration.
+#
+# Domain isolation: entity vocab queries are tagged by domain. At query
+# time constat's _RelationalEntityIndex enforces domain_ids filtering so
+# entity expansion never crosses domain access boundaries.
+
+# ---------------------------------------------------------------------------
+# Index features — which primitives to build at warmup
+# ---------------------------------------------------------------------------
+
+[index.features]
+ner          = true    # NER → chunk_entities (domain-tagged); enables entity expansion
+schema_vocab = true    # schema identifier terms suppress overlapping spaCy hits
+community    = false   # CommunityIndex → community_summary chunks; requires community_llm
+svo          = false   # SVOExtractor → svo_triples; requires svo_llm; enables graph_first
+
+# ---------------------------------------------------------------------------
+# NER model
+# ---------------------------------------------------------------------------
+
+[index]
+spacy_model = "en_core_web_sm"   # upgrade to en_core_web_lg for better recall
+
+# ---------------------------------------------------------------------------
+# Retrieval defaults (can be overridden in config.yaml under chonk:)
+# ---------------------------------------------------------------------------
+
+[retrieval]
+search_mode          = "auto"    # auto | vector_first | graph_first | global
+lane_entity_min_sim  = 0.45      # drop entity-linked chunks below this cosine similarity
+entity_ref_expansion = false     # post-selection gap-fill for missing query entities
+cluster              = false     # cluster-adjacency expansion (requires ClusterMap)
+
+# ---------------------------------------------------------------------------
+# Entity vocabulary — data values from demo databases
+# Queries are executed at warmup against each domain's DB.
+# entity_type becomes the label in chunk_entities; domain is inferred from
+# the connection string matched against constat's databases config.
+# ---------------------------------------------------------------------------
+
+# sales-analytics domain
+[[vocab.entities]]
+type        = "db_query"
+entity_type = "customer"
+domain      = "sales-analytics"
+connection  = "sqlite:///data/sales.db"
+sql         = "SELECT DISTINCT name FROM customers LIMIT 5000"
+
+[[vocab.entities]]
+type        = "db_query"
+entity_type = "product"
+domain      = "sales-analytics"
+connection  = "sqlite:///data/sales.db"
+sql         = "SELECT DISTINCT name FROM products LIMIT 5000"
+
+# hr-reporting domain
+[[vocab.entities]]
+type        = "db_query"
+entity_type = "employee"
+domain      = "hr-reporting"
+connection  = "sqlite:///data/hr.db"
+sql         = "SELECT first_name || ' ' || last_name AS name FROM employees LIMIT 5000"
+
+[[vocab.entities]]
+type        = "db_query"
+entity_type = "department"
+domain      = "hr-reporting"
+connection  = "sqlite:///data/hr.db"
+sql         = "SELECT DISTINCT name FROM departments LIMIT 1000"
+
+# ---------------------------------------------------------------------------
+# LLM overrides for optional features (uncomment to activate)
+# These override config.yaml's llm: for chonk-specific tasks only.
+# ---------------------------------------------------------------------------
+
+# [llm.svo]
+# provider = "anthropic"
+# model    = "claude-haiku-4-5-20251001"
+
+# [llm.community]
+# provider = "anthropic"
+# model    = "claude-haiku-4-5-20251001"
+
+# [llm.answer]
+# provider = "anthropic"
+# model    = "claude-haiku-4-5-20251001"

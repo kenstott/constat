@@ -13,12 +13,28 @@
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 
 from constat.core.config import DocumentConfig
 
 # Phase 1.5: re-export chonk's DocumentChunk; section is list[str], chunk_type is str
 from chonk.models import DocumentChunk
+
+
+class ChunkType(str, Enum):
+    DB_TABLE = "db_table"
+    DB_COLUMN = "db_column"
+    DOCUMENT = "document"
+    GLOSSARY_TERM = "glossary_term"
+    RELATIONSHIP = "relationship"
+    ENTITY_VALUE = "entity_value"
+    GRAPHQL_QUERY = "graphql_query"
+    GRAPHQL_MUTATION = "graphql_mutation"
+    GRAPHQL_TYPE = "graphql_type"
+    GRAPHQL_FIELD = "graphql_field"
+    API_SCHEMA = "api_schema"
+    API_ENDPOINT = "api_endpoint"
 
 
 def singularize(word: str) -> str:

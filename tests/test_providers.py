@@ -28,6 +28,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from constat.providers import (
+    AnthropicProvider,
+    MistralProvider,
+    CodestralProvider,
+    OllamaProvider,
+    OpenAIProvider,
+    GeminiProvider,
+    GrokProvider,
+    TogetherProvider,
+    GroqProvider,
+)
 from tests.test_providers_shared import SAMPLE_TOOLS, TOOL_HANDLERS
 
 
@@ -74,20 +85,20 @@ def require_ollama_model():
 class TestAnthropicProvider:
     """Tests for Anthropic Claude provider."""
 
-    @requires_anthropic_key
+    @pytest.mark.usefixtures("require_anthropic_key")
     def test_instantiation(self):
         """Provider can be instantiated."""
         provider = AnthropicProvider()
         assert provider.model == "claude-sonnet-4-20250514"
         assert provider.supports_tools is True
 
-    @requires_anthropic_key
+    @pytest.mark.usefixtures("require_anthropic_key")
     def test_instantiation_with_custom_model(self):
         """Provider accepts custom model."""
         provider = AnthropicProvider(model="claude-haiku-4-5-20251001")
         assert provider.model == "claude-haiku-4-5-20251001"
 
-    @requires_anthropic_key
+    @pytest.mark.usefixtures("require_anthropic_key")
     def test_generate_simple(self):
         """Basic generation without tools."""
         provider = AnthropicProvider(model="claude-haiku-4-5-20251001")
@@ -98,7 +109,7 @@ class TestAnthropicProvider:
         )
         assert "4" in response
 
-    @requires_anthropic_key
+    @pytest.mark.usefixtures("require_anthropic_key")
     def test_generate_code(self):
         """Code generation extracts from markdown blocks."""
         provider = AnthropicProvider(model="claude-haiku-4-5-20251001")
@@ -110,7 +121,7 @@ class TestAnthropicProvider:
         assert "def" in response
         assert "```" not in response  # Should be extracted
 
-    @requires_anthropic_key
+    @pytest.mark.usefixtures("require_anthropic_key")
     def test_generate_with_tools(self):
         """Generation with tool calling."""
         provider = AnthropicProvider(model="claude-haiku-4-5-20251001")
@@ -123,7 +134,7 @@ class TestAnthropicProvider:
         )
         assert "Paris" in response or "72" in response or "sunny" in response
 
-    @requires_anthropic_key
+    @pytest.mark.usefixtures("require_anthropic_key")
     def test_generate_with_calculation_tool(self):
         """Tool calling with calculation."""
         provider = AnthropicProvider(model="claude-haiku-4-5-20251001")
@@ -136,7 +147,7 @@ class TestAnthropicProvider:
         )
         assert "105" in response
 
-    @requires_anthropic_key
+    @pytest.mark.usefixtures("require_anthropic_key")
     def test_model_override_in_generate(self):
         """Model can be overridden per-call (for task-type routing)."""
         # Initialize with default sonnet model
@@ -155,7 +166,7 @@ class TestAnthropicProvider:
         # Original model should still be sonnet
         assert provider.model == "claude-sonnet-4-20250514"
 
-    @requires_anthropic_key
+    @pytest.mark.usefixtures("require_anthropic_key")
     def test_task_routing_integration(self):
         """Test task-type routing as used by planner/session."""
         from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
@@ -513,14 +524,14 @@ class TestOllamaProviderIntegration:
 
 
 # Keep the old markers for backward compatibility when running without fixtures
-@requires_ollama
+@pytest.mark.usefixtures("require_ollama")
 def test_ollama_provider_backward_compat():
     """Backward compatibility test - uses old marker."""
     provider = OllamaProvider()
     assert provider.model == "llama3.2"
 
 
-@requires_ollama_model
+@pytest.mark.usefixtures("require_ollama_model")
 def test_ollama_generate_backward_compat():
     """Backward compatibility test for generation."""
     provider = OllamaProvider(model=OLLAMA_TEST_MODEL)
@@ -542,20 +553,20 @@ class TestOpenAIProvider:
     These tests are skipped by default. Set OPENAI_API_KEY to run them.
     """
 
-    @requires_openai_key
+    @pytest.mark.usefixtures("require_openai_key")
     def test_instantiation(self):
         """Provider can be instantiated."""
         provider = OpenAIProvider()
         assert provider.model == "gpt-4o"
         assert provider.supports_tools is True
 
-    @requires_openai_key
+    @pytest.mark.usefixtures("require_openai_key")
     def test_instantiation_with_custom_model(self):
         """Provider accepts custom model."""
         provider = OpenAIProvider(model="gpt-4-turbo")
         assert provider.model == "gpt-4-turbo"
 
-    @requires_openai_key
+    @pytest.mark.usefixtures("require_openai_key")
     def test_generate_simple(self):
         """Basic generation without tools."""
         provider = OpenAIProvider(model="gpt-4o-mini")
@@ -566,7 +577,7 @@ class TestOpenAIProvider:
         )
         assert "4" in response
 
-    @requires_openai_key
+    @pytest.mark.usefixtures("require_openai_key")
     def test_generate_code(self):
         """Code generation extracts from markdown blocks."""
         provider = OpenAIProvider(model="gpt-4o-mini")
@@ -578,7 +589,7 @@ class TestOpenAIProvider:
         assert "def" in response
         assert "```" not in response
 
-    @requires_openai_key
+    @pytest.mark.usefixtures("require_openai_key")
     def test_generate_with_tools(self):
         """Generation with tool calling."""
         provider = OpenAIProvider(model="gpt-4o-mini")
@@ -591,7 +602,7 @@ class TestOpenAIProvider:
         )
         assert "Tokyo" in response or "72" in response or "sunny" in response
 
-    @requires_openai_key
+    @pytest.mark.usefixtures("require_openai_key")
     def test_generate_with_calculation_tool(self):
         """Tool calling with calculation."""
         provider = OpenAIProvider(model="gpt-4o-mini")
@@ -604,7 +615,7 @@ class TestOpenAIProvider:
         )
         assert "92" in response
 
-    @requires_openai_key
+    @pytest.mark.usefixtures("require_openai_key")
     def test_tool_format_conversion(self):
         """Tools are converted to OpenAI format correctly."""
         openai_tools = OpenAIProvider.convert_tools_to_openai_format(SAMPLE_TOOLS)
@@ -624,20 +635,20 @@ class TestGeminiProvider:
     These tests are skipped by default. Set GOOGLE_API_KEY to run them.
     """
 
-    @requires_google_key
+    @pytest.mark.usefixtures("require_google_key")
     def test_instantiation(self):
         """Provider can be instantiated."""
         provider = GeminiProvider()
         assert provider.model_name == "gemini-1.5-pro"
         assert provider.supports_tools is True
 
-    @requires_google_key
+    @pytest.mark.usefixtures("require_google_key")
     def test_instantiation_with_custom_model(self):
         """Provider accepts custom model."""
         provider = GeminiProvider(model="gemini-1.5-flash")
         assert provider.model_name == "gemini-1.5-flash"
 
-    @requires_google_key
+    @pytest.mark.usefixtures("require_google_key")
     def test_generate_simple(self):
         """Basic generation without tools."""
         provider = GeminiProvider(model="gemini-1.5-flash")
@@ -648,7 +659,7 @@ class TestGeminiProvider:
         )
         assert "4" in response
 
-    @requires_google_key
+    @pytest.mark.usefixtures("require_google_key")
     def test_generate_code(self):
         """Code generation extracts from markdown blocks."""
         provider = GeminiProvider(model="gemini-1.5-flash")
@@ -660,7 +671,7 @@ class TestGeminiProvider:
         assert "def" in response
         assert "```" not in response
 
-    @requires_google_key
+    @pytest.mark.usefixtures("require_google_key")
     def test_generate_with_tools(self):
         """Generation with tool calling."""
         provider = GeminiProvider(model="gemini-1.5-flash")
@@ -673,7 +684,7 @@ class TestGeminiProvider:
         )
         assert "Berlin" in response or "72" in response or "sunny" in response
 
-    @requires_google_key
+    @pytest.mark.usefixtures("require_google_key")
     def test_generate_with_calculation_tool(self):
         """Tool calling with calculation."""
         provider = GeminiProvider(model="gemini-1.5-flash")
@@ -697,20 +708,20 @@ class TestGrokProvider:
     These tests are skipped by default. Set XAI_API_KEY to run them.
     """
 
-    @requires_xai_key
+    @pytest.mark.usefixtures("require_xai_key")
     def test_instantiation(self):
         """Provider can be instantiated."""
         provider = GrokProvider()
         assert provider.model == "grok-2-latest"
         assert provider.supports_tools is True
 
-    @requires_xai_key
+    @pytest.mark.usefixtures("require_xai_key")
     def test_instantiation_with_custom_model(self):
         """Provider accepts custom model."""
         provider = GrokProvider(model="grok-2")
         assert provider.model == "grok-2"
 
-    @requires_xai_key
+    @pytest.mark.usefixtures("require_xai_key")
     def test_generate_simple(self):
         """Basic generation without tools."""
         provider = GrokProvider()
@@ -721,7 +732,7 @@ class TestGrokProvider:
         )
         assert "4" in response
 
-    @requires_xai_key
+    @pytest.mark.usefixtures("require_xai_key")
     def test_generate_code(self):
         """Code generation extracts from markdown blocks."""
         provider = GrokProvider()
@@ -733,7 +744,7 @@ class TestGrokProvider:
         assert "def" in response
         assert "```" not in response
 
-    @requires_xai_key
+    @pytest.mark.usefixtures("require_xai_key")
     def test_generate_with_tools(self):
         """Generation with tool calling."""
         provider = GrokProvider()
@@ -746,7 +757,7 @@ class TestGrokProvider:
         )
         assert "Sydney" in response or "72" in response or "sunny" in response
 
-    @requires_xai_key
+    @pytest.mark.usefixtures("require_xai_key")
     def test_generate_with_calculation_tool(self):
         """Tool calling with calculation."""
         provider = GrokProvider()
@@ -770,20 +781,20 @@ class TestTogetherProvider:
     These tests are skipped by default. Set TOGETHER_API_KEY to run them.
     """
 
-    @requires_together_key
+    @pytest.mark.usefixtures("require_together_key")
     def test_instantiation(self):
         """Provider can be instantiated."""
         provider = TogetherProvider()
         assert "llama" in provider.model.lower()
         assert provider.supports_tools is True
 
-    @requires_together_key
+    @pytest.mark.usefixtures("require_together_key")
     def test_instantiation_with_custom_model(self):
         """Provider accepts custom model."""
         provider = TogetherProvider(model="meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo")
         assert "8B" in provider.model
 
-    @requires_together_key
+    @pytest.mark.usefixtures("require_together_key")
     def test_generate_simple(self):
         """Basic generation without tools."""
         provider = TogetherProvider()
@@ -794,7 +805,7 @@ class TestTogetherProvider:
         )
         assert "4" in response
 
-    @requires_together_key
+    @pytest.mark.usefixtures("require_together_key")
     def test_generate_code(self):
         """Code generation extracts from markdown blocks."""
         provider = TogetherProvider()
@@ -817,20 +828,20 @@ class TestGroqProvider:
     These tests are skipped by default. Set GROQ_API_KEY to run them.
     """
 
-    @requires_groq_key
+    @pytest.mark.usefixtures("require_groq_key")
     def test_instantiation(self):
         """Provider can be instantiated."""
         provider = GroqProvider()
         assert "llama" in provider.model.lower()
         assert provider.supports_tools is True
 
-    @requires_groq_key
+    @pytest.mark.usefixtures("require_groq_key")
     def test_instantiation_with_custom_model(self):
         """Provider accepts custom model."""
         provider = GroqProvider(model="llama-3.1-8b-instant")
         assert "8b" in provider.model.lower()
 
-    @requires_groq_key
+    @pytest.mark.usefixtures("require_groq_key")
     def test_generate_simple(self):
         """Basic generation without tools."""
         provider = GroqProvider()
@@ -841,7 +852,7 @@ class TestGroqProvider:
         )
         assert "4" in response
 
-    @requires_groq_key
+    @pytest.mark.usefixtures("require_groq_key")
     def test_generate_code(self):
         """Code generation extracts from markdown blocks."""
         provider = GroqProvider()
@@ -892,20 +903,20 @@ class TestMistralProvider:
     These tests are skipped by default. Set MISTRAL_API_KEY to run them.
     """
 
-    @requires_mistral_key
+    @pytest.mark.usefixtures("require_mistral_key")
     def test_instantiation(self):
         """Provider can be instantiated."""
         provider = MistralProvider()
         assert provider.model == "mistral-large-latest"
         assert provider.supports_tools is True
 
-    @requires_mistral_key
+    @pytest.mark.usefixtures("require_mistral_key")
     def test_instantiation_with_custom_model(self):
         """Provider accepts custom model."""
         provider = MistralProvider(model="mistral-small-latest")
         assert provider.model == "mistral-small-latest"
 
-    @requires_mistral_key
+    @pytest.mark.usefixtures("require_mistral_key")
     def test_generate_simple(self):
         """Basic generation without tools."""
         provider = MistralProvider(model="mistral-small-latest")
@@ -916,7 +927,7 @@ class TestMistralProvider:
         )
         assert "4" in response
 
-    @requires_mistral_key
+    @pytest.mark.usefixtures("require_mistral_key")
     def test_generate_code(self):
         """Code generation extracts from markdown blocks."""
         provider = MistralProvider(model="mistral-small-latest")
@@ -928,7 +939,7 @@ class TestMistralProvider:
         assert "def" in response
         assert "```" not in response
 
-    @requires_mistral_key
+    @pytest.mark.usefixtures("require_mistral_key")
     def test_generate_with_tools(self):
         """Generation with tool calling."""
         provider = MistralProvider(model="mistral-small-latest")
@@ -941,7 +952,7 @@ class TestMistralProvider:
         )
         assert "Madrid" in response or "72" in response or "sunny" in response
 
-    @requires_mistral_key
+    @pytest.mark.usefixtures("require_mistral_key")
     def test_generate_with_calculation_tool(self):
         """Tool calling with calculation."""
         provider = MistralProvider(model="mistral-small-latest")
@@ -954,7 +965,7 @@ class TestMistralProvider:
         )
         assert "102" in response
 
-    @requires_mistral_key
+    @pytest.mark.usefixtures("require_mistral_key")
     def test_mistral_large_generation(self):
         """Test with Mistral Large model."""
         provider = MistralProvider(model="mistral-large-latest")
@@ -972,14 +983,14 @@ class TestCodestralProvider:
     These tests are skipped by default. Set MISTRAL_API_KEY to run them.
     """
 
-    @requires_mistral_key
+    @pytest.mark.usefixtures("require_mistral_key")
     def test_instantiation(self):
         """Provider can be instantiated."""
         provider = CodestralProvider()
         assert "codestral" in provider.model.lower()
         assert provider.supports_tools is True
 
-    @requires_mistral_key
+    @pytest.mark.usefixtures("require_mistral_key")
     def test_generate_code(self):
         """Code generation with Codestral."""
         provider = CodestralProvider()
@@ -992,7 +1003,7 @@ class TestCodestralProvider:
         assert "prime" in response.lower() or "%" in response
         assert "```" not in response
 
-    @requires_mistral_key
+    @pytest.mark.usefixtures("require_mistral_key")
     def test_generate_sql(self):
         """SQL generation with Codestral."""
         provider = CodestralProvider()

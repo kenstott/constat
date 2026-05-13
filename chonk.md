@@ -34,6 +34,37 @@ lane-sim=0.45, coherence=0.50, pruning enabled.
 
 ---
 
+## Implementation Status
+
+| Phase | Component | Status |
+|---|---|---|
+| 1.1 | `namespace` param on chonk `Store`/`DuckDBVectorBackend` | NOT STARTED — constat uses `domain_ids` instead |
+| 1.2 | `chonk/schema.py` (`TableMeta`, `ColumnMeta`, `EndpointMeta`, `FieldMeta`) | DONE — `chonk/schema.py` |
+| 1.2 | `DocumentLoader.load_schema()` / `load_api()` | DONE — on `DocumentLoader` |
+| 1.3 | `infer_parquet()` | DONE — `chonk/_struct_inference.py`, used by `constat/catalog/file/connector.py` |
+| 1.3 | `DocumentLoader.load_structured_file()` | DONE |
+| 1.4 | `SchemaMatcher` in `chonk/ner/_schema.py` | DONE — two-pass NER active in `vector_store._run_entity_extraction()` |
+| 1.5 | `DocumentChunk` re-exported from `chonk.models` | DONE |
+| 1.5 | `ChunkType` enum | DONE — kept as `str, Enum` in `constat/discovery/models.py` (not deleted) |
+| 2 | `EnhancedSearch` wired into `find_relevant_tables` + `search_documents` | DONE — `constat/storage/_enhanced_adapter.py` |
+| 2 | `chunk_types` pre-filtering via `_EnhancedStoreAdapter.search()` | DONE — `chunk_types` forwarded through adapter; not passed to `EnhancedSearch.__init__` |
+| 2 | structural expansion | DISABLED — `structural_expansion=False`; constat chunk ID hash includes `section` |
+| 2 | cluster expansion | DISABLED — `cluster_expansion=False`; no `ClusterMap` threaded through |
+| 2 | Replace `vector_store.py` with chonk `Store` | NOT STARTED — `NumpyVectorStore`, `VectorStoreBackend` dead code still present |
+| 3 | `chonk/generation/` (`AnswerGenerator`, `PromptBuilder`, `AnswerContext`) | DONE — `chonk/generation/` |
+| 3 | `answer_from_documents()` wired to `AnswerGenerator` | DONE — `_access.py`; `_chonk_llm.py` adapts constat providers |
+| 3 | `ChonkConfig` + per-feature `ChonkModelSpec` | DONE — `source_config.py`; `ner_model`, `answer_llm`, `community_llm`, `svo_llm`, `embed_model`, `search_mode` |
+| 4.1 | `SVOTriple`, `VERB_SET`, `SVOExtractor`, `RelationshipIndex` in `chonk/graph/` | DONE — FK-derived triples in `schema_manager._build_relationship_index()`; LLM extraction via `SVOExtractor` available |
+| 4.1 | SVO triples merged and wired into retrieval | DONE — `app.py` merges FK triples across schema managers; `doc_tools._relationship_index` set at warmup |
+| 4.1 | `graph_first` / `auto` mode wired into constat | DONE — `_resolve_search_mode()` auto-selects; `mode` + `relationship_index` forwarded through `search_enhanced` → `run_enhanced_search` |
+| 4.1 | LLM-driven SVO extraction via `SVOExtractor` | NOT STARTED — `svo_llm` config wired, no call site yet |
+| 4.2 | LLM community summaries | DONE — `chonk/community/_summarizer.py` |
+| 4.2 | Community summaries wired into constat | NOT STARTED — `community_llm` config wired, `community_summaries: bool` flag present |
+| 4.3 | `global` mode on `EnhancedSearch` | DONE — `EnhancedSearch.search(mode="global")` |
+| 4.3 | `global` mode wired into constat | NOT STARTED — blocked by 4.2 (no community_summary chunks yet) |
+
+---
+
 ## Phase 1 — Core Primitives (no breaking changes)
 
 These are purely additive. Existing Chonk consumers are unaffected.

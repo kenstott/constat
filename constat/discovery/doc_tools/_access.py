@@ -50,6 +50,18 @@ def _loaded_doc_to_result(doc, config_dir: str | None = None) -> dict:
 class _AccessMixin:
     """Access, search, and load methods for DocumentDiscoveryTools."""
 
+    def _resolve_search_mode(self) -> str:
+        """Pick effective EnhancedSearch mode based on config and available indices."""
+        chonk_cfg = getattr(self, "_chonk_config", None)
+        configured = getattr(chonk_cfg, "search_mode", "auto") if chonk_cfg else "auto"
+        if configured != "auto":
+            return configured
+        # "auto": prefer graph_first when relationship_index has triples, else vector_first
+        rel_idx = getattr(self, "_relationship_index", None)
+        if rel_idx is not None and rel_idx._by_subject:
+            return "graph_first"
+        return "vector_first"
+
     def list_documents(self) -> list[dict]:
         """
         List all configured reference documents with descriptions.
@@ -311,17 +323,28 @@ class _AccessMixin:
         # Use lock for thread-safe access - both embedding model AND DuckDB connection
         # are not thread-safe for concurrent operations
         with self._model_lock:
-            # Embed the query
             query_embedding = self._model.encode([query], convert_to_numpy=True)
 
-            # Search using vector store with filtering (also protected by lock for consistency)
-            search_results = self._vector_store.search(
-                query_embedding,
-                limit=limit,
-                domain_ids=self._active_domain_ids,
-                session_id=session_id,
-                query_text=query,
-            )
+            if hasattr(self._vector_store, "search_enhanced"):
+                mode = self._resolve_search_mode()
+                search_results = self._vector_store.search_enhanced(
+                    query_embedding,
+                    limit=limit,
+                    domain_ids=self._active_domain_ids,
+                    session_id=session_id,
+                    query_text=query,
+                    mode=mode,
+                    relationship_index=getattr(self, "_relationship_index", None),
+                    lane_entity_min_sim=getattr(self._chonk_config, "lane_entity_min_sim", None) if getattr(self, "_chonk_config", None) else None,
+                )
+            else:
+                search_results = self._vector_store.search(
+                    query_embedding,
+                    limit=limit,
+                    domain_ids=self._active_domain_ids,
+                    session_id=session_id,
+                    query_text=query,
+                )
 
         logger.debug(f"[SEARCH] Found {len(search_results)} results for '{query}'")
 
@@ -392,6 +415,56 @@ class _AccessMixin:
 
         # Fall back to regular search
         return self.search_documents(query, limit, session_id)
+
+    def answer_from_documents(
+        self,
+        query: str,
+        llm_fn=None,
+        limit: int = 10,
+        session_id: str | None = None,
+        token_budget: int = 4096,
+        llm_config=None,
+    ):
+        """Retrieve relevant chunks and generate an answer via AnswerGenerator.
+
+        llm_fn: callable(prompt) -> str. If None, built from chonk_config.answer_llm +
+                llm_config (falls back to config.llm). Returns None if no LLM available.
+        Requires search_enhanced support on the vector store.
+        """
+        if self._model is None or not hasattr(self._vector_store, "search_enhanced"):
+            return None
+
+        if llm_fn is None:
+            chonk_cfg = getattr(self, "_chonk_config", None)
+            spec = getattr(chonk_cfg, "answer_llm", None)
+            resolved_llm_config = llm_config or getattr(getattr(self, "config", None), "llm", None)
+            if resolved_llm_config is None:
+                return None
+            from constat.storage._chonk_llm import build_chonk_llm
+            client = build_chonk_llm(spec, resolved_llm_config)
+            if client is None:
+                return None
+            llm_fn = client.complete
+
+        from chonk.generation import AnswerContext, AnswerGenerator
+
+        with self._model_lock:
+            query_embedding = self._model.encode([query], convert_to_numpy=True)
+            mode = self._resolve_search_mode()
+            scored_chunks = self._vector_store.search_enhanced(
+                query_embedding,
+                limit=limit,
+                domain_ids=self._active_domain_ids,
+                session_id=session_id,
+                query_text=query,
+                mode=mode,
+                relationship_index=getattr(self, "_relationship_index", None),
+                lane_entity_min_sim=getattr(self._chonk_config, "lane_entity_min_sim", None) if getattr(self, "_chonk_config", None) else None,
+                return_scored=True,
+            )
+
+        context = AnswerContext(chunks=scored_chunks, query=query)
+        return AnswerGenerator(llm_fn, token_budget=token_budget).generate(context)
 
     def search_chunks_raw(
         self,
