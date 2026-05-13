@@ -113,11 +113,16 @@ def _build_term_from_row(
         if not definition:
             descs = chonk_store.get_entity_descriptions([name])
             definition = descs.get(name, "")
-        if not aliases and hasattr(chonk_store, 'get_entity_aliases'):
-            chonk_aliases = chonk_store.get_entity_aliases([name])
+        if not aliases:
+            chonk_aliases = chonk_store.get_entity_aliases_by_names([name])
             aliases = chonk_aliases.get(name, [])
-        if not parent_id and hasattr(chonk_store, 'get_entity_parent'):
-            parent_id = chonk_store.get_entity_parent(name)
+        if not parent_id:
+            parents = chonk_store.get_entity_parents([name])
+            if name in parents:
+                from constat.storage._chonk_glossary_sync import _PARENT_VERB_MAP
+                parent_name, svo_verb = parents[name]
+                parent_id = parent_name
+                parent_verb = _PARENT_VERB_MAP.get(svo_verb, "HAS_KIND")
 
     return GlossaryTermType(
         name=row["name"],
@@ -533,16 +538,19 @@ class Mutation:
         if input.status == "approved" and existing.provenance == "chonk_llm":
             chonk_store = getattr(managed.session, '_chonk_store', None)
             if chonk_store:
-                descs = chonk_store.get_entity_descriptions([name])
+                from constat.storage._chonk_glossary_sync import _PARENT_VERB_MAP
                 if not existing.definition and "definition" not in updates:
+                    descs = chonk_store.get_entity_descriptions([name])
                     updates.setdefault("definition", descs.get(name, ""))
-                chonk_aliases = chonk_store.get_entity_aliases([name]) if hasattr(chonk_store, 'get_entity_aliases') else {}
                 if not existing.aliases and "aliases" not in updates:
+                    chonk_aliases = chonk_store.get_entity_aliases_by_names([name])
                     updates.setdefault("aliases", chonk_aliases.get(name, []))
                 if not existing.parent_id and "parent_id" not in updates:
-                    chonk_parent = chonk_store.get_entity_parent(name) if hasattr(chonk_store, 'get_entity_parent') else None
-                    if chonk_parent:
-                        updates.setdefault("parent_id", chonk_parent)
+                    parents = chonk_store.get_entity_parents([name])
+                    if name in parents:
+                        parent_name, svo_verb = parents[name]
+                        updates.setdefault("parent_id", parent_name)
+                        updates.setdefault("parent_verb", _PARENT_VERB_MAP.get(svo_verb, "HAS_KIND"))
 
         if not updates:
             raise ValueError("No fields to update")
