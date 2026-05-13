@@ -360,7 +360,7 @@ class DuckDBSessionStore:
         with self._locked_conn() as conn:
             conn.execute(
                 "UPDATE _constat_table_registry SET dq_results = ? WHERE table_name = ?",
-                [json.dumps(results), name],
+                [json.dumps(results, default=_json_serializer), name],
             )
 
     def save_artifact(self, name: str, content, artifact_type: str = None, **kwargs) -> None:
