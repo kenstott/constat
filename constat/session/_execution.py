@@ -52,7 +52,7 @@ class ExecutionMixin:
                 db_path = db_path[5:]
             if "?" in db_path:
                 db_path = db_path.split("?")[0]
-            self.datastore.attach(db_name, db_path, db_type="sqlite", read_only=True)
+            self.datastore.attach(f"db_{db_name}", db_path, db_type="sqlite", read_only=True)
         except Exception as e:
             logger.debug(f"Could not auto-attach {db_name}: {e}")
 

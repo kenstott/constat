@@ -50,7 +50,7 @@ Share data between steps ONLY via `store`. Choose the right method:
 
 **Data Federation — Unified Query Namespace**:
 Source databases (SQLite, DuckDB) are automatically attached to the session store. All data — source DB tables, intermediate tables, and views — is queryable through `store.query()` using PostgreSQL syntax.
-- **Source DB tables**: queryable as `db_name.table_name` (e.g., `mydb.customers`, `warehouse.products`). CRITICAL: in SQL, the schema prefix is the plain database name — `chinook.Track`, NOT `db_chinook.Track`. The `db_` prefix exists only in Python variable names, NEVER in SQL schema prefixes.
+- **Source DB tables**: queryable as `db_name.table_name` (e.g., `db_mydb.customers`, `db_warehouse.products`). The `db_` prefix is used in both Python variable names and SQL schema prefixes.
 - **Store tables/views**: queryable by name (e.g., `filtered_items`, `enriched_records`)
 - **Cross-source JOINs**: `store.query('SELECT ... FROM mydb.customers c JOIN enriched_records er ON ...')` — joins source DB and store tables in one query
 - If data already exists in the store, use it. Do NOT re-query the database for it.

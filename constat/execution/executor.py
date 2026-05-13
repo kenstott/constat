@@ -386,23 +386,12 @@ def _get_prescriptive_fix(error_text: str, _code: str) -> str:
             "Use store.query('SELECT ... FROM db_name.table') or store.create_view() instead."
         )
 
-    # DuckDB schema-not-found: LLM used db_<name> prefix instead of <name>
+    # File-source: LLM used name.name instead of just name (file registered as plain view)
     if "does not exist because schema" in error_lower:
         import re
-        match = re.search(r"schema \"(db_\w+)\" does not exist", error_text, re.IGNORECASE)
+        match = re.search(r"schema \"(\w+)\" does not exist", error_text, re.IGNORECASE)
         if match:
-            wrong_prefix = match.group(1)
-            correct_prefix = wrong_prefix[3:]  # strip "db_"
-            return (
-                f"WRONG schema prefix. You used '{wrong_prefix}' but the attached database is named '{correct_prefix}'. "
-                f"In SQL queries, use '{correct_prefix}.table_name' (NOT 'db_{correct_prefix}.table_name'). "
-                f"The 'db_<name>' syntax is only for Python variable access, not for SQL schema prefixes. "
-                f"REPLACE 'db_{correct_prefix}.' with '{correct_prefix}.' in all SQL strings."
-            )
-        # File-source: LLM used name.name instead of just name (file registered as plain view)
-        match2 = re.search(r"schema \"(\w+)\" does not exist", error_text, re.IGNORECASE)
-        if match2:
-            schema_name = match2.group(1)
+            schema_name = match.group(1)
             return (
                 f"WRONG table reference. '{schema_name}' is a file-based source registered as a flat view, not a schema. "
                 f"Use just '{schema_name}' (NOT '{schema_name}.{schema_name}'). "
