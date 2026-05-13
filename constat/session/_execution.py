@@ -560,6 +560,16 @@ class ExecutionMixin:
                     first_db = conn.engine
                 # Auto-ATTACH SQLite sources to session DuckDB for federation
                 self._auto_attach_sqlite(db_name, conn)
+            elif db_config.is_file_source():
+                # Register file as DuckDB view so store.query('SELECT ... FROM db_name') works
+                fc = self.schema_manager.file_connections.get(db_name)
+                if fc and hasattr(fc, 'path') and hasattr(self.datastore, 'register_file'):
+                    fmt = (db_config.type or "").lower()
+                    try:
+                        self.datastore.register_file(db_name, fc.path, fmt)
+                    except Exception as _rfe:
+                        logger.debug(f"register_file({db_name}): {_rfe}")
+                globals_dict[f"file_{db_name}"] = fc.path if fc and hasattr(fc, 'path') else None
             else:
                 globals_dict[f"db_{db_name}"] = conn
                 if i == 0:

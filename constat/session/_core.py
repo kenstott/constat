@@ -136,6 +136,13 @@ class CoreMixin:
         # writes chunks to the correct DB (not the default .constat/system.duckdb)
         self.schema_manager._vector_store = vector_store
         self.api_schema_manager._vector_store = vector_store
+
+        # Build schema embeddings so find_relevant_tables() works in standalone (non-server) mode.
+        # The server calls build_chunks() at startup; sessions created directly (tests, scripts)
+        # must do it here after the shared vector_store is assigned.
+        self.schema_manager._model = EmbeddingModelLoader.get_instance().get_model()
+        if self.schema_manager._model is not None:
+            self.schema_manager._extract_entities_from_descriptions()
         logger.debug(f"Session init: DocumentDiscoveryTools took {time.time() - t0:.2f}s")
 
         # Entity extraction is handled by session_manager.refresh_entities_async()
