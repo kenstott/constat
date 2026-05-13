@@ -87,13 +87,14 @@ def warmup_chonk_index(config: "Config") -> None:
     logger.info(f"  chonk: global store ready at {store_path}")
 
     if chonk_toml.index.features.svo:
-        _run_svo_phase(store, config)
+        _run_svo_phase(store, config, chonk_toml=chonk_toml)
 
 
 def _run_svo_phase(
     store,
     config: "Config",
     on_progress: "Callable[[int], None] | None" = None,
+    chonk_toml=None,
 ) -> None:
     """Extract SVO triples + entity descriptions + aliases for all indexed chunks.
 
@@ -106,8 +107,9 @@ def _run_svo_phase(
     from chonk.graph._index import RelationshipIndex
     from constat.storage._chonk_llm import build_chonk_llm
 
-    chonk_cfg = config.chonk
-    llm_client = build_chonk_llm(getattr(chonk_cfg, "svo_llm", None), config.llm)
+    toml_svo = chonk_toml.llm.svo if chonk_toml is not None else None
+    svo_spec = toml_svo or getattr(config.chonk, "svo_llm", None)
+    llm_client = build_chonk_llm(svo_spec, config.llm)
     if not llm_client:
         logger.warning("chonk SVO: no LLM configured, skipping SVO extraction")
         return

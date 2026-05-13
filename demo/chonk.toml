@@ -16,7 +16,7 @@
 ner          = true    # NER → chunk_entities (domain-tagged); enables entity expansion
 schema_vocab = true    # schema identifier terms suppress overlapping spaCy hits
 community    = false   # CommunityIndex → community_summary chunks; requires community_llm
-svo          = false   # SVOExtractor → svo_triples; requires svo_llm; enables graph_first
+svo          = true    # SVOExtractor → svo_triples; requires svo_llm; enables graph_first
 
 # ---------------------------------------------------------------------------
 # NER model
@@ -77,9 +77,9 @@ sql         = "SELECT DISTINCT name FROM departments LIMIT 1000"
 # These override config.yaml's llm: for chonk-specific tasks only.
 # ---------------------------------------------------------------------------
 
-# [llm.svo]
-# provider = "anthropic"
-# model    = "claude-haiku-4-5-20251001"
+[llm.svo]
+provider = "anthropic"
+model    = "claude-haiku-4-5-20251001"
 
 # [llm.community]
 # provider = "anthropic"
