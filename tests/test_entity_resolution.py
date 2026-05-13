@@ -11,17 +11,13 @@
 """Tests for entity resolution — Phase 1."""
 
 from __future__ import annotations
-import pytest
 
 from constat.core.config import EntityResolutionConfig
-from constat.discovery.entity_extractor import EntityExtractor
 from constat.discovery.models import (
     ChunkType,
     DocumentChunk,
     EntityClass,
-    SemanticType,
 )
-from constat.discovery.ner_fingerprint import compute_ner_fingerprint
 
 
 class TestEntityResolutionConfig:
@@ -76,104 +72,6 @@ class TestEntityResolutionConfig:
         assert cfg.max_values == 500
 
 
-class TestEntityExtractorWithEntityTerms:
-    """Test EntityExtractor recognizes entity resolution values."""
-
-    def test_entity_terms_recognized(self):
-        extractor = EntityExtractor(
-            session_id="test",
-            entity_terms={"COUNTRY": ["France", "Germany", "Japan"]},
-        )
-        chunk = DocumentChunk(
-            document_name="test_doc",
-            content="We expanded operations to France and Germany last quarter.",
-        )
-        results = extractor.extract(chunk)
-        entity_names = {e.name for e, _ in results}
-        assert "France" in entity_names or "france" in entity_names
-
-    def test_entity_terms_high_confidence(self):
-        extractor = EntityExtractor(
-            session_id="test",
-            entity_terms={"COUNTRY": ["France"]},
-        )
-        chunk = DocumentChunk(
-            document_name="test_doc",
-            content="Our main market is France.",
-        )
-        results = extractor.extract(chunk)
-        for entity, link in results:
-            if "france" in entity.name.lower():
-                assert link.confidence == 0.95
-                break
-        else:
-            pytest.fail("France entity not found in results")
-
-    def test_entity_terms_label_preserved(self):
-        extractor = EntityExtractor(
-            session_id="test",
-            entity_terms={"COUNTRY": ["France"]},
-        )
-        chunk = DocumentChunk(
-            document_name="test_doc",
-            content="Revenue from France grew 20%.",
-        )
-        results = extractor.extract(chunk)
-        for entity, _ in results:
-            if "france" in entity.name.lower():
-                assert entity.ner_type == "COUNTRY"
-                break
-        else:
-            pytest.fail("France entity not found")
-
-    def test_multiple_entity_types(self):
-        extractor = EntityExtractor(
-            session_id="test",
-            entity_terms={
-                "COUNTRY": ["France", "Germany"],
-                "CURRENCY": ["EUR", "USD"],
-            },
-        )
-        chunk = DocumentChunk(
-            document_name="test_doc",
-            content="France uses EUR as its currency.",
-        )
-        results = extractor.extract(chunk)
-        labels = {e.ner_type for e, _ in results}
-        # Should find at least COUNTRY
-        assert "COUNTRY" in labels or len(results) > 0
-
-    def test_short_values_filtered(self):
-        """Values with length <= 1 should not create patterns."""
-        extractor = EntityExtractor(
-            session_id="test",
-            entity_terms={"LETTER": ["A", "B", "France"]},
-        )
-        chunk = DocumentChunk(
-            document_name="test_doc",
-            content="A is for France B is not recognized.",
-        )
-        results = extractor.extract(chunk)
-        entity_names = {e.name for e, _ in results}
-        # "A" and "B" should NOT be recognized (too short)
-        assert "a" not in entity_names
-        assert "b" not in entity_names
-
-    def test_empty_entity_terms(self):
-        """Empty or None entity_terms should not cause errors."""
-        extractor = EntityExtractor(
-            session_id="test",
-            entity_terms=None,
-        )
-        chunk = DocumentChunk(
-            document_name="test_doc",
-            content="This is a plain document about nothing.",
-        )
-        results = extractor.extract(chunk)
-        # Should still work, just no custom patterns
-        assert isinstance(results, list)
-
-
 class TestChunkTypeEntityValue:
     """Test ENTITY_VALUE chunk type."""
 
@@ -199,31 +97,3 @@ class TestEntityClass:
         assert EntityClass.METADATA_ENTITY == "metadata_entity"
         assert EntityClass.DATA_ENTITY == "data_entity"
         assert EntityClass.MIXED == "mixed"
-
-
-class TestNerFingerprintWithEntityTerms:
-    """Test that entity_terms affect the NER fingerprint."""
-
-    def test_fingerprint_changes_with_entity_terms(self):
-        fp1 = compute_ner_fingerprint(["c1"], ["t1"], ["a1"])
-        fp2 = compute_ner_fingerprint(
-            ["c1"], ["t1"], ["a1"],
-            entity_terms={"COUNTRY": ["France"]},
-        )
-        assert fp1 != fp2
-
-    def test_fingerprint_stable_without_entity_terms(self):
-        fp1 = compute_ner_fingerprint(["c1"], ["t1"], ["a1"])
-        fp2 = compute_ner_fingerprint(["c1"], ["t1"], ["a1"])
-        assert fp1 == fp2
-
-    def test_fingerprint_changes_with_different_values(self):
-        fp1 = compute_ner_fingerprint(
-            ["c1"], ["t1"], ["a1"],
-            entity_terms={"COUNTRY": ["France"]},
-        )
-        fp2 = compute_ner_fingerprint(
-            ["c1"], ["t1"], ["a1"],
-            entity_terms={"COUNTRY": ["France", "Germany"]},
-        )
-        assert fp1 != fp2

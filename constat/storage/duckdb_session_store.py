@@ -164,7 +164,9 @@ class DuckDBSessionStore:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     description VARCHAR,
                     role_id VARCHAR,
-                    version INTEGER DEFAULT 1
+                    version INTEGER DEFAULT 1,
+                    dq_constraints VARCHAR,
+                    dq_results VARCHAR
                 )
             """)
             conn.execute("""
@@ -352,6 +354,14 @@ class DuckDBSessionStore:
                 role_id = excluded.role_id,
                 version = excluded.version
         """, [name, step_number, row_count, description, role_id, version])
+
+    def save_dq_results(self, name: str, results: list[dict]) -> None:
+        """Persist DQ constraint results for a registered table."""
+        with self._locked_conn() as conn:
+            conn.execute(
+                "UPDATE _constat_table_registry SET dq_results = ? WHERE table_name = ?",
+                [json.dumps(results), name],
+            )
 
     def save_artifact(self, name: str, content, artifact_type: str = None, **kwargs) -> None:
         """Save a non-tabular artifact (markdown, JSON, image bytes, etc.).
