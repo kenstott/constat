@@ -28,8 +28,7 @@ class _ConstatLLMClient:
         self._provider = provider
 
     def complete(self, prompt: str) -> str:
-        result = self._provider.generate(system="", user_message=prompt, max_tokens=2048)
-        return result.content
+        return self._provider.generate(system="", user_message=prompt, max_tokens=2048)
 
 
 def build_chonk_llm(
