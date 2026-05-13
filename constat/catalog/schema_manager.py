@@ -1250,6 +1250,7 @@ class SchemaManager:
                 chunk_index=0,
                 source="schema",
                 chunk_type=ChunkType.DB_TABLE,
+                source_detail={"db_name": db_name, "table": table_name},
             ))
 
             # Build FK lookup for columns
@@ -1285,6 +1286,7 @@ class SchemaManager:
                     chunk_index=i,
                     source="schema",
                     chunk_type=ChunkType.DB_COLUMN,
+                    source_detail={"db_name": db_name, "table": table_name, "column": col.name},
                 ))
 
         return chunks
@@ -1659,6 +1661,8 @@ class SchemaManager:
                 # Database type - tells LLM what query semantics to use
                 "database_type": table_meta.database_type,  # e.g., "postgresql", "mongodb"
                 "is_nosql": table_meta.database_type in ("mongodb", "elasticsearch", "dynamodb", "cosmosdb", "firestore", "cassandra", "neo4j"),
+                # Source topology from chunk — used to reconstruct connections (credentials come from DatabaseConfig)
+                "source_detail": chunk.source_detail or {},
             }
 
             # Enrich with document context if doc_tools provided
