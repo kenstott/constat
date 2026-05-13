@@ -212,11 +212,22 @@ def postgresql_with_sample_data(postgresql_container) -> Generator[dict, None, N
 # Cassandra
 # ---------------------------------------------------------------------------
 
-def is_cassandra_ready(port: int = 9042, timeout: int = 5) -> bool:
-    """Check if Cassandra is ready to accept connections."""
+def is_cassandra_ready(port: int = 9042) -> bool:
+    """Check if Cassandra is ready to accept CQL connections."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            pass
+    except OSError:
+        return False
     try:
         from cassandra.cluster import Cluster
-        cluster = Cluster(["localhost"], port=port)
+        cluster = Cluster(
+            ["127.0.0.1"],
+            port=port,
+            connect_timeout=5,
+            control_connection_timeout=5,
+        )
         session = cluster.connect()
         session.shutdown()
         cluster.shutdown()
@@ -225,8 +236,8 @@ def is_cassandra_ready(port: int = 9042, timeout: int = 5) -> bool:
         return False
 
 
-def wait_for_cassandra(port: int = 9042, timeout: int = 120) -> bool:
-    """Wait for Cassandra to be ready."""
+def wait_for_cassandra(port: int = 9042, timeout: int = 600) -> bool:
+    """Wait for Cassandra to be ready (CQL handshake)."""
     start = time.time()
     while time.time() - start < timeout:
         if is_cassandra_ready(port):
@@ -358,14 +369,14 @@ def cassandra_container(docker_available) -> Generator[dict, None, None]:
         port_mapping=f"{port}:9042",
         env={
             "CASSANDRA_CLUSTER_NAME": "TestCluster",
-            "MAX_HEAP_SIZE": "256M",
-            "HEAP_NEWSIZE": "64M",
+            "MAX_HEAP_SIZE": "512M",
+            "HEAP_NEWSIZE": "128M",
         },
-        wait_seconds=30,
+        wait_seconds=10,
     ):
         pytest.fail("Failed to start Cassandra container")
 
-    if not wait_for_cassandra(port, timeout=120):
+    if not wait_for_cassandra(port, timeout=600):
         stop_container(container_name)
         pytest.fail("Cassandra container failed to become ready")
 
