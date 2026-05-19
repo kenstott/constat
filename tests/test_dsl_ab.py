@@ -55,9 +55,8 @@ BENCHMARK_QUERIES: list[BenchmarkQuery] = [
         name="total_revenue",
         tier="easy",
         query="What is the total revenue from all delivered orders?",
-        check=lambda r: r.get("success") and any(
-            x in str(r.get("answer", "")) for x in ["76", "77", "78"]
-        ),
+        # sum of all order amounts = 76,950; check for presence of "76" in answer
+        check=lambda r: r.get("success") and "76" in str(r.get("answer", "")),
     ),
     # --- Medium ---
     BenchmarkQuery(
@@ -321,13 +320,17 @@ def _run_query(session, query: str, bq: BenchmarkQuery, variant: str, run_idx: i
     try:
         result = session.solve(query)
     except Exception as e:
-        result = {"success": False, "answer": "", "error": str(e)}
+        result = {"success": False, "final_answer": "", "error": str(e)}
     duration_ms = int((time.time() - t0) * 1000)
 
     success = bool(result.get("success", False))
-    answer_ok = bool(bq.check(result)) if bq.check and success else success
+    # answer text lives in final_answer (not answer)
+    answer_text = str(result.get("final_answer") or result.get("output") or "")
+    # run semantic check against the answer text
+    check_result = {"success": success, "answer": answer_text}
+    answer_ok = bool(bq.check(check_result)) if bq.check else success
 
-    # Count total attempts across steps
+    # Count total attempts across steps via step.result (StepResult.attempts)
     plan = result.get("plan")
     total_attempts = 0
     n_steps = 0
@@ -335,13 +338,10 @@ def _run_query(session, query: str, bq: BenchmarkQuery, variant: str, run_idx: i
         steps = getattr(plan, "steps", [])
         n_steps = len(steps)
         for step in steps:
-            step_result = getattr(step, "_result", None)
-            if step_result:
-                total_attempts += getattr(step_result, "attempts", 1)
-            else:
-                total_attempts += 1
-    else:
-        total_attempts = result.get("attempts", 1)
+            step_result = getattr(step, "result", None)
+            total_attempts += getattr(step_result, "attempts", 1) if step_result else 1
+    if total_attempts == 0:
+        total_attempts = 1
 
     return RunResult(
         variant=variant,
@@ -374,16 +374,15 @@ def require_anthropic_key():
 @pytest.mark.parametrize("variant", ["dsl", "no_dsl"])
 @pytest.mark.parametrize("run_idx", range(N_RUNS))
 def test_ab_run(require_anthropic_key, ab_ecommerce_db, ab_results, bq, variant, run_idx):
-    """Single A/B run — collected into ab_results for the summary."""
+    """Single A/B run — record metrics; never hard-fail (A/B is a measurement)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         enable_dsl = variant == "dsl"
         session = _make_session(ab_ecommerce_db, enable_dsl, tmpdir)
         run = _run_query(session, bq.query, bq, variant, run_idx)
         ab_results.add(run)
-        assert run.success, (
-            f"[{variant}] {bq.name} run {run_idx} failed — "
-            f"check session logs for details"
-        )
+        # Log outcome but do not assert — failure is a valid metric data point
+        if not run.success:
+            print(f"\n  [METRIC] [{variant}] {bq.name} run {run_idx}: FAILED (recorded)")
 
 
 def test_ab_summary(ab_results):
