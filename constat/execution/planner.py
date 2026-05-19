@@ -13,23 +13,33 @@
 import json
 import logging
 import re
-from datetime import datetime, timezone
-from typing import Optional, Union, TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Optional
 
 from constat.core.config import Config
 
 logger = logging.getLogger(__name__)
-from constat.core.models import Plan, PlannerResponse, PostValidation, Step, StepType, TaskType, ValidationOnFail
+from constat.catalog.schema_manager import SchemaManager
+from constat.core.models import (
+    PRIMITIVE_TO_TASK_TYPE,
+    VALID_PRIMITIVES,
+    Plan,
+    PlannerResponse,
+    PostValidation,
+    Step,
+    StepType,
+    TaskType,
+    ValidationOnFail,
+)
+from constat.discovery.concept_detector import ConceptDetector
 from constat.providers import TaskRouter
 from constat.providers.base import BaseLLMProvider
-from constat.catalog.schema_manager import SchemaManager
 from constat.storage.learnings import LearningCategory
-from constat.discovery.concept_detector import ConceptDetector
 
 if TYPE_CHECKING:
-    from constat.discovery.doc_tools import DocumentDiscoveryTools
     from constat.catalog.api_schema_manager import APISchemaManager
     from constat.core.resources import SessionResources
+    from constat.discovery.doc_tools import DocumentDiscoveryTools
 
 
 # Prompts loaded from external files
@@ -73,14 +83,14 @@ class Planner:
         self,
         config: Config,
         schema_manager: SchemaManager,
-        router_or_provider: Optional[Union[BaseLLMProvider, TaskRouter]] = None,
+        router_or_provider: BaseLLMProvider | TaskRouter | None = None,
         learning_store=None,
         doc_tools: Optional["DocumentDiscoveryTools"] = None,
         api_schema_manager: Optional["APISchemaManager"] = None,
         resources: Optional["SessionResources"] = None,
-        allowed_databases: Optional[set[str]] = None,
-        allowed_apis: Optional[set[str]] = None,
-        allowed_documents: Optional[set[str]] = None,
+        allowed_databases: set[str] | None = None,
+        allowed_apis: set[str] | None = None,
+        allowed_documents: set[str] | None = None,
     ):
         """Initialize the planner.
 
@@ -367,19 +377,37 @@ class Planner:
             raise ValueError(f"Failed to parse plan response as JSON: {e}\nResponse: {response[:500]}")
 
     @staticmethod
+    def _validate_primitives(plan_data: dict) -> list[str]:
+        """Return list of validation error messages for primitive fields."""
+        errors = []
+        for step_data in plan_data.get("steps", []):
+            p = step_data.get("primitive", "")
+            if not p:
+                errors.append(
+                    f"Step {step_data.get('number', '?')}: missing 'primitive' field. "
+                    f"Valid values: {sorted(VALID_PRIMITIVES)}"
+                )
+            elif p not in VALID_PRIMITIVES:
+                errors.append(
+                    f"Step {step_data.get('number', '?')}: unknown primitive '{p}'. "
+                    f"Valid values: {sorted(VALID_PRIMITIVES)}"
+                )
+        return errors
+
+    @staticmethod
     def _build_steps_from_plan_data(plan_data: dict) -> list[Step]:
         """Build Step objects from parsed plan data."""
         steps = []
         for step_data in plan_data.get("steps", []):
-            task_type_str = step_data.get("task_type", "python_analysis")
-            try:
-                task_type = TaskType(task_type_str)
-            except ValueError:
-                task_type = TaskType.PYTHON_ANALYSIS
+            primitive = step_data.get("primitive", "python_analysis")
+            if primitive not in VALID_PRIMITIVES:
+                primitive = "python_analysis"
+            task_type = PRIMITIVE_TO_TASK_TYPE.get(primitive, TaskType.PYTHON_ANALYSIS)
 
             steps.append(Step(
                 number=step_data.get("number", len(steps) + 1),
                 goal=step_data.get("goal", ""),
+                primitive=primitive,
                 expected_inputs=step_data.get("inputs", []),
                 expected_outputs=step_data.get("outputs", []),
                 depends_on=step_data.get("depends_on", []),
@@ -600,14 +628,38 @@ class Planner:
                 tool_handlers=self._get_tool_handlers(),
             )
 
-        # Parse the response
+        # Parse and validate — retry up to 3x if primitive fields are invalid
         plan_data = self._parse_plan_response(response)
+        for _attempt in range(3):
+            errors = self._validate_primitives(plan_data)
+            if not errors:
+                break
+            error_msg = "\n".join(errors)
+            logger.warning(f"Plan primitive validation failed (attempt {_attempt + 1}):\n{error_msg}")
+            if self.router:
+                fix_result = self.router.execute(
+                    task_type=TaskType.PLANNING,
+                    system=system_prompt,
+                    user_message=(
+                        f"{user_message}\n\n"
+                        f"VALIDATION ERRORS in previous response — fix and return corrected JSON:\n{error_msg}"
+                    ),
+                    tools=schema_tools,
+                    tool_handlers=self._get_tool_handlers(),
+                    max_tokens=16384,
+                    complexity=complexity,
+                )
+                if not fix_result.success:
+                    break
+                plan_data = self._parse_plan_response(fix_result.content)
+            else:
+                break
         steps = self._build_steps_from_plan_data(plan_data)
 
         plan = Plan(
             problem=problem,
             steps=steps,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=datetime.now(UTC).isoformat(),
             contains_sensitive_data=plan_data.get("contains_sensitive_data", False),
         )
 
@@ -731,7 +783,7 @@ Return the plan in JSON format."""
         revised_plan = Plan(
             problem=original_plan.problem,
             steps=steps,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=datetime.now(UTC).isoformat(),
             completed_steps=list(completed_steps),
             contains_sensitive_data=plan_data.get("contains_sensitive_data", original_plan.contains_sensitive_data),
         )

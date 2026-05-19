@@ -17,7 +17,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -76,7 +76,7 @@ class SPPage:
 class SharePointClient:
     """Fetches content from SharePoint sites via Microsoft Graph or REST API."""
 
-    def __init__(self, config: "DocumentConfig", config_dir: Path | None = None):
+    def __init__(self, config: DocumentConfig, config_dir: Path | None = None):
         self._config = config
         self._config_dir = config_dir
         self._site_url = config.site_url
@@ -152,7 +152,11 @@ class SharePointClient:
     def _load_pfx_credential(cert_path: str, password: str) -> dict:
         """Extract thumbprint and private key from a PFX file for MSAL."""
         from cryptography.hazmat.primitives.hashes import SHA1
-        from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            NoEncryption,
+            PrivateFormat,
+        )
         from cryptography.hazmat.primitives.serialization.pkcs12 import load_pkcs12
 
         with open(cert_path, "rb") as f:
@@ -468,12 +472,6 @@ class SharePointClient:
                 enabled on the tenant. Tenant admin must run:
                 Set-SPOTenant -AllowAppOnlyPolicy $true
         """
-        if not self._has_cert():
-            logger.warning(
-                "SharePoint list item attachments require certificate auth "
-                "(SP_CERT_PATH not set) — skipping attachment indexing."
-            )
-            return []
         token = self._get_sharepoint_rest_token()
         encoded_name = sp_list.name.replace("'", "''")
         url = (
@@ -496,12 +494,6 @@ class SharePointClient:
         Raises:
             httpx.HTTPStatusError: 401 if AllowAppOnlyPolicy is not enabled.
         """
-        if not self._has_cert():
-            logger.warning(
-                "SharePoint list item attachments require certificate auth "
-                "(SP_CERT_PATH not set) — skipping attachment download."
-            )
-            return b""
         token = self._get_sharepoint_rest_token()
         encoded_name = sp_list.name.replace("'", "''")
         encoded_file = file_name.replace("'", "''")
@@ -646,12 +638,12 @@ class SharePointClient:
     def _parse_sp_datetime(value: str) -> datetime:
         """Parse a SharePoint datetime string to a timezone-aware datetime."""
         if not value:
-            return datetime(1970, 1, 1, tzinfo=timezone.utc)
+            return datetime(1970, 1, 1, tzinfo=UTC)
         # SharePoint datetimes may have trailing Z or offset
         cleaned = value.rstrip("Z")
         dt = datetime.fromisoformat(cleaned)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
 
     @staticmethod

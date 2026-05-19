@@ -15,6 +15,22 @@ from __future__ import annotations
 import logging
 
 from constat.core.models import TaskType
+
+_PRIMITIVE_HINTS: dict[str, str] = {
+    "db_lookup": "Primitive: db_lookup — write PostgreSQL-canonical SQL for relational sources (auto-transpiled). For NoSQL sources use the native client API matching the source's database_type.",
+    "doc_search": "Primitive: doc_search — call doc_read(name) to load documents, then search or filter the content.",
+    "fact_lookup": "Primitive: fact_lookup — call answer_from_docs(query) → str. Parse numeric values from the string as needed.",
+    "classify": "Primitive: classify — call llm_classify(value, categories) or llm_map(series, categories) for per-row classification.",
+    "compute": "Primitive: compute — pure Python/pandas/numpy only. No LLM calls, no database queries.",
+    "filter": "Primitive: filter — filter an existing DataFrame with .query() or boolean indexing. Load from store if needed.",
+    "join": "Primitive: join — merge two existing DataFrames with pd.merge(). Load from store if needed.",
+    "aggregate": "Primitive: aggregate — group and aggregate with .groupby().agg() or DuckDB GROUP BY.",
+    "summarize": "Primitive: summarize — produce a text summary using llm_ask() or llm_summarize().",
+    "extract": "Primitive: extract — call llm_extract(texts, fields, context) to pull structured fields from text.",
+    "user_input": "Primitive: user_input — call ask_user(question, widget=..., cache_key='step_N.name') to pause and collect input.",
+    "synthesize": "Primitive: synthesize — assemble the final answer from prior step outputs.",
+    "python_analysis": "",
+}
 from constat.session._types import STEP_PROMPT_SECTIONS, STEP_PROMPT_TEMPLATE
 
 logger = logging.getLogger(__name__)
@@ -230,6 +246,9 @@ class PromptsMixin:
 
         system_prompt = self._get_step_system_prompt(step, model_family=model_family)
 
+        hint_text = _PRIMITIVE_HINTS.get(getattr(step, "primitive", "python_analysis"), "")
+        primitive_hint = f"\nPrimitive hint: {hint_text}\n" if hint_text else ""
+
         return STEP_PROMPT_TEMPLATE.format(
             system_prompt=system_prompt,
             injected_sections=injected_sections,
@@ -247,6 +266,7 @@ class PromptsMixin:
             goal=step.goal,
             inputs=", ".join(step.expected_inputs) if step.expected_inputs else "(none)",
             outputs=", ".join(step.expected_outputs) if step.expected_outputs else "(none)",
+            primitive_hint=primitive_hint,
         )
 
     def _get_codegen_learnings(self, step_goal: str, task_type: TaskType = None, model_family: str | None = None) -> str:
@@ -415,7 +435,6 @@ class PromptsMixin:
         """Check if a reference skill is relevant to a step goal using similarity matching."""
         if not hasattr(self, 'skill_matcher') or not self.skill_matcher:
             return True  # No matcher available, include by default
-        from constat.core.skill_matcher import SkillMatch
         matches = self.skill_matcher.match(step_goal, threshold=0.80)
         return any(m.skill.name == skill.name for m in matches)
 

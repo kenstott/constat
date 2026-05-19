@@ -14,6 +14,22 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
+VALID_PRIMITIVES: frozenset[str] = frozenset({
+    "db_lookup",      # SQL or NoSQL query → DataFrame / list
+    "doc_search",     # vector/keyword search → list[str]
+    "fact_lookup",    # answer_from_docs() → str scalar
+    "classify",       # llm_classify / llm_map → str label
+    "compute",        # pure Python math/transform → scalar or DataFrame
+    "filter",         # filter DataFrame → DataFrame
+    "join",           # merge two DataFrames → DataFrame
+    "aggregate",      # groupby/agg → DataFrame or scalar
+    "summarize",      # llm_summarize / llm_ask → str
+    "extract",        # llm_extract structured fields → dict
+    "user_input",     # ask_user() → str
+    "synthesize",     # final answer assembly → str
+    "python_analysis",  # escape hatch — unconstrained Python
+})
+
 
 class StepType(Enum):
     """Type of step to execute."""
@@ -64,6 +80,23 @@ class TaskType(Enum):
 
     # Default fallback
     GENERAL = "general"
+
+
+PRIMITIVE_TO_TASK_TYPE: dict[str, "TaskType"] = {
+    "db_lookup": TaskType.SQL_GENERATION,
+    "doc_search": TaskType.PYTHON_ANALYSIS,
+    "fact_lookup": TaskType.FACT_RESOLUTION,
+    "classify": TaskType.STRUCTURED_EXTRACTION,
+    "compute": TaskType.PYTHON_ANALYSIS,
+    "filter": TaskType.PYTHON_ANALYSIS,
+    "join": TaskType.PYTHON_ANALYSIS,
+    "aggregate": TaskType.PYTHON_ANALYSIS,
+    "summarize": TaskType.SUMMARIZATION,
+    "extract": TaskType.STRUCTURED_EXTRACTION,
+    "user_input": TaskType.USER_INPUT,
+    "synthesize": TaskType.SYNTHESIS,
+    "python_analysis": TaskType.PYTHON_ANALYSIS,
+}
 
 
 class StepStatus(Enum):
@@ -169,12 +202,13 @@ class Step:
     """
     number: int
     goal: str  # Natural language description
+    primitive: str = "python_analysis"  # Step primitive — determines code shape
     expected_inputs: list[str] = field(default_factory=list)
     expected_outputs: list[str] = field(default_factory=list)
     depends_on: list[int] = field(default_factory=list)  # Explicit step dependencies
     step_type: StepType = StepType.PYTHON
 
-    # Task type for model routing (determines which models to try)
+    # Task type for model routing — derived from primitive by planner
     task_type: TaskType = TaskType.PYTHON_ANALYSIS
 
     # Complexity hint for model selection within a task type
@@ -184,23 +218,23 @@ class Step:
     # Role context for this step (None = shared context)
     # When set, facts created by this step are scoped to the role
     # Detected from patterns like "as a [role]" or "acting as [role]"
-    role_id: Optional[str] = None
+    role_id: str | None = None
 
     # Domain this step operates in (for domain-aware model routing)
     # Set by the planner based on which domain's data the step touches.
     # Router walks: domain hierarchy → user → system to find the model chain.
-    domain: Optional[str] = None
+    domain: str | None = None
 
     # Skills to apply for this step (None = use query-level skills)
     # Skills provide domain-specific instructions for code generation
-    skill_ids: Optional[list[str]] = None
+    skill_ids: list[str] | None = None
 
     # Post-execution validations (assertions checked after successful execution)
     post_validations: list["PostValidation"] = field(default_factory=list)
 
     # Populated during execution
     status: StepStatus = StepStatus.PENDING
-    code: Optional[str] = None
+    code: str | None = None
     result: Optional["StepResult"] = None
 
     def __setattr__(self, name: str, value) -> None:
@@ -216,8 +250,8 @@ class Step:
         object.__setattr__(self, name, value)
 
     # Phase 2 extensions
-    prolog_code: Optional[str] = None
-    derivation_trace: Optional[str] = None
+    prolog_code: str | None = None
+    derivation_trace: str | None = None
 
 
 @dataclass
@@ -226,7 +260,7 @@ class FailureSuggestion:
     id: str  # Short identifier (e.g., "rephrase", "skip", "manual")
     label: str  # Display label (e.g., "Rephrase search query")
     description: str  # Detailed description of what this option does
-    action: Optional[str] = None  # Optional action hint for the system
+    action: str | None = None  # Optional action hint for the system
 
 
 @dataclass
@@ -234,7 +268,7 @@ class StepResult:
     """Result of executing a step."""
     success: bool
     stdout: str
-    error: Optional[str] = None
+    error: str | None = None
     attempts: int = 1
     duration_ms: int = 0
 
@@ -282,14 +316,14 @@ class Plan:
         return len(self.completed_steps) == len(self.steps)
 
     @property
-    def next_step(self) -> Optional[Step]:
+    def next_step(self) -> Step | None:
         """Get the next step to execute."""
         for step in self.steps:
             if step.status == StepStatus.PENDING:
                 return step
         return None
 
-    def get_step(self, number: int) -> Optional[Step]:
+    def get_step(self, number: int) -> Step | None:
         """Get a step by number (1-indexed)."""
         for step in self.steps:
             if step.number == number:
@@ -430,7 +464,7 @@ class SessionState:
     """
     session_id: str
     config_path: str
-    plan: Optional[Plan] = None
+    plan: Plan | None = None
     scratchpad_content: str = ""
     tables: list[str] = field(default_factory=list)
     # Phase 2: knowledge_base facts and rules
@@ -460,16 +494,16 @@ class Artifact:
     attempt: int = 1
 
     # Metadata
-    title: Optional[str] = None
-    description: Optional[str] = None
-    content_type: Optional[str] = None  # MIME type override
+    title: str | None = None
+    description: str | None = None
+    content_type: str | None = None  # MIME type override
     metadata: dict[str, Any] = field(default_factory=dict)
 
     # Timestamps
-    created_at: Optional[str] = None
+    created_at: str | None = None
 
     # Role provenance - which role created this artifact
-    role_id: Optional[str] = None
+    role_id: str | None = None
 
     @property
     def mime_type(self) -> str:

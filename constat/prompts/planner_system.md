@@ -138,19 +138,34 @@ Return a JSON object:
   "reasoning": "Brief explanation of your approach",
   "contains_sensitive_data": false,
   "steps": [
-    {{"number": 1, "goal": "...", "inputs": [], "outputs": ["df"], "depends_on": [], "task_type": "sql_generation", "complexity": "medium", "domain": "my-domain", "role_id": null, "post_validations": [{{"expression": "len(df) > 0", "description": "Query returned results", "on_fail": "retry"}}]}},
-    {{"number": 2, "goal": "...", "inputs": ["df"], "outputs": ["summary"], "depends_on": [1], "task_type": "python_analysis", "complexity": "low", "domain": "my-domain", "role_id": "analyst"}}
+    {{"number": 1, "goal": "...", "primitive": "db_lookup", "inputs": [], "outputs": ["df"], "depends_on": [], "complexity": "medium", "domain": "my-domain", "role_id": null, "post_validations": [{{"expression": "len(df) > 0", "description": "Query returned results", "on_fail": "retry"}}]}},
+    {{"number": 2, "goal": "...", "primitive": "aggregate", "inputs": ["df"], "outputs": ["summary"], "depends_on": [1], "complexity": "low", "domain": "my-domain", "role_id": "analyst"}}
   ]
 }}
 ```
 
 Note: `role_id` and `domain` are optional. Use `null` or omit for steps that should use shared context / system-level routing.
 
-## Task Types (for code generation routing)
-- **sql_generation**: Steps that primarily query databases (SELECT, joins, aggregations)
-- **python_analysis**: Steps that transform data, compute statistics, or generate output (including summaries)
-- **synthesis**: Final summary, report, or executive output steps that combine prior results into a deliverable
-- **user_input**: Steps that pause to ask the user a question about intermediate results. Code calls `ask_user()`.
+## Primitives
+Each step must have a `primitive` field — it determines the code shape for that step.
+
+| primitive | what it does | code pattern |
+|---|---|---|
+| `db_lookup` | Query a database | Relational: PostgreSQL-canonical SQL via `sql_{db}(query)`. NoSQL: native client API (`db_{name}.find(...)`, `.query(cypher)`, etc.) — use the query language matching `database_type` from schema |
+| `doc_search` | Search configured documents | `doc_read(name)` to load, then filter/search content |
+| `fact_lookup` | Extract scalar fact from documents | `answer_from_docs(query)` → str; parse numeric values as needed |
+| `classify` | Label values using LLM | `llm_classify(value, categories)` or `llm_map(series, categories)` for per-row |
+| `compute` | Pure Python math or transformation | No LLM calls, no DB queries — pandas/numpy expressions only |
+| `filter` | Filter an existing DataFrame | `.query()` or boolean indexing on a prior step's output |
+| `join` | Merge two DataFrames | `pd.merge()` on two prior step outputs |
+| `aggregate` | Group and aggregate | `.groupby().agg()` or DuckDB GROUP BY on a prior step's output |
+| `summarize` | Produce a text summary | `llm_ask()` or `llm_summarize()` |
+| `extract` | Pull structured fields from text | `llm_extract(texts, fields, context)` |
+| `user_input` | Pause and ask the user | `ask_user(question, widget=..., cache_key='step_N.name')` |
+| `synthesize` | Assemble final answer | Combine prior outputs into the final deliverable |
+| `python_analysis` | Escape hatch — arbitrary Python | Use when no other primitive fits |
+
+Pick the most specific primitive that fits. Use `python_analysis` only when the operation genuinely doesn't match any other category.
 
 ## Complexity Levels
 - **low**: Simple single-table queries

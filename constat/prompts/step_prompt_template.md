@@ -20,5 +20,5 @@ Step {step_number} of {total_steps}: {goal}
 
 Expected inputs: {inputs}
 Expected outputs: {outputs}
-
+{primitive_hint}
 Generate the Python code to accomplish this step.
