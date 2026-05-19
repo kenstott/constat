@@ -74,7 +74,7 @@ llm:
 
 # chonk integration
 chonk:
-  toml_path: demo/chonk.toml
+  toml_path: chonk.toml
   search_mode: auto
 
 # Vector store and clustering
@@ -125,19 +125,19 @@ databases:
   # entry exists purely to demonstrate the JDBC config path without needing
   # a proprietary database.  Requires: pip install 'constat[jdbc]'
   #
-  chinook_jdbc:
-    type: jdbc
-    jdbc_driver: org.sqlite.JDBC
-    jdbc_url: "jdbc:sqlite:data/chinook.db"
-    jar_path:
-      - demo/drivers/sqlite-jdbc-3.45.3.0.jar
-      - demo/drivers/slf4j-api-2.0.9.jar
-      - demo/drivers/slf4j-nop-2.0.9.jar
-    description: >
-      Chinook sample music-store database (albums, artists, tracks, invoices,
-      customers, employees) accessed via Generic JDBC using the Xerial SQLite driver.
-      Demonstrates JDBC connectivity with no credentials required.
-    read_only: true
+  # chinook_jdbc:  # disabled — requires pip install 'constat[jdbc]'
+  #   type: jdbc
+  #   jdbc_driver: org.sqlite.JDBC
+  #   jdbc_url: "jdbc:sqlite:data/chinook.db"
+  #   jar_path:
+  #     - demo/drivers/sqlite-jdbc-3.45.3.0.jar
+  #     - demo/drivers/slf4j-api-2.0.9.jar
+  #     - demo/drivers/slf4j-nop-2.0.9.jar
+  #   description: >
+  #     Chinook sample music-store database (albums, artists, tracks, invoices,
+  #     customers, employees) accessed via Generic JDBC using the Xerial SQLite driver.
+  #     Demonstrates JDBC connectivity with no credentials required.
+  #   read_only: true
 
 databases_description: |
   Three interconnected business databases and two file-based data sources:
@@ -157,7 +157,7 @@ documents:
     path: data/audio
     whisper_model: large-v3        # faster-whisper model (tiny/base/small/medium/large-v3)
     diarize: true                  # Enable speaker diarization via WhisperX
-    hf_token: ${HF_TOKEN}          # HuggingFace token (required for diarization)
+    hf_token: ${HF_TOKEN:-}        # HuggingFace token (required for diarization)
     language: en                   # Language code (null = auto-detect)
 
 entity_resolution:

@@ -46,23 +46,42 @@ def sync_entities_from_chonk(
     ph = ", ".join(["?" for _ in chonk_domain_ids])
     rows = conn.execute(
         f"""
-        SELECT DISTINCT ent.id, ent.name, ent.display_name, ent.entity_type, emb.domain_id
+        SELECT DISTINCT ent.id, ent.name, ent.display_name, ent.entity_type, src.domain_id
         FROM entities ent
         JOIN chunk_entities ce ON ent.id = ce.entity_id
         JOIN embeddings emb ON ce.chunk_id = emb.chunk_id
-        WHERE emb.domain_id IN ({ph})
+        LEFT JOIN sources src ON (
+            emb.source_id = src.source_id
+            OR src.source_id LIKE emb.chunk_id || '%'
+            OR emb.chunk_id LIKE 'schema:' || REPLACE(src.source_id, ':', '.') || '%'
+        )
+        WHERE src.domain_id IN ({ph}) OR src.domain_id IS NULL
         """,
         chonk_domain_ids,
     ).fetchall()
 
     if not rows:
+        # Fallback: no domain filter — return all entities from chonk
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ent.id, ent.name, ent.display_name, ent.entity_type, NULL AS domain_id
+            FROM entities ent
+            JOIN chunk_entities ce ON ent.id = ce.entity_id
+            JOIN embeddings emb ON ce.chunk_id = emb.chunk_id
+            """
+        ).fetchall()
+
+    if not rows:
         return 0
 
     entities = []
-    for _, name, display_name, entity_type, domain_id in rows:
+    entity_id_map: dict[str, str] = {}  # chonk entity_id → constat entity_id
+    for chonk_eid, name, display_name, entity_type, domain_id in rows:
         domain_name = domain_id.replace("global:", "", 1) if domain_id else domain_names[0]
+        constat_eid = _entity_id(name, session_id)
+        entity_id_map[chonk_eid] = constat_eid
         entities.append(Entity(
-            id=_entity_id(name, session_id),
+            id=constat_eid,
             name=name,
             display_name=display_name,
             semantic_type=entity_type or "concept",
@@ -74,5 +93,26 @@ def sync_entities_from_chonk(
         ))
 
     vector_store.add_entities(entities, session_id=session_id)
+
+    # Create chunk_entities links in constat's vector store so glossary can see these entities
+    from constat.discovery.models import ChunkEntity
+    link_rows = conn.execute(
+        "SELECT entity_id, chunk_id, score FROM chunk_entities WHERE entity_id IN ({})".format(
+            ", ".join("?" for _ in entity_id_map)
+        ),
+        list(entity_id_map.keys()),
+    ).fetchall()
+    links = []
+    for chonk_eid, chunk_id, score in link_rows:
+        constat_eid = entity_id_map.get(chonk_eid)
+        if constat_eid:
+            links.append(ChunkEntity(
+                chunk_id=chunk_id,
+                entity_id=constat_eid,
+                confidence=float(score) if score else 0.8,
+            ))
+    if links:
+        vector_store.link_chunk_entities(links)
+
     logger.info(f"chonk entity sync: {len(entities)} entities → session {session_id}")
     return len(entities)

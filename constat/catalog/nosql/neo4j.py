@@ -10,9 +10,9 @@
 
 """Neo4j graph database connector."""
 
-from typing import Any, Optional
+from typing import Any
 
-from .base import NoSQLConnector, NoSQLType, CollectionMetadata, FieldInfo
+from .base import CollectionMetadata, NoSQLConnector, NoSQLType
 
 
 class Neo4jConnector(NoSQLConnector):
@@ -51,9 +51,9 @@ class Neo4jConnector(NoSQLConnector):
         self,
         uri: str = "bolt://localhost:7687",
         database: str = "neo4j",
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        name: Optional[str] = None,
+        username: str | None = None,
+        password: str | None = None,
+        name: str | None = None,
         description: str = "",
         sample_size: int = 100,
     ) -> None:
@@ -94,7 +94,7 @@ class Neo4jConnector(NoSQLConnector):
             self._driver = None
             self._connected = False
 
-    def _run(self, query: str, params: Optional[dict] = None) -> list[dict]:
+    def _run(self, query: str, params: dict | None = None) -> list[dict]:
         """Execute a Cypher query and return results as dicts."""
         if self._driver is None:
             raise RuntimeError("Not connected to Neo4j")
@@ -211,8 +211,7 @@ class Neo4jConnector(NoSQLConnector):
         # Outgoing
         outgoing = self._run(
             f"MATCH (:`{label}`)-[r]->(t) "
-            "RETURN type(r) AS rel_type, labels(t)[0] AS target "
-            "WITH DISTINCT rel_type, target "
+            "WITH DISTINCT type(r) AS rel_type, labels(t)[0] AS target "
             "RETURN rel_type, target ORDER BY rel_type",
         )
         if outgoing:
@@ -222,8 +221,7 @@ class Neo4jConnector(NoSQLConnector):
         # Incoming
         incoming = self._run(
             f"MATCH (s)-[r]->(:`{label}`) "
-            "RETURN type(r) AS rel_type, labels(s)[0] AS source "
-            "WITH DISTINCT rel_type, source "
+            "WITH DISTINCT type(r) AS rel_type, labels(s)[0] AS source "
             "RETURN rel_type, source ORDER BY rel_type",
         )
         if incoming:
@@ -344,7 +342,7 @@ class Neo4jConnector(NoSQLConnector):
             converted.append(rec)
         return converted
 
-    def cypher(self, query: str, params: Optional[dict] = None) -> list[dict]:
+    def cypher(self, query: str, params: dict | None = None) -> list[dict]:
         """Execute a raw Cypher query.
 
         Args:

@@ -37,6 +37,7 @@ from constat.server.graphql.types import (
     EntityRelationshipType,
     GenerateResultType,
     GlossaryChangeAction,
+    ContextEdgeType,
     GlossaryChangeEvent,
     GlossaryChildType,
     GlossaryListType,
@@ -345,6 +346,26 @@ class Query:
             except Exception:
                 logger.warning(f"glossary_term({name}): cluster siblings lookup failed", exc_info=True)
 
+        # Resolve context graph
+        context_graph_edges: list[ContextEdgeType] = []
+        try:
+            from constat.storage._chonk_registry import get_global_store_readonly
+            chonk_store = get_global_store_readonly()
+            if chonk_store is not None:
+                raw_edges = chonk_store.get_context_graph(lookup_name, namespace="global", min_weight=0.1)
+                context_graph_edges = [
+                    ContextEdgeType(
+                        target_entity_id=e.target_entity_id,
+                        weight=e.weight,
+                        svo_signal=e.svo_signal,
+                        cooccur_signal=e.cooccur_signal,
+                        cluster_signal=e.cluster_signal,
+                    )
+                    for e in raw_edges
+                ]
+        except Exception:
+            logger.warning(f"glossary_term({name}): context graph lookup failed", exc_info=True)
+
         # Build result from glossary term or entity
         if term:
             effective_domain = normalize_domain(
@@ -385,6 +406,7 @@ class Query:
                 children=children or None,
                 relationships=relationships or None,
                 cluster_siblings=cluster_siblings or None,
+                context_graph=context_graph_edges or None,
             )
 
         # No glossary term — check entity (self-describing)
@@ -412,6 +434,7 @@ class Query:
                 children=children or None,
                 relationships=relationships or None,
                 cluster_siblings=cluster_siblings or None,
+                context_graph=context_graph_edges or None,
             )
 
         return None

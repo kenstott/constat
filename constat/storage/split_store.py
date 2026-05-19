@@ -15,6 +15,7 @@ merge user and system data. Writes are routed via _write_schema().
 """
 
 import logging
+import re
 from pathlib import Path
 
 from constat.storage.duckdb_pool import ThreadLocalDuckDB
@@ -62,6 +63,7 @@ class SplitVectorStore:
             str(self._user_db_path),
             init_sql=init_sql or [],
         )
+        self._sys_alias = "sys"  # may be overridden by _attach_system_db
 
         if not self._warmup:
             self._attach_system_db()
@@ -76,33 +78,65 @@ class SplitVectorStore:
     def warmup(self) -> bool:
         return self._warmup
 
-    def _attach_system_db(self) -> None:
-        """ATTACH system DB as 'sys'.
+    def _find_attached_alias(self) -> str | None:
+        """Return the alias under which system_db_path is already attached, or None."""
+        sys_resolved = str(self._system_db_path.resolve())
+        rows = self._db.conn.execute(
+            "SELECT database_name, path FROM duckdb_databases() WHERE path IS NOT NULL"
+        ).fetchall()
+        for name, path in rows:
+            if path and str(Path(path).resolve()) == sys_resolved:
+                return name
+        return None
 
-        Tries read-write first, falls back to read-only on file handle
-        conflicts (DuckDB enforces process-wide unique file handles for
-        read-write but permits concurrent read-only ATTACHes).
+    def _attach_system_db(self) -> None:
+        """ATTACH system DB as 'sys' (or discover existing alias).
+
+        DuckDB 1.5.1+ shares file handles process-wide.  If the system DB is
+        already open under a different alias (e.g. "system"), ATTACH fails with
+        "already attached by database '<alias>'".  In that case we discover the
+        existing alias and use it instead of "sys".
         """
-        attached = [
+        # Already attached as 'sys' in this connection?
+        attached_names = [
             row[0]
-            for row in self._db.conn.execute(
-                "SELECT database_name FROM duckdb_databases()"
-            ).fetchall()
+            for row in self._db.conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()
         ]
-        if "sys" in attached:
+        if "sys" in attached_names:
+            self._sys_alias = "sys"
             return
+
+        # Already attached as some other alias?
+        alias = self._find_attached_alias()
+        if alias is not None:
+            self._sys_alias = alias
+            logger.debug("system DB already attached as %r — using that alias", alias)
+            return
+
         try:
-            self._db.conn.execute(
-                f"ATTACH '{self._system_db_path}' AS sys"
-            )
+            self._db.conn.execute(f"ATTACH '{self._system_db_path}' AS sys")
+            self._sys_alias = "sys"
         except Exception as e:
-            if "already attached" in str(e):
-                return
-            if "file handle conflict" in str(e).lower():
-                self._db.conn.execute(
-                    f"ATTACH '{self._system_db_path}' AS sys (READ_ONLY)"
-                )
-                return
+            err = str(e)
+            if "already attached" in err or "file handle conflict" in err.lower():
+                # Extract alias from error message if present
+                m = re.search(r"already attached by database ['\"]?(\w+)['\"]?", err)
+                if m:
+                    self._sys_alias = m.group(1)
+                    logger.debug("extracted sys alias %r from error message", self._sys_alias)
+                    return
+                # Fall back to read-only attach under 'sys'
+                try:
+                    self._db.conn.execute(f"ATTACH '{self._system_db_path}' AS sys (READ_ONLY)")
+                    self._sys_alias = "sys"
+                    return
+                except Exception:
+                    pass
+                # Last resort: scan again after failed attach attempts
+                alias = self._find_attached_alias()
+                if alias is not None:
+                    self._sys_alias = alias
+                    return
             raise
 
     def _create_union_views(self) -> None:
@@ -115,12 +149,13 @@ class SplitVectorStore:
         Use DuckDBVectorStore._ensure_sys_tables() before calling this.
         """
         conn = self._db.conn
+        sa = self._sys_alias
         for table in SPLIT_TABLES:
             conn.execute(
                 f"CREATE OR REPLACE TEMP VIEW v_{table} AS "
                 f"SELECT *, 'main' AS _source_schema FROM main.{table} "
                 f"UNION ALL "
-                f"SELECT *, 'sys' AS _source_schema FROM sys.{table}"
+                f"SELECT *, 'sys' AS _source_schema FROM {sa}.{table}"
             )
 
         # Composite views over union base views
@@ -172,12 +207,12 @@ class SplitVectorStore:
         if self._warmup:
             return "main"
         if domain_tier == "system":
-            return "sys"
+            return self._sys_alias
         return "main"
 
     def close(self) -> None:
         """Detach system DB and close user DB."""
-        if not self._warmup:
+        if not self._warmup and self._sys_alias == "sys":
             try:
                 self._db.conn.execute("DETACH sys")
             except Exception:

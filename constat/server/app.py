@@ -98,9 +98,8 @@ def _warmup_vector_store(config: Config) -> None:
             schema_manager = SchemaManager(config)
             schema_manager.build_chunks(domain_id="__base__", vector_store=vector_store)
             for triples in schema_manager.relationship_index._by_subject.values():
-                for ts in triples.values():
-                    for t in ts:
-                        _merged_rel_idx.add(t)
+                for t in triples:
+                    _merged_rel_idx.add(t)
             vector_store.set_source_hash(source_id, 'db', db_hash)
             logger.info(f"  Base databases: {len(config.databases)} indexed")
 
@@ -138,9 +137,8 @@ def _warmup_vector_store(config: Config) -> None:
                 domain_schema_manager = SchemaManager(domain_config)
                 domain_schema_manager.build_chunks(domain_id=domain_name, vector_store=vector_store)
                 for triples in domain_schema_manager.relationship_index._by_subject.values():
-                    for ts in triples.values():
-                        for t in ts:
-                            _merged_rel_idx.add(t)
+                    for t in triples:
+                        _merged_rel_idx.add(t)
                 vector_store.set_source_hash(source_id, 'db', db_hash)
                 logger.info(f"  Domain {domain_name} databases: {len(domain.databases)} indexed")
 

@@ -15,16 +15,25 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Callable
 
-from typing import Callable
-
-
-from constat.core.models import FailureSuggestion, PostValidation, Step, StepResult, TaskType, ValidationOnFail
+from constat.core.models import (
+    FailureSuggestion,
+    PostValidation,
+    Step,
+    StepResult,
+    TaskType,
+    ValidationOnFail,
+)
 from constat.email import create_send_email
 from constat.execution import RETRY_PROMPT_TEMPLATE
 from constat.execution.executor import format_error_for_retry
 from constat.session._types import (
-    ClarificationQuestion, ClarificationRequest, StepEvent, WidgetSpec, WidgetType,
+    ClarificationQuestion,
+    ClarificationRequest,
+    StepEvent,
+    WidgetSpec,
+    WidgetType,
 )
 from constat.storage.learnings import LearningCategory, LearningSource
 from constat.visualization import create_viz_helper
@@ -210,6 +219,22 @@ class ExecutionMixin:
 
         return doc_read
 
+    def _create_answer_from_docs_helper(self) -> Callable | None:
+        if self.doc_tools is None:
+            return None
+        doc_tools = self.doc_tools
+        config = self.config
+
+        def answer_from_docs(query: str) -> str:
+            result = doc_tools.answer_from_documents(query, llm_config=config.llm)
+            if result is None:
+                raise ValueError(
+                    "answer_from_docs: no documents configured or no answer_llm available"
+                )
+            return result.text
+
+        return answer_from_docs
+
     def _search_document_chunks(self, query: str, document_name: str, limit: int = 10) -> list:
         """Search for chunks within a specific document by semantic similarity.
 
@@ -285,7 +310,7 @@ class ExecutionMixin:
             document: str,
             columns: list[str] | None = None,
             dtypes: dict[str, str] | None = None,
-        ) -> "pd.DataFrame":
+        ) -> pd.DataFrame:
             """Extract a table from a document into a DataFrame.
 
             Uses chunk-based search to find the relevant section, then extracts
@@ -535,6 +560,7 @@ class ExecutionMixin:
             "llm_extract_table": self._create_extract_table_helper(),
             "llm_extract_facts": self._create_extract_facts_helper(),
             "doc_read": self._create_doc_read_helper(),
+            **({"answer_from_docs": helper} if (helper := self._create_answer_from_docs_helper()) is not None else {}),
         }
 
         # Provide database connections from config
@@ -1450,7 +1476,6 @@ class ExecutionMixin:
         # Don't overwrite values the step code just produced — even if
         # they aren't DataFrames — to avoid replacing fresh results with
         # stale store data from a previous step/attempt.
-        import pandas as pd
         try:
             for t in self.datastore.list_tables():
                 name = t["name"]
@@ -1534,7 +1559,7 @@ class ExecutionMixin:
         Returns:
             User's response string, or None if skipped/unavailable.
         """
-        from constat.session._types import ClarificationRequest, ClarificationQuestion
+        from constat.session._types import ClarificationQuestion, ClarificationRequest
 
         cache_key = f"_validation_{step.number}_{validation.description}"
         if self.datastore:
@@ -1641,6 +1666,7 @@ class ExecutionMixin:
     def _apply_glossary_draft(self, detection: dict) -> None:
         """Write a draft glossary term/alias based on a detected correction."""
         import hashlib
+
         from constat.discovery.models import GlossaryTerm, display_entity_name
 
         if not self.doc_tools or not hasattr(self.doc_tools, '_vector_store'):
@@ -1792,7 +1818,7 @@ class ExecutionMixin:
             if store_tables:
                 names = [t['name'] for t in store_tables if not t['name'].startswith('_')]
                 if names:
-                    lines.append(f"\nSTORE TABLES (use store.create_view() to build on these, or store.query() to read into Python):")
+                    lines.append("\nSTORE TABLES (use store.create_view() to build on these, or store.query() to read into Python):")
                     lines.append(f"  {', '.join(names)}")
 
         return "\n".join(lines) if lines else ""
@@ -1996,8 +2022,8 @@ Return ONLY the JSON array."""
 
     @staticmethod
     def _generate_failure_suggestions(
-        step: "Step", error: str, _code: str
-    ) -> list["FailureSuggestion"]:
+        step: Step, error: str, _code: str
+    ) -> list[FailureSuggestion]:
         """Generate suggestions for alternative approaches when a step fails.
 
         Differentiates between:

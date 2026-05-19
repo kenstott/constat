@@ -12,8 +12,9 @@ import { useQuery, useSubscription } from '@apollo/client/react'
 import { GLOSSARY_QUERY } from '@/graphql/queries'
 import { GLOSSARY_CHANGED_SUBSCRIPTION } from '@/graphql/subscriptions'
 import { setGlossaryGenerating, setGlossaryProgress } from '@/graphql/ui-state'
+import { setTermsFromState } from '@/store/glossaryState'
 import type { GlossaryTerm } from '@/types/api'
-import { useMemo, useRef, useCallback } from 'react'
+import { useMemo, useRef, useCallback, useEffect } from 'react'
 
 interface GlossaryQueryResult {
   glossary: {
@@ -129,6 +130,16 @@ export function useGlossaryData(sessionId: string, scope?: string, domain?: stri
     () => (data?.glossary?.terms ?? []).map(mapTerm),
     [data],
   )
+
+  useEffect(() => {
+    if (data?.glossary) {
+      setTermsFromState(
+        terms,
+        data.glossary.totalDefined,
+        data.glossary.totalSelfDescribing,
+      )
+    }
+  }, [data, terms])
 
   return {
     terms,

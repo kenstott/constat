@@ -14,6 +14,7 @@ Playwright/browser fixtures live in tests/e2e/conftest.py.
 """
 
 from __future__ import annotations
+
 import atexit
 import os
 import signal
@@ -26,7 +27,6 @@ import pytest
 import requests
 
 from tests.integration.fixtures_docker_helpers import is_docker_available
-
 
 _SERVER_HOST = "127.0.0.1"
 _STARTUP_TIMEOUT = 300  # seconds (warmup includes embedding model + whisper model + image/audio processing)
@@ -143,6 +143,9 @@ def server_process(integration_data_dir, server_port):
         "AUTH_DISABLED": "true",
         "CONSTAT_CONFIG": str(demo_config),
         "PYTHONPATH": str(project_root),
+        # Skip expensive SVO/context-graph rebuild on test server restarts;
+        # use CONSTAT_CHONK_FORCE_REBUILD=1 to regenerate from scratch.
+        "CONSTAT_CHONK_FORCE_REBUILD": os.environ.get("CONSTAT_CHONK_FORCE_REBUILD", "0"),
     }
 
     server_log = integration_data_dir / "server.log"
@@ -198,6 +201,7 @@ def server_url(server_process, server_port):
 def session_id(server_url):
     """Create a session shared across tests in a class."""
     import uuid
+
     import requests as _requests
     body = {"session_id": str(uuid.uuid4())}
     resp = _requests.post(f"{server_url}/api/sessions", json=body)

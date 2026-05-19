@@ -2,7 +2,7 @@
 //
 // Tests for AddDatabaseModal: per-type field rendering and auth type selectors.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { AddDatabaseModal } from '../AddDatabaseModal'
 
@@ -15,8 +15,8 @@ function selectType(type: string) {
 }
 
 describe('AddDatabaseModal', () => {
-  let onAdd: ReturnType<typeof vi.fn>
-  let onCancel: ReturnType<typeof vi.fn>
+  let onAdd: Mock
+  let onCancel: Mock
 
   beforeEach(() => {
     onAdd = vi.fn()

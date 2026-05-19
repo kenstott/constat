@@ -20,9 +20,10 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 - `llm_ask(question) -> scalar` for single factual lookups (GDP, capital, conversion rate). For per-row enrichment use `llm_map`/`llm_score`/`llm_extract` instead.
 - `send_email(to, subject, body, fmt="markdown", df=None)` for emails (use fmt="markdown" for styled HTML)
 - `doc_read(name)` to load reference document content at runtime, `llm_extract(texts, fields, context)` to parse structured rules from it
+- `answer_from_docs(query) -> str` for extracting a synthesized factual answer from configured documents. Use instead of `doc_read() + llm_extract()` for simple scalar lookups (discount rates, lead times, thresholds). Returns a string; caller parses numeric values as needed.
 
 ## Data Source Selection
-1. For policies, guidelines, rules, or business definitions: use `search_documents(query)` FIRST
+1. For policies, guidelines, rules, or business definitions: use `search_documents(query)` FIRST; for simple scalar fact lookups from documents, use `answer_from_docs(query)` in step code instead.
 2. For structured data (records, transactions, entities): use `find_relevant_tables(query)` or `find_relevant_apis(query)`
 3. Fall back to `llm_ask()` only for world knowledge not in configured sources
 4. ALWAYS use discovery tools before assuming data doesn't exist

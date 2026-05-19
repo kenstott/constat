@@ -293,6 +293,15 @@ export interface GlossaryTerm {
   }>
   cluster_siblings?: string[]
   spanning_domains?: string[]
+  context_graph?: ContextEdge[]
+}
+
+export interface ContextEdge {
+  target_entity_id: string
+  weight: number
+  svo_signal: number
+  cooccur_signal: number
+  cluster_signal: number
 }
 
 export interface GlossaryListResponse {

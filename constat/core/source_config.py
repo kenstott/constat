@@ -608,6 +608,7 @@ class ChonkIndexFeatures(BaseModel):
     schema_vocab: bool = True
     community: bool = False
     svo: bool = False
+    context_graph: bool = False
 
 
 class ChonkRetrieval(BaseModel):

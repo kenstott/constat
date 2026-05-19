@@ -18,6 +18,7 @@ to work unchanged.  New types should be added to the appropriate sub-module.
 from constat.server.graphql.types.glossary_types import (  # noqa: F401
     ConnectedResourceSource,
     ConnectedResourceType,
+    ContextEdgeType,
     DraftAliasesType,
     DraftDefinitionType,
     DraftTagsType,

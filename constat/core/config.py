@@ -14,7 +14,7 @@ import glob
 import os
 import re
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -124,14 +124,14 @@ class ModelSpec(BaseModel):
         # Minimal (uses default provider)
         - model: claude-sonnet-4-20250514
     """
-    provider: Optional[str] = None  # None means use default provider
+    provider: str | None = None  # None means use default provider
     model: str
 
     # Provider-specific options
-    api_key: Optional[str] = None  # Per-model API key (supports ${ENV_VAR})
-    base_url: Optional[str] = None
-    timeout_seconds: Optional[int] = None
-    max_tokens: Optional[int] = None
+    api_key: str | None = None  # Per-model API key (supports ${ENV_VAR})
+    base_url: str | None = None
+    timeout_seconds: int | None = None
+    max_tokens: int | None = None
 
 
 class TaskRoutingEntry(BaseModel):
@@ -152,10 +152,10 @@ class TaskRoutingEntry(BaseModel):
     models: list[ModelSpec]
 
     # Optional: models to use for low-complexity tasks (e.g., simple lookups)
-    low_complexity_models: Optional[list[ModelSpec]] = None
+    low_complexity_models: list[ModelSpec] | None = None
 
     # Optional: models to use for high-complexity tasks
-    high_complexity_models: Optional[list[ModelSpec]] = None
+    high_complexity_models: list[ModelSpec] | None = None
 
 
 class TaskRoutingConfig(BaseModel):
@@ -286,13 +286,13 @@ class LLMConfig(BaseModel):
     """LLM provider configuration."""
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-20250514"
-    api_key: Optional[str] = None
+    api_key: str | None = None
 
     # Task-type routing configuration
-    task_routing: Optional[TaskRoutingConfig] = None
+    task_routing: TaskRoutingConfig | None = None
 
     # Provider-specific options
-    base_url: Optional[str] = None  # For Ollama or custom endpoints
+    base_url: str | None = None  # For Ollama or custom endpoints
 
     def get_task_routing(self) -> TaskRoutingConfig:
         """
@@ -340,12 +340,12 @@ class VectorStoreConfig(BaseModel):
 
     # Path to DuckDB database file (only for duckdb backend)
     # Default: ~/.constat/system.duckdb
-    db_path: Optional[str] = None
+    db_path: str | None = None
 
     # Cross-encoder model for reranking search results.
     # When set, retrieves extra candidates then reranks with this model.
     # Example: "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    reranker_model: Optional[str] = None
+    reranker_model: str | None = None
 
     # Store original chunk text in embeddings table (useful for diagnostics)
     # When False, only embeddings are stored — reduces DB size for large datasets
@@ -354,7 +354,7 @@ class VectorStoreConfig(BaseModel):
     # Clustering parameters for glossary term grouping
     cluster_min_terms: int = 2        # minimum terms to trigger clustering
     cluster_divisor: int = 5          # k = max(2, n_terms // divisor)
-    cluster_max_k: Optional[int] = None  # optional cap on k
+    cluster_max_k: int | None = None  # optional cap on k
 
 
 class StorageConfig(BaseModel):
@@ -365,10 +365,13 @@ class StorageConfig(BaseModel):
     #   - duckdb:///path/to/file.duckdb (embedded, single-user)
     #   - postgresql://user:pass@host:port/db (production, multi-user)
     #   - sqlite:///path/to/file.db (embedded alternative)
-    artifact_store_uri: Optional[str] = None
+    artifact_store_uri: str | None = None
 
     # Directory for chonk Store files
     store_dir: str = "~/.constat/stores"
+
+    # Vector store tuning (optional)
+    vector_store: VectorStoreConfig | None = None
 
 
 class ExecutionConfig(BaseModel):
@@ -397,8 +400,8 @@ class EmailConfig(BaseModel):
     """
     smtp_host: str
     smtp_port: int = 587
-    smtp_user: Optional[str] = None
-    smtp_password: Optional[str] = None
+    smtp_user: str | None = None
+    smtp_password: str | None = None
     from_address: str
     from_name: str = "Constat"
     tls: bool = True
@@ -542,7 +545,7 @@ class DomainConfig(BaseModel):
     ner_stop_list: list[str] = Field(default_factory=list)
 
     # Optional domain-scoped permissions (loaded from permissions.yaml in domain directory)
-    permissions: Optional[Any] = Field(default=None, description="Domain-scoped PermissionsConfig (restricts global permissions)")
+    permissions: Any | None = Field(default=None, description="Domain-scoped PermissionsConfig (restricts global permissions)")
 
     # Optional domain-specific task routing (fine-tuned models, local models)
     # Same structure as llm.task_routing — maps task_type to model chain
@@ -707,7 +710,7 @@ class Config(BaseModel):
     system_prompt: str = ""
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
-    email: Optional[EmailConfig] = None  # Email configuration for send_email
+    email: EmailConfig | None = None  # Email configuration for send_email
 
     # Core facts that are always available in every session
     # YAML format: facts: {company_name: "Acme Corp", fiscal_year_start: "April 1"}
@@ -768,8 +771,8 @@ class Config(BaseModel):
     def from_yaml(
         cls,
         path: str | Path,
-        user_config_path: Optional[str | Path] = None,
-        user_config: Optional[dict] = None,
+        user_config_path: str | Path | None = None,
+        user_config: dict | None = None,
     ) -> "Config":
         """
         Load config from YAML file with env var substitution.
@@ -931,19 +934,22 @@ class Config(BaseModel):
 
         return merged
 
-    def get_database(self, name: str) -> Optional[DatabaseConfig]:
+    def get_database(self, name: str) -> DatabaseConfig | None:
         """Get database config by name."""
         return self.databases.get(name)
 
 
 def _substitute_env_vars(content: str) -> str:
-    """Replace ${VAR_NAME} with environment variable values."""
-    pattern = re.compile(r'\$\{([A-Za-z0-9_]+)}')
+    """Replace ${VAR} or ${VAR:-default} with environment variable values."""
+    pattern = re.compile(r'\$\{([A-Za-z0-9_]+)(?::-(.*?))?\}')
 
     def replacer(match: re.Match) -> str:
         var_name = match.group(1)
+        default = match.group(2)
         value = os.environ.get(var_name)
         if value is None:
+            if default is not None:
+                return default
             raise ValueError(f"Environment variable not set: {var_name}")
         return value
 

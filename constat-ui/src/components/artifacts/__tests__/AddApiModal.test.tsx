@@ -2,7 +2,7 @@
 //
 // Tests for AddApiModal: auth type field rendering and onAdd payload.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { AddApiModal, type ApiAddFields } from '../AddApiModal'
 
@@ -23,8 +23,8 @@ function selectAuth(value: string) {
 }
 
 describe('AddApiModal', () => {
-  let onAdd: ReturnType<typeof vi.fn>
-  let onCancel: ReturnType<typeof vi.fn>
+  let onAdd: Mock
+  let onCancel: Mock
 
   beforeEach(() => {
     onAdd = vi.fn()

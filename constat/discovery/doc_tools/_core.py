@@ -371,7 +371,6 @@ class _CoreMixin:
                     chunk_index=0,
                     source="entity_resolution",
                     chunk_type=ChunkType.ENTITY_VALUE,
-                    domain_id=domain_id,
                 ))
 
                 # Individual value chunks — use detail text when available
@@ -382,7 +381,6 @@ class _CoreMixin:
                         chunk_index=idx,
                         source="entity_resolution",
                         chunk_type=ChunkType.ENTITY_VALUE,
-                        domain_id=domain_id,
                     ))
 
         if not all_chunks:

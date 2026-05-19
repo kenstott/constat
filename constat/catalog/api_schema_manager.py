@@ -24,6 +24,7 @@ from typing import Callable, Optional
 import requests
 
 from constat.core.config import Config, APIConfig
+from constat.discovery.models import DocumentChunk
 from constat.embedding_loader import EmbeddingModelLoader
 
 logger = logging.getLogger(__name__)
@@ -136,11 +137,6 @@ class APISchemaManager:
             self._save_metadata_cache(config_hash)
 
             self._progress_callback = None
-
-        # Ensure vector store is available for search (chunks built at server startup)
-        if self._vector_store is None:
-            from constat.discovery.vector_store import DuckDBVectorStore
-            self._vector_store = DuckDBVectorStore()
 
     def build_chunks(self, domain_id: str | None = None, vector_store=None) -> None:
         """Build chunks for search (called at server startup).

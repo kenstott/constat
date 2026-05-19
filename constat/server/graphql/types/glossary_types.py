@@ -33,6 +33,15 @@ class GlossaryChildType:
 
 
 @strawberry.type
+class ContextEdgeType:
+    target_entity_id: str
+    weight: float
+    svo_signal: float
+    cooccur_signal: float
+    cluster_signal: float
+
+
+@strawberry.type
 class EntityRelationshipType:
     id: str
     subject: str
@@ -86,6 +95,7 @@ class GlossaryTermType:
     children: Optional[list[GlossaryChildType]] = None
     relationships: Optional[list[EntityRelationshipType]] = None
     cluster_siblings: Optional[list[str]] = None
+    context_graph: Optional[list[ContextEdgeType]] = None
 
 
 @strawberry.type

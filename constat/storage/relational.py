@@ -803,6 +803,7 @@ class RelationalStore:
             {scope_filter_1}
             AND (
                 g.id IS NOT NULL
+                OR e.ner_type = 'CHONK'
                 OR EXISTS (
                     SELECT 1 FROM {self._view('chunk_entities')} ce
                     JOIN {self._view('embeddings')} em ON ce.chunk_id = em.chunk_id

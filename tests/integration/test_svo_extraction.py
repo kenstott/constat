@@ -212,3 +212,140 @@ class TestSVOExtractEntityAnchored:
         for key in rel_descs:
             assert key in triple_keys, \
                 f"rel_description key '{key}' has no matching triple"
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline: warmup_chonk_index(Config) → svo_triples
+# ---------------------------------------------------------------------------
+
+def _create_sqlite_ecommerce(db_path: str) -> None:
+    """Create a minimal ecommerce SQLite DB for warmup introspection."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE customers (
+            customer_id INTEGER PRIMARY KEY,
+            name        TEXT NOT NULL,
+            email       TEXT NOT NULL,
+            region      TEXT
+        );
+        CREATE TABLE products (
+            product_id  INTEGER PRIMARY KEY,
+            name        TEXT NOT NULL,
+            category    TEXT,
+            unit_price  REAL
+        );
+        CREATE TABLE orders (
+            order_id     INTEGER PRIMARY KEY,
+            customer_id  INTEGER NOT NULL REFERENCES customers(customer_id),
+            product_id   INTEGER NOT NULL REFERENCES products(product_id),
+            order_date   TEXT,
+            quantity     INTEGER,
+            total_amount REAL
+        );
+    """)
+    conn.close()
+
+
+def _write_chonk_toml(path: str, api_key: str, model: str = "claude-haiku-4-5-20251001") -> None:
+    content = f"""
+[index.features]
+ner          = true
+schema_vocab = true
+svo          = true
+
+[llm.svo]
+provider = "anthropic"
+model    = "{model}"
+api_key  = "{api_key}"
+"""
+    with open(path, "w") as f:
+        f.write(content.strip())
+
+
+class TestFullNERSVOPipeline:
+    """End-to-end: warmup_chonk_index(Config) → NER → SVO → svo_triples."""
+
+    def test_warmup_produces_triples(self, tmp_path):
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            pytest.fail("ANTHROPIC_API_KEY not set")
+
+        from constat.core.config import Config, LLMConfig, DomainConfig
+        from constat.core.source_config import DatabaseConfig, ChonkConfig
+        from constat.server._chonk_warmup import warmup_chonk_index
+        from constat.embedding_loader import EmbeddingModelLoader
+        from sentence_transformers import SentenceTransformer
+
+        # Pre-load the embedding model singleton so warmup doesn't have to wait
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+        loader = EmbeddingModelLoader.get_instance()
+        loader._model = model
+        loader._loaded.set()
+
+        db_path = str(tmp_path / "ecommerce.db")
+        _create_sqlite_ecommerce(db_path)
+
+        toml_path = str(tmp_path / "chonk.toml")
+        _write_chonk_toml(toml_path, api_key)
+
+        config = Config(
+            config_dir=str(tmp_path),
+            llm=LLMConfig(provider="anthropic", model="claude-haiku-4-5-20251001", api_key=api_key),
+            chonk=ChonkConfig(toml_path=toml_path),
+            domains={
+                "ecommerce": DomainConfig(
+                    name="ecommerce",
+                    databases={"main": DatabaseConfig(uri=f"sqlite:///{db_path}")},
+                )
+            },
+        )
+
+        from unittest.mock import patch
+        import constat.server._chonk_warmup as _warmup_mod
+        from constat.storage._chonk_llm import _ConstatLLMClient
+
+        _real_build = _warmup_mod.__dict__.get(
+            "build_chonk_llm",
+            __import__("constat.storage._chonk_llm", fromlist=["build_chonk_llm"]).build_chonk_llm,
+        )
+
+        def _logging_build(spec, llm_cfg):
+            client = _real_build(spec, llm_cfg)
+            if client is None:
+                return None
+
+            class _Log(_ConstatLLMClient):
+                def complete(self, prompt: str) -> str:
+                    print(f"\n{'='*60}\nRAW INPUT\n{'='*60}\n{prompt}")
+                    result = super().complete(prompt)
+                    print(f"\n{'='*60}\nRAW OUTPUT\n{'='*60}\n{result}")
+                    return result
+
+            client.__class__ = _Log
+            return client
+
+        store_path = tmp_path / "chonk_global.duckdb"
+        with patch("constat.storage._chonk_llm.build_chonk_llm", side_effect=_logging_build):
+            warmup_chonk_index(config, store_path=store_path)
+
+        from chonk.storage import Store
+        store = Store(str(store_path))
+        conn = store.vector._conn
+
+        rows = conn.execute(
+            "SELECT subject_id, verb, object_id FROM svo_triples"
+        ).fetchall()
+        print(f"\n--- svo_triples ({len(rows)}) ---")
+        for r in rows:
+            print(f"  {r[0]} --[{r[1]}]--> {r[2]}")
+
+        assert len(rows) > 0, "warmup_chonk_index produced no SVO triples"
+        all_ids = {r[0] for r in rows} | {r[2] for r in rows}
+        schema_terms = {
+            "orders", "customers", "products",
+            "customer_id", "order_id", "product_id",
+        }
+        assert schema_terms & all_ids, (
+            f"expected schema entity IDs in triples, got: {all_ids}"
+        )

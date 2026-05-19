@@ -16,11 +16,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from chonk.cluster import ClusterMap
+    from chonk.community import CommunityIndex
     from chonk.storage import Store
 
 _lock = threading.Lock()
 _global_store_path: str | None = None
-_readonly_store: "Store | None" = None
+_readonly_store: Store | None = None
+_community_index: CommunityIndex | None = None
+_cluster_map: ClusterMap | None = None
 
 
 def set_global_store_path(path: str | Path) -> None:
@@ -35,7 +39,7 @@ def get_global_store_path() -> str | None:
         return _global_store_path
 
 
-def get_global_store_readonly() -> "Store | None":
+def get_global_store_readonly() -> Store | None:
     """Return (or lazily open) the singleton read-only global chonk Store."""
     global _readonly_store
     with _lock:
@@ -44,5 +48,28 @@ def get_global_store_readonly() -> "Store | None":
         if not _global_store_path or not Path(_global_store_path).exists():
             return None
         from chonk.storage import Store
+
         _readonly_store = Store(_global_store_path, read_only=True)
         return _readonly_store
+
+
+def set_community_index(idx: CommunityIndex) -> None:
+    global _community_index
+    with _lock:
+        _community_index = idx
+
+
+def get_community_index() -> CommunityIndex | None:
+    with _lock:
+        return _community_index
+
+
+def set_cluster_map(cm: ClusterMap) -> None:
+    global _cluster_map
+    with _lock:
+        _cluster_map = cm
+
+
+def get_cluster_map() -> ClusterMap | None:
+    with _lock:
+        return _cluster_map

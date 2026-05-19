@@ -28,6 +28,7 @@ from chonk.search import EnhancedSearch
 
 if TYPE_CHECKING:
     from chonk.models import ScoredChunk
+
     from constat.discovery.models import DocumentChunk
     from constat.storage.duckdb_backend import DuckDBVectorBackend
     from constat.storage.relational import RelationalStore
@@ -40,7 +41,7 @@ class _EnhancedStoreAdapter:
 
     def __init__(
         self,
-        vector: "DuckDBVectorBackend",
+        vector: DuckDBVectorBackend,
         domain_ids: list[str] | None = None,
         session_id: str | None = None,
         chunk_types: list[str] | None = None,
@@ -58,7 +59,7 @@ class _EnhancedStoreAdapter:
         chunk_types: list[str] | None = None,
         namespaces: list[str] | None = None,
         domain_ids: list[str] | None = None,
-    ) -> list[tuple[str, float, "DocumentChunk"]]:
+    ) -> list[tuple[str, float, DocumentChunk]]:
         return self.vector.search(
             query_embedding,
             limit=limit,
@@ -77,7 +78,7 @@ class _RelationalEntityIndex:
 
     def __init__(
         self,
-        relational: "RelationalStore",
+        relational: RelationalStore,
         session_id: str,
         domain_ids: list[str] | None = None,
     ) -> None:
@@ -105,10 +106,28 @@ class _RelationalEntityIndex:
             logger.debug("get_chunks_for_entity failed for %s: %s", entity_id, exc)
             return []
 
+    def chunk_ids(self) -> list[str]:
+        rows = self._rel._conn.execute(
+            "SELECT DISTINCT chunk_id FROM chunk_entities"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def total_chunks(self) -> int:
+        row = self._rel._conn.execute(
+            "SELECT COUNT(DISTINCT chunk_id) FROM embeddings"
+        ).fetchone()
+        return row[0] if row else 0
+
+    def entity_ids(self) -> list[str]:
+        rows = self._rel._conn.execute(
+            "SELECT DISTINCT entity_id FROM chunk_entities"
+        ).fetchall()
+        return [r[0] for r in rows]
+
 
 def run_enhanced_search(
-    vector: "DuckDBVectorBackend",
-    relational: "RelationalStore | None",
+    vector: DuckDBVectorBackend,
+    relational: RelationalStore | None,
     query_embedding: np.ndarray,
     limit: int,
     query_text: str | None,
@@ -120,7 +139,7 @@ def run_enhanced_search(
     relationship_index=None,
     return_scored: bool = False,
     active_domains: list[str] | None = None,
-) -> list[tuple[str, float, "DocumentChunk"]] | list["ScoredChunk"]:
+) -> list[tuple[str, float, DocumentChunk]] | list[ScoredChunk]:
     """Run EnhancedSearch with pre-filtering by chunk_type via chonk's native support.
 
     When the chonk global Store has been built by warmup, uses it natively for
@@ -133,11 +152,18 @@ def run_enhanced_search(
         return_scored: If True, return ScoredChunk objects (preserves provenance).
         active_domains: Domain names for resolve_session() (e.g. ["sales-analytics"]).
     """
-    from constat.storage._chonk_registry import get_global_store_readonly
+    from constat.storage._chonk_registry import (
+        get_cluster_map,
+        get_community_index,
+        get_global_store_readonly,
+    )
 
     # Derive active domain names from constat domain_ids (strip __base__).
     if active_domains is None and domain_ids:
         active_domains = [d for d in domain_ids if d != "__base__"]
+
+    community_index = get_community_index()
+    cluster_map = get_cluster_map()
 
     chonk_store = get_global_store_readonly()
     if chonk_store is not None and active_domains:
@@ -145,16 +171,25 @@ def run_enhanced_search(
             [("global", name) for name in active_domains],
             include_global=False,
         )
+        entity_index_global: _RelationalEntityIndex | None = None
+        if relational is not None and session_id:
+            entity_index_global = _RelationalEntityIndex(relational, session_id, domain_ids)
         searcher = EnhancedSearch(  # type: ignore[call-arg]
             store=chonk_store,  # type: ignore[arg-type]
+            entity_index=entity_index_global,  # type: ignore[arg-type]
             relationship_index=relationship_index,
             structural_expansion=True,
-            entity_expansion=False,
-            cluster_expansion=False,
+            entity_expansion=True,
+            cluster_expansion=True,
+            cluster_map=cluster_map,
+            community_index=community_index,
             lane_entity_min_sim=lane_entity_min_sim,
         )
         scored = searcher.search(  # type: ignore[call-arg]
-            query_embedding, k=limit, query_text=query_text, mode=mode,
+            query_embedding,
+            k=limit,
+            query_text=query_text,
+            mode=mode,
             domain_ids=chonk_domain_ids,
         )
         if return_scored:
@@ -174,7 +209,9 @@ def run_enhanced_search(
         relationship_index=relationship_index,
         structural_expansion=False,
         entity_expansion=(entity_index is not None),
-        cluster_expansion=False,
+        cluster_expansion=(entity_index is not None),
+        cluster_map=cluster_map,
+        community_index=community_index,
         lane_entity_min_sim=lane_entity_min_sim,
     )
 

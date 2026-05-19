@@ -93,6 +93,13 @@ export const GLOSSARY_TERM_QUERY = gql`
       }
       clusterSiblings
       spanningDomains
+      contextGraph {
+        targetEntityId
+        weight
+        svoSignal
+        cooccurSignal
+        clusterSignal
+      }
     }
   }
 `

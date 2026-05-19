@@ -335,6 +335,7 @@ class DuckDBVectorStore:
         inst._db = split_store.db
         inst._db_path = split_store._user_db_path
         inst._system_db_path = getattr(split_store, '_system_db_path', None)
+        inst._sys_alias = getattr(split_store, '_sys_alias', 'sys')
         inst._reranker_model = reranker_model
         inst._store_chunk_text = store_chunk_text
 
@@ -382,11 +383,12 @@ class DuckDBVectorStore:
         system_db_path = getattr(self, '_system_db_path', None)
         if not system_db_path or not os.path.exists(str(system_db_path)):
             return False
+        alias = getattr(self, '_sys_alias', 'sys')
         # Try attaching read-write, fall back to read-only
         for mode in ("", " (READ_ONLY)"):
             try:
-                conn.execute(f"ATTACH '{system_db_path}' AS sys{mode}")
-                logger.info(f"_reattach_sys_if_missing: attached sys{mode} from {system_db_path}")
+                conn.execute(f"ATTACH '{system_db_path}' AS {alias}{mode}")
+                logger.info(f"_reattach_sys_if_missing: attached {alias}{mode} from {system_db_path}")
                 return True
             except Exception as e:
                 err = str(e).lower()
@@ -407,26 +409,28 @@ class DuckDBVectorStore:
         """
         from constat.storage.split_store import SPLIT_TABLES
         conn = self._conn
+        sa = getattr(self, '_sys_alias', 'sys')
 
         for table in SPLIT_TABLES:
             try:
-                conn.execute(f"SELECT 1 FROM sys.{table} LIMIT 0")
+                conn.execute(f"SELECT 1 FROM {sa}.{table} LIMIT 0")
             except Exception as sel_err:
-                if "sys" in str(sel_err).lower() and "does not exist" in str(sel_err).lower():
+                sel_err_str = str(sel_err).lower()
+                if (sa in sel_err_str or "sys" in sel_err_str) and "does not exist" in sel_err_str:
                     # sys schema missing — try re-attaching before giving up
                     if self._reattach_sys_if_missing(conn):
                         try:
-                            conn.execute(f"SELECT 1 FROM sys.{table} LIMIT 0")
+                            conn.execute(f"SELECT 1 FROM {sa}.{table} LIMIT 0")
                             continue  # table exists in sys
                         except Exception:
                             pass  # fall through to CREATE TABLE
                 try:
                     conn.execute(
-                        f"CREATE TABLE sys.{table} AS SELECT * FROM main.{table} WHERE false"
+                        f"CREATE TABLE {sa}.{table} AS SELECT * FROM main.{table} WHERE false"
                     )
                 except Exception as e:
                     if "read only" in str(e).lower() or "read-only" in str(e).lower():
-                        logger.warning(f"Cannot create sys.{table}: system DB is read-only")
+                        logger.warning(f"Cannot create {sa}.{table}: system DB is read-only")
                     else:
                         raise
 
@@ -1116,45 +1120,19 @@ class DuckDBVectorStore:
     # Document hash wrappers (backwards compat aliases)
     # ------------------------------------------------------------------
 
-    def _scoped_doc_name(self, source_id: str, doc_name: str) -> str:
-        return f"{source_id}::{doc_name}"
-
     def list_doc_hashes(self, source_id: str) -> dict[str, str]:
-        prefix = f"{source_id}::"
-        rows = self._conn.execute(
-            "SELECT document_name, content_hash FROM documents WHERE document_name LIKE ?",
-            [prefix + "%"],
-        ).fetchall()
-        return {row[0][len(prefix):]: row[1] for row in rows}
+        return self._relational.get_resource_hashes_for_source(source_id, "document")
 
     def get_doc_hash(self, source_id: str, doc_name: str) -> str | None:
-        result = self._conn.execute(
-            "SELECT content_hash FROM documents WHERE document_name = ?",
-            [self._scoped_doc_name(source_id, doc_name)],
-        ).fetchone()
-        return result[0] if result else None
+        return self._relational.get_resource_hash(source_id, "document", doc_name)
 
     def set_doc_hash(self, source_id: str, doc_name: str, content_hash: str,
                      source_uri: str = "", chunk_count: int = 0) -> None:
-        self._conn.execute(
-            """
-            INSERT INTO documents (document_name, content_hash, source_uri, indexed_at, chunk_count)
-            VALUES (?, ?, ?, now(), ?)
-            ON CONFLICT (document_name) DO UPDATE SET
-                content_hash = excluded.content_hash,
-                source_uri   = excluded.source_uri,
-                indexed_at   = excluded.indexed_at,
-                chunk_count  = excluded.chunk_count
-            """,
-            [self._scoped_doc_name(source_id, doc_name), content_hash, source_uri, chunk_count],
-        ).fetchall()
+        self._relational.set_resource_hash(source_id, "document", doc_name, content_hash)
 
     def delete_doc_hash(self, source_id: str, doc_name: str) -> bool:
-        result = self._conn.execute(
-            "DELETE FROM documents WHERE document_name = ? RETURNING document_name",
-            [self._scoped_doc_name(source_id, doc_name)],
-        ).fetchone()
-        return result is not None
+        self._relational.delete_resource_hash(source_id, "document", doc_name)
+        return True
 
     # ------------------------------------------------------------------
     # Cross-layer operations — delegate to Store

@@ -112,7 +112,7 @@ async function moveDomainSource(input: { sourceType: string; sourceName: string;
 }
 import { forceSimulation, forceLink, forceManyBody, forceCollide, forceX, forceY } from 'd3-force'
 import { SkeletonLoader } from '../common/SkeletonLoader'
-import type { GlossaryTerm, GlossaryEditorialStatus, GlossarySuggestion } from '@/types/api'
+import type { GlossaryTerm, GlossaryEditorialStatus, GlossarySuggestion, ContextEdge } from '@/types/api'
 import { useAuth } from '@/contexts/AuthContext'
 import { apolloClient } from '@/graphql/client'
 import {
@@ -753,9 +753,10 @@ function ConnectedResources({
       sources: Array<{ documentName: string; source: string; section?: string; url?: string }>
     }>
     spanningDomains: string[]
-  }>({ resources: [], spanningDomains: [] })
+    contextGraph: ContextEdge[]
+  }>({ resources: [], spanningDomains: [], contextGraph: [] })
   const [resourcesLoaded, setResourcesLoaded] = useState(false)
-  const [graphOpen, setGraphOpen] = useState(false)
+  const [activeGraphTab, setActiveGraphTab] = useState<'term-graph' | 'context-graph' | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -765,6 +766,13 @@ function ConnectedResources({
         setServerDetail({
           resources: data.connectedResources || [],
           spanningDomains: data.spanningDomains || [],
+          contextGraph: (data.contextGraph || []).map((e: { targetEntityId: string; weight: number; svoSignal: number; cooccurSignal: number; clusterSignal: number }) => ({
+              target_entity_id: e.targetEntityId,
+              weight: e.weight,
+              svo_signal: e.svoSignal,
+              cooccur_signal: e.cooccurSignal,
+              cluster_signal: e.clusterSignal,
+            })),
         })
         setResourcesLoaded(true)
       }
@@ -775,7 +783,7 @@ function ConnectedResources({
     return () => { cancelled = true }
   }, [sessionId, termName, refreshKey])
 
-  const { resources, spanningDomains } = serverDetail
+  const { resources, spanningDomains, contextGraph } = serverDetail
   const hasConnections = !!(parent || children.length > 0 || relationships.length > 0 || cluster_siblings.length > 0)
   const hasContent = resources.length > 0 || hasConnections || !!domain || Object.keys(tags).length > 0
   if (!hasContent && resourcesLoaded) return null
@@ -901,16 +909,29 @@ function ConnectedResources({
           Domain: {spanningDomains.length > 0 ? spanningDomains.join(', ') : (domain_path || domain)}
         </div>
       )}
-      {hasConnections && (
+      {(hasConnections || contextGraph.length > 0) && (
         <div>
-          <button
-            onClick={() => setGraphOpen(!graphOpen)}
-            className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-          >
-            <ChevronRightIcon className={`w-3 h-3 transition-transform ${graphOpen ? 'rotate-90' : ''}`} />
-            Graph
-          </button>
-          {graphOpen && <TermGraphInline sessionId={sessionId} termName={termName} />}
+          <div className="flex items-center gap-1">
+            <ChevronRightIcon className={`w-3 h-3 transition-transform text-gray-400 ${activeGraphTab ? 'rotate-90' : ''}`} />
+            {hasConnections && (
+              <button
+                onClick={() => setActiveGraphTab(activeGraphTab === 'term-graph' ? null : 'term-graph')}
+                className={`text-xs px-1.5 py-0.5 rounded ${activeGraphTab === 'term-graph' ? 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
+              >
+                Graph
+              </button>
+            )}
+            {contextGraph.length > 0 && (
+              <button
+                onClick={() => setActiveGraphTab(activeGraphTab === 'context-graph' ? null : 'context-graph')}
+                className={`text-xs px-1.5 py-0.5 rounded ${activeGraphTab === 'context-graph' ? 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
+              >
+                Context
+              </button>
+            )}
+          </div>
+          {activeGraphTab === 'term-graph' && <TermGraphInline sessionId={sessionId} termName={termName} />}
+          {activeGraphTab === 'context-graph' && <ContextGraphInline termName={termName} edges={contextGraph} />}
         </div>
       )}
     </div>
@@ -2036,6 +2057,119 @@ function GraphDomainFilter({
               </label>
             )
           })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Context graph — weighted entity neighbourhood from chonk
+// ---------------------------------------------------------------------------
+
+function ContextGraphInline({
+  termName,
+  edges,
+}: {
+  termName: string
+  edges: ContextEdge[]
+}) {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; edge: ContextEdge } | null>(null)
+  const W = 340
+  const H = 240
+  const CX = W / 2
+  const CY = H / 2
+  const MAX_NODES = 20
+
+  const visible = edges.slice(0, MAX_NODES)
+  const maxWeight = visible.length > 0 ? Math.max(...visible.map(e => e.weight)) : 1
+
+  // Arrange neighbours in a circle, shorter radius = higher weight
+  const MIN_R = 55
+  const MAX_R = 100
+  const nodePositions = visible.map((edge, i) => {
+    const angle = (2 * Math.PI * i) / visible.length - Math.PI / 2
+    const normW = maxWeight > 0 ? edge.weight / maxWeight : 0
+    const r = MAX_R - normW * (MAX_R - MIN_R)
+    return {
+      edge,
+      x: CX + r * Math.cos(angle),
+      y: CY + r * Math.sin(angle),
+    }
+  })
+
+  const signalColor = (e: ContextEdge) => {
+    if (e.svo_signal > 0.5) return '#6366f1'      // indigo — SVO
+    if (e.cooccur_signal > 0.5) return '#0ea5e9'  // sky — co-occurrence
+    return '#10b981'                               // emerald — cluster
+  }
+
+  return (
+    <div className="relative mt-1 select-none">
+      <svg
+        ref={svgRef}
+        width={W}
+        height={H}
+        className="overflow-visible"
+        onMouseLeave={() => setTooltip(null)}
+      >
+        {/* edges */}
+        {nodePositions.map(({ edge, x, y }) => (
+          <line
+            key={`e-${edge.target_entity_id}`}
+            x1={CX} y1={CY} x2={x} y2={y}
+            stroke={signalColor(edge)}
+            strokeWidth={1 + edge.weight * 2}
+            strokeOpacity={0.3 + edge.weight * 0.6}
+          />
+        ))}
+        {/* neighbour nodes */}
+        {nodePositions.map(({ edge, x, y }) => (
+          <g key={`n-${edge.target_entity_id}`}
+            onMouseEnter={(ev) => {
+              const rect = svgRef.current?.getBoundingClientRect()
+              setTooltip({ x: ev.clientX - (rect?.left ?? 0), y: ev.clientY - (rect?.top ?? 0), edge })
+            }}
+            className="cursor-pointer"
+          >
+            <circle cx={x} cy={y} r={5} fill={signalColor(edge)} fillOpacity={0.85} />
+            <text
+              x={x} y={y - 7}
+              textAnchor="middle"
+              fontSize={9}
+              fill="currentColor"
+              className="text-gray-600 dark:text-gray-300"
+            >
+              {edge.target_entity_id.length > 12
+                ? edge.target_entity_id.slice(0, 11) + '…'
+                : edge.target_entity_id}
+            </text>
+          </g>
+        ))}
+        {/* centre node */}
+        <circle cx={CX} cy={CY} r={7} fill="#6366f1" />
+        <text x={CX} y={CY + 16} textAnchor="middle" fontSize={9} fill="currentColor" className="text-gray-700 dark:text-gray-200 font-medium">
+          {termName.length > 14 ? termName.slice(0, 13) + '…' : termName}
+        </text>
+      </svg>
+      {/* legend */}
+      <div className="flex gap-2 mt-0.5 text-[9px] text-gray-400 dark:text-gray-500">
+        <span className="flex items-center gap-0.5"><span className="w-2 h-2 rounded-full inline-block bg-indigo-500" />SVO</span>
+        <span className="flex items-center gap-0.5"><span className="w-2 h-2 rounded-full inline-block bg-sky-500" />Co-occur</span>
+        <span className="flex items-center gap-0.5"><span className="w-2 h-2 rounded-full inline-block bg-emerald-500" />Cluster</span>
+      </div>
+      {/* tooltip */}
+      {tooltip && (
+        <div
+          className="absolute z-50 text-[10px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded shadow px-2 py-1 pointer-events-none"
+          style={{ left: tooltip.x + 8, top: tooltip.y - 8 }}
+        >
+          <div className="font-medium mb-0.5">{tooltip.edge.target_entity_id}</div>
+          <div>weight: {tooltip.edge.weight.toFixed(3)}</div>
+          <div>SVO: {tooltip.edge.svo_signal.toFixed(3)}</div>
+          <div>co-occur: {tooltip.edge.cooccur_signal.toFixed(3)}</div>
+          <div>cluster: {tooltip.edge.cluster_signal.toFixed(3)}</div>
         </div>
       )}
     </div>
