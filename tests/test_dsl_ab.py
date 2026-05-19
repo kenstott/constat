@@ -27,7 +27,7 @@ pytestmark = [pytest.mark.slow]
 
 # How many times to run each query per variant. LLM output is stochastic;
 # more runs give tighter confidence but take longer.
-N_RUNS = 3
+N_RUNS = 10
 
 
 # ---------------------------------------------------------------------------
