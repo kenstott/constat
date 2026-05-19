@@ -246,7 +246,8 @@ class PromptsMixin:
 
         system_prompt = self._get_step_system_prompt(step, model_family=model_family)
 
-        hint_text = _PRIMITIVE_HINTS.get(getattr(step, "primitive", "python_analysis"), "")
+        dsl_on = getattr(self.session_config, "enable_primitive_dsl", True)
+        hint_text = _PRIMITIVE_HINTS.get(getattr(step, "primitive", "python_analysis"), "") if dsl_on else ""
         primitive_hint = f"\nPrimitive hint: {hint_text}\n" if hint_text else ""
 
         return STEP_PROMPT_TEMPLATE.format(

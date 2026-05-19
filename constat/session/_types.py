@@ -13,9 +13,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any
 
 from constat.core.config import Config
 from constat.execution.mode import Mode, PlanApprovalRequest, PlanApprovalResponse
@@ -41,7 +42,7 @@ class DetectedIntent:
     """A single detected intent with confidence."""
     intent: str
     confidence: float = 0.8
-    extracted_value: Optional[str] = None
+    extracted_value: str | None = None
 
 
 @dataclass
@@ -49,13 +50,13 @@ class QuestionAnalysis:
     """Combined result of question analysis (facts + classification + intent + mode)."""
     question_type: str
     extracted_facts: list = field(default_factory=list)
-    cached_fact_answer: Optional[str] = None
+    cached_fact_answer: str | None = None
     intents: list = field(default_factory=list)
     fact_modifications: list = field(default_factory=list)
     scope_refinements: list = field(default_factory=list)
     wants_brief: bool = False
-    recommended_mode: Optional[str] = None
-    mode_reasoning: Optional[str] = None
+    recommended_mode: str | None = None
+    mode_reasoning: str | None = None
 
 
 def _parse_prompt_sections(text: str) -> list[tuple[str, str, str | None]]:
@@ -112,7 +113,7 @@ class ClarificationQuestion:
     """A single clarification question with optional suggested answers."""
     text: str
     suggestions: list[str] = field(default_factory=list)
-    widget: Optional[WidgetSpec] = None
+    widget: WidgetSpec | None = None
 
 
 @dataclass
@@ -147,7 +148,8 @@ class SessionConfig:
     skip_clarification: bool = False
     enable_insights: bool = True
     show_raw_output: bool = True
-    default_mode: Optional[Mode] = None
+    default_mode: Mode | None = None
+    enable_primitive_dsl: bool = True  # DSL primitive catalog in planner + step hints
 
 
 @dataclass
@@ -158,7 +160,7 @@ class StepEvent:
     data: dict = field(default_factory=dict)
 
 
-def create_session(config_path: str, session_id: str) -> "Session":
+def create_session(config_path: str, session_id: str) -> Session:
     """Create a session from a config file path."""
     from constat.session import Session
     config = Config.from_yaml(config_path)

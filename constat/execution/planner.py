@@ -48,6 +48,24 @@ from constat.prompts import load_prompt
 PLANNER_SYSTEM_PROMPT = load_prompt("planner_system.md")
 PLANNER_PROMPT_TEMPLATE = load_prompt("planner_template.md")
 
+_PLANNER_SYSTEM_NO_DSL: str | None = None  # lazy-built stripped variant
+
+
+def _planner_prompt_no_dsl() -> str:
+    """Return PLANNER_SYSTEM_PROMPT with primitive DSL sections removed."""
+    import re
+    global _PLANNER_SYSTEM_NO_DSL
+    if _PLANNER_SYSTEM_NO_DSL is None:
+        prompt = PLANNER_SYSTEM_PROMPT
+        # Remove ## Primitives section through to next ## header
+        prompt = re.sub(r'\n## Primitives\n.*?(?=\n## )', '', prompt, flags=re.DOTALL)
+        # Remove "primitive" key from output format examples
+        prompt = re.sub(r',?\s*"primitive":\s*"[^"]*"', '', prompt)
+        # Remove trailing instruction line about picking primitives
+        prompt = re.sub(r'\nPick the most specific primitive.*?\n', '\n', prompt)
+        _PLANNER_SYSTEM_NO_DSL = prompt
+    return _PLANNER_SYSTEM_NO_DSL
+
 
 def _parse_post_validations(raw: list[dict]) -> list[PostValidation]:
     """Parse raw post-validation dicts into PostValidation objects."""
@@ -91,6 +109,7 @@ class Planner:
         allowed_databases: set[str] | None = None,
         allowed_apis: set[str] | None = None,
         allowed_documents: set[str] | None = None,
+        enable_primitive_dsl: bool = True,
     ):
         """Initialize the planner.
 
@@ -119,6 +138,7 @@ class Planner:
         self._available_agents: list[dict] = []  # For agent-based step assignment
         self._skill_manager = None  # Set via set_skill_manager()
         self._glossary_context: str = ""  # Set via set_glossary_context()
+        self.enable_primitive_dsl = enable_primitive_dsl
 
         # Support both direct provider (backward compat) and router (new)
         if isinstance(router_or_provider, TaskRouter):
@@ -310,8 +330,9 @@ class Planner:
         if self._glossary_context:
             domain_text += "\n" + self._glossary_context
 
+        base_prompt = PLANNER_SYSTEM_PROMPT if self.enable_primitive_dsl else _planner_prompt_no_dsl()
         return PLANNER_PROMPT_TEMPLATE.format(
-            system_prompt=PLANNER_SYSTEM_PROMPT,
+            system_prompt=base_prompt,
             injected_sections=injected_sections,
             schema_overview=self.schema_manager.get_brief_summary(self.allowed_databases),
             api_overview=api_overview,
@@ -628,10 +649,10 @@ class Planner:
                 tool_handlers=self._get_tool_handlers(),
             )
 
-        # Parse and validate — retry up to 3x if primitive fields are invalid
+        # Parse and validate — retry up to 3x if primitive fields are invalid (DSL only)
         plan_data = self._parse_plan_response(response)
         primitive_retries = 0
-        for _attempt in range(3):
+        for _attempt in range(3 if self.enable_primitive_dsl else 0):
             errors = self._validate_primitives(plan_data)
             if not errors:
                 break

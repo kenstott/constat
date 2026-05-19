@@ -14,17 +14,18 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional, Any
+from typing import Any
 
 import constat.llm
 from constat.catalog.api_schema_manager import APISchemaManager
 from constat.catalog.preload_cache import MetadataPreloadCache
 from constat.catalog.schema_manager import SchemaManager
 from constat.core.config import Config
-from constat.core.tiered_config import ResolvedConfig
 from constat.core.models import Plan
 from constat.core.resources import SessionResources
+from constat.core.tiered_config import ResolvedConfig
 from constat.discovery.concept_detector import ConceptDetector
 from constat.discovery.doc_tools import DocumentDiscoveryTools
 from constat.embedding_loader import EmbeddingModelLoader
@@ -32,19 +33,25 @@ from constat.execution.executor import PythonExecutor
 from constat.execution.fact_resolver import FactResolver
 from constat.execution.intent_classifier import IntentClassifier
 from constat.execution.mode import (
-    Phase, TurnIntent, ConversationState, PrimaryIntent,
+    ConversationState,
+    Phase,
+    PrimaryIntent,
+    TurnIntent,
 )
 from constat.execution.parallel_scheduler import ExecutionContext
 from constat.execution.planner import Planner
 from constat.execution.scratchpad import Scratchpad
 from constat.providers import TaskRouter
 from constat.session._types import (
-    SessionConfig, StepEvent, ApprovalCallback, ClarificationCallback,
+    ApprovalCallback,
+    ClarificationCallback,
+    SessionConfig,
+    StepEvent,
 )
+from constat.storage.duckdb_session_store import DuckDBSessionStore
 from constat.storage.history import SessionHistory
 from constat.storage.learnings import LearningStore
 from constat.storage.registry import ConstatRegistry
-from constat.storage.duckdb_session_store import DuckDBSessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +62,16 @@ class CoreMixin:
         self,
         config: Config,
         session_id: str,
-        session_config: Optional[SessionConfig] = None,
-        history: Optional[SessionHistory] = None,
-        progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
-        user_id: Optional[str] = None,
-        data_dir: Optional[Path] = None,
+        session_config: SessionConfig | None = None,
+        history: SessionHistory | None = None,
+        progress_callback: Callable[[str, int, int, str], None] | None = None,
+        user_id: str | None = None,
+        data_dir: Path | None = None,
     ):
         self.session_id = session_id  # Always provided by client
 
         self.config = config
-        self.resolved_config: Optional[ResolvedConfig] = None
+        self.resolved_config: ResolvedConfig | None = None
         self.session_config = session_config or SessionConfig()
         self.user_id = user_id or "default"
         self.data_dir = data_dir or Path(".constat")
@@ -92,7 +99,7 @@ class CoreMixin:
         # Metadata preload cache for faster context loading
         t0 = time.time()
         self.preload_cache = MetadataPreloadCache(config)
-        self._preloaded_context: Optional[str] = None
+        self._preloaded_context: str | None = None
         # noinspection PyUnresolvedReferences
         self._load_preloaded_context()
         logger.debug(f"Session init: MetadataPreloadCache took {time.time() - t0:.2f}s")
@@ -103,12 +110,10 @@ class CoreMixin:
         # Document discovery tools (for reference documents)
         # Create split vector store: user DB (main) + system DB (ATTACHed as sys)
         t0 = time.time()
-        from constat.core.paths import user_vault_dir
-        from constat.storage.split_store import SplitVectorStore
-        from constat.discovery.vector_store import DuckDBVectorStore
         from constat.core.domain_tiers import get_domain_tier
-
-        from constat.core.paths import migrate_db_name
+        from constat.core.paths import migrate_db_name, user_vault_dir
+        from constat.discovery.vector_store import DuckDBVectorStore
+        from constat.storage.split_store import SplitVectorStore
         user_vault = user_vault_dir(self.data_dir, self.user_id)
         user_db = migrate_db_name(user_vault, "vectors.duckdb", "user.duckdb")
         system_db = migrate_db_name(self.data_dir, "vectors.duckdb", "system.duckdb")
@@ -162,6 +167,7 @@ class CoreMixin:
             config, self.schema_manager, self.router,
             doc_tools=self.doc_tools,
             api_schema_manager=self.api_schema_manager,
+            enable_primitive_dsl=self.session_config.enable_primitive_dsl,
         )
 
 
@@ -175,10 +181,10 @@ class CoreMixin:
         # Session state
         # Note: self.session_id is set at the top of __init__ (required parameter)
         # Store server_session_id for history mapping (allows find_session_by_server_id)
-        self.server_session_id: Optional[str] = session_id  # Server UUID for reverse lookup
-        self.plan: Optional[Plan] = None
+        self.server_session_id: str | None = session_id  # Server UUID for reverse lookup
+        self.plan: Plan | None = None
         self.scratchpad = Scratchpad()
-        self.datastore: Optional[DuckDBSessionStore] = None  # Persistent storage (only shared state between steps)
+        self.datastore: DuckDBSessionStore | None = None  # Persistent storage (only shared state between steps)
 
         # Central registry for tables and artifacts (shared across sessions)
         self.registry = ConstatRegistry(base_dir=self.data_dir)
@@ -239,22 +245,22 @@ class CoreMixin:
         self.planner.set_skill_manager(self.skill_manager)
 
         # Track current agent for this query (None = shared context)
-        self._current_agent_id: Optional[str] = None
+        self._current_agent_id: str | None = None
 
         # Event callbacks for monitoring
         self._event_handlers: list[Callable[[StepEvent], None]] = []
 
         # Approval callback (set via set_approval_callback)
-        self._approval_callback: Optional[ApprovalCallback] = None
+        self._approval_callback: ApprovalCallback | None = None
 
         # Clarification callback (set via set_clarification_callback)
-        self._clarification_callback: Optional[ClarificationCallback] = None
+        self._clarification_callback: ClarificationCallback | None = None
 
         # Tool response cache for schema tools (cleared on refresh)
         self._tool_cache: dict[str, Any] = {}
 
         # Cached proof result (set after prove_conversation completes)
-        self.last_proof_result: Optional[dict] = None
+        self.last_proof_result: dict | None = None
 
         # Proof user validations and step hints (set during prove flow)
         self._proof_user_validations: list[dict] = []
@@ -767,6 +773,7 @@ class CoreMixin:
             return
 
         import re as _re
+
         from constat.testing.grounding import build_source_patterns
 
         for node in proof_nodes:
