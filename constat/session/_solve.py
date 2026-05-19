@@ -11,11 +11,12 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 
-from constat.core.models import Plan, PlannerResponse, Step, StepStatus, StepResult, TaskType
+from constat.core.models import Plan, PlannerResponse, Step, StepResult, StepStatus
 from constat.execution.mode import PlanApproval, PrimaryIntent, SubIntent
-from constat.keywords import wants_brief_output
 from constat.execution.scratchpad import Scratchpad
+from constat.keywords import wants_brief_output
 from constat.session._types import QuestionAnalysis, QuestionType, StepEvent, is_meta_question
 from constat.storage.duckdb_session_store import DuckDBSessionStore
 
@@ -103,8 +104,8 @@ class SolveMixin:
             data={"message": "Analyzing your question..."}
         ))
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         def run_intent():
             return self._classify_turn_intent(problem)
@@ -339,14 +340,14 @@ class SolveMixin:
 
         # Update objectives log — preserve existing entries (e.g. redo) and append new question
         import json as _json_obj
-        from datetime import datetime as _dt_obj, timezone as _tz_obj
+        from datetime import datetime as _dt_obj
         _existing_log_json = self.datastore.get_session_meta("objectives_log")
         _obj_log = _json_obj.loads(_existing_log_json) if _existing_log_json else []
-        _obj_log.append({"type": "question", "text": original_question, "ts": _dt_obj.now(_tz_obj.utc).isoformat()})
+        _obj_log.append({"type": "question", "text": original_question, "ts": _dt_obj.now(UTC).isoformat()})
         pending = getattr(self, '_pending_clarifications', None)
         if pending:
             for item in pending:
-                _obj_log.append({"type": "clarification", "question": item["question"], "answer": item["answer"], "ts": _dt_obj.now(_tz_obj.utc).isoformat()})
+                _obj_log.append({"type": "clarification", "question": item["question"], "answer": item["answer"], "ts": _dt_obj.now(UTC).isoformat()})
         self.datastore.set_session_meta("objectives_log", _json_obj.dumps(_obj_log))
 
         # Persist clarification Q&A as structured data (survives restore)
@@ -833,6 +834,7 @@ class SolveMixin:
                         attempts=failed_result.attempts,
                         duration_ms=failed_result.duration_ms,
                         error=failed_result.error,
+                        primitive_retries=planner_response.primitive_retries if planner_response else 0,
                     )
                     self.history.complete_session(self.session_id, status="failed")
                     return {
@@ -1005,6 +1007,7 @@ class SolveMixin:
             attempts=total_attempts,
             duration_ms=total_duration,
             answer=final_answer,
+            primitive_retries=planner_response.primitive_retries if planner_response else 0,
         )
         self.history.complete_session(self.session_id, status="completed")
 

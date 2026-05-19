@@ -476,6 +476,7 @@ class PlannerResponse:
     plan: Plan
     reasoning: str = ""  # Why this plan was chosen
     raw_response: str = ""  # Raw LLM output before parsing
+    primitive_retries: int = 0  # Times validation retry loop fired
 
 
 @dataclass

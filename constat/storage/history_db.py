@@ -13,8 +13,8 @@
 import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from constat.storage.duckdb_pool import ThreadLocalDuckDB
 from constat.storage.history import (
@@ -162,7 +162,7 @@ class DuckDBSessionHistory:
     @staticmethod
     def _generate_session_id() -> str:
         """Generate a unique session ID with full timestamp."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
         microseconds = f"{now.microsecond:06d}"
         return f"{timestamp}_{microseconds}"
@@ -180,13 +180,13 @@ class DuckDBSessionHistory:
         self,
         config_dict: dict,
         databases: list[str],
-        apis: Optional[list[str]] = None,
-        documents: Optional[list[str]] = None,
-        server_session_id: Optional[str] = None,
+        apis: list[str] | None = None,
+        documents: list[str] | None = None,
+        server_session_id: str | None = None,
     ) -> str:
         self._ensure_tables()
         session_id = self._generate_session_id()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         self._db.execute(
             """
@@ -216,9 +216,10 @@ class DuckDBSessionHistory:
         success: bool,
         attempts: int,
         duration_ms: int,
-        answer: Optional[str] = None,
-        error: Optional[str] = None,
-        attempt_history: Optional[list[dict]] = None,
+        answer: str | None = None,
+        error: str | None = None,
+        attempt_history: list[dict] | None = None,
+        primitive_retries: int = 0,
     ) -> int:
         self._ensure_tables()
 
@@ -260,7 +261,7 @@ class DuckDBSessionHistory:
                 str(uuid.uuid4()),
                 session_id,
                 query_id,
-                datetime.now(timezone.utc),
+                datetime.now(UTC),
                 question,
                 success,
                 attempts,
@@ -289,7 +290,7 @@ class DuckDBSessionHistory:
             [
                 str(uuid.uuid4()),
                 session_id,
-                datetime.now(timezone.utc),
+                datetime.now(UTC),
                 text,
                 input_type,
             ],
@@ -299,7 +300,7 @@ class DuckDBSessionHistory:
         self._ensure_tables()
         self._db.execute(
             "UPDATE sessions SET status = ?, completed_at = ? WHERE session_id = ?",
-            [status, datetime.now(timezone.utc), session_id],
+            [status, datetime.now(UTC), session_id],
         )
 
     def update_resources(
@@ -348,7 +349,7 @@ class DuckDBSessionHistory:
                 "decision": approval_decision,
                 "feedback": user_feedback,
                 "edited_steps": edited_steps,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             })
 
         # Check if row exists
@@ -408,10 +409,13 @@ class DuckDBSessionHistory:
         step_number: int,
         goal: str,
         code: str,
-        output: Optional[str] = None,
-        error: Optional[str] = None,
-        prompt: Optional[str] = None,
-        model: Optional[str] = None,
+        output: str | None = None,
+        error: str | None = None,
+        prompt: str | None = None,
+        model: str | None = None,
+        primitive: str | None = None,
+        success: bool | None = None,
+        attempts: int | None = None,
     ) -> None:
         self._ensure_tables()
 
@@ -429,7 +433,7 @@ class DuckDBSessionHistory:
                 """,
                 [
                     goal, code, output, error, prompt, model,
-                    datetime.now(timezone.utc), session_id, step_number,
+                    datetime.now(UTC), session_id, step_number,
                 ],
             )
         else:
@@ -442,9 +446,11 @@ class DuckDBSessionHistory:
                 """,
                 [
                     session_id, step_number, goal, code, output, error,
-                    prompt, model, datetime.now(timezone.utc),
+                    prompt, model, datetime.now(UTC),
                 ],
             )
+        # primitive/success/attempts are only persisted in the file backend's index.jsonl;
+        # the DB backend stores them as metadata via the steps index only
 
     def list_step_codes(self, session_id: str) -> list[dict]:
         self._ensure_tables()
@@ -488,10 +494,10 @@ class DuckDBSessionHistory:
         operation: str,
         code: str,
         attempt: int = 1,
-        output: Optional[str] = None,
-        error: Optional[str] = None,
-        prompt: Optional[str] = None,
-        model: Optional[str] = None,
+        output: str | None = None,
+        error: str | None = None,
+        prompt: str | None = None,
+        model: str | None = None,
     ) -> None:
         self._ensure_tables()
 
@@ -510,7 +516,7 @@ class DuckDBSessionHistory:
                 """,
                 [
                     name, operation, code, output, error, prompt, model,
-                    datetime.now(timezone.utc),
+                    datetime.now(UTC),
                     session_id, inference_id, attempt,
                 ],
             )
@@ -524,7 +530,7 @@ class DuckDBSessionHistory:
                 """,
                 [
                     session_id, inference_id, name, operation, code, attempt,
-                    output, error, prompt, model, datetime.now(timezone.utc),
+                    output, error, prompt, model, datetime.now(UTC),
                 ],
             )
 
@@ -646,7 +652,7 @@ class DuckDBSessionHistory:
                 [session_id, json.dumps(state)],
             )
 
-    def load_state(self, session_id: str) -> Optional[dict]:
+    def load_state(self, session_id: str) -> dict | None:
         self._ensure_tables()
         row = self._db.execute(
             "SELECT state FROM session_state WHERE session_id = ?", [session_id]
@@ -771,7 +777,7 @@ class DuckDBSessionHistory:
             ))
         return result
 
-    def get_session(self, session_id: str) -> Optional[SessionDetail]:
+    def get_session(self, session_id: str) -> SessionDetail | None:
         self._ensure_tables()
         row = self._db.execute(
             """
@@ -875,7 +881,7 @@ class DuckDBSessionHistory:
 
         return artifacts
 
-    def find_session_by_server_id(self, server_session_id: str) -> Optional[str]:
+    def find_session_by_server_id(self, server_session_id: str) -> str | None:
         self._ensure_tables()
         row = self._db.execute(
             "SELECT session_id FROM sessions WHERE server_session_id = ?",

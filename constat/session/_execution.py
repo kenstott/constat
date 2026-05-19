@@ -1257,6 +1257,9 @@ class ExecutionMixin:
                         output=result.stdout,
                         prompt=prompt,
                         model=codegen_model,
+                        primitive=step.primitive,
+                        success=True,
+                        attempts=attempt,
                     )
 
                 # Restore previous role context
@@ -1374,6 +1377,9 @@ class ExecutionMixin:
                 goal=step.goal,
                 code=last_code,
                 error=last_error,
+                primitive=step.primitive,
+                success=False,
+                attempts=self.session_config.max_retries_per_step,
             )
 
         # Restore previous role context

@@ -12,9 +12,9 @@
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from constat.storage.history import (
     Artifact,
@@ -44,8 +44,8 @@ class FileSessionHistory:
 
     def __init__(
         self,
-        storage_dir: Optional[Path] = None,
-        user_id: Optional[str] = None,
+        storage_dir: Path | None = None,
+        user_id: str | None = None,
     ):
         """
         Initialize session history storage.
@@ -73,7 +73,7 @@ class FileSessionHistory:
     @staticmethod
     def _generate_session_id() -> str:
         """Generate a unique session ID with full timestamp (sortable and human-readable)."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # Format: YYYY-MM-DD_HH-MM-SS_uuuuuu (microseconds for uniqueness)
         timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
         microseconds = f"{now.microsecond:06d}"
@@ -101,9 +101,9 @@ class FileSessionHistory:
         self,
         config_dict: dict,
         databases: list[str],
-        apis: Optional[list[str]] = None,
-        documents: Optional[list[str]] = None,
-        server_session_id: Optional[str] = None,
+        apis: list[str] | None = None,
+        documents: list[str] | None = None,
+        server_session_id: str | None = None,
     ) -> str:
         """
         Create a new session.
@@ -126,7 +126,7 @@ class FileSessionHistory:
         # Write session metadata
         metadata = {
             "session_id": session_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "config_hash": self._hash_config(config_dict),
             "databases": databases,
             "apis": apis or [],
@@ -198,7 +198,7 @@ class FileSessionHistory:
                     "decision": approval_decision,
                     "feedback": user_feedback,
                     "edited_steps": edited_steps,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 }, f, indent=2)
 
     def log_user_input(
@@ -226,7 +226,7 @@ class FileSessionHistory:
 
         # Create input record
         record = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "type": input_type,
             "text": text,
         }
@@ -242,9 +242,10 @@ class FileSessionHistory:
         success: bool,
         attempts: int,
         duration_ms: int,
-        answer: Optional[str] = None,
-        error: Optional[str] = None,
-        attempt_history: Optional[list[dict]] = None,
+        answer: str | None = None,
+        error: str | None = None,
+        attempt_history: list[dict] | None = None,
+        primitive_retries: int = 0,
     ) -> int:
         """
         Record a completed query with all artifacts.
@@ -289,7 +290,7 @@ class FileSessionHistory:
         # Create query record
         query_record = {
             "query_id": query_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "question": question,
             "success": success,
             "attempts": attempts,
@@ -299,6 +300,8 @@ class FileSessionHistory:
             query_record["answer"] = answer
         if error:
             query_record["error"] = error
+        if primitive_retries:
+            query_record["primitive_retries"] = primitive_retries
 
         # Append to queries file
         with open(queries_file, "a") as f:
@@ -349,7 +352,7 @@ class FileSessionHistory:
             metadata = json.load(f)
 
         metadata["status"] = status
-        metadata["completed_at"] = datetime.now(timezone.utc).isoformat()
+        metadata["completed_at"] = datetime.now(UTC).isoformat()
 
         with open(session_file, "w") as f:
             json.dump(metadata, f, indent=2)
@@ -439,7 +442,7 @@ class FileSessionHistory:
 
         return sessions
 
-    def get_session(self, session_id: str) -> Optional[SessionDetail]:
+    def get_session(self, session_id: str) -> SessionDetail | None:
         """
         Get full session detail including all queries.
 
@@ -546,10 +549,13 @@ class FileSessionHistory:
         step_number: int,
         goal: str,
         code: str,
-        output: Optional[str] = None,
-        error: Optional[str] = None,
-        prompt: Optional[str] = None,
-        model: Optional[str] = None,
+        output: str | None = None,
+        error: str | None = None,
+        prompt: str | None = None,
+        model: str | None = None,
+        primitive: str | None = None,
+        success: bool | None = None,
+        attempts: int | None = None,
     ) -> None:
         """
         Save code for a specific execution step.
@@ -563,6 +569,9 @@ class FileSessionHistory:
             error: Error message if execution failed (optional)
             prompt: LLM prompt used to generate the code (optional)
             model: Model used to generate the code (optional)
+            primitive: DSL primitive for this step (optional)
+            success: Whether step succeeded (optional)
+            attempts: Number of codegen/exec attempts (optional)
         """
         steps_dir = self._steps_dir(session_id)
         self._ensure_dir(steps_dir)
@@ -571,10 +580,16 @@ class FileSessionHistory:
         step_data = {
             "step_number": step_number,
             "goal": goal,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         if model:
             step_data["model"] = model
+        if primitive is not None:
+            step_data["primitive"] = primitive
+        if success is not None:
+            step_data["success"] = success
+        if attempts is not None:
+            step_data["attempts"] = attempts
 
         # Save code file
         code_file = steps_dir / f"step_{step_number:03d}_code.py"
@@ -671,10 +686,10 @@ class FileSessionHistory:
         operation: str,
         code: str,
         attempt: int = 1,
-        output: Optional[str] = None,
-        error: Optional[str] = None,
-        prompt: Optional[str] = None,
-        model: Optional[str] = None,
+        output: str | None = None,
+        error: str | None = None,
+        prompt: str | None = None,
+        model: str | None = None,
     ) -> None:
         """Save code for a specific inference node (auditable mode)."""
         inferences_dir = self._inferences_dir(session_id)
@@ -708,7 +723,7 @@ class FileSessionHistory:
             "name": name,
             "operation": operation,
             "attempt": attempt,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         if model:
             entry["model"] = model
@@ -805,7 +820,7 @@ class FileSessionHistory:
 
         return sorted(inferences, key=lambda x: x["inference_id"])
 
-    def find_session_by_server_id(self, server_session_id: str) -> Optional[str]:
+    def find_session_by_server_id(self, server_session_id: str) -> str | None:
         """
         Find a history session ID by its server UUID.
 
@@ -876,7 +891,7 @@ class FileSessionHistory:
         with open(state_file, "w") as f:
             json.dump(state, f, indent=2)
 
-    def load_state(self, session_id: str) -> Optional[dict]:
+    def load_state(self, session_id: str) -> dict | None:
         """
         Load session state for resumption.
 
@@ -922,7 +937,7 @@ class FileSessionHistory:
         try:
             with open(messages_file) as f:
                 return json.load(f)
-        except (json.JSONDecodeError, IOError):
+        except (OSError, json.JSONDecodeError):
             return []
 
     def save_messages_by_server_id(

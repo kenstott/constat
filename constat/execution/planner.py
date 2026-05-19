@@ -630,12 +630,14 @@ class Planner:
 
         # Parse and validate — retry up to 3x if primitive fields are invalid
         plan_data = self._parse_plan_response(response)
+        primitive_retries = 0
         for _attempt in range(3):
             errors = self._validate_primitives(plan_data)
             if not errors:
                 break
+            primitive_retries += 1
             error_msg = "\n".join(errors)
-            logger.warning(f"Plan primitive validation failed (attempt {_attempt + 1}):\n{error_msg}")
+            logger.warning(f"[PRIMITIVE_RETRY] attempt={_attempt + 1} errors={len(errors)}: {error_msg}")
             if self.router:
                 fix_result = self.router.execute(
                     task_type=TaskType.PLANNING,
@@ -654,6 +656,7 @@ class Planner:
                 plan_data = self._parse_plan_response(fix_result.content)
             else:
                 break
+        logger.info(f"[PRIMITIVE_RETRIES] primitive_retries={primitive_retries}")
         steps = self._build_steps_from_plan_data(plan_data)
 
         plan = Plan(
@@ -681,6 +684,7 @@ class Planner:
             plan=plan,
             reasoning=plan_data.get("reasoning", ""),
             raw_response=response,
+            primitive_retries=primitive_retries,
         )
 
     def replan(
