@@ -11,14 +11,14 @@
 """Single-shot query engine with automatic retry on errors."""
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 from constat.catalog.schema_manager import SchemaManager
 from constat.core.config import Config
 from constat.discovery.concept_detector import ConceptDetector
-from constat.discovery.doc_tools import DocumentDiscoveryTools, DOC_TOOL_SCHEMAS
+from constat.discovery.doc_tools import DOC_TOOL_SCHEMAS, DocumentDiscoveryTools
 from constat.email import create_send_email
 from constat.providers.anthropic import AnthropicProvider
+
 from . import RETRY_PROMPT_TEMPLATE
 from .executor import PythonExecutor, format_error_for_retry
 
@@ -30,7 +30,7 @@ class QueryResult:
     answer: str
     code: str
     attempts: int
-    error: Optional[str] = None
+    error: str | None = None
     # History of attempts for debugging
     attempt_history: list[dict] = field(default_factory=list)
 
@@ -61,11 +61,11 @@ class QueryEngine:
         self,
         config: Config,
         schema_manager: SchemaManager,
-        llm: Optional[AnthropicProvider] = None,
+        llm: AnthropicProvider | None = None,
         max_retries: int = 10,
-        allowed_databases: Optional[set[str]] = None,
-        allowed_apis: Optional[set[str]] = None,
-        allowed_documents: Optional[set[str]] = None,
+        allowed_databases: set[str] | None = None,
+        allowed_apis: set[str] | None = None,
+        allowed_documents: set[str] | None = None,
     ):
         """Initialize the code generation engine.
 
@@ -162,21 +162,21 @@ class QueryEngine:
                 if api_config.type == "graphql" and api_config.graphql_flavor:
                     flavor = api_config.graphql_flavor.lower()
                     if flavor == "hasura":
-                        api_lines.append(f"  **Hasura GraphQL** - Filter syntax:")
-                        api_lines.append(f"    - where: `{{field: {{_eq: value}}}}` operators: _eq, _neq, _gt, _lt, _gte, _lte, _in, _like, _ilike")
-                        api_lines.append(f"    - order_by: `{{field: asc}}` or `{{field: desc}}`")
-                        api_lines.append(f"    - limit/offset: `limit: 10, offset: 0`")
-                        api_lines.append(f"    - Aggregates: use `<table>_aggregate` for count, sum, avg, max, min")
-                        api_lines.append(f"    - Example: `orders_aggregate(where: {{status: {{_eq: \"pending\"}}}}) {{ aggregate {{ count sum {{ total }} }} }}`")
+                        api_lines.append("  **Hasura GraphQL** - Filter syntax:")
+                        api_lines.append("    - where: `{field: {_eq: value}}` operators: _eq, _neq, _gt, _lt, _gte, _lte, _in, _like, _ilike")
+                        api_lines.append("    - order_by: `{field: asc}` or `{field: desc}`")
+                        api_lines.append("    - limit/offset: `limit: 10, offset: 0`")
+                        api_lines.append("    - Aggregates: use `<table>_aggregate` for count, sum, avg, max, min")
+                        api_lines.append("    - Example: `orders_aggregate(where: {status: {_eq: \"pending\"}}) { aggregate { count sum { total } } }`")
                     elif flavor == "prisma":
-                        api_lines.append(f"  **Prisma GraphQL** - Filter syntax:")
-                        api_lines.append(f"    - where: `{{field: {{equals: value}}}}` operators: equals, not, in, notIn, lt, lte, gt, gte, contains, startsWith, endsWith")
-                        api_lines.append(f"    - orderBy: `{{field: asc}}` or `{{field: desc}}`")
-                        api_lines.append(f"    - take/skip: `take: 10, skip: 0`")
+                        api_lines.append("  **Prisma GraphQL** - Filter syntax:")
+                        api_lines.append("    - where: `{field: {equals: value}}` operators: equals, not, in, notIn, lt, lte, gt, gte, contains, startsWith, endsWith")
+                        api_lines.append("    - orderBy: `{field: asc}` or `{field: desc}`")
+                        api_lines.append("    - take/skip: `take: 10, skip: 0`")
                     elif flavor == "apollo":
-                        api_lines.append(f"  **Apollo GraphQL** - Check schema for filter arguments (no standard syntax)")
+                        api_lines.append("  **Apollo GraphQL** - Check schema for filter arguments (no standard syntax)")
                     elif flavor == "relay":
-                        api_lines.append(f"  **Relay GraphQL** - Uses connection pattern with edges/nodes, first/after for pagination")
+                        api_lines.append("  **Relay GraphQL** - Uses connection pattern with edges/nodes, first/after for pagination")
 
             api_overview = "\n".join(api_lines)
 
@@ -254,7 +254,7 @@ class QueryEngine:
             handlers.update({
                 "list_documents": self.doc_tools.list_documents,
                 "get_document": lambda name: self.doc_tools.get_document(name),
-                "search_documents": lambda query, limit=5: self.doc_tools.search_documents(query, limit),
+                "search_documents": lambda query, limit=30: self.doc_tools.search_documents(query, limit),
                 "get_document_section": lambda name, section: self.doc_tools.get_document_section(name, section),
             })
 

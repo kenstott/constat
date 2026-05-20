@@ -12,9 +12,6 @@
 
 from __future__ import annotations
 
-import shutil
-import textwrap
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -92,7 +89,7 @@ def _make_domain_config(
     databases=None,
     apis=None,
     documents=None,
-    domains=None,
+    domains=None,  # unused — hierarchy is filesystem-derived
 ):
     from constat.core.config import DomainConfig
     return DomainConfig(
@@ -105,7 +102,6 @@ def _make_domain_config(
         databases=databases or {},
         apis=apis or {},
         documents=documents or {},
-        domains=domains or [],
     )
 
 
@@ -566,20 +562,20 @@ class TestDeleteDomainMutation:
     async def test_delete_domain_referenced(self, tmp_path):
         from constat.server.graphql import schema
 
+        # Domain directory with a sub-domains/ child — filesystem is the authority.
         domain_dir = tmp_path / "domain"
         domain_dir.mkdir()
         config_file = domain_dir / "config.yaml"
         config_file.write_text(yaml.dump({"name": "Sales"}))
+        sub_domains_dir = domain_dir / "domains" / "child"
+        sub_domains_dir.mkdir(parents=True)
+        (sub_domains_dir / "config.yaml").write_text(yaml.dump({"name": "Child"}))
 
         config = _make_mock_config(tmp_path)
-        dc_child = _make_domain_config(
+        dc = _make_domain_config(
             filename="sales", name="Sales", source_path=str(config_file),
         )
-        dc_parent = _make_domain_config(
-            filename="parent", name="Parent", domains=["sales"],
-        )
-        config.domains["sales"] = dc_child
-        config.domains["parent"] = dc_parent
+        config.domains["sales"] = dc
 
         ctx = _make_context(config=config)
 
@@ -594,7 +590,7 @@ class TestDeleteDomainMutation:
             context_value=ctx,
         )
         assert result.errors is not None
-        assert "composed by" in result.errors[0].message.lower()
+        assert "sub-domain" in result.errors[0].message.lower()
 
 
 class TestUpdateDomainContentMutation:

@@ -16,10 +16,11 @@ Manages server-side Session instances, tracking lifecycle, timeout, and cleanup.
 import asyncio
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from threading import Lock
-from typing import Callable, Optional, Any
+from typing import Any, Optional
 
 from constat.api.impl import ConstatAPIImpl
 from constat.core.config import Config
@@ -44,21 +45,21 @@ class ManagedSession:
     created_at: datetime
     last_activity: datetime
     status: SessionStatus = SessionStatus.IDLE
-    current_query: Optional[str] = None
-    execution_id: Optional[str] = None
+    current_query: str | None = None
+    execution_id: str | None = None
 
     # History session ID (timestamp-based, e.g., '2026-02-05_160420_697412')
     # This is different from session_id which is the server/client UUID
-    _history_session_id: Optional[str] = None
+    _history_session_id: str | None = None
 
     # Per-session system prompt (seeded from global config on creation)
-    session_prompt: Optional[str] = None
+    session_prompt: str | None = None
 
     # Active domain filenames (e.g., ['sales-analytics.yaml', 'hr-reporting.yaml'])
     active_domains: list[str] = field(default_factory=list)
 
     # Resolved tiered config (rebuilt on domain/source changes)
-    resolved_config: Optional[ResolvedConfig] = None
+    resolved_config: ResolvedConfig | None = None
 
     # Dynamic resources (databases, APIs, file refs) added during the session
     _dynamic_dbs: list[dict[str, Any]] = field(default_factory=list)
@@ -67,19 +68,19 @@ class ManagedSession:
 
     # Last entity_rebuild_complete event — replayed on subscription connect
     # (scope cache may finish before WS connects, losing the event)
-    _entity_rebuild_event: Optional[dict] = None
+    _entity_rebuild_event: dict | None = None
 
     # Unified data source registry (providers registered at session creation)
     registry: Optional["DataSourceRegistry"] = None
 
     # Last session_ready event — replayed on GraphQL subscription connect
     # (background init may finish before subscription connects)
-    _session_ready_event: Optional[dict] = None
+    _session_ready_event: dict | None = None
 
     # Entity state cache tracking for JSON Patch diffs
     _entity_state_version: int = 0
-    _last_entity_state: Optional[dict] = None
-    _client_entity_version: Optional[int] = None
+    _last_entity_state: dict | None = None
+    _client_entity_version: int | None = None
 
     # Cancellation flag for background glossary generation
     _glossary_cancelled: threading.Event = field(default_factory=threading.Event)
@@ -88,7 +89,7 @@ class ManagedSession:
     _ner_cancelled: threading.Event = field(default_factory=threading.Event)
 
     # Active NER thread (for checking if NER is in-flight)
-    _ner_thread: Optional[threading.Thread] = None
+    _ner_thread: threading.Thread | None = None
 
 
     # Whether session initialization is complete (domains loaded, schema entities set)
@@ -99,26 +100,26 @@ class ManagedSession:
     _glossary_generating: bool = False
 
     # Approval event for blocking on plan approval
-    approval_event: Optional[asyncio.Event] = None
-    approval_response: Optional[dict] = None
+    approval_event: asyncio.Event | None = None
+    approval_response: dict | None = None
 
     # Clarification event for blocking on user clarification
-    clarification_event: Optional[asyncio.Event] = None
-    clarification_response: Optional[dict] = None
+    clarification_event: asyncio.Event | None = None
+    clarification_response: dict | None = None
 
     @property
-    def history_session_id(self) -> Optional[str]:
+    def history_session_id(self) -> str | None:
         """Get the session ID used for history storage (timestamp-based)."""
         return self._history_session_id
 
     def touch(self) -> None:
         """Update last activity timestamp."""
-        self.last_activity = datetime.now(timezone.utc)
+        self.last_activity = datetime.now(UTC)
 
     def is_expired(self, timeout_minutes: int) -> bool:
         """Check if session has exceeded timeout."""
         expiry = self.last_activity + timedelta(minutes=timeout_minutes)
-        return datetime.now(timezone.utc) > expiry
+        return datetime.now(UTC) > expiry
 
     def has_database(self, db_name: str) -> bool:
         """Check if a database exists in any source (config, domain, dynamic, schema_manager)."""
@@ -200,8 +201,9 @@ class ManagedSession:
 
     def _persist_dbs_to_user_config(self) -> None:
         """Write dynamic databases to .constat/{user_id}/config.yaml."""
-        import yaml
         from pathlib import Path
+
+        import yaml
 
         from constat.core.paths import user_vault_dir
         config_path = user_vault_dir(Path(".constat"), self.user_id) / "config.yaml"
@@ -235,8 +237,10 @@ class ManagedSession:
 
     def _persist_docs_to_user_config(self) -> None:
         """Write dynamic documents (file_refs) to .constat/{user_id}.vault/config.yaml."""
-        import yaml
         from pathlib import Path
+
+        import yaml
+
         from constat.core.paths import user_vault_dir
 
         config_path = user_vault_dir(Path(".constat"), self.user_id) / "config.yaml"
@@ -272,8 +276,9 @@ class ManagedSession:
     @staticmethod
     def _remove_doc_from_user_config(user_id: str, doc_name: str) -> None:
         """Remove a document entry from the user-level config."""
-        import yaml
         from pathlib import Path
+
+        import yaml
 
         from constat.core.paths import user_vault_dir
         config_path = user_vault_dir(Path(".constat"), user_id) / "config.yaml"
@@ -291,8 +296,10 @@ class ManagedSession:
     @staticmethod
     def _remove_db_from_user_config(user_id: str, db_name: str) -> None:
         """Remove a database entry from the user-level config."""
-        import yaml
         from pathlib import Path
+
+        import yaml
+
         from constat.core.paths import user_vault_dir
 
         config_path = user_vault_dir(Path(".constat"), user_id) / "config.yaml"
@@ -391,8 +398,8 @@ class ManagedSession:
                         success, msg = self.session.doc_tools.add_document_from_config(
                             ref["name"], doc_config, session_id=self.session_id,
                         )
-                        from datetime import datetime, timezone
-                        ref["last_refreshed"] = datetime.now(timezone.utc).isoformat()
+                        from datetime import datetime
+                        ref["last_refreshed"] = datetime.now(UTC).isoformat()
                         if success:
                             logger.info(f"Background IMAP ingest complete: {ref['name']} — {msg}")
                         else:
@@ -426,7 +433,7 @@ class SessionManager:
         self._server_config = server_config
         self._sessions: dict[str, ManagedSession] = {}
         self._lock = Lock()
-        self._cleanup_task: Optional[asyncio.Task] = None
+        self._cleanup_task: asyncio.Task | None = None
 
         # Diff generator registry (heartbeat-triggered)
         from constat.server.diff_generators import EntityDiffGenerator
@@ -446,7 +453,7 @@ class SessionManager:
             if managed.user_id == user_id and hasattr(managed.session, '_split_store'):
                 return managed.session._split_store.db
         # No active session — open standalone
-        from constat.core.paths import user_vault_dir, migrate_db_name
+        from constat.core.paths import migrate_db_name, user_vault_dir
         from constat.storage.duckdb_pool import ThreadLocalDuckDB
         vault = user_vault_dir(self._server_config.data_dir, user_id)
         vault.mkdir(parents=True, exist_ok=True)
@@ -460,13 +467,15 @@ class SessionManager:
     def _create_registry() -> "DataSourceRegistry":
         """Create a DataSourceRegistry with all known providers."""
         from constat.core.sources import DataSourceKind, DataSourceRegistry
-        from constat.providers.sql_provider import SqlDatabaseProvider
-        from constat.providers.document_providers import (
-            FileDocumentProvider, HttpDocumentProvider, ImapDocumentProvider,
-        )
-        from constat.providers.api_providers import GraphQLApiProvider, OpenApiProvider
-        from constat.mcp.document_provider import McpDocumentProvider
         from constat.mcp.api_provider import McpApiProvider
+        from constat.mcp.document_provider import McpDocumentProvider
+        from constat.providers.api_providers import GraphQLApiProvider, OpenApiProvider
+        from constat.providers.document_providers import (
+            FileDocumentProvider,
+            HttpDocumentProvider,
+            ImapDocumentProvider,
+        )
+        from constat.providers.sql_provider import SqlDatabaseProvider
 
         registry = DataSourceRegistry()
         registry.register(DataSourceKind.DATABASE, "sql", SqlDatabaseProvider())
@@ -523,7 +532,7 @@ class SessionManager:
         """Process a heartbeat: run eligible diff generators, return server_time."""
         managed = self._sessions.get(session_id)
         if not managed:
-            return datetime.now(timezone.utc).isoformat()
+            return datetime.now(UTC).isoformat()
         managed.touch()
         for gen in self._diff_generators:
             try:
@@ -531,7 +540,7 @@ class SessionManager:
                     gen.run(managed, self, since)
             except Exception as e:
                 logger.warning(f"Diff generator '{gen.name}' error: {e}")
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
     def create_session(self, session_id: str, user_id: str = "default") -> str:
         """Create or restore a Session instance.
@@ -624,7 +633,7 @@ class SessionManager:
                 learning_store=learning_store,
             )
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             managed = ManagedSession(
                 session_id=session_id,
                 session=session,
@@ -645,6 +654,15 @@ class SessionManager:
                 managed.restore_resources()
 
             logger.info(f"Created session {session_id} for user {user_id}")
+
+        # Register user namespace + domains in chonk store (idempotent).
+        try:
+            from pathlib import Path as _Path
+
+            from constat.server._chonk_warmup import register_user_namespace
+            register_user_namespace(user_id, base_dir=_Path(self._server_config.data_dir))
+        except Exception as _exc:
+            logger.debug(f"chonk user namespace registration skipped: {_exc}")
 
         # Build initial resolved config (tier 1 + user tier; domains added later)
         self.resolve_config(session_id)
@@ -690,7 +708,7 @@ class SessionManager:
             }
         return overrides
 
-    def resolve_config(self, session_id: str) -> Optional[ResolvedConfig]:
+    def resolve_config(self, session_id: str) -> ResolvedConfig | None:
         """Build or rebuild the tiered ResolvedConfig for a session.
 
         Merges system, system-domain, user, user-domain, and session tiers.
@@ -755,6 +773,7 @@ class SessionManager:
             True if tombstone was written, False if skipped
         """
         import yaml
+
         from constat.core.tiered_config import ConfigSource
 
         managed = self.get_session_or_none(session_id)
@@ -809,7 +828,7 @@ class SessionManager:
         domain's routing is independent — the router walks the domain hierarchy
         (domain → user → system) per step to find the appropriate model chain.
         """
-        from constat.core.config import TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+        from constat.core.config import ModelSpec, TaskRoutingConfig, TaskRoutingEntry
 
         router = session.router
 
@@ -844,9 +863,9 @@ class SessionManager:
 
         Returns entity diff dict with added/removed lists, or None.
         """
-        from constat.storage._chonk_registry import get_global_store_readonly
         from constat.storage._chonk_entity_sync import sync_entities_from_chonk
         from constat.storage._chonk_glossary_sync import sync_entity_descriptions_to_glossary
+        from constat.storage._chonk_registry import get_global_store_readonly
 
         vector_store = (
             session.doc_tools._vector_store
@@ -1286,9 +1305,9 @@ class SessionManager:
 
         Skips silently if no chonk Store is available or svo feature is disabled.
         """
-        from constat.storage._chonk_registry import get_global_store_readonly
         from constat.server._chonk_warmup import _run_svo_phase
         from constat.storage._chonk_glossary_sync import sync_entity_descriptions_to_glossary
+        from constat.storage._chonk_registry import get_global_store_readonly
 
         chonk_store = get_global_store_readonly()
         if chonk_store is None:
@@ -1516,7 +1535,7 @@ class SessionManager:
             event_type=event_type,
             session_id=managed.session_id,
             step_number=0,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             data=data,
         )
         event_dict = ws_event.model_dump(mode="json")
@@ -1533,7 +1552,10 @@ class SessionManager:
         self.publish_execution_event(managed.session_id, event_dict)
 
         # Also publish glossary generation events to the glossaryChanged subscription
-        from constat.server.graphql.types.glossary_types import GlossaryChangeAction, GlossaryChangeEvent
+        from constat.server.graphql.types.glossary_types import (
+            GlossaryChangeAction,
+            GlossaryChangeEvent,
+        )
         _glossary_action_map = {
             EventType.GLOSSARY_REBUILD_START: GlossaryChangeAction.GENERATION_STARTED,
             EventType.GLOSSARY_GENERATION_PROGRESS: GlossaryChangeAction.GENERATION_PROGRESS,
@@ -1567,7 +1589,7 @@ class SessionManager:
         managed.touch()
         return managed
 
-    def get_session_or_none(self, session_id: str) -> Optional[ManagedSession]:
+    def get_session_or_none(self, session_id: str) -> ManagedSession | None:
         """Get a managed session by ID, returning None if not found.
 
         Args:
@@ -1581,7 +1603,7 @@ class SessionManager:
         except KeyError:
             return None
 
-    def list_sessions(self, user_id: Optional[str] = None) -> list[ManagedSession]:
+    def list_sessions(self, user_id: str | None = None) -> list[ManagedSession]:
         """List all managed sessions.
 
         Args:
@@ -1679,7 +1701,7 @@ class SessionManager:
                 self._sessions[session_id].status = status
                 self._sessions[session_id].touch()
 
-    def set_current_query(self, session_id: str, query: Optional[str]) -> None:
+    def set_current_query(self, session_id: str, query: str | None) -> None:
         """Set the current query being processed.
 
         Args:

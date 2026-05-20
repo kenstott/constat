@@ -21,11 +21,15 @@ Public interface:
 import hashlib
 import logging
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
-from constat.discovery.models import DocumentChunk, Entity, ChunkEntity, EnrichedChunk, SemanticType, GlossaryTerm
+from constat.discovery.models import (
+    ChunkEntity,
+    DocumentChunk,
+    Entity,
+    SemanticType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +37,7 @@ logger = logging.getLogger(__name__)
 def _run_entity_extraction(
     chunks,
     session_id: str,
-    project_id: Optional[str],
+    project_id: str | None,
     schema_terms,
     api_terms,
     business_terms,
@@ -157,7 +161,7 @@ class NumpyVectorStore(VectorStoreBackend):
 
     def __init__(self):
         self._chunks: list[DocumentChunk] = []
-        self._embeddings: Optional[np.ndarray] = None
+        self._embeddings: np.ndarray | None = None
         self._chunk_ids: list[str] = []
 
     @staticmethod
@@ -254,7 +258,7 @@ class DuckDBVectorStore:
 
     def __init__(
         self,
-        db_path: Optional[str] = None,
+        db_path: str | None = None,
         reranker_model: str | None = None,
         cluster_min_terms: int = 2,
         cluster_divisor: int = 5,
@@ -262,6 +266,7 @@ class DuckDBVectorStore:
         store_chunk_text: bool = True,
     ):
         import os
+
         from chonk.storage import Store
 
         if db_path:
@@ -983,7 +988,6 @@ class DuckDBVectorStore:
 
     @staticmethod
     def _make_resource_id(source_id, resource_type, resource_name):
-        from constat.storage.relational import RelationalStore
         return RelationalStore._make_resource_id(source_id, resource_type, resource_name)
 
     def get_resource_hash(self, *a, **kw):
@@ -1106,7 +1110,6 @@ class DuckDBVectorStore:
 
     @staticmethod
     def entity_visibility_filter(*a, **kw):
-        from constat.storage.relational import RelationalStore
         return RelationalStore.entity_visibility_filter(*a, **kw)
 
     def _term_from_row(self, row):
@@ -1153,6 +1156,8 @@ class DuckDBVectorStore:
         mode: str = "vector_first",
         relationship_index=None,
         return_scored: bool = False,
+        user_id: str | None = None,
+        domain_filter_llm_fn=None,
     ):
         """EnhancedSearch with MMR diversity + entity expansion, post-filtered by chunk_type."""
         from constat.storage._enhanced_adapter import run_enhanced_search
@@ -1169,6 +1174,8 @@ class DuckDBVectorStore:
             mode=mode,
             relationship_index=relationship_index,
             return_scored=return_scored,
+            user_id=user_id,
+            domain_filter_llm_fn=domain_filter_llm_fn,
         )
 
     def search_similar_entities(self, *a, **kw):
@@ -1208,12 +1215,11 @@ class DuckDBVectorStore:
 
 
 # Import here to avoid circular imports in delegation
-from constat.storage.relational import RelationalStore  # noqa: E402
 
 
 def create_vector_store(
     backend: str = "duckdb",
-    db_path: Optional[str] = None,
+    db_path: str | None = None,
     reranker_model: str | None = None,
     cluster_min_terms: int = 2,
     cluster_divisor: int = 5,

@@ -12,20 +12,16 @@
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from constat.core.paths import user_vault_dir
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from constat.server.persona_config import require_write
-
 from constat.core.config import Config
+from constat.core.paths import user_vault_dir
 from constat.server.auth import CurrentUserId
 from constat.server.config import ServerConfig
-from constat.server.session_manager import SessionManager
 from constat.server.models import (
     ConfigResponse,
     DomainDetailResponse,
@@ -40,8 +36,9 @@ from constat.server.models import (
     RuleInfo,
     RuleUpdateRequest,
 )
-from constat.server.config import ServerConfig
 from constat.server.permissions import get_user_permissions
+from constat.server.persona_config import require_write
+from constat.server.session_manager import SessionManager
 from constat.storage.learnings import LearningCategory, LearningSource
 
 logger = logging.getLogger(__name__)
@@ -87,6 +84,7 @@ def _ensure_user_domain_config(user_id: str, config: Config) -> None:
     yaml_path = user_dir / "config.yaml"
 
     import yaml as _yaml
+
     from constat.core.config import DomainConfig
 
     raw = None
@@ -105,35 +103,6 @@ def _ensure_user_domain_config(user_id: str, config: Config) -> None:
         raw["name"] = "User"
     config.domains[filename] = DomainConfig(**raw)
 
-
-def _check_domain_cycles(graph: dict[str, list[str]]) -> list[str]:
-    """Check for cycles in a domain composition graph.
-
-    Args:
-        graph: dict mapping domain filename -> list of child domain filenames
-
-    Returns:
-        List of cycle descriptions (empty if no cycles).
-    """
-    WHITE, GRAY, BLACK = 0, 1, 2
-    color = {name: WHITE for name in graph}
-    cycles: list[str] = []
-
-    def dfs(name: str, path: list[str]) -> None:
-        color[name] = GRAY
-        for child in graph.get(name, []):
-            if child not in color:
-                continue
-            if color[child] == GRAY:
-                cycles.append(" -> ".join(path + [child]))
-            elif color[child] == WHITE:
-                dfs(child, path + [child])
-        color[name] = BLACK
-
-    for name in graph:
-        if color[name] == WHITE:
-            dfs(name, [name])
-    return cycles
 
 
 def _domain_data_dirs(domain_cfg, user_id: str) -> list[Path]:
@@ -210,7 +179,7 @@ async def list_learnings(
                     source=l.get("source", LearningSource.EXPLICIT_COMMAND.value),
                     context=l.get("context"),
                     applied_count=l.get("applied_count", 0),
-                    created_at=datetime.fromisoformat(l["created"]) if l.get("created") else datetime.now(timezone.utc),
+                    created_at=datetime.fromisoformat(l["created"]) if l.get("created") else datetime.now(UTC),
                     scope=l.get("scope"),
                 )
                 for l in learnings_data
@@ -270,7 +239,7 @@ async def add_learning(
     Returns:
         Created learning
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     learning_id = str(uuid.uuid4())
 
     learning = {
@@ -363,9 +332,9 @@ async def compact_learnings(
         Compaction results with counts of rules created/strengthened
     """
     try:
-        from constat.storage.learnings import LearningStore
         from constat.learning.compactor import LearningCompactor
         from constat.providers import TaskRouter
+        from constat.storage.learnings import LearningStore
 
         store = LearningStore(user_id=user_id)
         stats = store.get_stats()
@@ -430,9 +399,9 @@ async def generate_exemplars(
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     # Get dependencies
-    from constat.storage.learnings import LearningStore
     from constat.learning.exemplar_generator import ExemplarGenerator
     from constat.providers import TaskRouter
+    from constat.storage.learnings import LearningStore
 
     store = LearningStore(user_id=user_id)
     llm = TaskRouter(config.llm)
@@ -502,8 +471,9 @@ async def download_simple_exemplars(
 ):
     """Download learnings as JSONL for fine-tuning — no LLM calls, instant."""
     from fastapi.responses import StreamingResponse
-    from constat.storage.learnings import LearningStore
+
     from constat.learning.simple_exporter import SimpleExporter
+    from constat.storage.learnings import LearningStore
 
     if format not in ("messages", "alpaca", "sharegpt"):
         raise HTTPException(status_code=400, detail="format must be messages, alpaca, or sharegpt")
@@ -584,6 +554,18 @@ async def get_config_sanitized(
 # ============================================================================
 # Domain Endpoints
 # ============================================================================
+
+
+@router.get("/domains/dag")
+async def get_domain_dag() -> dict[str, list[str]]:
+    """Return the domain DAG as a flat map of path -> [child_paths].
+
+    Built from the filesystem at warmup. Returns empty dict if chonk index
+    has not been built yet.
+    """
+    from constat.storage._chonk_registry import get_domain_dag
+
+    return get_domain_dag()
 
 
 @router.get("/domains/tree")
@@ -691,7 +673,6 @@ async def get_domain_tree(
             rules=rule_ids,
             facts=fact_names,
             system_prompt=domain_cfg.system_prompt or "",
-            domains=domain_cfg.domains or [],
         )
 
     # --- Phase 1: Flat discovery ---
@@ -765,59 +746,18 @@ async def get_domain_tree(
     user_domains_dir = user_vault_dir(Path(".constat"), user_id) /"domains"
     _flat_scan(user_domains_dir, tier="user")
 
-    def _resolve_ref(ref: str, parent_key: str = "") -> str | None:
-        """Resolve a domain reference to its canonical key.
-
-        Tries exact/FQ match first, then relative to parent (parent_key/ref).
-        """
-        if ref in all_configs:
-            return ref
-        if parent_key:
-            relative = f"{parent_key}/{ref}"
-            if relative in all_configs:
-                return relative
-        return None
-
-    # --- Phase 2: Cycle detection (3-color DFS) ---
-    WHITE, GRAY, BLACK = 0, 1, 2
-    _color = {name: WHITE for name in all_configs}
-    bad_edges: set[tuple[str, str]] = set()
-
-    def _dfs(name: str, path: list[str]) -> None:
-        _color[name] = GRAY
-        cfg, _ = all_configs[name]
-        for child_ref in (cfg.domains or []):
-            child = _resolve_ref(child_ref, parent_key=name)
-            if child is None or child not in _color:
-                continue
-            if _color[child] == GRAY:
-                bad_edges.add((name, child))
-                logger.error(f"Domain cycle: {' -> '.join(path + [child])}")
-            elif _color[child] == WHITE:
-                _dfs(child, path + [child])
-        _color[name] = BLACK
-
-    for _name in all_configs:
-        if _color[_name] == WHITE:
-            _dfs(_name, [_name])
-
-    # --- Phase 3: DAG assembly ---
+    # --- Phase 2: DAG assembly from filesystem slash-paths ---
+    # Parent-child is implicit in the canonical name: "sales-analytics/north-america"
+    # parent is "sales-analytics". Cycles are impossible with filesystem hierarchy.
     referenced: set[str] = set()
-    for fname, (cfg, _) in all_configs.items():
-        for child_ref in (cfg.domains or []):
-            child_name = _resolve_ref(child_ref, parent_key=fname)
-            if child_name and child_name in all_nodes and (fname, child_name) not in bad_edges:
-                referenced.add(child_name)
+    for fname in all_nodes:
+        parts = fname.split("/")
+        if len(parts) > 1:
+            parent_name = "/".join(parts[:-1])
+            if parent_name in all_nodes:
+                all_nodes[parent_name].children.append(all_nodes[fname])
+                referenced.add(fname)
 
-    # Attach children
-    for fname, (cfg, _) in all_configs.items():
-        node = all_nodes[fname]
-        for child_ref in (cfg.domains or []):
-            child_name = _resolve_ref(child_ref, parent_key=fname)
-            if child_name and child_name in all_nodes and (fname, child_name) not in bad_edges:
-                node.children.append(all_nodes[child_name])
-
-    # Top-level = unreferenced domains
     top_level = [all_nodes[fname] for fname in all_nodes if fname not in referenced]
 
     # --- Phase 4: Root wrapper ---
@@ -995,6 +935,7 @@ async def create_domain(
         Created domain info
     """
     import re
+
     import yaml
 
     name = body.get("name", "").strip()
@@ -1045,39 +986,6 @@ async def create_domain(
     content["filename"] = filename
     content["source_path"] = str(domain_path.resolve())
     config.domains[filename] = DomainConfig(**content)
-
-    # If parent_domain specified, add this domain to parent's domains list
-    if parent_domain and parent_domain != "user":
-        if parent_domain == "root":
-            # Add to main config.yaml domains list
-            if config.config_dir:
-                root_config_path = Path(config.config_dir) / "config.yaml"
-                if root_config_path.is_file():
-                    root_data = yaml.safe_load(root_config_path.read_text()) or {}
-                    root_domains = root_data.get("domains", [])
-                    if not isinstance(root_domains, list):
-                        root_domains = list(root_domains.keys())
-                    if filename not in root_domains:
-                        root_domains.append(filename)
-                        root_data["domains"] = root_domains
-                        root_config_path.write_text(
-                            yaml.dump(root_data, default_flow_style=False, sort_keys=False)
-                        )
-                        config.domain_refs = root_domains
-        else:
-            parent_cfg = config.domains.get(parent_domain)
-            if parent_cfg and parent_cfg.source_path:
-                parent_config_path = Path(parent_cfg.source_path)
-                if parent_config_path.is_file():
-                    parent_data = yaml.safe_load(parent_config_path.read_text()) or {}
-                    domains_list = parent_data.get("domains", [])
-                    if filename not in domains_list:
-                        domains_list.append(filename)
-                        parent_data["domains"] = domains_list
-                        parent_config_path.write_text(
-                            yaml.dump(parent_data, default_flow_style=False, sort_keys=False)
-                        )
-                        parent_cfg.domains = domains_list
 
     return {
         "status": "created",
@@ -1194,23 +1102,19 @@ async def delete_domain(
     if not _can_modify_domain(domain, user_id, server_config):
         raise HTTPException(status_code=403, detail="You do not have permission to delete this domain")
 
-    # Prevent deletion if this domain is referenced in another domain's composition
-    referencing = [
-        k for k, d in config.domains.items()
-        if k != filename and filename in (d.domains or [])
-    ]
-    if referencing:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot delete: domain is composed by {', '.join(referencing)}",
-        )
-
     if not domain.source_path:
         raise HTTPException(status_code=400, detail="Domain has no source path")
 
+    # Prevent deletion if this domain has sub-domains (filesystem authority).
     import shutil
     domain_path = Path(domain.source_path)
     domain_dir = domain_path.parent
+    sub_domains_dir = domain_dir / "domains"
+    if sub_domains_dir.is_dir() and any(sub_domains_dir.iterdir()):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete: domain has sub-domains. Delete sub-domains first.",
+        )
 
     # Safety: only rmtree if the directory contains config.yaml
     if domain_dir.is_dir() and (domain_dir / "config.yaml").exists():
@@ -1365,38 +1269,8 @@ async def update_domain_content(
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
 
-    # Check for cycles if domains list changed
-    new_domains = (parsed or {}).get("domains", []) if isinstance(parsed, dict) else []
-    if new_domains:
-        # Build canonical graph from all known domains, resolving refs relative to parent
-        all_keys = set(config.domains.keys())
-        all_keys.add(filename)
-
-        def _resolve(ref: str, parent: str) -> str | None:
-            if ref in all_keys:
-                return ref
-            relative = f"{parent}/{ref}"
-            if relative in all_keys:
-                return relative
-            return None
-
-        graph: dict[str, list[str]] = {}
-        for k, d in config.domains.items():
-            graph[k] = [r for ref in (d.domains or []) if (r := _resolve(ref, k))]
-        graph[filename] = [r for ref in new_domains if (r := _resolve(ref, filename))]
-        cycles = _check_domain_cycles(graph)
-        if cycles:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot save: would create domain cycle(s): {'; '.join(cycles)}",
-            )
-
     # Write the file
     domain_path.write_text(content)
-
-    # Update in-memory config
-    if isinstance(parsed, dict) and "domains" in parsed:
-        domain.domains = parsed["domains"]
 
     return {
         "status": "saved",
@@ -1581,6 +1455,7 @@ async def promote_domain(
 ) -> dict:
     """Move a user domain to root (system domains directory)."""
     import shutil
+
     import yaml
 
     domain = config.load_domain(filename)
@@ -1915,6 +1790,7 @@ async def move_domain_source(
     reloads the domain configs in-place, and triggers entity refresh.
     """
     import yaml
+
     from constat.core.config import DomainConfig
 
     source_type = body.get("source_type")
@@ -2141,6 +2017,7 @@ async def delete_rule(
     """
     try:
         import yaml as _yaml
+
         from constat.storage.learnings import LearningStore
 
         # Look up rule summary before deletion for tombstone reverse-mapping

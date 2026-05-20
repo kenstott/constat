@@ -524,9 +524,6 @@ class DomainConfig(BaseModel):
     active: bool = True
     order: int = 0
 
-    # Composition: child domain filenames (DAG references)
-    domains: list[str] = Field(default_factory=list, description="Child domain filenames for composition")
-
     # Data sources (same structure as main config)
     databases: dict[str, DatabaseConfig] = Field(default_factory=dict)
     apis: dict[str, APIConfig] = Field(default_factory=dict)

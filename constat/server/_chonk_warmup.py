@@ -75,7 +75,10 @@ def warmup_chonk_index(config: Config, store_path: str | Path | None = None) -> 
 
     from constat.core.source_config import ChonkTomlConfig
     from constat.embedding_loader import EmbeddingModelLoader
-    from constat.storage._chonk_registry import set_global_store_path
+    from constat.storage._chonk_registry import (
+        set_domain_descriptions,
+        set_global_store_path,
+    )
 
     chonk_toml = ChonkTomlConfig.from_toml(toml_path)
 
@@ -90,42 +93,66 @@ def warmup_chonk_index(config: Config, store_path: str | Path | None = None) -> 
     embed_dim = embed_model.get_embedding_dimension() or 384
 
     store = Store(str(resolved_store_path), embedding_dim=embed_dim)
-    store.register_namespace("global", description="System-wide schema and document index")
 
-    loader = DocumentLoader(enrich_context=False)
+    # enrich_context=True adds breadcrumb prefix to each chunk — improves cross-domain retrieval.
+    # min/max chunk sizes match the ECDR-Bench leader configuration.
+    loader = DocumentLoader(min_chunk_size=1100, max_chunk_size=2200)
     config_base = Path(config.config_dir).resolve() if config.config_dir else Path.cwd()
 
-    for domain_name, domain in list(config.projects.items()):
-        domain_id = f"global:{domain_name}"
-        store.register_domain(domain_id, "global", domain_name)
+    # Register global namespace and derive domain hierarchy from config.domains (filesystem authority).
+    # parent_id is required for chonk's recursive CTE descent in resolve_domain_ids.
+    store.register_namespace("global", description="Shared company knowledge")
+    descriptions: dict[str, str] = {}
 
-        if not domain.databases:
+    def _register_domain_tree(domains_dir: Path, ns_id: str, prefix: str = "") -> None:
+        if not domains_dir.is_dir():
+            return
+        for entry in sorted(domains_dir.iterdir()):
+            if entry.is_dir() and (entry / "config.yaml").exists():
+                import yaml as _yaml
+                try:
+                    cfg_raw = entry.read_text() if False else (entry / "config.yaml").read_text()
+                    cfg_data = _yaml.safe_load(cfg_raw) or {}
+                except Exception:
+                    cfg_data = {}
+                domain_path = f"{prefix}/{entry.name}" if prefix else entry.name
+                domain_id = f"{ns_id}:{domain_path}"
+                parent_path = prefix if prefix else None
+                parent_id = f"{ns_id}:{parent_path}" if parent_path else None
+                description = cfg_data.get("description", "")
+                store.register_domain(domain_id, ns_id, domain_path, description=description, parent_id=parent_id)
+                descriptions[domain_id] = description
+                sub_dir = entry / "domains"
+                _register_domain_tree(sub_dir, ns_id, prefix=domain_path)
+
+    if config.config_dir:
+        _register_domain_tree(Path(config.config_dir) / "domains", "global")
+
+    # Index [[sources]] entries — domain field must match a registered domain path.
+    for src in chonk_toml.sources:
+        if src.type != "db_schema" or not src.uri:
             continue
-
-        for db_name, db_cfg in domain.databases.items():
-            uri = db_cfg.uri or ""
-            if not uri:
+        ns_id = src.namespace or "global"
+        domain_path = src.domain or src.name
+        domain_id = f"{ns_id}:{domain_path}"
+        uri = src.uri
+        if uri.startswith("sqlite:///") and not uri.startswith("sqlite:////"):
+            uri = f"sqlite:///{config_base / uri[len('sqlite:///'):]}"
+        try:
+            store.register_source(src.name, domain_id, "db_schema", uri)
+            tables = _introspect_db_schema(uri, source_db=src.name)
+            chunks = loader.load_schema(tables)
+            if not chunks:
+                logger.warning(f"  chonk: no chunks from {src.name}")
                 continue
-            # Resolve relative sqlite:/// paths against config_dir
-            if uri.startswith("sqlite:///") and not uri.startswith("sqlite:////"):
-                rel = uri[len("sqlite:///"):]
-                abs_path = config_base / rel
-                uri = f"sqlite:///{abs_path}"
-            source_id = f"{domain_name}:{db_name}"
-            store.register_source(source_id, domain_id, "db_schema", uri)
-            try:
-                tables = _introspect_db_schema(uri, source_db=db_name)
-                chunks = loader.load_schema(tables)
-                if not chunks:
-                    logger.warning(f"  chonk: no chunks from {source_id}")
-                    continue
-                texts = [c.embedding_content or c.content for c in chunks]
-                emb = embed_model.encode(texts, normalize_embeddings=True).astype("float32")
-                store.add_document(chunks, emb, namespace="global")
-                logger.info(f"  chonk: indexed {source_id} ({len(chunks)} chunks)")
-            except Exception as exc:
-                logger.warning(f"  chonk: failed to index {source_id}: {exc}")
+            texts = [c.embedding_content or c.content for c in chunks]
+            emb = embed_model.encode(texts, normalize_embeddings=True).astype("float32")
+            store.add_document(chunks, emb, namespace=ns_id, source_id=src.name, domain_id=domain_id)
+            logger.info(f"  chonk: indexed {src.name} ({len(chunks)} chunks)")
+        except Exception as exc:
+            logger.warning(f"  chonk: failed to index {src.name}: {exc}")
 
+    set_domain_descriptions(descriptions)
     set_global_store_path(resolved_store_path)
     logger.info(f"  chonk: global store ready at {resolved_store_path}")
 
@@ -144,10 +171,17 @@ def warmup_chonk_index(config: Config, store_path: str | Path | None = None) -> 
                 entry = {**entry, "connection": f"sqlite:///{abs_path}"}
             vocab_entries.append(entry)
         vocab_entries = vocab_entries or None
+        # Always enable schema_vocab when indexing DB schema sources — DatabaseSchemaCrawler
+        # produces db_table/db_column chunks that SchemaVocabBuilder.add_chunks() needs.
+        has_db_sources = any(
+            db_cfg.uri for domain in config.projects.values()
+            for db_cfg in (domain.databases or {}).values()
+        )
+        use_schema_vocab = chonk_toml.index.features.schema_vocab or has_db_sources
         n = build_ner(
             store,
             spacy_model=chonk_toml.index.spacy_model,
-            use_schema_vocab=chonk_toml.index.features.schema_vocab,
+            use_schema_vocab=use_schema_vocab,
             vocab_entities=vocab_entries,
             force=force_rebuild,
         )
@@ -193,7 +227,7 @@ def warmup_chonk_index(config: Config, store_path: str | Path | None = None) -> 
 
                 def get_entities_for_chunk(self, chunk_id):
                     rows = self._conn.execute(
-                        "SELECT entity_id, confidence FROM chunk_entities WHERE chunk_id = ?",
+                        "SELECT entity_id, score FROM chunk_entities WHERE chunk_id = ?",
                         [chunk_id],
                     ).fetchall()
                     return [(r[0], r[1]) for r in rows]
@@ -232,6 +266,58 @@ def warmup_chonk_index(config: Config, store_path: str | Path | None = None) -> 
         logger.info(f"  chonk context graph: {edge_count} edges built")
     except Exception as exc:
         logger.warning(f"  chonk context graph: build failed: {exc}")
+
+
+def register_user_namespace(user_id: str, base_dir: Path | None = None) -> None:
+    """Register user namespace and domains in the chonk global Store.
+
+    Walks `.constat/{user_id}/domains/` recursively and calls register_namespace /
+    register_domain so that chonk's CTE descent works for user-scoped searches.
+    Safe to call multiple times — register_* calls are idempotent on the Store.
+    """
+    from constat.storage._chonk_registry import get_global_store_readonly
+
+    store = get_global_store_readonly()
+    if store is None:
+        return
+
+    ns_id = f"user:{user_id}"
+    try:
+        store.register_namespace(ns_id, description=f"User domains for {user_id}")
+    except Exception:
+        pass  # already registered
+
+    if base_dir is None:
+        base_dir = Path(".constat")
+    from constat.core.paths import user_vault_dir
+    domains_dir = user_vault_dir(base_dir, user_id) / "domains"
+    if not domains_dir.is_dir():
+        return
+
+    def _walk(directory: Path, prefix: str = "") -> None:
+        for entry in sorted(directory.iterdir()):
+            if not entry.is_dir() or not (entry / "config.yaml").exists():
+                continue
+            import yaml as _yaml
+            try:
+                cfg_data = _yaml.safe_load((entry / "config.yaml").read_text()) or {}
+            except Exception:
+                cfg_data = {}
+            domain_path = f"{prefix}/{entry.name}" if prefix else entry.name
+            domain_id = f"{ns_id}:{domain_path}"
+            parent_path = prefix if prefix else None
+            parent_id = f"{ns_id}:{parent_path}" if parent_path else None
+            description = cfg_data.get("description", "")
+            try:
+                store.register_domain(domain_id, ns_id, domain_path, description=description, parent_id=parent_id)
+            except Exception:
+                pass  # already registered
+            sub_dir = entry / "domains"
+            if sub_dir.is_dir():
+                _walk(sub_dir, prefix=domain_path)
+
+    _walk(domains_dir)
+    logger.debug(f"chonk: registered user namespace {ns_id}")
 
 
 def _run_svo_phase(

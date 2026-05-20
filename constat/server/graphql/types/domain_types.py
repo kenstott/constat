@@ -12,8 +12,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import strawberry
 from strawberry.scalars import JSON
 
@@ -48,7 +46,6 @@ class DomainTreeNodeType:
     rules: list[str] = strawberry.field(default_factory=list)
     facts: list[str] = strawberry.field(default_factory=list)
     system_prompt: str = ""
-    domains: list[str] = strawberry.field(default_factory=list)
     children: list[DomainTreeNodeType] = strawberry.field(default_factory=list)
 
 
@@ -102,35 +99,35 @@ class DomainRuleType:
     tags: list[str] = strawberry.field(default_factory=list)
     domain: str = ""
     source: str = ""
-    scope: Optional[JSON] = None
+    scope: JSON | None = None
 
 
 @strawberry.type
 class DomainFactType:
     name: str
-    value: Optional[JSON] = None
+    value: JSON | None = None
     domain: str = ""
-    source: Optional[str] = None
-    confidence: Optional[float] = None
+    source: str | None = None
+    confidence: float | None = None
 
 
 # Domain inputs
 
+
 @strawberry.input
 class CreateDomainInput:
     name: str
-    description: Optional[str] = None
-    system_prompt: Optional[str] = None
-    parent_domain: Optional[str] = None
-    initial_domains: Optional[list[str]] = None
+    description: str | None = None
+    system_prompt: str | None = None
+    parent_domain: str | None = None
 
 
 @strawberry.input
 class UpdateDomainInput:
-    name: Optional[str] = None
-    description: Optional[str] = None
-    order: Optional[int] = None
-    active: Optional[bool] = None
+    name: str | None = None
+    description: str | None = None
+    order: int | None = None
+    active: bool | None = None
 
 
 @strawberry.input
@@ -139,7 +136,7 @@ class MoveDomainSourceInput:
     source_name: str
     from_domain: str
     to_domain: str
-    session_id: Optional[str] = None
+    session_id: str | None = None
 
 
 @strawberry.input
@@ -147,7 +144,7 @@ class MoveDomainSkillInput:
     skill_name: str
     from_domain: str
     to_domain: str
-    validate_only: Optional[bool] = None
+    validate_only: bool | None = None
 
 
 @strawberry.input
@@ -164,6 +161,7 @@ class MoveDomainRuleInput:
 
 
 # Domain result types
+
 
 @strawberry.type
 class CreateDomainResultType:
@@ -202,23 +200,23 @@ class PromoteDomainResultType:
 @strawberry.type
 class MoveDomainSkillResultType:
     status: str
-    skill: Optional[str] = None
-    to_domain: Optional[str] = None
-    warnings: Optional[list[str]] = None
+    skill: str | None = None
+    to_domain: str | None = None
+    warnings: list[str] | None = None
 
 
 @strawberry.type
 class MoveDomainAgentResultType:
     status: str
-    agent: Optional[str] = None
-    to_domain: Optional[str] = None
+    agent: str | None = None
+    to_domain: str | None = None
 
 
 @strawberry.type
 class MoveDomainRuleResultType:
     status: str
-    rule_id: Optional[str] = None
-    to_domain: Optional[str] = None
+    rule_id: str | None = None
+    to_domain: str | None = None
 
 
 @strawberry.type

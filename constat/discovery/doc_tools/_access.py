@@ -300,7 +300,7 @@ class _AccessMixin:
     def search_documents(
         self,
         query: str,
-        limit: int = 5,
+        limit: int = 30,
         session_id: str | None = None,
     ) -> list[dict]:
         """
@@ -317,7 +317,7 @@ class _AccessMixin:
             List of relevant document excerpts with relevance scores
         """
         if self._model is None:
-            logger.debug(f"[SEARCH] No embedding model")
+            logger.debug("[SEARCH] No embedding model")
             return []
 
         # Use lock for thread-safe access - both embedding model AND DuckDB connection
@@ -365,7 +365,7 @@ class _AccessMixin:
     def search_documents_enriched(
         self,
         query: str,
-        limit: int = 5,
+        limit: int = 30,
         session_id: str | None = None,
     ) -> list[dict]:
         """Search documents with entity enrichment.
@@ -420,15 +420,22 @@ class _AccessMixin:
         self,
         query: str,
         llm_fn=None,
-        limit: int = 10,
+        limit: int = 30,
         session_id: str | None = None,
         token_budget: int = 4096,
         llm_config=None,
+        user_id: str | None = None,
+        domain_filter_llm_fn=None,
     ):
-        """Retrieve relevant chunks and generate an answer via AnswerGenerator.
+        """Retrieve relevant chunks and generate an answer via EnhancedSearch.ask().
+
+        Uses chonk's single-call RAG pipeline when the native Store is available:
+        ask() embeds, searches, and generates in one call, returning Answer(.text, .citations).
+        Falls back to manual search + AnswerGenerator when chonk store is not present.
 
         llm_fn: callable(prompt) -> str. If None, built from chonk_config.answer_llm +
                 llm_config (falls back to config.llm). Returns None if no LLM available.
+        domain_filter_llm_fn: LLM callable for narrowing active domains to query-relevant ones.
         Requires search_enhanced support on the vector store.
         """
         if self._model is None or not hasattr(self._vector_store, "search_enhanced"):
@@ -446,11 +453,58 @@ class _AccessMixin:
                 return None
             llm_fn = client.complete
 
+        from constat.storage._chonk_registry import get_global_store_readonly
+
+        chonk_store = get_global_store_readonly()
+        mode = self._resolve_search_mode()
+        chonk_cfg = getattr(self, "_chonk_config", None)
+        lane_entity_min_sim = getattr(chonk_cfg, "lane_entity_min_sim", None) if chonk_cfg else None
+
+        if chonk_store is not None:
+            # Use EnhancedSearch.ask() — the single-call RAG pipeline.
+            # ask() embeds, searches, generates, and returns Answer(.text, .citations).
+            from constat.storage._chonk_registry import (
+                get_cluster_map,
+                get_community_index,
+            )
+
+            active_domains = [d for d in (self._active_domain_ids or []) if d != "__base__"]
+            chonk_domain_ids = None
+            if active_domains and not domain_filter_llm_fn:
+                ns_pairs = [("global", name) for name in active_domains]
+                if user_id:
+                    ns_pairs += [(f"user:{user_id}", name) for name in active_domains]
+                chonk_domain_ids = chonk_store.resolve_domain_ids(ns_pairs, include_global=False)
+
+            from chonk.search import EnhancedSearch
+
+            searcher = EnhancedSearch(
+                store=chonk_store,
+                entity_index=None,
+                cluster_map=get_cluster_map(),
+                community_index=get_community_index(),
+                lane_entity_min_sim=lane_entity_min_sim,
+            )
+
+            def _embed_fn(texts: list[str]):
+                return self._model.encode(texts, convert_to_numpy=True)
+
+            with self._model_lock:
+                return searcher.ask(
+                    query=query,
+                    embed_fn=_embed_fn,
+                    llm_fn=llm_fn,
+                    k=limit,
+                    mode=mode,
+                    domain_ids=chonk_domain_ids,
+                    token_budget=token_budget,
+                )
+
+        # Fallback: manual search + AnswerGenerator
         from chonk.generation import AnswerContext, AnswerGenerator
 
         with self._model_lock:
             query_embedding = self._model.encode([query], convert_to_numpy=True)
-            mode = self._resolve_search_mode()
             scored_chunks = self._vector_store.search_enhanced(
                 query_embedding,
                 limit=limit,
@@ -459,7 +513,7 @@ class _AccessMixin:
                 query_text=query,
                 mode=mode,
                 relationship_index=getattr(self, "_relationship_index", None),
-                lane_entity_min_sim=getattr(self._chonk_config, "lane_entity_min_sim", None) if getattr(self, "_chonk_config", None) else None,
+                lane_entity_min_sim=lane_entity_min_sim,
                 return_scored=True,
             )
 

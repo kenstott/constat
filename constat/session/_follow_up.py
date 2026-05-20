@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import UTC
 
 from constat.core.models import StepResult, StepStatus, TaskType
 from constat.execution.mode import PlanApproval
@@ -224,10 +225,10 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                 self.fact_resolver.add_user_facts_from_text(guidance)
                 # Append redo to objectives log before re-solve
                 import json as _json_redo_fp
-                from datetime import datetime as _dt_redo_fp, timezone as _tz_redo_fp
+                from datetime import datetime as _dt_redo_fp
                 _redo_log_json = self.datastore.get_session_meta("objectives_log") if self.datastore else None
                 _redo_log = _json_redo_fp.loads(_redo_log_json) if _redo_log_json else []
-                _redo_log.append({"type": "redo", "mode": "exploratory", "guidance": guidance, "ts": _dt_redo_fp.now(_tz_redo_fp.utc).isoformat()})
+                _redo_log.append({"type": "redo", "mode": "exploratory", "guidance": guidance, "ts": _dt_redo_fp.now(UTC).isoformat()})
                 if self.datastore:
                     self.datastore.set_session_meta("objectives_log", _json_redo_fp.dumps(_redo_log))
                 original_problem = self.datastore.get_session_meta("problem") if self.datastore else guidance
@@ -897,8 +898,8 @@ User feedback: {suggestion_text}
             refinement = f"Re-execute: {original_goal}"
 
         prompt = (
-            f"Continue the plan.\n\n"
-            f"Objective (user requests):\n"
+            "Continue the plan.\n\n"
+            "Objective (user requests):\n"
             + "\n".join(f"- {q}" for q in user_queries)
             + f"\n\n{refinement}"
         )
@@ -932,7 +933,7 @@ User feedback: {suggestion_text}
 
         if self.doc_tools and self.config.documents:
             # Search for relevant document excerpts
-            search_results = self.doc_tools.search_documents(problem, limit=5)
+            search_results = self.doc_tools.search_documents(problem, limit=30)
 
             if search_results:
                 doc_lines = ["Relevant document excerpts:"]
@@ -1220,7 +1221,7 @@ Prove all of the above claims and provide a complete audit trail."""
                             step_number=0,
                             data={"summary": summary_result.summary}
                         ))
-                        logger.info(f"[prove_conversation] Proof summary generated and emitted")
+                        logger.info("[prove_conversation] Proof summary generated and emitted")
                     else:
                         logger.warning(f"[prove_conversation] summarize_proof failed: {summary_result.error}")
                 except Exception as e:

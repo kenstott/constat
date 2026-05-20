@@ -25,6 +25,8 @@ _global_store_path: str | None = None
 _readonly_store: Store | None = None
 _community_index: CommunityIndex | None = None
 _cluster_map: ClusterMap | None = None
+_domain_dag: dict[str, list[str]] = {}  # path -> [child_paths]
+_domain_descriptions: dict[str, str] = {}  # path -> description
 
 
 def set_global_store_path(path: str | Path) -> None:
@@ -73,3 +75,25 @@ def set_cluster_map(cm: ClusterMap) -> None:
 def get_cluster_map() -> ClusterMap | None:
     with _lock:
         return _cluster_map
+
+
+def set_domain_descriptions(descriptions: dict[str, str]) -> None:
+    global _domain_descriptions
+    with _lock:
+        _domain_descriptions = descriptions
+
+
+def get_domain_descriptions() -> dict[str, str]:
+    with _lock:
+        return dict(_domain_descriptions)
+
+
+def set_domain_dag(dag: dict[str, list[str]]) -> None:
+    global _domain_dag
+    with _lock:
+        _domain_dag = dag
+
+
+def get_domain_dag() -> dict[str, list[str]]:
+    with _lock:
+        return dict(_domain_dag)

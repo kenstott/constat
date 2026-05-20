@@ -10,12 +10,11 @@
 
 """Pydantic models for API request/response schemas."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ============================================================================
 # Enums
@@ -142,7 +141,7 @@ class SessionCreate(BaseModel):
         default="default",
         description="User ID for session ownership",
     )
-    config_overrides: Optional[dict[str, Any]] = Field(
+    config_overrides: dict[str, Any] | None = Field(
         default=None,
         description="Optional config overrides for this session",
     )
@@ -183,11 +182,11 @@ class SessionResponse(BaseModel):
     status: SessionStatus = Field(description="Current session status")
     created_at: datetime = Field(description="When the session was created")
     last_activity: datetime = Field(description="Last activity timestamp")
-    current_query: Optional[str] = Field(
+    current_query: str | None = Field(
         default=None,
         description="Current query being processed",
     )
-    summary: Optional[str] = Field(
+    summary: str | None = Field(
         default=None,
         description="Brief summary/description of the session",
     )
@@ -281,15 +280,15 @@ class StepResponse(BaseModel):
         default_factory=list,
         description="Step numbers this step depends on",
     )
-    code: Optional[str] = Field(
+    code: str | None = Field(
         default=None,
         description="Generated code (after execution)",
     )
-    domain: Optional[str] = Field(
+    domain: str | None = Field(
         default=None,
         description="Domain this step operates in (for domain-aware model routing)",
     )
-    result: Optional[dict[str, Any]] = Field(
+    result: dict[str, Any] | None = Field(
         default=None,
         description="Execution result (after completion)",
     )
@@ -323,15 +322,15 @@ class ApprovalRequest(BaseModel):
     """Request to approve or reject a plan."""
 
     approved: bool = Field(description="Whether to approve the plan")
-    feedback: Optional[str] = Field(
+    feedback: str | None = Field(
         default=None,
         description="Optional feedback (required if rejected)",
     )
-    deleted_steps: Optional[list[int]] = Field(
+    deleted_steps: list[int] | None = Field(
         default=None,
         description="Step numbers to skip/delete from execution",
     )
-    edited_steps: Optional[list[EditedStep]] = Field(
+    edited_steps: list[EditedStep] | None = Field(
         default=None,
         description="The edited plan steps (for replanning)",
     )
@@ -375,9 +374,9 @@ class TableVersionInfo(BaseModel):
     """A single version entry for a table."""
 
     version: int = Field(description="Version number")
-    step_number: Optional[int] = Field(default=None, description="Step that created this version")
+    step_number: int | None = Field(default=None, description="Step that created this version")
     row_count: int = Field(default=0, description="Number of rows in this version")
-    created_at: Optional[str] = Field(default=None, description="Creation timestamp")
+    created_at: str | None = Field(default=None, description="Creation timestamp")
 
 
 class TableVersionsResponse(BaseModel):
@@ -407,13 +406,13 @@ class ArtifactInfo(BaseModel):
     name: str = Field(description="Artifact name")
     artifact_type: str = Field(description="Type of artifact")
     step_number: int = Field(description="Step that created it")
-    title: Optional[str] = Field(default=None, description="Display title")
-    description: Optional[str] = Field(default=None, description="Description")
+    title: str | None = Field(default=None, description="Display title")
+    description: str | None = Field(default=None, description="Description")
     mime_type: str = Field(description="MIME type of content")
-    created_at: Optional[str] = Field(default=None, description="Creation timestamp")
+    created_at: str | None = Field(default=None, description="Creation timestamp")
     is_key_result: bool = Field(default=False, description="Whether this is a key result")
     is_starred: bool = Field(default=False, description="Whether user has explicitly starred this")
-    metadata: Optional[dict] = Field(default=None, description="Artifact metadata")
+    metadata: dict | None = Field(default=None, description="Artifact metadata")
     version: int = Field(default=1, description="Current version number")
     version_count: int = Field(default=1, description="Total number of versions")
 
@@ -431,7 +430,7 @@ class ArtifactVersionInfo(BaseModel):
     version: int = Field(description="Version number")
     step_number: int = Field(description="Step that created this version")
     attempt: int = Field(description="Attempt number")
-    created_at: Optional[str] = Field(default=None, description="Creation timestamp")
+    created_at: str | None = Field(default=None, description="Creation timestamp")
 
 
 class ArtifactVersionsResponse(BaseModel):
@@ -459,11 +458,11 @@ class FactInfo(BaseModel):
     name: str = Field(description="Fact name")
     value: Any = Field(description="Resolved value")
     source: str = Field(description="Source of the fact")
-    reasoning: Optional[str] = Field(default=None, description="Resolution reasoning")
-    confidence: Optional[float] = Field(default=None, description="Confidence score")
+    reasoning: str | None = Field(default=None, description="Resolution reasoning")
+    confidence: float | None = Field(default=None, description="Confidence score")
     is_persisted: bool = Field(default=False, description="Whether the fact is persisted globally")
-    role_id: Optional[str] = Field(default=None, description="Role that created this fact (provenance)")
-    domain: Optional[str] = Field(default=None, description="Owning domain filename (None = user-level)")
+    role_id: str | None = Field(default=None, description="Role that created this fact (provenance)")
+    domain: str | None = Field(default=None, description="Owning domain filename (None = user-level)")
 
 
 class FactListResponse(BaseModel):
@@ -525,7 +524,7 @@ class StepEventWS(BaseModel):
     session_id: str = Field(description="Session this event belongs to")
     step_number: int = Field(default=0, description="Related step number")
     timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="Event timestamp",
     )
     data: dict[str, Any] = Field(
@@ -574,11 +573,11 @@ class FileRefRequest(BaseModel):
 
     name: str = Field(description="Reference name for the file")
     uri: str = Field(description="URL or file:// path")
-    auth: Optional[str] = Field(
+    auth: str | None = Field(
         default=None,
         description="Optional auth header (e.g., 'Bearer token123')",
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         default=None,
         description="Optional description of the file",
     )
@@ -590,9 +589,9 @@ class FileRefInfo(BaseModel):
     name: str = Field(description="Reference name")
     uri: str = Field(description="URL or file path")
     has_auth: bool = Field(description="Whether auth was provided")
-    description: Optional[str] = Field(default=None, description="File description")
+    description: str | None = Field(default=None, description="File description")
     added_at: datetime = Field(description="When the reference was added")
-    session_id: Optional[str] = Field(default=None, description="Session ID for persistence")
+    session_id: str | None = Field(default=None, description="Session ID for persistence")
 
 
 class FileRefListResponse(BaseModel):
@@ -610,11 +609,11 @@ class DatabaseAddRequest(BaseModel):
     """Request to add a database connection."""
 
     name: str = Field(description="Database connection name")
-    uri: Optional[str] = Field(
+    uri: str | None = Field(
         default=None,
         description="Connection URI (SQLAlchemy format)",
     )
-    file_id: Optional[str] = Field(
+    file_id: str | None = Field(
         default=None,
         description="ID of uploaded file for file-based databases",
     )
@@ -622,11 +621,11 @@ class DatabaseAddRequest(BaseModel):
         default="sqlalchemy",
         description="Database type (sqlalchemy, duckdb, sqlite, mongodb)",
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         default=None,
         description="Optional description",
     )
-    options: Optional[dict[str, Any]] = Field(
+    options: dict[str, Any] | None = Field(
         default=None,
         description="Connection options (schema, readonly, etc.)",
     )
@@ -641,15 +640,15 @@ class ApiAddRequest(BaseModel):
         description="API type (rest, graphql, openapi)",
     )
     base_url: str = Field(description="Base URL for the API")
-    description: Optional[str] = Field(
+    description: str | None = Field(
         default=None,
         description="Optional description",
     )
-    auth_type: Optional[str] = Field(
+    auth_type: str | None = Field(
         default=None,
         description="Authentication type (bearer, api_key, basic)",
     )
-    auth_header: Optional[str] = Field(
+    auth_header: str | None = Field(
         default=None,
         description="Auth header name (e.g., Authorization, X-API-Key)",
     )
@@ -660,15 +659,15 @@ class SessionDatabaseInfo(BaseModel):
 
     name: str = Field(description="Database name")
     type: str = Field(description="Database type")
-    dialect: Optional[str] = Field(default=None, description="SQL dialect")
-    description: Optional[str] = Field(default=None, description="Description")
+    dialect: str | None = Field(default=None, description="SQL dialect")
+    description: str | None = Field(default=None, description="Description")
     connected: bool = Field(description="Whether connected")
-    table_count: Optional[int] = Field(default=None, description="Number of tables")
+    table_count: int | None = Field(default=None, description="Number of tables")
     added_at: datetime = Field(description="When the database was added")
     is_dynamic: bool = Field(description="Whether dynamically added (vs config)")
-    file_id: Optional[str] = Field(default=None, description="Uploaded file ID if any")
+    file_id: str | None = Field(default=None, description="Uploaded file ID if any")
     source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
-    tier: Optional[str] = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
+    tier: str | None = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
 
 
 class SessionDatabaseListResponse(BaseModel):
@@ -681,27 +680,27 @@ class SessionApiInfo(BaseModel):
     """Information about a session API source."""
 
     name: str = Field(description="API name")
-    type: Optional[str] = Field(default=None, description="API type (rest, graphql, openapi)")
-    description: Optional[str] = Field(default=None, description="Description")
-    base_url: Optional[str] = Field(default=None, description="Base URL")
+    type: str | None = Field(default=None, description="API type (rest, graphql, openapi)")
+    description: str | None = Field(default=None, description="Description")
+    base_url: str | None = Field(default=None, description="Base URL")
     connected: bool = Field(description="Whether API is reachable")
     from_config: bool = Field(description="Whether from config (vs session-added)")
     source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
     is_dynamic: bool = Field(default=False, description="Whether dynamically added (vs config)")
-    tier: Optional[str] = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
+    tier: str | None = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
 
 
 class SessionDocumentInfo(BaseModel):
     """Information about a session document source."""
 
     name: str = Field(description="Document name")
-    type: Optional[str] = Field(default=None, description="Document type")
-    description: Optional[str] = Field(default=None, description="Description")
-    path: Optional[str] = Field(default=None, description="File path")
+    type: str | None = Field(default=None, description="Document type")
+    description: str | None = Field(default=None, description="Description")
+    path: str | None = Field(default=None, description="File path")
     indexed: bool = Field(description="Whether document is indexed")
     from_config: bool = Field(description="Whether from config (vs session-added)")
     source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
-    tier: Optional[str] = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
+    tier: str | None = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
 
 
 class SessionDataSourcesResponse(BaseModel):
@@ -718,7 +717,7 @@ class DatabaseTestResponse(BaseModel):
     name: str = Field(description="Database name")
     connected: bool = Field(description="Connection successful")
     table_count: int = Field(default=0, description="Number of tables found")
-    error: Optional[str] = Field(default=None, description="Error message if failed")
+    error: str | None = Field(default=None, description="Error message if failed")
 
 
 # ============================================================================
@@ -733,13 +732,13 @@ class LearningInfo(BaseModel):
     content: str = Field(description="The correction/learning text")
     category: str = Field(description="Learning category")
     source: str = Field(description="How the learning was captured")
-    context: Optional[dict[str, Any]] = Field(
+    context: dict[str, Any] | None = Field(
         default=None,
         description="Original context",
     )
     applied_count: int = Field(default=0, description="Times applied")
     created_at: datetime = Field(description="When captured")
-    scope: Optional[dict[str, Any]] = Field(default=None, description="Data source scope")
+    scope: dict[str, Any] | None = Field(default=None, description="Data source scope")
 
 
 class LearningCreateRequest(BaseModel):
@@ -763,7 +762,7 @@ class RuleInfo(BaseModel):
     tags: list[str] = Field(default_factory=list, description="Tags for searching")
     domain: str = Field(default="", description="Owning domain filename")
     source: str = Field(default="", description="Source tier")
-    scope: Optional[dict[str, Any]] = Field(default=None, description="Data source scope")
+    scope: dict[str, Any] | None = Field(default=None, description="Data source scope")
 
 
 class RuleCreateRequest(BaseModel):
@@ -781,9 +780,9 @@ class RuleCreateRequest(BaseModel):
 class RuleUpdateRequest(BaseModel):
     """Request to update an existing rule."""
 
-    summary: Optional[str] = Field(default=None, description="New rule text/summary")
-    confidence: Optional[float] = Field(default=None, description="New confidence score")
-    tags: Optional[list[str]] = Field(default=None, description="New tags")
+    summary: str | None = Field(default=None, description="New rule text/summary")
+    confidence: float | None = Field(default=None, description="New confidence score")
+    tags: list[str] | None = Field(default=None, description="New tags")
 
 
 class LearningListResponse(BaseModel):
@@ -817,7 +816,7 @@ class EntityInfo(BaseModel):
     name: str = Field(description="Entity name")
     type: str = Field(description="Entity type")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Metadata")
-    created_at: Optional[datetime] = Field(default=None, description="When extracted")
+    created_at: datetime | None = Field(default=None, description="When extracted")
     mention_count: int = Field(default=0, description="How often referenced")
 
 
@@ -837,24 +836,24 @@ class GlossaryTermResponse(BaseModel):
 
     name: str = Field(description="Canonical term name")
     display_name: str = Field(description="Display name")
-    definition: Optional[str] = Field(default=None, description="Business definition")
-    domain: Optional[str] = Field(default=None, description="Owning domain")
-    domain_path: Optional[str] = Field(default=None, description="Full domain hierarchy path")
-    parent_id: Optional[str] = Field(default=None, description="Parent term ID")
+    definition: str | None = Field(default=None, description="Business definition")
+    domain: str | None = Field(default=None, description="Owning domain")
+    domain_path: str | None = Field(default=None, description="Full domain hierarchy path")
+    parent_id: str | None = Field(default=None, description="Parent term ID")
     parent_verb: str = Field(default="HAS_KIND", description="Hierarchy type: HAS_ONE (composition), HAS_KIND (taxonomy), HAS_MANY (collection)")
     aliases: list[str] = Field(default_factory=list, description="Alternate names")
-    semantic_type: Optional[str] = Field(default=None, description="Semantic type")
+    semantic_type: str | None = Field(default=None, description="Semantic type")
     cardinality: str = Field(default="many", description="Cardinality")
-    status: Optional[str] = Field(default=None, description="Editorial status")
-    provenance: Optional[str] = Field(default=None, description="Source of definition")
+    status: str | None = Field(default=None, description="Editorial status")
+    provenance: str | None = Field(default=None, description="Source of definition")
     glossary_status: str = Field(default="self_describing", description="defined or self_describing")
-    entity_id: Optional[str] = Field(default=None, description="Matching entity ID")
-    glossary_id: Optional[str] = Field(default=None, description="Glossary term ID (for parent_id linking)")
-    ner_type: Optional[str] = Field(default=None, description="NER type")
+    entity_id: str | None = Field(default=None, description="Matching entity ID")
+    glossary_id: str | None = Field(default=None, description="Glossary term ID (for parent_id linking)")
+    ner_type: str | None = Field(default=None, description="NER type")
     connected_resources: list[dict[str, Any]] = Field(default_factory=list, description="Physical resources")
     tags: dict[str, Any] = Field(default_factory=dict, description="Classification tags (e.g. PII, GDPR)")
     ignored: bool = Field(default=False, description="Whether term is excluded from graphs and similarity")
-    canonical_source: Optional[str] = Field(default=None, description="Document name of the authoritative source for this term")
+    canonical_source: str | None = Field(default=None, description="Document name of the authoritative source for this term")
 
 
 class GlossaryListResponse(BaseModel):
@@ -870,25 +869,25 @@ class GlossaryCreateRequest(BaseModel):
 
     name: str = Field(description="Term name")
     definition: str = Field(description="Business definition")
-    domain: Optional[str] = Field(default=None, description="Owning domain")
+    domain: str | None = Field(default=None, description="Owning domain")
     aliases: list[str] = Field(default_factory=list, description="Alternate names")
-    parent_id: Optional[str] = Field(default=None, description="Parent term ID")
-    semantic_type: Optional[str] = Field(default=None, description="Semantic type")
+    parent_id: str | None = Field(default=None, description="Parent term ID")
+    semantic_type: str | None = Field(default=None, description="Semantic type")
 
 
 class GlossaryUpdateRequest(BaseModel):
     """Request to update a glossary term."""
 
-    definition: Optional[str] = Field(default=None, description="New definition")
-    aliases: Optional[list[str]] = Field(default=None, description="New aliases")
-    parent_id: Optional[str] = Field(default=None, description="New parent")
-    parent_verb: Optional[str] = Field(default=None, description="Verb for parent-child edge")
-    status: Optional[str] = Field(default=None, description="New status")
-    domain: Optional[str] = Field(default=None, description="New domain")
-    semantic_type: Optional[str] = Field(default=None, description="New semantic type")
-    tags: Optional[dict[str, Any]] = Field(default=None, description="Classification tags (e.g. {\"PII\": {}, \"GDPR\": {}})")
-    ignored: Optional[bool] = Field(default=None, description="Mark term as ignored")
-    canonical_source: Optional[str] = Field(default=None, description="Document name of the authoritative source")
+    definition: str | None = Field(default=None, description="New definition")
+    aliases: list[str] | None = Field(default=None, description="New aliases")
+    parent_id: str | None = Field(default=None, description="New parent")
+    parent_verb: str | None = Field(default=None, description="Verb for parent-child edge")
+    status: str | None = Field(default=None, description="New status")
+    domain: str | None = Field(default=None, description="New domain")
+    semantic_type: str | None = Field(default=None, description="New semantic type")
+    tags: dict[str, Any] | None = Field(default=None, description="Classification tags (e.g. {\"PII\": {}, \"GDPR\": {}})")
+    ignored: bool | None = Field(default=None, description="Mark term as ignored")
+    canonical_source: str | None = Field(default=None, description="Document name of the authoritative source")
 
 
 class GlossaryBulkStatusRequest(BaseModel):
@@ -966,7 +965,6 @@ class DomainTreeNode(BaseModel):
     rules: list[str] = Field(default_factory=list)
     facts: list[str] = Field(default_factory=list)
     system_prompt: str = Field(default="", description="Domain system prompt")
-    domains: list[str] = Field(default_factory=list, description="DAG composition children (filenames)")
     children: list["DomainTreeNode"] = Field(default_factory=list)
 
 
@@ -1001,7 +999,7 @@ class ErrorResponse(BaseModel):
 
     error: str = Field(description="Error type/code")
     message: str = Field(description="Human-readable error message")
-    details: Optional[dict[str, Any]] = Field(
+    details: dict[str, Any] | None = Field(
         default=None,
         description="Additional error details",
     )

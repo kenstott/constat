@@ -139,6 +139,8 @@ def run_enhanced_search(
     relationship_index=None,
     return_scored: bool = False,
     active_domains: list[str] | None = None,
+    user_id: str | None = None,
+    domain_filter_llm_fn=None,
 ) -> list[tuple[str, float, DocumentChunk]] | list[ScoredChunk]:
     """Run EnhancedSearch with pre-filtering by chunk_type via chonk's native support.
 
@@ -151,6 +153,9 @@ def run_enhanced_search(
         relationship_index: Optional RelationshipIndex for graph_first mode.
         return_scored: If True, return ScoredChunk objects (preserves provenance).
         active_domains: Domain names for resolve_session() (e.g. ["sales-analytics"]).
+        user_id: Current user ID — used to build user namespace pairs alongside global.
+        domain_filter_llm_fn: Optional callable for LLM-based domain narrowing. When
+            provided, domain_ids is not pre-resolved and chonk's Index applies the fn.
     """
     from constat.storage._chonk_registry import (
         get_cluster_map,
@@ -167,10 +172,11 @@ def run_enhanced_search(
 
     chonk_store = get_global_store_readonly()
     if chonk_store is not None and active_domains:
-        chonk_domain_ids = chonk_store.resolve_domain_ids(
-            [("global", name) for name in active_domains],
-            include_global=False,
-        )
+        # Build namespace pairs for both global and user namespaces.
+        ns_pairs = [("global", name) for name in active_domains]
+        if user_id:
+            ns_pairs += [(f"user:{user_id}", name) for name in active_domains]
+        chonk_domain_ids = chonk_store.resolve_domain_ids(ns_pairs, include_global=False)
         entity_index_global: _RelationalEntityIndex | None = None
         if relational is not None and session_id:
             entity_index_global = _RelationalEntityIndex(relational, session_id, domain_ids)
@@ -181,16 +187,20 @@ def run_enhanced_search(
             structural_expansion=True,
             entity_expansion=True,
             cluster_expansion=True,
+            entity_ref_expansion=True,
             cluster_map=cluster_map,
             community_index=community_index,
             lane_entity_min_sim=lane_entity_min_sim,
         )
+        # When domain_filter_llm_fn is provided, pass domain_ids=None so chonk's
+        # Index applies the fn to select relevant domains automatically.
+        search_domain_ids = None if domain_filter_llm_fn else chonk_domain_ids
         scored = searcher.search(  # type: ignore[call-arg]
             query_embedding,
             k=limit,
             query_text=query_text,
             mode=mode,
-            domain_ids=chonk_domain_ids,
+            domain_ids=search_domain_ids,
         )
         if return_scored:
             return scored
@@ -210,6 +220,7 @@ def run_enhanced_search(
         structural_expansion=False,
         entity_expansion=(entity_index is not None),
         cluster_expansion=(entity_index is not None),
+        entity_ref_expansion=(entity_index is not None),
         cluster_map=cluster_map,
         community_index=community_index,
         lane_entity_min_sim=lane_entity_min_sim,

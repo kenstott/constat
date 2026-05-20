@@ -10,15 +10,14 @@
 
 """Data source configuration models: DatabaseConfig, DocumentConfig, APIConfig."""
 
-from typing import Optional, Union
 
 from pydantic import BaseModel, Field
 
 
 class DatabaseCredentials(BaseModel):
     """Database credentials for authentication."""
-    username: Optional[str] = None
-    password: Optional[str] = None
+    username: str | None = None
+    password: str | None = None
 
     def is_complete(self) -> bool:
         """Check if both username and password are provided and non-empty."""
@@ -105,58 +104,58 @@ class DatabaseConfig(BaseModel):
     read_only: bool = False  # If True, block write operations (INSERT, UPDATE, DELETE, etc.)
 
     # SQL databases (SQLAlchemy)
-    uri: Optional[str] = None
+    uri: str | None = None
 
     # Credentials (used by SQL and some NoSQL)
-    username: Optional[str] = None
-    password: Optional[str] = None
+    username: str | None = None
+    password: str | None = None
 
     # MongoDB
-    database: Optional[str] = None  # Also used by CosmosDB
+    database: str | None = None  # Also used by CosmosDB
     sample_size: int = 100  # For schema inference
 
     # Cassandra
-    keyspace: Optional[str] = None
-    hosts: Optional[list[str]] = None
-    port: Optional[int] = None
-    cloud_config: Optional[dict] = None  # For DataStax Astra
+    keyspace: str | None = None
+    hosts: list[str] | None = None
+    port: int | None = None
+    cloud_config: dict | None = None  # For DataStax Astra
 
     # DynamoDB
-    region: Optional[str] = None
-    endpoint_url: Optional[str] = None  # For local DynamoDB
-    aws_access_key_id: Optional[str] = None
-    aws_secret_access_key: Optional[str] = None
-    aws_session_token: Optional[str] = None
-    profile_name: Optional[str] = None
+    region: str | None = None
+    endpoint_url: str | None = None  # For local DynamoDB
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_session_token: str | None = None
+    profile_name: str | None = None
 
     # Elasticsearch
-    api_key: Optional[str] = None
+    api_key: str | None = None
     # hosts: already defined above
 
     # CosmosDB
-    endpoint: Optional[str] = None
-    key: Optional[str] = None
-    container: Optional[str] = None
+    endpoint: str | None = None
+    key: str | None = None
+    container: str | None = None
     # database: already defined above
 
     # Firestore
-    project: Optional[str] = None
-    collection: Optional[str] = None
-    credentials_path: Optional[str] = None
+    project: str | None = None
+    collection: str | None = None
+    credentials_path: str | None = None
 
     # File-based data sources (csv, json, jsonl, parquet, arrow)
     # Supports local paths, s3://, https://, etc.
-    path: Optional[str] = None
+    path: str | None = None
 
     # JDBC (via JayDeBeApi)
-    jdbc_driver: Optional[str] = None
-    jdbc_url: Optional[str] = None
-    jar_path: Optional[str | list[str]] = None
+    jdbc_driver: str | None = None
+    jdbc_url: str | None = None
+    jar_path: str | list[str] | None = None
 
     def is_jdbc(self) -> bool:
         return self.type == "jdbc"
 
-    def get_connection_uri(self, config_dir: Optional[str] = None) -> str:
+    def get_connection_uri(self, config_dir: str | None = None) -> str:
         """
         Get the connection URI with credentials applied.
 
@@ -203,7 +202,7 @@ class DatabaseConfig(BaseModel):
 
         return uri
 
-    def get_resolved_path(self, config_dir: Optional[str] = None) -> Optional[str]:
+    def get_resolved_path(self, config_dir: str | None = None) -> str | None:
         """
         Get the file path resolved relative to config directory.
 
@@ -235,7 +234,7 @@ class DatabaseConfig(BaseModel):
 
         return self.path
 
-    def _inject_credentials(self, username: str, password: str, uri: Optional[str] = None) -> str:
+    def _inject_credentials(self, username: str, password: str, uri: str | None = None) -> str:
         """
         Inject credentials into the URI.
 
@@ -282,7 +281,7 @@ class DatabaseConfig(BaseModel):
         return self.type in ("csv", "json", "jsonl", "parquet", "arrow", "feather")
 
     # Glossary generation gating
-    generate_definitions: Union[bool, float, str] = True  # True/False/float threshold/"auto"
+    generate_definitions: bool | float | str = True  # True/False/float threshold/"auto"
 
 
 class DocumentConfig(BaseModel):
@@ -335,47 +334,47 @@ class DocumentConfig(BaseModel):
     type: str = "auto"
 
     # Source (transport inferred from field presence / URL scheme)
-    path: Optional[str] = None  # Local file path (supports glob: ./docs/*.md)
-    url: Optional[str] = None  # URL to fetch (http, https, s3, ftp, sftp)
-    content: Optional[str] = None  # Inline content
+    path: str | None = None  # Local file path (supports glob: ./docs/*.md)
+    url: str | None = None  # URL to fetch (http, https, s3, ftp, sftp)
+    content: str | None = None  # Inline content
     headers: dict[str, str] = Field(default_factory=dict)  # HTTP headers
 
     # Credentials (all support ${ENV_VAR} via existing YAML substitution)
-    username: Optional[str] = None  # FTP/SFTP/Confluence
-    password: Optional[str] = None  # FTP/SFTP
-    port: Optional[int] = None  # FTP/SFTP custom port
-    key_path: Optional[str] = None  # SFTP SSH key path
-    aws_profile: Optional[str] = None  # S3 AWS profile
-    aws_region: Optional[str] = None  # S3 AWS region
+    username: str | None = None  # FTP/SFTP/Confluence
+    password: str | None = None  # FTP/SFTP
+    port: int | None = None  # FTP/SFTP custom port
+    key_path: str | None = None  # SFTP SSH key path
+    aws_profile: str | None = None  # S3 AWS profile
+    aws_region: str | None = None  # S3 AWS region
 
     # Confluence
-    space_key: Optional[str] = None  # Confluence space key
-    page_title: Optional[str] = None  # Page title to fetch
-    page_id: Optional[str] = None  # Or page ID directly
-    api_token: Optional[str] = None  # Confluence API token
+    space_key: str | None = None  # Confluence space key
+    page_title: str | None = None  # Page title to fetch
+    page_id: str | None = None  # Or page ID directly
+    api_token: str | None = None  # Confluence API token
 
     # Notion
-    page_url: Optional[str] = None  # Notion page URL
-    notion_token: Optional[str] = None  # Notion integration token
+    page_url: str | None = None  # Notion page URL
+    notion_token: str | None = None  # Notion integration token
 
     # IMAP
     mailbox: str = "INBOX"
     search_criteria: str = "ALL"
-    since: Optional[str] = None
+    since: str | None = None
     max_messages: int = 500
     include_headers: bool = True
-    attachment_types: Optional[list[str]] = None
+    attachment_types: list[str] | None = None
     extract_attachments: bool = True
 
     # OAuth2 (IMAP)
     auth_type: str = "basic"  # "basic" | "oauth2" | "oauth2_refresh"
-    oauth2_client_id: Optional[str] = None
-    oauth2_client_secret: Optional[str] = None
-    oauth2_tenant_id: Optional[str] = None  # Azure AD
+    oauth2_client_id: str | None = None
+    oauth2_client_secret: str | None = None
+    oauth2_tenant_id: str | None = None  # Azure AD
     oauth2_scopes: list[str] = Field(default_factory=list)
-    oauth2_token_cache: Optional[str] = None
-    oauth2_cert_path: Optional[str] = None  # Path to PFX file (env: SP_CERT_PATH)
-    oauth2_cert_password: Optional[str] = None  # PFX password (env: SP_CERT_PASSWORD)
+    oauth2_token_cache: str | None = None
+    oauth2_cert_path: str | None = None  # Path to PFX file (env: SP_CERT_PATH)
+    oauth2_cert_password: str | None = None  # PFX password (env: SP_CERT_PASSWORD)
 
     # Metadata
     description: str = ""  # What this document contains
@@ -384,41 +383,41 @@ class DocumentConfig(BaseModel):
     # PDF/Office extraction options
     extract_tables: bool = True  # Extract tables from PDFs/docs as markdown
     extract_images: bool = False  # Extract and describe images (requires vision model)
-    page_range: Optional[str] = None  # e.g., "1-5" or "1,3,5-10" for PDFs
+    page_range: str | None = None  # e.g., "1-5" or "1,3,5-10" for PDFs
 
     # Loading behavior
     cache: bool = True  # Cache fetched content
-    cache_ttl: Optional[int] = None  # Cache TTL in seconds (None = forever)
+    cache_ttl: int | None = None  # Cache TTL in seconds (None = forever)
 
     # Link following (build corpus from linked documents)
     follow_links: bool = False  # Follow links in document to build corpus
     max_depth: int = 2  # Max link depth to follow (1 = direct links only)
     max_documents: int = 20  # Max documents to fetch via link following
-    link_pattern: Optional[str] = None  # Regex to filter which links to follow
+    link_pattern: str | None = None  # Regex to filter which links to follow
     same_domain_only: bool = True  # Only follow links to same domain
-    exclude_patterns: Optional[list[str]] = None  # Regex patterns for URLs to skip
+    exclude_patterns: list[str] | None = None  # Regex patterns for URLs to skip
 
     # Glossary generation gating
-    generate_definitions: Union[bool, float, str] = "auto"  # True/False/float threshold/"auto" (0.5)
+    generate_definitions: bool | float | str = "auto"  # True/False/float threshold/"auto" (0.5)
 
     # Audio transcription
     whisper_model: str = "large-v3"  # faster-whisper model size
     diarize: bool = False  # Enable WhisperX speaker diarization
-    language: Optional[str] = None  # Language code (None = auto-detect)
-    hf_token: Optional[str] = None  # HuggingFace token for diarization (${HF_TOKEN})
+    language: str | None = None  # Language code (None = auto-detect)
+    hf_token: str | None = None  # HuggingFace token for diarization (${HF_TOKEN})
 
     # Background refresh
     auto_refresh: bool = True  # Whether this source is eligible for background refresh
-    refresh_interval: Optional[int] = None  # Override default refresh interval (seconds)
+    refresh_interval: int | None = None  # Override default refresh interval (seconds)
 
     # MCP resource filtering
-    resource_filter: Optional[str] = None  # Regex to filter MCP resource URIs
+    resource_filter: str | None = None  # Regex to filter MCP resource URIs
     max_resources: int = 100  # Max resources to list from MCP server
 
     # Calendar source
-    provider: Optional[str] = None  # "google" | "microsoft"
-    calendar_id: Optional[str] = None  # Calendar ID (default: primary)
-    until: Optional[str] = None  # End date for event window (ISO format)
+    provider: str | None = None  # "google" | "microsoft"
+    calendar_id: str | None = None  # Calendar ID (default: primary)
+    until: str | None = None  # End date for event window (ISO format)
     max_events: int = 500
     expand_recurring: bool = True
     include_declined: bool = False
@@ -427,27 +426,27 @@ class DocumentConfig(BaseModel):
     calendars: list[str] = Field(default_factory=list)  # Multi-calendar IDs
 
     # Cloud drive source
-    folder_id: Optional[str] = None  # Root folder ID
-    folder_path: Optional[str] = None  # Root folder path (resolved to ID)
+    folder_id: str | None = None  # Root folder ID
+    folder_path: str | None = None  # Root folder path (resolved to ID)
     recursive: bool = True  # Recurse into subfolders
     max_files: int = 200
-    include_types: Optional[list[str]] = None  # File extension allowlist [".pdf", ".docx"]
+    include_types: list[str] | None = None  # File extension allowlist [".pdf", ".docx"]
     include_trashed: bool = False
-    site_id: Optional[str] = None  # SharePoint site ID (for MS Graph)
-    drive_id: Optional[str] = None  # Specific drive ID
+    site_id: str | None = None  # SharePoint site ID (for MS Graph)
+    drive_id: str | None = None  # Specific drive ID
 
     # SharePoint source
-    site_url: Optional[str] = None  # SharePoint site URL
+    site_url: str | None = None  # SharePoint site URL
     discover_libraries: bool = True  # Index document libraries
     discover_lists: bool = False  # Index lists as tables
     discover_calendars: bool = False  # Index calendar lists
     discover_pages: bool = False  # Index site pages
-    library_names: Optional[list[str]] = None  # Allowlist of library names
-    list_names: Optional[list[str]] = None  # Allowlist of list names
-    calendar_names: Optional[list[str]] = None  # Allowlist of calendar names
+    library_names: list[str] | None = None  # Allowlist of library names
+    list_names: list[str] | None = None  # Allowlist of list names
+    calendar_names: list[str] | None = None  # Allowlist of calendar names
     max_rows: int = 5000  # Max rows per list
     list_as_table: bool = True  # Render lists as markdown tables
-    page_types: Optional[list[str]] = None  # ["modern", "wiki"]
+    page_types: list[str] | None = None  # ["modern", "wiki"]
 
 
 class APIConfig(BaseModel):
@@ -505,37 +504,37 @@ class APIConfig(BaseModel):
     # GraphQL implementation flavor (affects filter syntax hints)
     # Options: hasura | prisma | apollo | relay | custom
     # If not specified, generic hints are provided
-    graphql_flavor: Optional[str] = None
+    graphql_flavor: str | None = None
 
     # Base URL for the API
-    url: Optional[str] = None
+    url: str | None = None
 
     # OpenAPI spec location (for type=openapi)
-    spec_url: Optional[str] = None  # URL to download OpenAPI spec
-    spec_path: Optional[str] = None  # Local path to OpenAPI spec file
-    spec_inline: Optional[dict] = None  # Inline OpenAPI spec (embedded in config)
+    spec_url: str | None = None  # URL to download OpenAPI spec
+    spec_path: str | None = None  # Local path to OpenAPI spec file
+    spec_inline: dict | None = None  # Inline OpenAPI spec (embedded in config)
 
     description: str = ""  # What this API provides
     headers: dict[str, str] = Field(default_factory=dict)  # Auth headers, etc.
 
     # Auth configuration (alternative to headers)
-    auth_type: Optional[str] = None  # bearer | basic | api_key
-    auth_token: Optional[str] = None  # Token for bearer auth
-    auth_username: Optional[str] = None  # Username for basic auth
-    auth_password: Optional[str] = None  # Password for basic auth
-    api_key: Optional[str] = None  # API key value
+    auth_type: str | None = None  # bearer | basic | api_key
+    auth_token: str | None = None  # Token for bearer auth
+    auth_username: str | None = None  # Username for basic auth
+    auth_password: str | None = None  # Password for basic auth
+    api_key: str | None = None  # API key value
     api_key_header: str = "X-API-Key"  # Header name for API key
 
     # Schema introspection (GraphQL introspection or OpenAPI spec parsing)
     introspect: bool = True  # Fetch and cache schema at startup
-    _schema_cache: Optional[dict] = None  # Cached schema (internal, not serialized)
+    _schema_cache: dict | None = None  # Cached schema (internal, not serialized)
 
     # MCP tool filtering
-    allowed_tools: Optional[list[str]] = None  # Allowlist of MCP tool names
-    denied_tools: Optional[list[str]] = None  # Denylist of MCP tool names
+    allowed_tools: list[str] | None = None  # Allowlist of MCP tool names
+    denied_tools: list[str] | None = None  # Denylist of MCP tool names
 
     # Glossary generation gating
-    generate_definitions: Union[bool, float, str] = True  # True/False/float threshold/"auto"
+    generate_definitions: bool | float | str = True  # True/False/float threshold/"auto"
 
 
 class ChonkModelSpec(BaseModel):
@@ -545,10 +544,10 @@ class ChonkModelSpec(BaseModel):
     self-contained in source_config to avoid circular imports.
     """
     model: str
-    provider: Optional[str] = None
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
-    max_tokens: Optional[int] = None
+    provider: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    max_tokens: int | None = None
 
 
 class ChonkConfig(BaseModel):
@@ -573,17 +572,17 @@ class ChonkConfig(BaseModel):
     search_mode: str = "auto"
     entity_expansion: bool = True
     community_summaries: bool = False
-    lane_entity_min_sim: Optional[float] = None
+    lane_entity_min_sim: float | None = None
 
     # Path to a chonk.toml config file (relative to config.yaml or absolute)
-    toml_path: Optional[str] = None
+    toml_path: str | None = None
 
     # Per-feature model specs
     ner_model: str = "en_core_web_sm"
-    community_llm: Optional[ChonkModelSpec] = None
-    svo_llm: Optional[ChonkModelSpec] = None
-    answer_llm: Optional[ChonkModelSpec] = None
-    embed_model: Optional[str] = None
+    community_llm: ChonkModelSpec | None = None
+    svo_llm: ChonkModelSpec | None = None
+    answer_llm: ChonkModelSpec | None = None
+    embed_model: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -594,12 +593,12 @@ class ChonkVocabEntry(BaseModel):
     """One entry under [[vocab.entities]] in chonk.toml."""
     type: str                          # "static" | "db_query"
     entity_type: str
-    domain: Optional[str] = None       # constat domain_id; None = all domains
+    domain: str | None = None       # constat domain_id; None = all domains
     # static:
     names: list[str] = []
     # db_query:
-    connection: Optional[str] = None
-    sql: Optional[str] = None
+    connection: str | None = None
+    sql: str | None = None
 
 
 class ChonkIndexFeatures(BaseModel):
@@ -614,31 +613,49 @@ class ChonkIndexFeatures(BaseModel):
 class ChonkRetrieval(BaseModel):
     """Retrieval defaults under [retrieval] in chonk.toml."""
     search_mode: str = "auto"
-    lane_entity_min_sim: Optional[float] = None
+    lane_entity_min_sim: float | None = None
     entity_ref_expansion: bool = False
     cluster: bool = False
 
 
 class ChonkLLMOverride(BaseModel):
     """One LLM override under [llm.*] in chonk.toml."""
-    provider: Optional[str] = None
+    provider: str | None = None
     model: str
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
-    max_tokens: Optional[int] = None
+    api_key: str | None = None
+    base_url: str | None = None
+    max_tokens: int | None = None
 
 
 class ChonkLLMOverrides(BaseModel):
     """All LLM overrides under [llm] in chonk.toml."""
-    svo: Optional[ChonkLLMOverride] = None
-    community: Optional[ChonkLLMOverride] = None
-    answer: Optional[ChonkLLMOverride] = None
+    svo: ChonkLLMOverride | None = None
+    community: ChonkLLMOverride | None = None
+    answer: ChonkLLMOverride | None = None
 
 
 class ChonkIndex(BaseModel):
     """Settings under [index] in chonk.toml."""
     spacy_model: str = "en_core_web_sm"
     features: ChonkIndexFeatures = Field(default_factory=ChonkIndexFeatures)
+
+
+class ChonkNamespaceConfig(BaseModel):
+    """One namespace entry under [namespaces.<id>] in chonk.toml."""
+    description: str = ""
+
+
+class ChonkSourceConfig(BaseModel):
+    """One entry under [[sources]] in chonk.toml."""
+    name: str
+    type: str  # "db_schema" | "glob" | "json_array" | "sql"
+    namespace: str | None = None
+    domain: str | None = None
+    # db_schema
+    uri: str | None = None
+    # glob / document sources
+    path: str | None = None
+    pattern: str | None = None
 
 
 class ChonkTomlConfig(BaseModel):
@@ -650,6 +667,8 @@ class ChonkTomlConfig(BaseModel):
     retrieval: ChonkRetrieval = Field(default_factory=ChonkRetrieval)
     llm: ChonkLLMOverrides = Field(default_factory=ChonkLLMOverrides)
     vocab: dict = Field(default_factory=dict)  # raw; .vocab_entries() parses it
+    namespaces: dict[str, ChonkNamespaceConfig] = Field(default_factory=dict)
+    sources: list[ChonkSourceConfig] = Field(default_factory=list)
 
     @classmethod
     def from_toml(cls, path: "str | Path") -> "ChonkTomlConfig":
@@ -665,3 +684,4 @@ class ChonkTomlConfig(BaseModel):
     def vocab_entries(self) -> "list[ChonkVocabEntry]":
         entries = self.vocab.get("entities", [])
         return [ChonkVocabEntry.model_validate(e) for e in entries]
+

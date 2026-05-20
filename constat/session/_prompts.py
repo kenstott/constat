@@ -18,8 +18,21 @@ from constat.core.models import TaskType
 
 _PRIMITIVE_HINTS: dict[str, str] = {
     "db_lookup": "Primitive: db_lookup — write PostgreSQL-canonical SQL for relational sources (auto-transpiled). For NoSQL sources use the native client API matching the source's database_type.",
-    "doc_search": "Primitive: doc_search — call doc_read(name) to load documents, then search or filter the content.",
-    "fact_lookup": "Primitive: fact_lookup — call answer_from_docs(query) → str. Parse numeric values from the string as needed.",
+    "doc_search": (
+        "Primitive: doc_search — call search_docs(query) → list[dict] to retrieve relevant chunks for reasoning. "
+        "Issue one atomic sub-query per call (decompose compound questions first). "
+        "Name entities explicitly — 'Amazon Total Net Sales FY2025' outperforms vague descriptions. "
+        "State the answer type in the query ('What date...', 'What dollar amount...'). "
+        "Use search_docs when the retrieved chunks are input to further reasoning; "
+        "use answer_from_docs when you need a direct answer string."
+    ),
+    "fact_lookup": (
+        "Primitive: fact_lookup — call answer_from_docs(query) → str for a terminal, fully-formed sub-question. "
+        "Frame the query as a complete self-contained question including entity name, attribute, and scope "
+        "(e.g. 'What was the total revenue for sales-analytics in Q1 2024?'). "
+        "Treat the returned citations as ground truth; parse Answer.text for the answer string. "
+        "Use fact_lookup only at terminal steps; if the result feeds further reasoning, use doc_search instead."
+    ),
     "classify": "Primitive: classify — call llm_classify(value, categories) or llm_map(series, categories) for per-row classification.",
     "compute": "Primitive: compute — pure Python/pandas/numpy only. No LLM calls, no database queries.",
     "filter": "Primitive: filter — filter an existing DataFrame with .query() or boolean indexing. Load from store if needed.",

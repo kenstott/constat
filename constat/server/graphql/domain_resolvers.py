@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 import strawberry
 
@@ -49,7 +48,6 @@ from constat.server.graphql.types import (
 from constat.server.permissions import get_user_permissions
 from constat.server.routes.learnings import (
     _can_modify_domain,
-    _check_domain_cycles,
     _domain_data_dirs,
     _ensure_user_domain_config,
 )
@@ -254,7 +252,6 @@ class Query:
                 rules=rule_ids,
                 facts=fact_names,
                 system_prompt=domain_cfg.system_prompt or "",
-                domains=domain_cfg.domains or [],
             )
 
         # --- Phase 1: Flat discovery ---
@@ -323,52 +320,15 @@ class Query:
         user_domains_dir = user_vault_dir(Path(".constat"), user_id) / "domains"
         _flat_scan(user_domains_dir, tier="user")
 
-        def _resolve_ref(ref: str, parent_key: str = "") -> str | None:
-            if ref in all_configs:
-                return ref
-            if parent_key:
-                relative = f"{parent_key}/{ref}"
-                if relative in all_configs:
-                    return relative
-            return None
-
-        # --- Phase 2: Cycle detection ---
-        WHITE, GRAY, BLACK = 0, 1, 2
-        _color = {name: WHITE for name in all_configs}
-        bad_edges: set[tuple[str, str]] = set()
-
-        def _dfs(name: str, path: list[str]) -> None:
-            _color[name] = GRAY
-            cfg, _ = all_configs[name]
-            for child_ref in (cfg.domains or []):
-                child = _resolve_ref(child_ref, parent_key=name)
-                if child is None or child not in _color:
-                    continue
-                if _color[child] == GRAY:
-                    bad_edges.add((name, child))
-                    logger.error(f"Domain cycle: {' -> '.join(path + [child])}")
-                elif _color[child] == WHITE:
-                    _dfs(child, path + [child])
-            _color[name] = BLACK
-
-        for _name in all_configs:
-            if _color[_name] == WHITE:
-                _dfs(_name, [_name])
-
-        # --- Phase 3: DAG assembly ---
+        # --- Phase 2: DAG assembly from filesystem slash-paths ---
         referenced: set[str] = set()
-        for fname, (cfg, _) in all_configs.items():
-            for child_ref in (cfg.domains or []):
-                child_name = _resolve_ref(child_ref, parent_key=fname)
-                if child_name and child_name in all_nodes and (fname, child_name) not in bad_edges:
-                    referenced.add(child_name)
-
-        for fname, (cfg, _) in all_configs.items():
-            node = all_nodes[fname]
-            for child_ref in (cfg.domains or []):
-                child_name = _resolve_ref(child_ref, parent_key=fname)
-                if child_name and child_name in all_nodes and (fname, child_name) not in bad_edges:
-                    node.children.append(all_nodes[child_name])
+        for fname in all_nodes:
+            parts = fname.split("/")
+            if len(parts) > 1:
+                parent_name = "/".join(parts[:-1])
+                if parent_name in all_nodes:
+                    all_nodes[parent_name].children.append(all_nodes[fname])
+                    referenced.add(fname)
 
         top_level = [all_nodes[fname] for fname in all_nodes if fname not in referenced]
 
@@ -657,6 +617,7 @@ class Mutation:
     @strawberry.mutation
     async def create_domain(self, info: Info, input: CreateDomainInput) -> CreateDomainResultType:
         import re
+
         import yaml
 
         user_id = _require_auth(info)
@@ -669,7 +630,6 @@ class Mutation:
         description = (input.description or "").strip()
         system_prompt = (input.system_prompt or "").strip()
         parent_domain = (input.parent_domain or "").strip()
-        initial_domains: list[str] = input.initial_domains or []
 
         slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
         if not slug:
@@ -698,45 +658,12 @@ class Mutation:
         }
         if system_prompt:
             content["system_prompt"] = system_prompt
-        if initial_domains:
-            content["domains"] = initial_domains
         domain_path.write_text(yaml.dump(content, default_flow_style=False, sort_keys=False))
 
         from constat.core.config import DomainConfig
         content["filename"] = filename
         content["source_path"] = str(domain_path.resolve())
         config.domains[filename] = DomainConfig(**content)
-
-        if parent_domain and parent_domain != "user":
-            if parent_domain == "root":
-                if config.config_dir:
-                    root_config_path = Path(config.config_dir) / "config.yaml"
-                    if root_config_path.is_file():
-                        root_data = yaml.safe_load(root_config_path.read_text()) or {}
-                        root_domains = root_data.get("domains", [])
-                        if not isinstance(root_domains, list):
-                            root_domains = list(root_domains.keys())
-                        if filename not in root_domains:
-                            root_domains.append(filename)
-                            root_data["domains"] = root_domains
-                            root_config_path.write_text(
-                                yaml.dump(root_data, default_flow_style=False, sort_keys=False)
-                            )
-                            config.domain_refs = root_domains
-            else:
-                parent_cfg = config.domains.get(parent_domain)
-                if parent_cfg and parent_cfg.source_path:
-                    parent_config_path = Path(parent_cfg.source_path)
-                    if parent_config_path.is_file():
-                        parent_data = yaml.safe_load(parent_config_path.read_text()) or {}
-                        domains_list = parent_data.get("domains", [])
-                        if filename not in domains_list:
-                            domains_list.append(filename)
-                            parent_data["domains"] = domains_list
-                            parent_config_path.write_text(
-                                yaml.dump(parent_data, default_flow_style=False, sort_keys=False)
-                            )
-                            parent_cfg.domains = domains_list
 
         return CreateDomainResultType(
             status="created", filename=filename, name=name, description=description,
@@ -819,19 +746,15 @@ class Mutation:
         if not _can_modify_domain(domain, user_id, server_config):
             raise ValueError("You do not have permission to delete this domain")
 
-        referencing = [
-            k for k, d in config.domains.items()
-            if k != filename and filename in (d.domains or [])
-        ]
-        if referencing:
-            raise ValueError(f"Cannot delete: domain is composed by {', '.join(referencing)}")
-
         if not domain.source_path:
             raise ValueError("Domain has no source path")
 
         import shutil
         domain_path = Path(domain.source_path)
         domain_dir = domain_path.parent
+        sub_domains_dir = domain_dir / "domains"
+        if sub_domains_dir.is_dir() and any(sub_domains_dir.iterdir()):
+            raise ValueError("Cannot delete: domain has sub-domains. Delete sub-domains first.")
 
         if domain_dir.is_dir() and (domain_dir / "config.yaml").exists():
             shutil.rmtree(domain_dir)
@@ -888,38 +811,14 @@ class Mutation:
         except yaml.YAMLError as e:
             raise ValueError(f"Invalid YAML: {e}")
 
-        # Cycle check
-        new_domains = (parsed or {}).get("domains", []) if isinstance(parsed, dict) else []
-        if new_domains:
-            all_keys = set(config.domains.keys())
-            all_keys.add(filename)
-
-            def _resolve(ref: str, parent: str) -> str | None:
-                if ref in all_keys:
-                    return ref
-                relative = f"{parent}/{ref}"
-                if relative in all_keys:
-                    return relative
-                return None
-
-            graph: dict[str, list[str]] = {}
-            for k, d in config.domains.items():
-                graph[k] = [r for ref in (d.domains or []) if (r := _resolve(ref, k))]
-            graph[filename] = [r for ref in new_domains if (r := _resolve(ref, filename))]
-            cycles = _check_domain_cycles(graph)
-            if cycles:
-                raise ValueError(f"Cannot save: would create domain cycle(s): {'; '.join(cycles)}")
-
         domain_path.write_text(content)
-
-        if isinstance(parsed, dict) and "domains" in parsed:
-            domain.domains = parsed["domains"]
 
         return DomainContentSaveResultType(status="saved", filename=filename, path=str(domain_path))
 
     @strawberry.mutation
     async def promote_domain(self, info: Info, filename: str) -> PromoteDomainResultType:
         import shutil
+
         import yaml
 
         user_id = _require_auth(info)
@@ -1198,6 +1097,7 @@ class Mutation:
         self, info: Info, input: MoveDomainSourceInput,
     ) -> MoveDomainSourceResultType:
         import yaml
+
         from constat.core.config import DomainConfig
 
         config = info.context.config

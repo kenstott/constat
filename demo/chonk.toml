@@ -1,12 +1,44 @@
 # chonk index configuration for the constat demo
 #
-# This file is read by constat's warmup (app.py) to configure the chonk
-# indexing pipeline. It is separate from config.yaml so chonk concerns
-# stay out of constat's domain/DB/LLM configuration.
+# namespaces: defines the domain hierarchy for the chonk index.
+#   Each namespace maps to a constat scope: "global" = system-wide,
+#   "user:<id>" = per-user. Domains are fully-qualified slash-paths;
+#   the hierarchy is implicit (sales-analytics/north-america is a child
+#   of sales-analytics).
 #
-# Domain isolation: entity vocab queries are tagged by domain. At query
-# time constat's _RelationalEntityIndex enforces domain_ids filtering so
-# entity expansion never crosses domain access boundaries.
+# sources: data sources to index, each assigned to a namespace + domain.
+
+# ---------------------------------------------------------------------------
+# Namespaces and domain dictionary
+# ---------------------------------------------------------------------------
+
+[namespaces.global]
+description = "Shared company knowledge"
+
+# ---------------------------------------------------------------------------
+# Sources — db_schema entries are introspected via SQLAlchemy at warmup
+# ---------------------------------------------------------------------------
+
+[[sources]]
+name      = "sales-analytics-db"
+type      = "db_schema"
+namespace = "global"
+domain    = "sales-analytics"
+uri       = "sqlite:///data/sales.db"
+
+[[sources]]
+name      = "hr-reporting-db"
+type      = "db_schema"
+namespace = "global"
+domain    = "hr-reporting"
+uri       = "sqlite:///data/hr.db"
+
+[[sources]]
+name      = "inventory-db"
+type      = "db_schema"
+namespace = "global"
+domain    = "sales-analytics"
+uri       = "sqlite:///data/inventory.db"
 
 # ---------------------------------------------------------------------------
 # Index features — which primitives to build at warmup
@@ -38,8 +70,6 @@ cluster              = false     # cluster-adjacency expansion (requires Cluster
 # ---------------------------------------------------------------------------
 # Entity vocabulary — data values from demo databases
 # Queries are executed at warmup against each domain's DB.
-# entity_type becomes the label in chunk_entities; domain is inferred from
-# the connection string matched against constat's databases config.
 # ---------------------------------------------------------------------------
 
 # sales-analytics domain

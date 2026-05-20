@@ -357,7 +357,7 @@ class Planner:
         if self.doc_tools:
             # noinspection PyTypeChecker
             handlers["list_documents"] = self.doc_tools.list_documents
-            handlers["search_documents"] = lambda query, limit=5: self.doc_tools.search_documents(query, limit)
+            handlers["search_documents"] = lambda query, limit=30: self.doc_tools.search_documents(query, limit)
             handlers["get_document"] = lambda name: self.doc_tools.get_document(name)
 
         # Add API schema handlers if APIs are configured
