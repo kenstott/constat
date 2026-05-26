@@ -462,15 +462,9 @@ class SharePointClient:
     def fetch_list_item_attachments(self, sp_list: SPList, item_id: str) -> list[dict]:
         """List attachments for a single list item via SharePoint REST API.
 
-        Graph API v1.0 does not expose the /attachments navigation property for
-        SharePoint list items; the SharePoint REST API is the only supported path.
-
         Returns list of dicts with keys: FileName, ServerRelativeUrl.
 
-        Raises:
-            httpx.HTTPStatusError: 401 if the Azure AD app-only policy is not
-                enabled on the tenant. Tenant admin must run:
-                Set-SPOTenant -AllowAppOnlyPolicy $true
+        Requires tenant AllowAppOnlyPolicy=true (Set-SPOTenant -AllowAppOnlyPolicy $true).
         """
         token = self._get_sharepoint_rest_token()
         encoded_name = sp_list.name.replace("'", "''")
@@ -491,8 +485,7 @@ class SharePointClient:
     ) -> bytes:
         """Download attachment content via SharePoint REST API.
 
-        Raises:
-            httpx.HTTPStatusError: 401 if AllowAppOnlyPolicy is not enabled.
+        Requires tenant AllowAppOnlyPolicy=true.
         """
         token = self._get_sharepoint_rest_token()
         encoded_name = sp_list.name.replace("'", "''")

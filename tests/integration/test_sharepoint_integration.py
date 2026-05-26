@@ -33,6 +33,15 @@ pytestmark = pytest.mark.integration
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _find_calendar_with_items(sp_client, calendars):
+    """Return the first calendar that has at least one item, or None."""
+    for cal in calendars:
+        items = sp_client.fetch_list_items(cal)
+        if items:
+            return cal, items
+    return None, []
+
+
 def _require_env(name: str) -> str:
     val = os.environ.get(name)
     if not val:
@@ -95,6 +104,110 @@ def sp_client():
 def site_discovery(sp_client):
     """Run discover_site() once and share the result across tests in this module."""
     return sp_client.discover_site()
+
+
+@pytest.fixture(scope="module")
+def list_item_with_attachment(sp_client, site_discovery):
+    """Create a list item with a text attachment; yield (sp_list, item_id, filename); delete on teardown."""
+    import httpx
+
+    if not site_discovery["lists"]:
+        pytest.fail("No generic lists found on the SharePoint site.")
+
+    sp_list = site_discovery["lists"][0]
+    token = sp_client._get_access_token()
+    site_id = sp_client._get_site_id(token)
+    from constat.discovery.doc_tools._sharepoint import _GRAPH_API
+
+    # Create item via Graph
+    r = httpx.post(
+        f"{_GRAPH_API}/sites/{site_id}/lists/{sp_list.id}/items",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"fields": {"Title": "pytest-attachment-fixture"}},
+        timeout=30,
+    )
+    r.raise_for_status()
+    graph_item_id = r.json()["id"]
+
+    # Add attachment via SharePoint REST (requires cert auth)
+    rest_token = sp_client._get_sharepoint_rest_token()
+    site_url = sp_client._site_url.rstrip("/")
+    encoded_name = sp_list.name.replace("'", "''")
+    attachment_name = "pytest_attachment.txt"
+    r2 = httpx.post(
+        f"{site_url}/_api/web/lists/getbytitle('{encoded_name}')/items({graph_item_id})/AttachmentFiles/add(FileName='{attachment_name}')",
+        headers={
+            "Authorization": f"Bearer {rest_token}",
+            "Accept": "application/json;odata=verbose",
+        },
+        content=b"pytest test attachment content",
+        timeout=30,
+    )
+    r2.raise_for_status()
+
+    yield sp_list, graph_item_id, attachment_name
+
+    # Teardown: delete item via Graph
+    httpx.delete(
+        f"{_GRAPH_API}/sites/{site_id}/lists/{sp_list.id}/items/{graph_item_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+
+
+@pytest.fixture(scope="module")
+def calendar_item_with_attachment(sp_client, site_discovery):
+    """Create a calendar event with a text attachment; yield (cal, item_id, filename); delete on teardown."""
+    import httpx
+
+    if not site_discovery["calendars"]:
+        pytest.fail("No calendar lists found on the SharePoint site.")
+
+    cal, _ = _find_calendar_with_items(sp_client, site_discovery["calendars"])
+    if cal is None:
+        pytest.fail(
+            f"No calendars with items found. Calendars: "
+            f"{[c.name for c in site_discovery['calendars']]}"
+        )
+
+    token = sp_client._get_access_token()
+    site_id = sp_client._get_site_id(token)
+    from constat.discovery.doc_tools._sharepoint import _GRAPH_API
+
+    # Create calendar event via Graph
+    r = httpx.post(
+        f"{_GRAPH_API}/sites/{site_id}/lists/{cal.id}/items",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"fields": {"Title": "pytest-calendar-attachment-fixture"}},
+        timeout=30,
+    )
+    r.raise_for_status()
+    graph_item_id = r.json()["id"]
+
+    # Add attachment via SharePoint REST
+    rest_token = sp_client._get_sharepoint_rest_token()
+    site_url = sp_client._site_url.rstrip("/")
+    encoded_name = cal.name.replace("'", "''")
+    attachment_name = "pytest_cal_attachment.txt"
+    r2 = httpx.post(
+        f"{site_url}/_api/web/lists/getbytitle('{encoded_name}')/items({graph_item_id})/AttachmentFiles/add(FileName='{attachment_name}')",
+        headers={
+            "Authorization": f"Bearer {rest_token}",
+            "Accept": "application/json;odata=verbose",
+        },
+        content=b"pytest calendar attachment content",
+        timeout=30,
+    )
+    r2.raise_for_status()
+
+    yield cal, graph_item_id, attachment_name
+
+    # Teardown
+    httpx.delete(
+        f"{_GRAPH_API}/sites/{site_id}/lists/{cal.id}/items/{graph_item_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -282,87 +395,20 @@ class TestSitePages:
 # List item attachments
 # ---------------------------------------------------------------------------
 
-_ALLOW_APP_ONLY_MSG = (
-    "SharePoint REST API rejected the app-only token (401). "
-    "Tenant admin must enable app-only access: "
-    "Connect-SPOService -Url https://kenstott-admin.sharepoint.com; "
-    "Set-SPOTenant -AllowAppOnlyPolicy $true"
-)
-
-
 class TestListItemAttachments:
-    def _find_item_with_attachment(self, sp_client, sp_list) -> tuple[str, str] | None:
-        """Return (item_id, attachment_name) for the first item that has attachments."""
-        import httpx as _httpx
-
-        items = sp_client.fetch_list_items(sp_list)
-        for item in items:
-            item_id = item.get("id", "")
-            if not item_id:
-                continue
-            try:
-                attachments = sp_client.fetch_list_item_attachments(sp_list, item_id)
-                if attachments:
-                    file_name = attachments[0].get("FileName", attachments[0].get("name", ""))
-                    if file_name:
-                        return item_id, file_name
-            except _httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 401:
-                    pytest.fail(_ALLOW_APP_ONLY_MSG)
-                continue
-        return None
-
-    def test_fetch_attachments_returns_list(self, sp_client, site_discovery):
-        import httpx as _httpx
-
-        if not site_discovery["lists"]:
-            pytest.fail("No generic lists found on the SharePoint site.")
-        sp_list = site_discovery["lists"][0]
-        items = sp_client.fetch_list_items(sp_list)
-        if not items:
-            pytest.fail(f"List '{sp_list.name}' has no items.")
-        item_id = items[0]["id"]
-        try:
-            attachments = sp_client.fetch_list_item_attachments(sp_list, item_id)
-        except _httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401:
-                pytest.fail(_ALLOW_APP_ONLY_MSG)
-            raise
+    def test_fetch_attachments_returns_list(self, sp_client, list_item_with_attachment):
+        sp_list, item_id, _ = list_item_with_attachment
+        attachments = sp_client.fetch_list_item_attachments(sp_list, item_id)
         assert isinstance(attachments, list)
 
-    def test_item_with_attachment_has_name(self, sp_client, site_discovery):
-        if not site_discovery["lists"]:
-            pytest.fail("No generic lists found on the SharePoint site.")
-        sp_list = site_discovery["lists"][0]
-        result = self._find_item_with_attachment(sp_client, sp_list)
-        if result is None:
-            pytest.fail(
-                f"No items with attachments found in list '{sp_list.name}'. "
-                "Add an attachment to a list item before running this test."
-            )
-        _, attachment_name = result
+    def test_item_with_attachment_has_name(self, list_item_with_attachment):
+        _, _, attachment_name = list_item_with_attachment
         assert isinstance(attachment_name, str)
         assert len(attachment_name) > 0
 
-    def test_download_list_item_attachment(self, sp_client, site_discovery):
-        import httpx as _httpx
-
-        if not site_discovery["lists"]:
-            pytest.fail("No generic lists found on the SharePoint site.")
-        sp_list = site_discovery["lists"][0]
-        result = self._find_item_with_attachment(sp_client, sp_list)
-        if result is None:
-            pytest.fail(
-                f"No items with attachments found in list '{sp_list.name}'. "
-                "Add an attachment to a list item before running this test."
-            )
-        item_id, attachment_name = result
-        try:
-            content = sp_client.download_list_item_attachment(sp_list, item_id, attachment_name)
-        except _httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401:
-                pytest.fail(_ALLOW_APP_ONLY_MSG)
-            raise
+    def test_download_list_item_attachment(self, sp_client, list_item_with_attachment):
+        sp_list, item_id, attachment_name = list_item_with_attachment
+        content = sp_client.download_list_item_attachment(sp_list, item_id, attachment_name)
         assert isinstance(content, bytes)
         assert len(content) > 0
 
@@ -372,63 +418,14 @@ class TestListItemAttachments:
 # ---------------------------------------------------------------------------
 
 class TestCalendarItemAttachments:
-    def _find_calendar_item_with_attachment(self, sp_client, cal) -> tuple[str, str] | None:
-        import httpx as _httpx
-
-        items = sp_client.fetch_list_items(cal)
-        for item in items:
-            item_id = item.get("id", "")
-            if not item_id:
-                continue
-            try:
-                attachments = sp_client.fetch_list_item_attachments(cal, item_id)
-                if attachments:
-                    file_name = attachments[0].get("FileName", attachments[0].get("name", ""))
-                    if file_name:
-                        return item_id, file_name
-            except _httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 401:
-                    pytest.fail(_ALLOW_APP_ONLY_MSG)
-                continue
-        return None
-
-    def test_calendar_item_attachments_returns_list(self, sp_client, site_discovery):
-        import httpx as _httpx
-
-        if not site_discovery["calendars"]:
-            pytest.fail("No calendar lists found on the SharePoint site.")
-        cal = site_discovery["calendars"][0]
-        items = sp_client.fetch_list_items(cal)
-        if not items:
-            pytest.fail(f"Calendar '{cal.name}' has no items.")
-        item_id = items[0]["id"]
-        try:
-            attachments = sp_client.fetch_list_item_attachments(cal, item_id)
-        except _httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401:
-                pytest.fail(_ALLOW_APP_ONLY_MSG)
-            raise
+    def test_calendar_item_attachments_returns_list(self, sp_client, calendar_item_with_attachment):
+        cal, item_id, _ = calendar_item_with_attachment
+        attachments = sp_client.fetch_list_item_attachments(cal, item_id)
         assert isinstance(attachments, list)
 
-    def test_download_calendar_item_attachment(self, sp_client, site_discovery):
-        import httpx as _httpx
-
-        if not site_discovery["calendars"]:
-            pytest.fail("No calendar lists found on the SharePoint site.")
-        cal = site_discovery["calendars"][0]
-        result = self._find_calendar_item_with_attachment(sp_client, cal)
-        if result is None:
-            pytest.fail(
-                f"No items with attachments found in calendar '{cal.name}'. "
-                "Add an attachment to a calendar event before running this test."
-            )
-        item_id, attachment_name = result
-        try:
-            content = sp_client.download_list_item_attachment(cal, item_id, attachment_name)
-        except _httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401:
-                pytest.fail(_ALLOW_APP_ONLY_MSG)
-            raise
+    def test_download_calendar_item_attachment(self, sp_client, calendar_item_with_attachment):
+        cal, item_id, attachment_name = calendar_item_with_attachment
+        content = sp_client.download_list_item_attachment(cal, item_id, attachment_name)
         assert isinstance(content, bytes)
         assert len(content) > 0
 
@@ -476,12 +473,19 @@ class TestLinkedFileExtraction:
     def test_calendar_items_contain_linked_file(self, sp_client, site_discovery):
         """The test calendar item with a hyperlinked .docx in its description
         should yield at least one linked file via extract_linked_files_from_items."""
+        if not sp_client._has_cert():
+            pytest.fail(
+                "Certificate auth required to fetch linked files (SP_CERT_PATH not set). "
+                "Set SP_CERT_PATH and SP_CERT_THUMBPRINT to run this test."
+            )
         if not site_discovery["calendars"]:
             pytest.fail("No calendar lists found on the SharePoint site.")
-        cal = site_discovery["calendars"][0]
-        items = sp_client.fetch_list_items(cal)
-        if not items:
-            pytest.fail(f"Calendar '{cal.name}' has no items.")
+        cal, items = _find_calendar_with_items(sp_client, site_discovery["calendars"])
+        if cal is None:
+            pytest.fail(
+                f"No calendars with items found. Calendars checked: "
+                f"{[c.name for c in site_discovery['calendars']]}"
+            )
         results = sp_client.extract_linked_files_from_items(items)
         if not results:
             pytest.fail(
@@ -497,15 +501,18 @@ class TestLinkedFileExtraction:
 
     def test_fetch_linked_file_returns_bytes(self, sp_client, site_discovery):
         """fetch_linked_file should download a file and return non-empty bytes."""
+        if not sp_client._has_cert():
+            pytest.fail(
+                "Certificate auth required to fetch linked files (SP_CERT_PATH not set). "
+                "Set SP_CERT_PATH and SP_CERT_THUMBPRINT to run this test."
+            )
         if not site_discovery["calendars"]:
             pytest.fail("No calendar lists found on the SharePoint site.")
-        cal = site_discovery["calendars"][0]
-        items = sp_client.fetch_list_items(cal)
+        _, items = _find_calendar_with_items(sp_client, site_discovery["calendars"])
         results = sp_client.extract_linked_files_from_items(items)
         if not results:
             pytest.fail("No linked files found — cannot test fetch_linked_file directly.")
         _, url, content = results[0]
-        # Re-fetch to verify fetch_linked_file is independently callable
         content2 = sp_client.fetch_linked_file(url)
         assert isinstance(content2, bytes)
         assert len(content2) > 0
