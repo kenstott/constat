@@ -70,7 +70,6 @@ Screenshot*
 /node_modules/.cache/wrangler/wrangler-account.json
 /node_modules/.cache/wrangler/pages.json
 constat-ui/coverage/
-.claude/worktrees/
-.claude/projects/
+.claude/
 /constat-ui/.vite.test.config.mts
 sharepoint/
