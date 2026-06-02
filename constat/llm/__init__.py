@@ -17,14 +17,11 @@ standalone use; call set_backend(router) for in-session use.
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -61,175 +58,13 @@ def on_call(callback: Callable[[LLMCallEvent], None]) -> None:
     _on_call_listeners.append(callback)
 
 
-class _DirectProvider:
-    """Lightweight LLM backend using raw provider SDKs — no constat deps."""
-
-    def __init__(self, provider: str, model: str, api_key: str):
-        self.provider = provider
-        self.model = model
-        self.api_key = api_key
-
-    def generate(self, system: str, user_message: str, max_tokens: int = 4096) -> str:
-        if self.provider == "anthropic":
-            import anthropic
-            client = anthropic.Anthropic(api_key=self.api_key)
-            # noinspection PyTypeChecker
-            resp = client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                system=system,
-                messages=[{"role": "user", "content": user_message}],
-            )
-            return resp.content[0].text
-
-        if self.provider == "openai":
-            import openai
-            client = openai.OpenAI(api_key=self.api_key)
-            # noinspection PyTypeChecker
-            resp = client.chat.completions.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_message},
-                ],
-            )
-            return resp.choices[0].message.content
-
-        if self.provider == "gemini":
-            # noinspection PyUnresolvedReferences
-            import google.generativeai as genai
-            genai.configure(api_key=self.api_key)
-            model = genai.GenerativeModel(self.model, system_instruction=system)
-            resp = model.generate_content(user_message)
-            return resp.text
-
-        # OpenAI-compatible providers (grok, together, groq, mistral)
-        base_urls = {
-            "grok": "https://api.x.ai/v1",
-            "together": "https://api.together.xyz/v1",
-            "groq": "https://api.groq.com/openai/v1",
-            "mistral": "https://api.mistral.ai/v1",
-        }
-        if self.provider in base_urls:
-            import openai
-            client = openai.OpenAI(api_key=self.api_key, base_url=base_urls[self.provider])
-            # noinspection PyTypeChecker
-            resp = client.chat.completions.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_message},
-                ],
-            )
-            return resp.choices[0].message.content
-
-        if self.provider == "ollama":
-            import ollama as _ollama
-            resp = _ollama.chat(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_message},
-                ],
-            )
-            return resp["message"]["content"]
-
-        raise RuntimeError(f"Unsupported provider: {self.provider}")
-
-    def generate_vision(
-        self,
-        system: str,
-        image_bytes: bytes,
-        mime_type: str,
-        text_prompt: str,
-        max_tokens: int = 1024,
-    ) -> str:
-        """Vision generation for standalone mode."""
-        image_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
-
-        if self.provider == "anthropic":
-            import anthropic
-            client = anthropic.Anthropic(api_key=self.api_key)
-            resp = client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                system=system,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": mime_type,
-                                "data": image_b64,
-                            },
-                        },
-                        {"type": "text", "text": text_prompt},
-                    ],
-                }],
-            )
-            return resp.content[0].text
-
-        if self.provider in ("openai", "grok", "together", "groq", "mistral"):
-            import openai
-            base_urls = {
-                "grok": "https://api.x.ai/v1",
-                "together": "https://api.together.xyz/v1",
-                "groq": "https://api.groq.com/openai/v1",
-                "mistral": "https://api.mistral.ai/v1",
-            }
-            kwargs = {}
-            if self.provider in base_urls:
-                kwargs["base_url"] = base_urls[self.provider]
-            client = openai.OpenAI(api_key=self.api_key, **kwargs)
-            data_uri = f"data:{mime_type};base64,{image_b64}"
-            resp = client.chat.completions.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": [
-                        {"type": "image_url", "image_url": {"url": data_uri}},
-                        {"type": "text", "text": text_prompt},
-                    ]},
-                ],
-            )
-            return resp.choices[0].message.content
-
-        raise RuntimeError(f"Vision not supported for provider: {self.provider}")
+def _auto_detect_backend():
+    """Create a LiteLLMProvider from the first matching API key env var."""
+    from constat.providers.litellm_provider import auto_detect_provider
+    return auto_detect_provider()
 
 
-def _auto_detect_backend() -> _DirectProvider:
-    """Create a lightweight direct provider from the first matching env var.
-
-    No constat.* dependencies — works standalone with just the provider SDK.
-    """
-    env_to_provider = [
-        ("ANTHROPIC_API_KEY", "anthropic", "claude-sonnet-4-20250514"),
-        ("OPENAI_API_KEY", "openai", "gpt-4o"),
-        ("GOOGLE_API_KEY", "gemini", "gemini-2.0-flash"),
-        ("XAI_API_KEY", "grok", "grok-3-mini-fast"),
-        ("MISTRAL_API_KEY", "mistral", "mistral-large-latest"),
-        ("TOGETHER_API_KEY", "together", "meta-llama/Llama-3-70b-chat-hf"),
-        ("GROQ_API_KEY", "groq", "llama3-70b-8192"),
-        ("OLLAMA_HOST", "ollama", "llama3"),
-    ]
-
-    for env_var, provider, model in env_to_provider:
-        if os.environ.get(env_var):
-            return _DirectProvider(provider, model, os.environ[env_var])
-
-    raise RuntimeError(
-        "No LLM provider found. Set one of: "
-        "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, XAI_API_KEY, "
-        "MISTRAL_API_KEY, TOGETHER_API_KEY, GROQ_API_KEY, OLLAMA_HOST"
-    )
-
-
-def _get_backend():
+def _get_backend() -> Any:
     """Return the current backend, auto-detecting if needed."""
     global _backend
     if _backend is None:
@@ -245,15 +80,9 @@ def _execute(system: str, user_message: str, *, task_type=None) -> tuple[str, st
     """Call the backend and return (content, model_used, provider_used)."""
     backend = _get_backend()
 
-    # _DirectProvider — standalone mode, returns plain str
-    if isinstance(backend, _DirectProvider):
-        content = backend.generate(system=system, user_message=user_message)
-        return content.strip(), backend.model, backend.provider
-
     # TaskRouter path (constat session) — has .execute() with task_type
     if hasattr(backend, "execute"):
         from constat.core.models import TaskType
-        # noinspection PyUnresolvedReferences
         result = backend.execute(
             task_type=task_type or TaskType.SYNTHESIS,
             system=system,
@@ -264,20 +93,16 @@ def _execute(system: str, user_message: str, *, task_type=None) -> tuple[str, st
             raise RuntimeError(result.content)
         return (
             result.content.strip(),
-            getattr(result, "model", "unknown"),
-            getattr(result, "provider", "unknown"),
+            getattr(result, "model_used", "unknown"),
+            getattr(result, "provider_used", "unknown"),
         )
 
-    # BaseLLMProvider fallback
-    # noinspection PyUnresolvedReferences
-    result = backend.generate(
-        system=system,
-        user_message=user_message,
-    )
+    # BaseLLMProvider / LiteLLMProvider — standalone mode
+    content = backend.generate(system=system, user_message=user_message)
     return (
-        result.strip(),
+        content.strip(),
         getattr(backend, "model", "unknown"),
-        type(backend).__name__,
+        getattr(backend, "_provider", type(backend).__name__),
     )
 
 
@@ -286,13 +111,6 @@ def _execute_vision(
 ) -> tuple[str, str, str]:
     """Call the backend with a vision request and return (content, model_used, provider_used)."""
     backend = _get_backend()
-
-    if isinstance(backend, _DirectProvider):
-        content = backend.generate_vision(
-            system=system, image_bytes=image_bytes,
-            mime_type=mime_type, text_prompt=text_prompt,
-        )
-        return content.strip(), backend.model, backend.provider
 
     # TaskRouter / BaseLLMProvider — has generate_vision()
     if hasattr(backend, "generate_vision"):
@@ -303,7 +121,7 @@ def _execute_vision(
         return (
             content.strip(),
             getattr(backend, "model", "unknown"),
-            type(backend).__name__,
+            getattr(backend, "_provider", type(backend).__name__),
         )
 
     raise RuntimeError("Backend does not support vision")
@@ -486,7 +304,7 @@ def llm_classify(
     *,
     reason: bool = False,
     score: bool = False,
-) -> dict[str, str] | dict[str, dict]:
+) -> dict[str, Any]:
     """Classify items into fixed categories using LLM knowledge.
 
     Args:
@@ -513,12 +331,12 @@ def llm_classify(
             entry_keys.append('"score"')
         keys_str = ", ".join(entry_keys)
 
-        example_entry = {"value": "category_a"}
+        example_entry: dict[str, Any] = {"value": "category_a"}
         if reason:
             example_entry["reason"] = "brief explanation"
         if score:
             example_entry["score"] = 0.95
-        example_null = {"value": None}
+        example_null: dict[str, Any] = {"value": None}
         if reason:
             example_null["reason"] = None
         if score:
@@ -590,7 +408,7 @@ YOUR JSON RESPONSE:"""
     return mapping
 
 
-def llm_extract(texts: str | list[str], fields: list[str] | dict, context: str = "") -> dict[str, str] | list[dict[str, str]]:
+def llm_extract(texts: str | list[str], fields: list[str] | dict, context: str = "") -> dict[str, Any] | list[dict[str, Any]]:
     """Extract structured fields from free text using LLM knowledge.
 
     Args:
@@ -763,7 +581,8 @@ YOUR JSON RESPONSE:"""
 
     if not content.startswith("["):
         logger.warning(f"[LLM_SCORE] Could not parse response: {content[:200]}")
-        results = [(None, "") for _ in texts]
+        _none: float | None = None
+        results: list[tuple[float | None, str]] = [(_none, "") for _ in texts]
     else:
         raw = json.loads(content)
         results = []
@@ -937,7 +756,7 @@ def _parse_cell_value(val):
         if is_accounting_neg:
             v = -v
         v = _pct(v)
-        if not is_pct and v == int(v) and not ('.' in cleaned or cleaned[-1] in _UNIT_MULT):
+        if not is_pct and isinstance(v, (int, float)) and v == int(v) and not ('.' in cleaned or cleaned[-1] in _UNIT_MULT):
             return int(v)
         return v
 
@@ -949,7 +768,7 @@ def llm_extract_table(
     description: str,
     columns: list[str] | None = None,
     dtypes: dict[str, str] | None = None,
-) -> "pd.DataFrame":
+) -> Any:  # returns pandas.DataFrame
     """Extract a table from document text into a DataFrame.
 
     Reads structured tabular data (markdown tables, lists of key-value pairs,
@@ -970,7 +789,7 @@ def llm_extract_table(
     Raises:
         ValueError: If no table is found or extraction fails.
     """
-    import pandas as pd
+    import pandas as pd  # pyright: ignore[reportMissingImports]
 
     col_instruction = ""
     if columns:

@@ -73,18 +73,19 @@ class TaskRouter:
             logger.warning(f"Task escalated: {result.escalations}")
     """
 
-    # Map of provider names to their classes
+    # All providers route through LiteLLMProvider.
+    # Legacy per-provider classes are preserved for backward compat but not used by the router.
     PROVIDER_CLASSES = {
-        "anthropic": "constat.providers.anthropic.AnthropicProvider",
-        "openai": "constat.providers.openai.OpenAIProvider",
-        "gemini": "constat.providers.gemini.GeminiProvider",
-        "grok": "constat.providers.grok.GrokProvider",
-        "mistral": "constat.providers.mistral.MistralProvider",
-        "codestral": "constat.providers.mistral.CodestralProvider",
-        "ollama": "constat.providers.llama.OllamaProvider",
-        "llama": "constat.providers.llama.LlamaProvider",
-        "together": "constat.providers.llama.TogetherProvider",
-        "groq": "constat.providers.llama.GroqProvider",
+        "anthropic": "constat.providers.litellm_provider.LiteLLMProvider",
+        "openai": "constat.providers.litellm_provider.LiteLLMProvider",
+        "gemini": "constat.providers.litellm_provider.LiteLLMProvider",
+        "grok": "constat.providers.litellm_provider.LiteLLMProvider",
+        "mistral": "constat.providers.litellm_provider.LiteLLMProvider",
+        "codestral": "constat.providers.litellm_provider.LiteLLMProvider",
+        "ollama": "constat.providers.litellm_provider.LiteLLMProvider",
+        "llama": "constat.providers.litellm_provider.LiteLLMProvider",
+        "together": "constat.providers.litellm_provider.LiteLLMProvider",
+        "groq": "constat.providers.litellm_provider.LiteLLMProvider",
     }
 
     def __init__(self, llm_config: LLMConfig):
@@ -275,24 +276,25 @@ class TaskRouter:
         if cache_key not in self._provider_cache:
             provider_class = self._get_provider_class(provider_name)
 
-            # Build kwargs
-            kwargs = {"model": spec.model}
-
-            # API key resolution: spec.api_key → global key (if same provider) → provider env var
+            # Build kwargs — LiteLLMProvider takes provider as first positional arg
+            api_key = None
             if spec.api_key:
-                kwargs["api_key"] = spec.api_key
+                api_key = spec.api_key
             elif self.llm_config.api_key and provider_name == (self.llm_config.provider or "").lower():
-                kwargs["api_key"] = self.llm_config.api_key
+                api_key = self.llm_config.api_key
 
-            # Add base_url if provided
+            kwargs: dict = {
+                "provider": provider_name,
+                "model": spec.model,
+            }
+            if api_key:
+                kwargs["api_key"] = api_key
             if base_url:
                 kwargs["base_url"] = base_url
-
-            # Set client-level timeout from model spec
             if spec.timeout_seconds:
                 kwargs["timeout"] = float(spec.timeout_seconds)
 
-            logger.info(f"Creating provider {provider_name}/{spec.model} (api_key={'set' if 'api_key' in kwargs else 'from env'}, timeout={spec.timeout_seconds or 120}s)")
+            logger.info(f"Creating provider {provider_name}/{spec.model} (api_key={'set' if api_key else 'from env'}, timeout={spec.timeout_seconds or 120}s)")
             self._provider_cache[cache_key] = provider_class(**kwargs)
 
         return self._provider_cache[cache_key]
