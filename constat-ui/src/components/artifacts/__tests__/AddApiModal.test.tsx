@@ -1,4 +1,5 @@
 // Copyright (c) 2025 Kenneth Stott
+// Canary: e678adf4-9760-4610-bfa9-11324bbeca6a
 //
 // Tests for AddApiModal: auth type field rendering and onAdd payload.
 

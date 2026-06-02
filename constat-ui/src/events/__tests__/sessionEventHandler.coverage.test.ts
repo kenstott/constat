@@ -1,4 +1,5 @@
 // Copyright (c) 2025 Kenneth Stott
+// Canary: c8c76a07-90e8-4599-88b7-fbc32053c286
 // Canary: test-coverage-sessionEventHandler
 //
 // This source code is licensed under the Business Source License 1.1

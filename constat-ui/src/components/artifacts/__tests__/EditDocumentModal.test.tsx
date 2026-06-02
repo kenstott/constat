@@ -1,4 +1,5 @@
 // Copyright (c) 2025 Kenneth Stott
+// Canary: 16076ea6-c41a-4887-9b80-1d48c1506e04
 //
 // Tests for EditDocumentModal: URI scheme detection, validation logic,
 // and component rendering/validation behaviour.

@@ -1,3 +1,13 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: 0231f950-bf89-4855-8c82-435955c4e8d6
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """CLI: aggregate DSL primitive metrics across all .constat sessions."""
 
 from __future__ import annotations

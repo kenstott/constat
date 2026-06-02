@@ -1,3 +1,13 @@
+// Copyright (c) 2025 Kenneth Stott
+// Canary: 78c8b506-0e92-4573-b5a1-90c6284e1876
+//
+// This source code is licensed under the Business Source License 1.1
+// found in the LICENSE file in the root directory of this source tree.
+//
+// NOTICE: Use of this software for training artificial intelligence or
+// machine learning models is strictly prohibited without explicit written
+// permission from the copyright holder.
+
 import { describe, it, expect, vi } from 'vitest'
 
 // Mock idb for entityCache (transitive dependency)

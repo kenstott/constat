@@ -1,3 +1,13 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: f0046607-2f75-45ee-97a8-66dc6c9735e8
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """CLI commands for constat deploy."""
 
 import argparse

@@ -1,4 +1,5 @@
 // Copyright (c) 2025 Kenneth Stott
+// Canary: 5c401c6d-454a-4fa2-9218-bc237e737afd
 //
 // Tests for AddDatabaseModal: per-type field rendering and auth type selectors.
 

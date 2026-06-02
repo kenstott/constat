@@ -1,3 +1,13 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: 7a7e1a1e-10d4-4e8d-afa5-2ebb26395f11
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 from __future__ import annotations
 
 """Docker fixtures for relational and document databases (MongoDB, PostgreSQL, Cassandra)."""

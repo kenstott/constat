@@ -1,3 +1,13 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: 9cfcda11-6b96-4d28-8115-96fef28402f7
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """A/B benchmark: DSL primitive approach vs. free-form Python codegen.
 
 Runs each query N_RUNS times under each variant and compares:

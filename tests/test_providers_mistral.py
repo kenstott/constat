@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # Copyright (c) 2025 Kenneth Stott
-# Canary: f0e226dd-3488-41ae-80c7-40d2fbe56fa8
+# Canary: 20817c1c-7a1b-4990-ac9d-417ee866ca45
 #
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.

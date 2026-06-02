@@ -1,3 +1,13 @@
+# Copyright (c) 2025 Kenneth Stott
+# Canary: 8b22c416-ae39-40a7-b4a3-1b8d2029eb01
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 from __future__ import annotations
 
 """Docker fixtures for search/analytics services (Elasticsearch)."""
