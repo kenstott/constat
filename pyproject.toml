@@ -60,7 +60,7 @@ dependencies = [
     # JSON Patch (RFC 6902) for entity cache diffs
     "jsonpatch>=1.33",
     # GraphRAG / document chunking
-    "chonk @ file:///Volumes/dev/Users/kennethstott/PycharmProjects/chonk",
+    "chonk",
 ]
 
 [project.optional-dependencies]
@@ -68,7 +68,7 @@ dependencies = [
 mysql = ["pymysql>=1.1.2"]
 bigquery = ["sqlalchemy-bigquery>=1.11.0", "google-cloud-bigquery>=3.25.0"]
 snowflake = ["snowflake-sqlalchemy>=1.7.0"]
-databricks = ["databricks-sql-connector>=3.6.0", "sqlalchemy-databricks>=0.2.0"]
+databricks = ["databricks-sql-connector>=4.2", "databricks-sqlalchemy"]
 
 # NoSQL connectors
 mongodb = ["pymongo>=4.16.0"]
@@ -202,3 +202,9 @@ warn_unused_ignores = true
 warn_return_any = true
 show_error_codes = true
 exclude = '^(build|dist|\.venv|tests/fixtures)/'
+
+[tool.uv]
+override-dependencies = ["pandas>=3.0.0"]
+
+[tool.uv.sources]
+chonk = { path = "../chonk", editable = true }
